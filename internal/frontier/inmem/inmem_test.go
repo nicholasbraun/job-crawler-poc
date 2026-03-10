@@ -68,6 +68,12 @@ func TestFrontierCooldown(t *testing.T) {
 
 		synctest.Wait()
 
+		select {
+		case url := <-urlChan:
+			t.Fatalf("should not have received a url before cooldown. url: %v", url)
+		default:
+		}
+
 		time.Sleep(cooldown)
 
 		synctest.Wait()
