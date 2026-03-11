@@ -5,13 +5,12 @@ import (
 )
 
 type Content struct {
-	URL   URL
-	Title string
-	Text  string
-	URLs  []string
+	Title       string
+	MainContent string
+	URLs        []string
 }
 
 type ContentRepository interface {
-	Save(ctx context.Context, content *Content) error
+	Save(ctx context.Context, url string, content *Content) error
 	Exists(ctx context.Context, url string) (bool, error)
 }
