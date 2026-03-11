@@ -15,5 +15,5 @@ func (u URL) GetFullURL() string {
 
 type URLRepository interface {
 	Save(ctx context.Context, url string) error
-	Visted(ctx context.Context, url string) (bool, error)
+	Visited(ctx context.Context, url string) (bool, error)
 }
