@@ -116,12 +116,7 @@ func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 			}
 		}
 
-		// no urls left in the queues, we are waiting for a signal that a new one got added
-		select {
-		case <-f.signal:
-			continue
-		case <-ctx.Done():
-			return crawler.URL{}, ctx.Err()
-		}
+		// no urls left in the queues, signal work done
+		return crawler.URL{}, frontier.ErrDone
 	}
 }

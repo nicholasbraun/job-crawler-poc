@@ -13,21 +13,26 @@ import (
 
 func TestFrontierAddAndRetrieveSingleURL(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		frontier := inmem.NewFrontier(inmem.WithCooldown(time.Second))
+		inmemFrontier := inmem.NewFrontier(inmem.WithCooldown(time.Second))
 
 		url := crawler.URL{Base: "base", Path: "path"}
-		err := frontier.AddURL(t.Context(), url)
+		err := inmemFrontier.AddURL(t.Context(), url)
 		if err != nil {
 			t.Fatalf("error adding URL to frontier. error: %v", err)
 		}
 
-		nextURL, err := frontier.Next(t.Context())
+		url2, err := inmemFrontier.Next(t.Context())
 		if err != nil {
 			t.Fatalf("error getting the next URL from frontier. error: %v", err)
 		}
 
-		if nextURL != url {
-			t.Errorf("nextUrl and url should be the same. nextUrl: %v", nextURL)
+		if url2 != url {
+			t.Errorf("nextUrl and url should be the same. nextUrl: %v", url2)
+		}
+
+		_, err = inmemFrontier.Next(t.Context())
+		if !errors.Is(err, frontier.ErrDone) {
+			t.Fatalf("expected %v, got %v", frontier.ErrDone, err)
 		}
 	})
 }
@@ -35,20 +40,20 @@ func TestFrontierAddAndRetrieveSingleURL(t *testing.T) {
 func TestFrontierCooldown(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		cooldown := time.Second
-		frontier := inmem.NewFrontier(inmem.WithCooldown(cooldown))
+		inmemFrontier := inmem.NewFrontier(inmem.WithCooldown(cooldown))
 
 		url1 := crawler.URL{Base: "base", Path: "path1"}
 		url2 := crawler.URL{Base: "base", Path: "path2"}
-		err := frontier.AddURL(t.Context(), url1)
+		err := inmemFrontier.AddURL(t.Context(), url1)
 		if err != nil {
 			t.Fatalf("error adding URL1 to frontier. error: %v", err)
 		}
-		err = frontier.AddURL(t.Context(), url2)
+		err = inmemFrontier.AddURL(t.Context(), url2)
 		if err != nil {
 			t.Fatalf("error adding URL2 to frontier. error: %v", err)
 		}
 
-		nextURL, err := frontier.Next(t.Context())
+		nextURL, err := inmemFrontier.Next(t.Context())
 		if err != nil {
 			t.Fatalf("error getting the next URL from frontier. error: %v", err)
 		}
@@ -60,7 +65,7 @@ func TestFrontierCooldown(t *testing.T) {
 		urlChan := make(chan crawler.URL, 1)
 
 		go func() {
-			nextURL2, err2 := frontier.Next(t.Context())
+			nextURL2, err2 := inmemFrontier.Next(t.Context())
 			if err2 != nil {
 				t.Errorf("error getting the next URL from frontier. error: %v", err2)
 			}
