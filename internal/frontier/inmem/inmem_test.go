@@ -1,6 +1,7 @@
 package inmem_test
 
 import (
+	"errors"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -104,7 +105,7 @@ func TestMaxDomains(t *testing.T) {
 
 	url3 := crawler.URL{Base: "base2", Path: "path"}
 	err = inmemFrontier.AddURL(t.Context(), url3)
-	if err != frontier.ErrMaxDomainLimit {
+	if !errors.Is(err, frontier.ErrMaxDomainLimit) {
 		t.Errorf("expected %v, got: %v", frontier.ErrMaxDomainLimit, err)
 	}
 }

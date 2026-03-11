@@ -21,6 +21,8 @@ type Frontier struct {
 	maxDomains int
 }
 
+var _ frontier.Frontier = &Frontier{}
+
 func WithCooldown(c time.Duration) FrontierOption {
 	return func(f *Frontier) {
 		f.cooldown = c
