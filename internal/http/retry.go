@@ -54,20 +54,16 @@ func (rc *RetryClient) Get(ctx context.Context, url string) (*Response, error) {
 
 	for i := 1; i <= rc.maxTries; i++ {
 		res, err := rc.inner.Get(ctx, url)
-		if err != nil {
-			time.Sleep(currentBackoff)
-			currentBackoff *= time.Duration(rc.multiplicator)
-			continue
+		if err == nil && !isRetryable(res, err) {
+			return res, nil
 		}
 
-		if isRetryable(res, err) {
-			time.Sleep(currentBackoff)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(currentBackoff):
 			currentBackoff *= time.Duration(rc.multiplicator)
-			continue
 		}
-
-		return res, err
-
 	}
 
 	return nil, fmt.Errorf("could not GET %s after %d tries", url, rc.maxTries)

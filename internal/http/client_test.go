@@ -2,10 +2,12 @@ package http_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	myHttp "github.com/nicholasbraun/job-crawler-poc/internal/http"
 )
@@ -54,30 +56,164 @@ func TestGet200(t *testing.T) {
 }
 
 func TestRetry(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
+	t.Run("Retry on 500", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			mock := &mockDownloader{
+				responses: []*myHttp.Response{
+					{StatusCode: 500},
+					{StatusCode: 500},
+					{StatusCode: 200, Content: []byte("hello world")},
+				},
+				errors: []error{nil, nil, nil},
+			}
+			downloader := myHttp.NewRetryClient(mock)
+
+			res, err := downloader.Get(t.Context(), "http://something.de")
+			if err != nil {
+				t.Fatalf("server did return an error: %v", err)
+			}
+
+			wantCode := 200
+			gotCode := res.StatusCode
+			if gotCode != wantCode {
+				t.Errorf("expected status code %d. got: %d", wantCode, gotCode)
+			}
+
+			wantAttempts := 3
+			gotAttempts := mock.callCount
+			if gotAttempts != wantAttempts {
+				t.Errorf("expected %d attemps. got: %d", wantAttempts, gotAttempts)
+			}
+		})
+	})
+
+	t.Run("Don't retry on 404", func(t *testing.T) {
 		mock := &mockDownloader{
 			responses: []*myHttp.Response{
-				{StatusCode: 500},
-				{StatusCode: 500},
-				{StatusCode: 200, Content: []byte("hello world")},
+				{StatusCode: 404},
+				{StatusCode: 200},
 			},
-			errors: []error{nil, nil, nil},
+			errors: []error{nil, nil},
 		}
 		downloader := myHttp.NewRetryClient(mock)
 
 		res, err := downloader.Get(t.Context(), "http://something.de")
-		synctest.Wait()
-
 		if err != nil {
 			t.Fatalf("server did return an error: %v", err)
 		}
 
-		if res.StatusCode != 200 {
-			t.Errorf("expected status code 200 on first try. got: %d", res.StatusCode)
+		wantCode := 404
+		gotCode := res.StatusCode
+		if gotCode != wantCode {
+			t.Errorf("expected status code %d. got: %d", wantCode, gotCode)
 		}
 
-		if mock.callCount != 3 {
-			t.Errorf("expected three attemps. got: %d", mock.callCount)
+		wantAttempts := 1
+		gotAttempts := mock.callCount
+		if gotAttempts != wantAttempts {
+			t.Errorf("expected %d attemps. got: %d", wantAttempts, gotAttempts)
 		}
+	})
+
+	t.Run("Retry on error", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			mock := &mockDownloader{
+				responses: []*myHttp.Response{
+					nil,
+					{StatusCode: 200},
+				},
+				errors: []error{errors.New("error"), nil},
+			}
+			downloader := myHttp.NewRetryClient(mock)
+
+			res, err := downloader.Get(t.Context(), "http://something.de")
+			if err != nil {
+				t.Fatalf("server did return an error: %v", err)
+			}
+
+			wantCode := 200
+			gotCode := res.StatusCode
+			if gotCode != wantCode {
+				t.Errorf("expected status code %d. got: %d", wantCode, gotCode)
+			}
+
+			wantAttempts := 2
+			gotAttempts := mock.callCount
+			if gotAttempts != wantAttempts {
+				t.Errorf("expected %d attemps. got: %d", wantAttempts, gotAttempts)
+			}
+		})
+	})
+
+	t.Run("Max retries exhausted", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			mock := &mockDownloader{
+				responses: []*myHttp.Response{
+					{StatusCode: 500},
+					{StatusCode: 500},
+					{StatusCode: 500},
+					{StatusCode: 200},
+				},
+				errors: []error{nil, nil, nil, nil},
+			}
+			maxRetries := 3
+			downloader := myHttp.NewRetryClient(mock, myHttp.WithMaxTries(maxRetries))
+
+			res, err := downloader.Get(t.Context(), "http://something.de")
+			if err == nil {
+				t.Error("expected an error. got nil")
+			}
+
+			if res != nil {
+				t.Errorf("expected res to be nil. got %v", res)
+			}
+
+			wantAttempts := maxRetries
+			gotAttempts := mock.callCount
+			if gotAttempts != wantAttempts {
+				t.Errorf("expected %d attemps. got: %d", wantAttempts, gotAttempts)
+			}
+		})
+	})
+
+	t.Run("Context cancels retries", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			mock := &mockDownloader{
+				responses: []*myHttp.Response{
+					{StatusCode: 500},
+					{StatusCode: 500},
+					{StatusCode: 500},
+					{StatusCode: 200},
+				},
+				errors: []error{nil, nil, nil, nil},
+			}
+
+			downloader := myHttp.NewRetryClient(
+				mock,
+				myHttp.WithMultiplicator(1),
+				myHttp.WithBackoff(time.Second),
+			)
+
+			// 2.5s timeout should cancel after 3 retries
+			// 1. attempt at 0s
+			// 2. attempt at 1s
+			// 3. attempt at 2s
+			ctxTimeout, cancel := context.WithTimeout(t.Context(), 2500*time.Millisecond)
+			defer cancel()
+			res, err := downloader.Get(ctxTimeout, "http://something.de")
+			if err == nil {
+				t.Error("expected an error. got nil")
+			}
+
+			if res != nil {
+				t.Errorf("expected res to be nil. got %v", res)
+			}
+
+			wantAttempts := 3
+			gotAttempts := mock.callCount
+			if gotAttempts != wantAttempts {
+				t.Errorf("expected %d attemps. got: %d", wantAttempts, gotAttempts)
+			}
+		})
 	})
 }
