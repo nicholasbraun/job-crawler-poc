@@ -8,46 +8,17 @@ import (
 	"time"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
+	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 )
-
-type queue struct {
-	deadline time.Time
-	cooldown time.Duration
-	urls     []crawler.URL
-}
-
-func newQueue(cooldown time.Duration) *queue {
-	return &queue{
-		deadline: time.Now(),
-		cooldown: cooldown,
-		urls:     []crawler.URL{},
-	}
-}
-
-// push adds an element to the queue
-func (q *queue) push(url crawler.URL) {
-	q.urls = append(q.urls, url)
-}
-
-// pop returns the first element from the queue and removes it from the queue
-func (q *queue) pop() (crawler.URL, bool) {
-	if len(q.urls) > 0 {
-		url := q.urls[0]
-		q.urls = q.urls[1:]
-
-		return url, true
-	}
-
-	return crawler.URL{}, false
-}
 
 type FrontierOption func(*Frontier)
 
 type Frontier struct {
-	queues   map[string]*queue
-	cooldown time.Duration
-	mu       sync.Mutex
-	signal   chan struct{}
+	queues     map[string]*queue
+	cooldown   time.Duration
+	mu         sync.Mutex
+	signal     chan struct{}
+	maxDomains int
 }
 
 func WithCooldown(c time.Duration) FrontierOption {
@@ -56,12 +27,19 @@ func WithCooldown(c time.Duration) FrontierOption {
 	}
 }
 
+func WithMaxDomains(md int) FrontierOption {
+	return func(f *Frontier) {
+		f.maxDomains = md
+	}
+}
+
 func NewFrontier(opts ...FrontierOption) *Frontier {
 	f := &Frontier{
-		queues:   map[string]*queue{},
-		cooldown: time.Second,
-		mu:       sync.Mutex{},
-		signal:   make(chan struct{}, 1),
+		queues:     map[string]*queue{},
+		cooldown:   time.Second,
+		maxDomains: 50,
+		mu:         sync.Mutex{},
+		signal:     make(chan struct{}, 1),
 	}
 
 	for _, fn := range opts {
@@ -76,6 +54,10 @@ func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 	f.mu.Lock()
 
 	if _, ok := f.queues[url.Base]; !ok {
+		if len(f.queues) >= f.maxDomains {
+			f.mu.Unlock()
+			return frontier.ErrMaxDomainLimit
+		}
 		f.queues[url.Base] = newQueue(f.cooldown)
 	}
 

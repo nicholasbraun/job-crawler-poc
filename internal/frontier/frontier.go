@@ -10,9 +10,12 @@ package frontier
 
 import (
 	"context"
+	"errors"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 )
+
+var ErrMaxDomainLimit = errors.New("frontier: max domains limit reached")
 
 type Frontier interface {
 	AddURL(ctx context.Context, url crawler.URL) error

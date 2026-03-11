@@ -3,9 +3,8 @@ package crawler
 import "context"
 
 type URL struct {
-	Base  string
-	Path  string
-	Depth int
+	Base string
+	Path string
 }
 
 func (u URL) GetFullURL() string {
