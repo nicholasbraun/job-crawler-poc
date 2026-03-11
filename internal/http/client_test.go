@@ -57,12 +57,8 @@ func TestRetry(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		mock := &mockDownloader{
 			responses: []*myHttp.Response{
-				{
-					StatusCode: 500,
-				},
-				{
-					StatusCode: 500,
-				},
+				{StatusCode: 500},
+				{StatusCode: 500},
 				{StatusCode: 200, Content: []byte("hello world")},
 			},
 			errors: []error{nil, nil, nil},
