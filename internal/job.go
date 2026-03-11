@@ -10,7 +10,7 @@ type Job struct {
 	TechStack []string
 }
 
-type JobsRepository interface {
+type JobRepository interface {
 	Save(ctx context.Context, job *Job) error
 	Find(ctx context.Context) ([]*Job, error)
 }

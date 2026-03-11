@@ -27,5 +27,18 @@ func Setup(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("error creating url table %w", err)
 	}
 
+	_, err = db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS job (
+			url TEXT PRIMARY KEY,
+			title TEXT NOT NULL,
+			company TEXT,
+			location TEXT,
+			tech_stack TEXT
+		)
+		`)
+	if err != nil {
+		return fmt.Errorf("error creating job table %w", err)
+	}
+
 	return nil
 }

@@ -8,7 +8,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func TestSQLite(t *testing.T) {
+func TestSQLiteURLRepository(t *testing.T) {
 	db, err := sqlite.Open(":memory:")
 	if err != nil {
 		t.Fatalf("error creating in memory db: %v", err)
@@ -49,5 +49,56 @@ func TestSQLite(t *testing.T) {
 
 	if visited {
 		t.Errorf("%s should not be visited", nonExistingURL)
+	}
+}
+
+func TestSQLiteJobRepository(t *testing.T) {
+	db, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("error creating in memory db: %v", err)
+	}
+
+	err = sqlite.Setup(t.Context(), db)
+	if err != nil {
+		t.Fatalf("error setting up tables: %v", err)
+	}
+
+	var jobRepository crawler.JobRepository = sqlite.NewJobRepository(db)
+
+	job := &crawler.Job{
+		URL:       "https://netflix.com/jobs/123", // yeah right, lol
+		Title:     "Senior Software Engineer",
+		Company:   "netflix",
+		Location:  "Germany/remote",
+		TechStack: []string{"golang", "sqlite"},
+	}
+
+	err = jobRepository.Save(t.Context(), job)
+	if err != nil {
+		t.Fatalf("error saving job: %v", err)
+	}
+
+	jobs, err := jobRepository.Find(t.Context())
+	if err != nil {
+		t.Fatalf("error finding jobs: %v", err)
+	}
+
+	if len(jobs) != 1 {
+		t.Fatalf("should have found one job")
+	}
+
+	wantURL := job.URL
+	gotURL := jobs[0].URL
+	if wantURL != gotURL {
+		t.Errorf("want url: %s, got: %s", wantURL, gotURL)
+	}
+
+	if len(jobs[0].TechStack) != 2 {
+		t.Fatalf("should have found two tech stack items, found: %v", jobs[0].TechStack)
+	}
+	wantTechStack1 := job.TechStack[0]
+	gotTechStack1 := jobs[0].TechStack[0]
+	if wantTechStack1 != gotTechStack1 {
+		t.Errorf("want tech stack item: %s, got: %s", wantTechStack1, gotTechStack1)
 	}
 }
