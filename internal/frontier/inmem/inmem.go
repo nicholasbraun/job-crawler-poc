@@ -4,7 +4,6 @@ package inmem
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"time"
 
@@ -72,6 +71,7 @@ func NewFrontier(opts ...FrontierOption) *Frontier {
 	return f
 }
 
+// AddURL adds an URL to the frontier
 func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 	f.mu.Lock()
 
@@ -85,12 +85,15 @@ func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 
 	select {
 	case f.signal <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
 	default:
 	}
 
 	return nil
 }
 
+// Next blocks until the next URL is available and returns it from the frontier
 func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 	for {
 		f.mu.Lock()
@@ -125,7 +128,7 @@ func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 			case <-time.After(time.Until(*nextDeadline)):
 				continue
 			case <-ctx.Done():
-				return crawler.URL{}, errors.New("still urls left, but context done")
+				return crawler.URL{}, ctx.Err()
 			}
 		}
 
@@ -134,7 +137,7 @@ func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 		case <-f.signal:
 			continue
 		case <-ctx.Done():
-			return crawler.URL{}, errors.New("no urls found, and context done")
+			return crawler.URL{}, ctx.Err()
 		}
 	}
 }
