@@ -1,15 +1,39 @@
 package crawler
 
-import "context"
+import (
+	"context"
+	"errors"
+	"net/url"
+	"strings"
+)
 
 type URL struct {
-	Base string
-	Path string
+	Hostname string
+	RawURL   string
 }
 
-func (u URL) GetFullURL() string {
-	// TODO: add logic to insert "/" between the two if it is missing
-	return u.Base + u.Path
+func ParseURL(base string, u string) (URL, error) {
+	if base == "" {
+		return URL{}, errors.New("url: cannot parse url with empty base")
+	}
+
+	if !strings.HasPrefix(u, "http") && !strings.HasPrefix(u, "/") && u != "" {
+		return URL{}, errors.New("url: cannot parse url without schema or relative path")
+	}
+
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return URL{}, err
+	}
+	parsed, err = parsed.Parse(u)
+	if err != nil {
+		return URL{}, err
+	}
+
+	return URL{
+		Hostname: parsed.Hostname(),
+		RawURL:   parsed.String(),
+	}, nil
 }
 
 type URLRepository interface {

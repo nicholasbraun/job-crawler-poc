@@ -55,15 +55,15 @@ func NewFrontier(opts ...FrontierOption) *Frontier {
 func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 	f.mu.Lock()
 
-	if _, ok := f.queues[url.Base]; !ok {
+	if _, ok := f.queues[url.Hostname]; !ok {
 		if len(f.queues) >= f.maxDomains {
 			f.mu.Unlock()
 			return frontier.ErrMaxDomainLimit
 		}
-		f.queues[url.Base] = newQueue(f.cooldown)
+		f.queues[url.Hostname] = newQueue(f.cooldown)
 	}
 
-	f.queues[url.Base].push(url)
+	f.queues[url.Hostname].push(url)
 
 	f.mu.Unlock()
 
