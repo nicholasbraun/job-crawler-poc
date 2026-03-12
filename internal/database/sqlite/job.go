@@ -25,7 +25,7 @@ func (jr *JobRepository) Save(ctx context.Context, job *crawler.Job) error {
 	_, err = jr.db.ExecContext(ctx, `
 		INSERT OR IGNORE INTO job (url, title, company, location, tech_stack)
 		VALUES (?, ?, ?, ?, ?);
-		`, job.URL, job.Title, job.Company, job.Title, techJSON)
+		`, job.URL, job.Title, job.Company, job.Location, techJSON)
 	if err != nil {
 		return fmt.Errorf("error saving job %v: %w", job, err)
 	}
