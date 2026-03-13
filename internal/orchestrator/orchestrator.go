@@ -4,6 +4,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
@@ -64,7 +65,7 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 		}
 
 		err = o.frontier.AddURL(ctx, parsed)
-		if err == frontier.ErrMaxDomainLimit {
+		if errors.Is(err, frontier.ErrMaxDomainLimit) {
 			slog.Info("max domain limit reached, dropping new domains")
 			continue
 		}
@@ -77,7 +78,7 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 
 	for {
 		nextURL, err := o.frontier.Next(ctx)
-		if err == frontier.ErrDone {
+		if errors.Is(err, frontier.ErrDone) {
 			slog.Info("received Done signal. ending crawl")
 			cancel(frontier.ErrDone)
 			return nil
@@ -136,7 +137,7 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 			}
 
 			err = o.frontier.AddURL(ctx, parsed)
-			if err == frontier.ErrMaxDomainLimit {
+			if errors.Is(err, frontier.ErrMaxDomainLimit) {
 				slog.Info("max domain limit reached, dropping new domains")
 				continue
 			}
