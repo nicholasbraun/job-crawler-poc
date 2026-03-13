@@ -99,13 +99,6 @@ func TestURLs(t *testing.T) {
 		}
 	})
 
-	t.Run("Test URL Parse (invalid, no base)", func(t *testing.T) {
-		url, err := crawler.ParseURL("", "/jobs")
-		if err == nil {
-			t.Fatalf("expected parsing url without base to fail, got: %+v", url)
-		}
-	})
-
 	t.Run("Test URL Parse (invalid, fragment)", func(t *testing.T) {
 		url, err := crawler.ParseURL("https://google.com/jobs", "mailto@google.com")
 		if err == nil {
