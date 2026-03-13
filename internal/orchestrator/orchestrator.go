@@ -91,11 +91,6 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 			return err
 		}
 
-		if nextURL.Depth >= o.maxDepth {
-			slog.Info("max depth reached for URL", "url", nextURL.RawURL)
-			continue
-		}
-
 		rawHTML, err := o.downloader.Get(ctx, nextURL.RawURL)
 		if err != nil {
 			slog.Error("error downloading raw html", "err", err)
@@ -140,6 +135,11 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 			err = o.urlRepository.Save(ctx, parsed.RawURL)
 			if err != nil {
 				slog.Error("error saving url", "err", err)
+				continue
+			}
+
+			if parsed.Depth > o.maxDepth {
+				slog.Info("max depth reached for URL", "url", parsed.RawURL)
 				continue
 			}
 
