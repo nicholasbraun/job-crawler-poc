@@ -23,6 +23,7 @@ type Config struct {
 	ContentFilter   filter.CheckFn[*crawler.Content]
 	URLFilter       filter.CheckFn[*crawler.URL]
 	RelevanceFilter filter.CheckFn[*crawler.Content]
+	MaxDepth        int
 }
 
 type Orchestrator struct {
@@ -34,6 +35,7 @@ type Orchestrator struct {
 	contentFilter   filter.CheckFn[*crawler.Content]
 	urlFilter       filter.CheckFn[*crawler.URL]
 	relevanceFilter filter.CheckFn[*crawler.Content]
+	maxDepth        int
 }
 
 func NewOrchestrator(cfg Config) *Orchestrator {
@@ -46,10 +48,11 @@ func NewOrchestrator(cfg Config) *Orchestrator {
 		contentFilter:   cfg.ContentFilter,
 		urlFilter:       cfg.URLFilter,
 		relevanceFilter: cfg.RelevanceFilter,
+		maxDepth:        cfg.MaxDepth,
 	}
 }
 
-func (o *Orchestrator) Run(ctx context.Context, seedURLs []string, maxDepth int) error {
+func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	for _, seedURL := range seedURLs {
 		parsed, err := crawler.NewURL(seedURL)
@@ -88,7 +91,7 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string, maxDepth int)
 			return err
 		}
 
-		if nextURL.Depth >= maxDepth {
+		if nextURL.Depth >= o.maxDepth {
 			slog.Info("max depth reached for URL", "url", nextURL.RawURL)
 			continue
 		}

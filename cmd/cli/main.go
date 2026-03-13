@@ -73,11 +73,12 @@ func main() {
 		ContentFilter:   contentFilter,
 		URLFilter:       urlFilter,
 		RelevanceFilter: relevanceFilter,
+		MaxDepth:        *maxDepth,
 	}
 	o := orchestrator.NewOrchestrator(cfg)
 
 	// run
-	err = o.Run(ctx, seedURLs, *maxDepth)
+	err = o.Run(ctx, seedURLs)
 	if err != nil {
 		log.Fatalf("crawl failed: %v", err)
 	}
