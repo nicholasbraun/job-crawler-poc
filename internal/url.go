@@ -10,18 +10,32 @@ import (
 type URL struct {
 	Hostname string
 	RawURL   string
+	Depth    int
 }
 
-func ParseURL(base string, u string) (URL, error) {
-	if base == "" {
-		return URL{}, errors.New("url: cannot parse url with empty base")
+func NewURL(u string) (URL, error) {
+	if u == "" {
+		return URL{}, errors.New("url: cannot create empty url")
 	}
 
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return URL{}, err
+	}
+
+	return URL{
+		Hostname: parsed.Hostname(),
+		RawURL:   parsed.String(),
+		Depth:    0,
+	}, nil
+}
+
+func (base *URL) Parse(u string) (URL, error) {
 	if !strings.HasPrefix(u, "http") && !strings.HasPrefix(u, "/") && u != "" {
 		return URL{}, errors.New("url: cannot parse url without schema or relative path")
 	}
 
-	parsed, err := url.Parse(base)
+	parsed, err := url.Parse(base.RawURL)
 	if err != nil {
 		return URL{}, err
 	}
@@ -33,6 +47,7 @@ func ParseURL(base string, u string) (URL, error) {
 	return URL{
 		Hostname: parsed.Hostname(),
 		RawURL:   parsed.String(),
+		Depth:    base.Depth + 1,
 	}, nil
 }
 

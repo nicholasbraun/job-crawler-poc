@@ -49,10 +49,10 @@ func NewOrchestrator(cfg Config) *Orchestrator {
 	}
 }
 
-func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
+func (o *Orchestrator) Run(ctx context.Context, seedURLs []string, maxDepth int) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	for _, seedURL := range seedURLs {
-		parsed, err := crawler.ParseURL(seedURL, "")
+		parsed, err := crawler.NewURL(seedURL)
 		if err != nil {
 			slog.Error("could not parse seed url", "err", err)
 			continue
@@ -73,7 +73,6 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 			slog.Error("error adding seed url", "err", err)
 			continue
 		}
-
 	}
 
 	for {
@@ -87,6 +86,11 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 			slog.Error("error getting next url", "err", err)
 			cancel(err)
 			return err
+		}
+
+		if nextURL.Depth >= maxDepth {
+			slog.Info("max depth reached for URL", "url", nextURL.RawURL)
+			continue
 		}
 
 		rawHTML, err := o.downloader.Get(ctx, nextURL.RawURL)
@@ -112,7 +116,7 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 		}
 
 		for _, contentURL := range content.URLs {
-			parsed, err := crawler.ParseURL(nextURL.RawURL, contentURL)
+			parsed, err := nextURL.Parse(contentURL)
 			if err != nil {
 				slog.Error("error parsing content url", "err", err, "url", contentURL)
 				continue

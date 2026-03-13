@@ -8,7 +8,8 @@ import (
 
 func TestURLs(t *testing.T) {
 	t.Run("Test URL Parse (absolute)", func(t *testing.T) {
-		url, err := crawler.ParseURL("https://google.com", "https://google.com/jobs")
+		base, _ := crawler.NewURL("https://google.com")
+		url, err := base.Parse("https://google.com/jobs")
 		if err != nil {
 			t.Fatalf("error parsing url %v", err)
 		}
@@ -25,7 +26,8 @@ func TestURLs(t *testing.T) {
 	})
 
 	t.Run("Test URL Parse (relative)", func(t *testing.T) {
-		url, err := crawler.ParseURL("https://google.com", "/jobs")
+		base, _ := crawler.NewURL("https://google.com")
+		url, err := base.Parse("/jobs")
 		if err != nil {
 			t.Fatalf("error parsing url %v", err)
 		}
@@ -42,7 +44,7 @@ func TestURLs(t *testing.T) {
 	})
 
 	t.Run("Test URL Parse (seed)", func(t *testing.T) {
-		url, err := crawler.ParseURL("https://google.com", "")
+		url, err := crawler.NewURL("https://google.com")
 		if err != nil {
 			t.Fatalf("error parsing url %v", err)
 		}
@@ -59,7 +61,7 @@ func TestURLs(t *testing.T) {
 	})
 
 	t.Run("Test URL Parse (seed with path)", func(t *testing.T) {
-		url, err := crawler.ParseURL("https://google.com/jobs", "")
+		url, err := crawler.NewURL("https://google.com/jobs")
 		if err != nil {
 			t.Fatalf("error parsing url %v", err)
 		}
@@ -76,7 +78,9 @@ func TestURLs(t *testing.T) {
 	})
 
 	t.Run("Test URL Parse (different absolute url)", func(t *testing.T) {
-		url, err := crawler.ParseURL("https://google.com/jobs", "https://netflix.com/jobs")
+		base, _ := crawler.NewURL("https://google.com")
+
+		url, err := base.Parse("https://netflix.com/jobs")
 		if err != nil {
 			t.Fatalf("error parsing url %v", err)
 		}
@@ -92,15 +96,10 @@ func TestURLs(t *testing.T) {
 		assertStrings(t, wantRawURL, gotRawURL)
 	})
 
-	t.Run("Test URL Parse (invalid, no base)", func(t *testing.T) {
-		url, err := crawler.ParseURL("", "/jobs")
-		if err == nil {
-			t.Fatalf("expected parsing url without base to fail, got: %+v", url)
-		}
-	})
-
 	t.Run("Test URL Parse (invalid, fragment)", func(t *testing.T) {
-		url, err := crawler.ParseURL("https://google.com/jobs", "mailto@google.com")
+		base, _ := crawler.NewURL("https://google.com/jobs")
+
+		url, err := base.Parse("mailto@google.com")
 		if err == nil {
 			t.Fatalf("expected parsing url fragmet to fail, got: %+v", url)
 		}

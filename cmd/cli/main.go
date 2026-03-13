@@ -8,6 +8,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -28,6 +29,7 @@ func main() {
 	// seed URLs from command line args
 	seedURLsPtr := flag.String("seedURLs", "https://news.ycombinator.com/jobs", "comma separated list of seedURLs")
 	dbPath := flag.String("db", "./data/database.db", "path to sqlite database")
+	maxDepth := flag.Int("maxDepth", 2, "maximum depth a URL should be crawled")
 	flag.Parse()
 
 	seedURLs := strings.Split(*seedURLsPtr, ",")
@@ -75,9 +77,9 @@ func main() {
 	o := orchestrator.NewOrchestrator(cfg)
 
 	// run
-	err = o.Run(ctx, seedURLs)
+	err = o.Run(ctx, seedURLs, *maxDepth)
 	if err != nil {
 		log.Fatalf("crawl failed: %v", err)
 	}
-	log.Println("crawl complete")
+	slog.Info("crawl complete")
 }
