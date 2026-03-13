@@ -8,14 +8,12 @@ import (
 
 type queue struct {
 	deadline time.Time
-	cooldown time.Duration
 	urls     []crawler.URL
 }
 
-func newQueue(cooldown time.Duration) *queue {
+func newQueue() *queue {
 	return &queue{
 		deadline: time.Now(),
-		cooldown: cooldown,
 		urls:     []crawler.URL{},
 	}
 }

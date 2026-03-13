@@ -60,7 +60,7 @@ func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 			f.mu.Unlock()
 			return frontier.ErrMaxDomainLimit
 		}
-		f.queues[url.Hostname] = newQueue(f.cooldown)
+		f.queues[url.Hostname] = newQueue()
 	}
 
 	f.queues[url.Hostname].push(url)
