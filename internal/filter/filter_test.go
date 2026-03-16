@@ -28,6 +28,12 @@ func createSpyCheckFn[T any](returnsError bool) (*int, filter.CheckFn[T]) {
 	return &count, fn
 }
 
+func createErrAllowedSpyCheckFn[T any]() filter.CheckFn[T] {
+	return func(t T) error {
+		return filter.ErrAllowed
+	}
+}
+
 func TestFilterChain(t *testing.T) {
 	t.Run("empty chain", func(t *testing.T) {
 		checks := []filter.CheckFn[int]{}
@@ -78,6 +84,21 @@ func TestFilterChain(t *testing.T) {
 		}
 		if *count != 1 {
 			t.Errorf("checkFnPasses must run 1 time. but it ran %d times", *count)
+		}
+	})
+
+	t.Run("explicitly allow", func(t *testing.T) {
+		allowCheckFn := createErrAllowedSpyCheckFn[int]()
+		count, checkFnPasses := createSpyCheckFn[int](false)
+		chainCheckFn := filter.Chain(allowCheckFn, checkFnPasses)
+
+		err := chainCheckFn(1)
+		if err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+
+		if *count != 0 {
+			t.Errorf("second checkFn must not run")
 		}
 	})
 }
