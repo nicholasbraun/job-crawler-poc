@@ -65,7 +65,7 @@ func main() {
 	relevanceFilter := filter.Chain[*crawler.Content]()
 
 	invalidURLCheck := urlfilter.BlockInvalidURLs()
-	allowSubdomainsCheck := urlfilter.AllowSubdomains("jobs", "career", "careers", "hiring", "recruiting", "talent", "join", "apply", "boards")
+	allowSubdomainsCheck := urlfilter.AllowSubdomains("jobs", "career", "careers", "hiring", "recruiting", "talent", "join", "apply", "boards", "team", "job-boards")
 	allowPathSegmentsCheck := urlfilter.AllowPathSegments(
 		"jobs",
 		"careers", "career",
@@ -78,6 +78,7 @@ func main() {
 		"recruitment",
 		"stellenangebote",
 		"stellen",
+		"team",
 	)
 	blockSubdomainCheck := urlfilter.BlockSubdomains("blog", "news", "press", "media", "stories", "shop", "store", "marketplace", "help", "support", "docs", "wiki", "forum", "community", "research", "discuss", "gist", "templates",
 		"api", "cdn", "static", "assets", "status", "staging", "dev", "test", "login", "auth", "sso", "accounts", "id", "ads", "mail", "email", "analytics", "tracking", "events")

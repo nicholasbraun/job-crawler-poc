@@ -2,11 +2,17 @@
 // It implements all the filters for content, urls and relevant jobs.
 package filter
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 type CheckFn[T any] func(T) error
 
-var ErrAllowed = errors.New("filter: explicitly allowed")
+var (
+	ErrAllowed = errors.New("filter: explicitly allowed")
+	ErrReject  = errors.New("filter: explicitly rejected")
+)
 
 // Chain reduces multiple checks to one check. When the returned check is called,
 // all the checks in the chain will get called in the same order as provided.
@@ -28,5 +34,24 @@ func Chain[T any](checks ...CheckFn[T]) CheckFn[T] {
 		}
 
 		return nil
+	}
+}
+
+// OneOf checks if a string contains one of the provided keywords (case insensitive) and returns ErrAllowed if it does.
+func OneOf(keywords ...string) CheckFn[string] {
+	return func(s string) error {
+		for _, keyword := range keywords {
+			if strings.Contains(strings.ToLower(s), strings.ToLower(keyword)) {
+				return ErrAllowed
+			}
+		}
+
+		return nil
+	}
+}
+
+func Reject[T any]() CheckFn[T] {
+	return func(a T) error {
+		return ErrReject
 	}
 }

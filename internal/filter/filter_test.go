@@ -288,3 +288,60 @@ func TestURLFilter(t *testing.T) {
 		}
 	})
 }
+
+func TestOneOf(t *testing.T) {
+	checkFn := filter.OneOf("foo", "bar")
+
+	tests := []struct {
+		name       string
+		testString string
+		wantMatch  bool
+	}{
+		{"not found", "hello world", false},
+		{"found", "hello foo", true},
+		{"found (case insensitive)", "hello BAR", true},
+		{"found (case insensitive + in longer word)", "hello FOOFoo", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkFn(tt.testString)
+			if err != nil && !tt.wantMatch {
+				t.Errorf("expected nil, got: %v", err)
+			}
+			if err == nil && tt.wantMatch {
+				t.Errorf("expected an error, got: nil")
+			}
+		})
+	}
+}
+
+func TestReject(t *testing.T) {
+	rejectFn := filter.Reject[string]()
+	count, passingCheckFn := createSpyCheckFn[string](false)
+	chain := filter.Chain(rejectFn, passingCheckFn)
+
+	err := chain("foo")
+	if err != filter.ErrReject {
+		t.Errorf("expected reject, got: %v", err)
+	}
+	if *count != 0 {
+		t.Errorf("expected passingCheckFn to not run, but it did %d times", *count)
+	}
+}
+
+func TestChainOneOfReject(t *testing.T) {
+	checkFn := filter.OneOf("foo", "bar")
+	rejectFn := filter.Reject[string]()
+	chain := filter.Chain(checkFn, rejectFn)
+
+	err := chain("hello Fooworld")
+	if err != nil {
+		t.Errorf("expected nil, got: %v", err)
+	}
+
+	err = chain("no match")
+	if err != filter.ErrReject {
+		t.Errorf("expected ErrReject, got: %v", err)
+	}
+}
