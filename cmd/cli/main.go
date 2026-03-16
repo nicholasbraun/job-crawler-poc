@@ -65,7 +65,7 @@ func main() {
 	relevanceFilter := filter.Chain[*crawler.Content]()
 
 	invalidURLCheck := urlfilter.BlockInvalidURLs()
-	allowSubdomainsCheck := urlfilter.AllowSubdomains("jobs", "carrer", "carrers", "hiring", "recruiting", "talent", "join", "apply", "boards")
+	allowSubdomainsCheck := urlfilter.AllowSubdomains("jobs", "career", "careers", "hiring", "recruiting", "talent", "join", "apply", "boards")
 	allowPathSegmentsCheck := urlfilter.AllowPathSegments(
 		"jobs",
 		"careers", "career",
