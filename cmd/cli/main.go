@@ -16,6 +16,7 @@ import (
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/sqlite"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
+	urlfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/url"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier/inmem"
 	"github.com/nicholasbraun/job-crawler-poc/internal/http"
 	"github.com/nicholasbraun/job-crawler-poc/internal/orchestrator"
@@ -30,6 +31,7 @@ func main() {
 	seedURLsPtr := flag.String("seedURLs", "https://news.ycombinator.com/jobs", "comma separated list of seedURLs")
 	dbPath := flag.String("db", "./data/database.db", "path to sqlite database")
 	maxDepth := flag.Int("maxDepth", 2, "maximum depth a URL should be crawled")
+	maxDomains := flag.Int("maxDomains", 10, "maximum domains that can be crawled")
 	flag.Parse()
 
 	seedURLs := strings.Split(*seedURLsPtr, ",")
@@ -49,7 +51,7 @@ func main() {
 	jobRepository := sqlite.NewJobRepository(db)
 
 	// create frontier
-	frontier := inmem.NewFrontier(inmem.WithMaxDomains(10))
+	frontier := inmem.NewFrontier(inmem.WithMaxDomains(*maxDomains))
 
 	// create HTTP client + retry wrapper
 	httpClient := http.NewClient()
@@ -60,8 +62,45 @@ func main() {
 
 	// create filter chains (start with pass-through filters)
 	contentFilter := filter.Chain[*crawler.Content]() // empty chain = pass everything
-	urlFilter := filter.Chain[*crawler.URL]()
 	relevanceFilter := filter.Chain[*crawler.Content]()
+
+	invalidURLCheck := urlfilter.BlockInvalidURLs()
+	allowSubdomainsCheck := urlfilter.AllowSubdomains("jobs", "carrer", "carrers", "hiring", "recruiting", "talent", "join", "apply", "boards")
+	allowPathSegmentsCheck := urlfilter.AllowPathSegments(
+		"jobs",
+		"careers", "career",
+		"vacancies",
+		"positions",
+		"openings",
+		"apply",
+		"hiring",
+		"opportunities",
+		"recruitment",
+		"stellenangebote",
+		"stellen",
+	)
+	blockSubdomainCheck := urlfilter.BlockSubdomains("blog", "news", "press", "media", "stories", "shop", "store", "marketplace", "help", "support", "docs", "wiki", "forum", "community", "research", "discuss", "gist", "templates",
+		"api", "cdn", "static", "assets", "status", "staging", "dev", "test", "login", "auth", "sso", "accounts", "id", "ads", "mail", "email", "analytics", "tracking", "events")
+	blockPathSegmentsCheck := urlfilter.BlockPathSegments("blog", "news", "press", "media", "podcast", "magazine", "articles", "stories",
+		"learning", "posts", "products", "imprint", "impressum", "contact", "privacy", "legal", "terms", "disclaimer", "cookie", "gdpr", "tos", "agb", "datenschutz",
+		"login", "signin", "signup", "register", "auth", "oauth", "sso", "account", "profile", "settings", "password", "logout",
+		"shop", "store", "cart", "checkout", "pricing", "plans", "billing", "subscribe", "order",
+		"help", "support", "faq", "docs", "documentation", "wiki", "forum", "community", "knowledgebase",
+		"share", "feed", "rss", "atom", "sitemap", "social",
+		"assets", "static", "cdn", "download", "downloads", "api", "webhook", "graphql",
+		"landing", "promo", "campaign", "ads", "referral", "affiliate", "events", "webinar", "top-content", "maps",
+		"demo", "trial", "onboarding", "tour", "features", "integrations", "changelog", "roadmap", "status", "model", "workflows", "cgi", "cdn-cgi", "authenticate")
+
+	blockHostnames := urlfilter.BlockHostnames("x.com", "www.x.com", "youtube.com", "www.youtube.com", "youtu.be", "www.youtu.be", "github.com", "www.github.com", "tiktok.com", "www.tiktok.com", "twitter.com", "www.twitter.com", "roboflow.com", "www.roboflow.com", "instagram.com", "www.instagram.com", "google.com", "www.google.com", "bing.com", "www.bing.com")
+
+	urlFilter := filter.Chain[string](
+		invalidURLCheck,
+		allowSubdomainsCheck,
+		allowPathSegmentsCheck,
+		blockSubdomainCheck,
+		blockPathSegmentsCheck,
+		blockHostnames,
+	)
 
 	// create orchestrator
 	cfg := orchestrator.Config{

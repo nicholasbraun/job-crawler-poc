@@ -21,7 +21,7 @@ type Config struct {
 	URLRepository   crawler.URLRepository
 	JobRepository   crawler.JobRepository
 	ContentFilter   filter.CheckFn[*crawler.Content]
-	URLFilter       filter.CheckFn[*crawler.URL]
+	URLFilter       filter.CheckFn[string]
 	RelevanceFilter filter.CheckFn[*crawler.Content]
 	MaxDepth        int
 }
@@ -33,7 +33,7 @@ type Orchestrator struct {
 	urlRepository   crawler.URLRepository
 	jobRepository   crawler.JobRepository
 	contentFilter   filter.CheckFn[*crawler.Content]
-	urlFilter       filter.CheckFn[*crawler.URL]
+	urlFilter       filter.CheckFn[string]
 	relevanceFilter filter.CheckFn[*crawler.Content]
 	maxDepth        int
 }
@@ -114,13 +114,14 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 		}
 
 		for _, contentURL := range content.URLs {
+			if err := o.urlFilter(contentURL); err != nil {
+				slog.Info("url filtered out", "cause", err)
+				continue
+			}
+
 			parsed, err := nextURL.Parse(contentURL)
 			if err != nil {
 				slog.Error("error parsing content url", "err", err, "url", contentURL)
-				continue
-			}
-			if err := o.urlFilter(&parsed); err != nil {
-				slog.Info("url filtered out", "cause", err)
 				continue
 			}
 			visited, err := o.urlRepository.Visited(ctx, parsed.RawURL)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/url"
-	"strings"
 )
 
 type URL struct {
@@ -31,10 +30,6 @@ func NewURL(u string) (URL, error) {
 }
 
 func (base *URL) Parse(u string) (URL, error) {
-	if !strings.HasPrefix(u, "http") && !strings.HasPrefix(u, "/") && u != "" {
-		return URL{}, errors.New("url: cannot parse url without schema or relative path")
-	}
-
 	parsed, err := url.Parse(base.RawURL)
 	if err != nil {
 		return URL{}, err

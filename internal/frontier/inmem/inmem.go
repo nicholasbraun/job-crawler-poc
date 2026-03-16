@@ -89,6 +89,7 @@ func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 				continue
 			}
 
+			// this queue's deadline has elapsed and we can return an URL from it
 			if time.Until(q.deadline) <= 0 {
 				url, _ := q.pop()
 				q.deadline = time.Now().Add(f.cooldown)
@@ -96,6 +97,7 @@ func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 				return url, nil
 			}
 
+			// find the next deadline of all queues with URLs
 			if nextDeadline == nil || q.deadline.Before(*nextDeadline) {
 				nextDeadline = &q.deadline
 			}
