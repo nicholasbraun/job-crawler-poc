@@ -4,6 +4,7 @@ package inmem
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -48,6 +49,8 @@ func NewFrontier(opts ...FrontierOption) *Frontier {
 		fn(f)
 	}
 
+	slog.Info("created new Frontier", "frontier", f)
+
 	return f
 }
 
@@ -74,6 +77,7 @@ func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 	default:
 	}
 
+	slog.Info("added URL to the frontier", "url", url.RawURL)
 	return nil
 }
 

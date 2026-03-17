@@ -12,6 +12,7 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 	"github.com/nicholasbraun/job-crawler-poc/internal/http"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
+	"github.com/nicholasbraun/job-crawler-poc/internal/processor"
 )
 
 type Config struct {
@@ -24,6 +25,7 @@ type Config struct {
 	URLFilter       filter.CheckFn[string]
 	RelevanceFilter filter.CheckFn[*crawler.Content]
 	MaxDepth        int
+	Processor       processor.Processor
 }
 
 type Orchestrator struct {
@@ -36,6 +38,7 @@ type Orchestrator struct {
 	urlFilter       filter.CheckFn[string]
 	relevanceFilter filter.CheckFn[*crawler.Content]
 	maxDepth        int
+	processor       processor.Processor
 }
 
 func NewOrchestrator(cfg Config) *Orchestrator {
@@ -49,11 +52,14 @@ func NewOrchestrator(cfg Config) *Orchestrator {
 		urlFilter:       cfg.URLFilter,
 		relevanceFilter: cfg.RelevanceFilter,
 		maxDepth:        cfg.MaxDepth,
+		processor:       cfg.Processor,
 	}
 }
 
 func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 	ctx, cancel := context.WithCancelCause(ctx)
+	defer o.processor.Close()
+
 	for _, seedURL := range seedURLs {
 		parsed, err := crawler.NewURL(seedURL)
 		if err != nil {
@@ -110,12 +116,15 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 
 		if err := o.relevanceFilter(content); err == nil {
 			slog.Info("content passed relevance filter", "title", content.Title, "url", nextURL)
-			// TODO: add relevance pipeline. content has to be parsed for a job and saved to job db
+			err := o.processor.Process(ctx, processor.WorkLoad{URL: nextURL, Content: *content})
+			if err != nil {
+				slog.Error("error processing content", "err", err)
+			}
 		}
 
 		for _, contentURL := range content.URLs {
 			if err := o.urlFilter(contentURL); err != nil {
-				slog.Info("url filtered out", "cause", err)
+				// slog.Info("url filtered out", "cause", err)
 				continue
 			}
 
@@ -130,6 +139,7 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 				continue
 			}
 			if visited {
+				slog.Info("already visited url. skipping", "url", parsed.RawURL)
 				continue
 			}
 
@@ -140,7 +150,7 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 			}
 
 			if parsed.Depth > o.maxDepth {
-				slog.Info("max depth reached for URL", "url", parsed.RawURL)
+				// slog.Info("max depth reached for URL", "url", parsed.RawURL)
 				continue
 			}
 
@@ -153,7 +163,6 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 				slog.Error("error adding url", "err", err)
 				continue
 			}
-
 		}
 
 		select {

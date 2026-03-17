@@ -10,8 +10,8 @@ import (
 type CheckFn[T any] func(T) error
 
 var (
-	ErrAllowed = errors.New("filter: explicitly allowed")
-	ErrReject  = errors.New("filter: explicitly rejected")
+	ErrAllowed  = errors.New("filter: explicitly allowed")
+	ErrRejected = errors.New("filter: explicitly rejected")
 )
 
 // Chain reduces multiple checks to one check. When the returned check is called,
@@ -37,8 +37,8 @@ func Chain[T any](checks ...CheckFn[T]) CheckFn[T] {
 	}
 }
 
-// OneOf checks if a string contains one of the provided keywords (case insensitive) and returns ErrAllowed if it does.
-func OneOf(keywords ...string) CheckFn[string] {
+// Contains checks if a string contains one of the provided keywords (case insensitive) and returns ErrAllowed if it does.
+func Contains(keywords ...string) CheckFn[string] {
 	return func(s string) error {
 		for _, keyword := range keywords {
 			if strings.Contains(strings.ToLower(s), strings.ToLower(keyword)) {
@@ -50,8 +50,20 @@ func OneOf(keywords ...string) CheckFn[string] {
 	}
 }
 
+func Every[T any](checks ...CheckFn[T]) CheckFn[T] {
+	return func(item T) error {
+		for _, fn := range checks {
+			if err := fn(item); !errors.Is(err, ErrAllowed) {
+				return nil
+			}
+		}
+
+		return ErrAllowed
+	}
+}
+
 func Reject[T any]() CheckFn[T] {
 	return func(a T) error {
-		return ErrReject
+		return ErrRejected
 	}
 }

@@ -16,11 +16,13 @@ import (
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/sqlite"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
+	jobfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/job"
 	urlfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/url"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier/inmem"
 	"github.com/nicholasbraun/job-crawler-poc/internal/http"
 	"github.com/nicholasbraun/job-crawler-poc/internal/orchestrator"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
+	inmemprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/inmem"
 )
 
 func main() {
@@ -60,9 +62,24 @@ func main() {
 	// create parser
 	parser := parser.NewHTMLParser()
 
+	// create processor
+	processor := inmemprocessor.NewInMemProcessor(ctx, jobRepository)
 	// create filter chains (start with pass-through filters)
 	contentFilter := filter.Chain[*crawler.Content]() // empty chain = pass everything
-	relevanceFilter := filter.Chain[*crawler.Content]()
+	relevanceFilter := filter.Chain(
+		filter.Every(jobfilter.TitleContains(
+			filter.Contains("developer", "engineer", "entwickler"),
+			filter.Contains("golang", "go", "backend", "software"),
+		),
+			jobfilter.MainContentContains(
+				filter.Contains("apply", "bewerben"),
+				filter.Contains("golang"),
+				filter.Contains("experience", "erfahrung"),
+				filter.Contains("remote", "europa", "europe", "germany", "deutschland", "berlin", "frankfurt", "hamburg"),
+			),
+		),
+		filter.Reject[*crawler.Content](),
+	)
 
 	invalidURLCheck := urlfilter.BlockInvalidURLs()
 	allowSubdomainsCheck := urlfilter.AllowSubdomains("jobs", "career", "careers", "hiring", "recruiting", "talent", "join", "apply", "boards", "team", "job-boards")
@@ -90,9 +107,9 @@ func main() {
 		"share", "feed", "rss", "atom", "sitemap", "social",
 		"assets", "static", "cdn", "download", "downloads", "api", "webhook", "graphql",
 		"landing", "promo", "campaign", "ads", "referral", "affiliate", "events", "webinar", "top-content", "maps",
-		"demo", "trial", "onboarding", "tour", "features", "integrations", "changelog", "roadmap", "status", "model", "workflows", "cgi", "cdn-cgi", "authenticate")
+		"demo", "trial", "onboarding", "tour", "features", "integrations", "changelog", "roadmap", "status", "model", "workflows", "cgi", "cdn-cgi", "authenticate", "games")
 
-	blockHostnames := urlfilter.BlockHostnames("x.com", "www.x.com", "youtube.com", "www.youtube.com", "youtu.be", "www.youtu.be", "github.com", "www.github.com", "tiktok.com", "www.tiktok.com", "twitter.com", "www.twitter.com", "roboflow.com", "www.roboflow.com", "instagram.com", "www.instagram.com", "google.com", "www.google.com", "bing.com", "www.bing.com")
+	blockHostnames := urlfilter.BlockHostnames("trustpilot.com", "www.apple.com", "x.com", "www.x.com", "youtube.com", "www.youtube.com", "youtu.be", "www.youtu.be", "github.com", "www.github.com", "tiktok.com", "www.tiktok.com", "twitter.com", "www.twitter.com", "roboflow.com", "www.roboflow.com", "instagram.com", "www.instagram.com", "google.com", "www.google.com", "bing.com", "www.bing.com", "open.spotify")
 
 	urlFilter := filter.Chain[string](
 		invalidURLCheck,
@@ -114,6 +131,7 @@ func main() {
 		URLFilter:       urlFilter,
 		RelevanceFilter: relevanceFilter,
 		MaxDepth:        *maxDepth,
+		Processor:       processor,
 	}
 	o := orchestrator.NewOrchestrator(cfg)
 
