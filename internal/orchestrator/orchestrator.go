@@ -96,6 +96,7 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 			cancel(err)
 			return err
 		}
+		slog.Info("got nextURL", "url", nextURL.RawURL)
 
 		rawHTML, err := o.downloader.Get(ctx, nextURL.RawURL)
 		if err != nil {
@@ -124,7 +125,7 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 
 		for _, contentURL := range content.URLs {
 			if err := o.urlFilter(contentURL); err != nil {
-				// slog.Info("url filtered out", "cause", err)
+				slog.Info("url filtered out", "cause", err)
 				continue
 			}
 
@@ -150,7 +151,7 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 			}
 
 			if parsed.Depth > o.maxDepth {
-				// slog.Info("max depth reached for URL", "url", parsed.RawURL)
+				slog.Info("max depth reached for URL", "url", parsed.RawURL)
 				continue
 			}
 
