@@ -11,9 +11,9 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
+	jsonloader "github.com/nicholasbraun/job-crawler-poc/internal/config/json_loader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/sqlite"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
 	jobfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/job"
@@ -29,14 +29,16 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	// seed URLs from command line args
-	seedURLsPtr := flag.String("seedURLs", "https://news.ycombinator.com/jobs", "comma separated list of seedURLs")
+	// config
 	dbPath := flag.String("db", "./data/database.db", "path to sqlite database")
-	maxDepth := flag.Int("maxDepth", 2, "maximum depth a URL should be crawled")
-	maxDomains := flag.Int("maxDomains", 10, "maximum domains that can be crawled")
 	flag.Parse()
 
-	seedURLs := strings.Split(*seedURLsPtr, ",")
+	jsonConfigLoader := jsonloader.NewJSONLoader("config.json")
+	config, err := jsonConfigLoader.Load(ctx)
+	if err != nil {
+		log.Fatalf("error loading config: %v", err)
+	}
+	slog.Info("config loaded: %+v", "config", config)
 
 	// create SQLite DB + setup
 	db, err := sqlite.Open(*dbPath)
@@ -53,7 +55,7 @@ func main() {
 	jobRepository := sqlite.NewJobRepository(db)
 
 	// create frontier
-	frontier := inmem.NewFrontier(inmem.WithMaxDomains(*maxDomains))
+	frontier := inmem.NewFrontier(inmem.WithMaxDomains(config.MaxDomains))
 
 	// create HTTP client + retry wrapper
 	httpClient := http.NewClient()
@@ -82,34 +84,11 @@ func main() {
 	)
 
 	invalidURLCheck := urlfilter.BlockInvalidURLs()
-	allowSubdomainsCheck := urlfilter.AllowSubdomains("jobs", "career", "careers", "hiring", "recruiting", "talent", "join", "apply", "boards", "team", "job-boards")
-	allowPathSegmentsCheck := urlfilter.AllowPathSegments(
-		"jobs",
-		"careers", "career",
-		"vacancies",
-		"positions",
-		"openings",
-		"apply",
-		"hiring",
-		"opportunities",
-		"recruitment",
-		"stellenangebote",
-		"stellen",
-		"team",
-	)
-	blockSubdomainCheck := urlfilter.BlockSubdomains("blog", "news", "press", "media", "stories", "shop", "store", "marketplace", "help", "support", "docs", "wiki", "forum", "community", "research", "discuss", "gist", "templates",
-		"api", "cdn", "static", "assets", "status", "staging", "dev", "test", "login", "auth", "sso", "accounts", "id", "ads", "mail", "email", "analytics", "tracking", "events")
-	blockPathSegmentsCheck := urlfilter.BlockPathSegments("blog", "news", "press", "media", "podcast", "magazine", "articles", "stories",
-		"learning", "posts", "products", "imprint", "impressum", "contact", "privacy", "legal", "terms", "disclaimer", "cookie", "gdpr", "tos", "agb", "datenschutz",
-		"login", "signin", "signup", "register", "auth", "oauth", "sso", "account", "profile", "settings", "password", "logout",
-		"shop", "store", "cart", "checkout", "pricing", "plans", "billing", "subscribe", "order",
-		"help", "support", "faq", "docs", "documentation", "wiki", "forum", "community", "knowledgebase", "comments",
-		"share", "feed", "rss", "atom", "sitemap", "social",
-		"assets", "static", "cdn", "download", "downloads", "api", "webhook", "graphql",
-		"landing", "promo", "campaign", "ads", "referral", "affiliate", "events", "webinar", "top-content", "maps",
-		"demo", "trial", "onboarding", "tour", "features", "integrations", "changelog", "roadmap", "status", "model", "workflows", "cgi", "cdn-cgi", "authenticate", "games")
-
-	blockHostnames := urlfilter.BlockHostnames("trustpilot.com", "www.apple.com", "x.com", "www.x.com", "youtube.com", "www.youtube.com", "youtu.be", "www.youtu.be", "github.com", "www.github.com", "tiktok.com", "www.tiktok.com", "twitter.com", "www.twitter.com", "roboflow.com", "www.roboflow.com", "instagram.com", "www.instagram.com", "google.com", "www.google.com", "bing.com", "www.bing.com", "open.spotify")
+	allowSubdomainsCheck := urlfilter.AllowSubdomains(config.AllowedSubdomains...)
+	allowPathSegmentsCheck := urlfilter.AllowPathSegments(config.AllowedPathSegments...)
+	blockSubdomainCheck := urlfilter.BlockSubdomains(config.BlockedSubdomains...)
+	blockPathSegmentsCheck := urlfilter.BlockPathSegments(config.BlockedPathSegments...)
+	blockHostnames := urlfilter.BlockHostnames(config.BlockedHostnames...)
 
 	urlFilter := filter.Chain[string](
 		invalidURLCheck,
@@ -130,13 +109,13 @@ func main() {
 		ContentFilter:   contentFilter,
 		URLFilter:       urlFilter,
 		RelevanceFilter: relevanceFilter,
-		MaxDepth:        *maxDepth,
+		MaxDepth:        config.MaxDepth,
 		Processor:       processor,
 	}
 	o := orchestrator.NewOrchestrator(cfg)
 
 	// run
-	err = o.Run(ctx, seedURLs)
+	err = o.Run(ctx, config.SeedURLs)
 	if err != nil {
 		log.Fatalf("crawl failed: %v", err)
 	}
