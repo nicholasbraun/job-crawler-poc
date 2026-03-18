@@ -103,7 +103,7 @@ func main() {
 		"learning", "posts", "products", "imprint", "impressum", "contact", "privacy", "legal", "terms", "disclaimer", "cookie", "gdpr", "tos", "agb", "datenschutz",
 		"login", "signin", "signup", "register", "auth", "oauth", "sso", "account", "profile", "settings", "password", "logout",
 		"shop", "store", "cart", "checkout", "pricing", "plans", "billing", "subscribe", "order",
-		"help", "support", "faq", "docs", "documentation", "wiki", "forum", "community", "knowledgebase",
+		"help", "support", "faq", "docs", "documentation", "wiki", "forum", "community", "knowledgebase", "comments",
 		"share", "feed", "rss", "atom", "sitemap", "social",
 		"assets", "static", "cdn", "download", "downloads", "api", "webhook", "graphql",
 		"landing", "promo", "campaign", "ads", "referral", "affiliate", "events", "webinar", "top-content", "maps",
