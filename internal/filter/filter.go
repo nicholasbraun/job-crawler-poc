@@ -10,7 +10,7 @@ import (
 type CheckFn[T any] func(T) error
 
 var (
-	ErrAllowed  = errors.New("filter: explicitly allowed")
+	ErrPass     = errors.New("filter: explicitly pass")
 	ErrRejected = errors.New("filter: explicitly rejected")
 )
 
@@ -18,14 +18,14 @@ var (
 // all the checks in the chain will get called in the same order as provided.
 // Chain returns nil when all checks pass and an error when the first check fails.
 //
-// IMPORTANT: It is possible to add 'Allow' CheckFns which also fail fast, but pass.
+// IMPORTANT: It is possible to add 'Pass' CheckFns which also fail fast, but pass.
 // For example for a URL that we explicitly want, like "jobs.example.com".
-// ORDERING MATTERS: ALLOW must come before BLOCK CheckFns
+// ORDERING MATTERS: PASS must come before BLOCK CheckFns
 func Chain[T any](checks ...CheckFn[T]) CheckFn[T] {
 	return func(item T) error {
 		for _, fn := range checks {
 			err := fn(item)
-			if errors.Is(err, ErrAllowed) {
+			if errors.Is(err, ErrPass) {
 				return nil
 			}
 			if err != nil {
@@ -37,12 +37,12 @@ func Chain[T any](checks ...CheckFn[T]) CheckFn[T] {
 	}
 }
 
-// Contains checks if a string contains one of the provided keywords (case insensitive) and returns ErrAllowed if it does.
+// Contains checks if a string contains one of the provided keywords (case insensitive) and returns ErrPass if it does.
 func Contains(keywords ...string) CheckFn[string] {
 	return func(s string) error {
 		for _, keyword := range keywords {
 			if strings.Contains(strings.ToLower(s), strings.ToLower(keyword)) {
-				return ErrAllowed
+				return ErrPass
 			}
 		}
 
@@ -53,12 +53,12 @@ func Contains(keywords ...string) CheckFn[string] {
 func Every[T any](checks ...CheckFn[T]) CheckFn[T] {
 	return func(item T) error {
 		for _, fn := range checks {
-			if err := fn(item); !errors.Is(err, ErrAllowed) {
+			if err := fn(item); !errors.Is(err, ErrPass) {
 				return nil
 			}
 		}
 
-		return ErrAllowed
+		return ErrPass
 	}
 }
 

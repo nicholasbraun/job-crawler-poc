@@ -7,7 +7,12 @@
     "https://news.ycombinator.com/jobs",
     "https://berlinstartupjobs.com/engineering/"
   ],
+  "allowedTLDs": ["de", "com", "org", "ai", "io", "jobs"],
   "blockedSubdomains": [
+    "wiki",
+    "foundation",
+    "docs",
+    "donate",
     "blog",
     "news",
     "press",
@@ -27,6 +32,7 @@
     "gist",
     "templates",
     "api",
+    "books",
     "cdn",
     "static",
     "assets",
@@ -48,8 +54,11 @@
   ],
   "blockedPathSegments": [
     "blog",
+    "wiki",
+    "signin",
     "news",
     "press",
+    "users",
     "media",
     "podcast",
     "magazine",
@@ -141,7 +150,7 @@
     "authenticate",
     "games"
   ],
-  "allowedSubdomains": [
+  "passSubdomains": [
     "jobs",
     "career",
     "careers",
@@ -155,7 +164,7 @@
     "team",
     "job-boards"
   ],
-  "allowedPathSegments": [
+  "passPathSegments": [
     "jobs",
     "job",
     "careers",
@@ -181,6 +190,7 @@
     "www.youtube.com",
     "youtu.be",
     "www.youtu.be",
+    "foundation.wikimedia.com",
     "github.com",
     "www.github.com",
     "tiktok.com",

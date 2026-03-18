@@ -15,27 +15,27 @@ type test struct {
 }
 
 func TestURLFilter(t *testing.T) {
-	t.Run("allow subdomains", func(t *testing.T) {
-		allowSubdomainCheck := urlfilter.AllowSubdomains("jobs", "career")
+	t.Run("pass subdomains", func(t *testing.T) {
+		passSubdomainCheck := urlfilter.PassSubdomains("jobs", "career")
 		tests := []struct {
 			name             string
 			url              string
 			expectedErr      error
 			expectedChainErr error
 		}{
-			{"allowed 1", "https://jobs.google.com/something", filter.ErrAllowed, nil},
-			{"allowed 2", "https://jobs.google.co.uk/something", filter.ErrAllowed, nil},
+			{"passed 1", "https://jobs.google.com/something", filter.ErrPass, nil},
+			{"passed 2", "https://jobs.google.co.uk/something", filter.ErrPass, nil},
 			{"relative", "/something", nil, nil},
 		}
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				err := allowSubdomainCheck(tt.url)
+				err := passSubdomainCheck(tt.url)
 				if !errors.Is(err, tt.expectedErr) {
 					t.Errorf("expected %v, got %v", tt.expectedErr, err)
 				}
 
-				checkFn := filter.Chain(allowSubdomainCheck)
+				checkFn := filter.Chain(passSubdomainCheck)
 
 				err = checkFn(tt.url)
 				if !errors.Is(err, tt.expectedChainErr) {
@@ -51,7 +51,7 @@ func TestURLFilter(t *testing.T) {
 
 		tests := []test{
 			{"block blog", "https://blog.google.com/something", false},
-			{"allow jobs", "https://jobs.google.com/something", true},
+			{"pass jobs", "https://jobs.google.com/something", true},
 		}
 
 		for _, tt := range tests {
@@ -93,8 +93,8 @@ func TestURLFilter(t *testing.T) {
 		}
 	})
 
-	t.Run("allow path segments", func(t *testing.T) {
-		allowPathSegmentsCheck := urlfilter.AllowPathSegments("jobs", "career")
+	t.Run("pass path segments", func(t *testing.T) {
+		passPathSegmentsCheck := urlfilter.PassPathSegments("jobs", "career")
 
 		tests := []struct {
 			name             string
@@ -102,19 +102,19 @@ func TestURLFilter(t *testing.T) {
 			expectedErr      error
 			expectedChainErr error
 		}{
-			{"absolute", "https://google.com/jobs/something", filter.ErrAllowed, nil},
-			{"relative", "/career/something", filter.ErrAllowed, nil},
+			{"absolute", "https://google.com/jobs/something", filter.ErrPass, nil},
+			{"relative", "/career/something", filter.ErrPass, nil},
 			{"relative (fail)", "/careers/something", nil, nil},
 		}
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				err := allowPathSegmentsCheck(tt.url)
+				err := passPathSegmentsCheck(tt.url)
 				if !errors.Is(err, tt.expectedErr) {
 					t.Errorf("expected %v, got %v", tt.expectedErr, err)
 				}
 
-				checkFn := filter.Chain(allowPathSegmentsCheck)
+				checkFn := filter.Chain(passPathSegmentsCheck)
 
 				err = checkFn(tt.url)
 				if !errors.Is(err, tt.expectedChainErr) {
@@ -153,9 +153,9 @@ func TestURLFilter(t *testing.T) {
 		blockPathSegmentsCheck := urlfilter.BlockPathSegments("blog", "contact")
 		tests := []test{
 			{"block absolute", "https://google.com/blog", false},
-			{"allow absolute", "https://google.com/jobs", true},
+			{"pass absolute", "https://google.com/jobs", true},
 			{"block relative", "/blog", false},
-			{"allow relative", "/jobs", true},
+			{"pass relative", "/jobs", true},
 		}
 
 		for _, tt := range tests {
@@ -173,29 +173,52 @@ func TestURLFilter(t *testing.T) {
 		}
 	})
 
-	t.Run("allow check fails fast", func(t *testing.T) {
-		allowPathSegmentsCheck := urlfilter.AllowPathSegments("jobs", "career")
+	t.Run("pass check fails fast", func(t *testing.T) {
+		passPathSegmentsCheck := urlfilter.PassPathSegments("jobs", "career")
 		blockPathSegmentsCheck := urlfilter.BlockPathSegments("blog", "contact")
-		allowedURL1 := "https://google.com/jobs/something/blog"
+		passedURL1 := "https://google.com/jobs/something/blog"
 
-		checkFn := filter.Chain(allowPathSegmentsCheck, blockPathSegmentsCheck)
+		checkFn := filter.Chain(passPathSegmentsCheck, blockPathSegmentsCheck)
 
-		err := checkFn(allowedURL1)
+		err := checkFn(passedURL1)
 		if err != nil {
 			t.Errorf("expected no error. got: %v", err)
 		}
 	})
 
 	t.Run("block check fails fast", func(t *testing.T) {
-		allowPathSegmentsCheck := urlfilter.AllowPathSegments("jobs", "career")
+		passPathSegmentsCheck := urlfilter.PassPathSegments("jobs", "career")
 		blockPathSegmentsCheck := urlfilter.BlockPathSegments("blog", "contact")
 		blockedURL1 := "https://google.com/jobs/something/blog"
 
-		checkFn := filter.Chain(blockPathSegmentsCheck, allowPathSegmentsCheck)
+		checkFn := filter.Chain(blockPathSegmentsCheck, passPathSegmentsCheck)
 
 		err := checkFn(blockedURL1)
 		if err == nil {
 			t.Errorf("expected an error. got: nil")
 		}
 	})
+}
+
+func TestAllowedTLDs(t *testing.T) {
+	allowedTLDsCheck := urlfilter.AllowedTLDs("de", "com", "org", "io")
+	chainFn := filter.Chain(allowedTLDsCheck)
+
+	tests := []test{
+		{"allowed tld", "https://google.com/blog", true},
+		{"blocked tld (co.uk)", "https://google.co.uk", false},
+		{"blocked tld (fr)", "https://google.fr", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := chainFn(tt.url)
+			if err == nil && !tt.wantPass {
+				t.Errorf("expected an error. got nil")
+			}
+			if err != nil && tt.wantPass {
+				t.Errorf("expected no error. got %v", err)
+			}
+		})
+	}
 }

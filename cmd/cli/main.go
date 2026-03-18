@@ -75,7 +75,7 @@ func main() {
 		),
 			jobfilter.MainContentContains(
 				filter.Contains("apply", "bewerben"),
-				filter.Contains("golang"),
+				filter.Contains("golang", "go"),
 				filter.Contains("experience", "erfahrung"),
 				filter.Contains("remote", "europa", "europe", "germany", "deutschland", "berlin", "frankfurt", "hamburg"),
 			),
@@ -84,16 +84,18 @@ func main() {
 	)
 
 	invalidURLCheck := urlfilter.BlockInvalidURLs()
-	allowSubdomainsCheck := urlfilter.AllowSubdomains(config.AllowedSubdomains...)
-	allowPathSegmentsCheck := urlfilter.AllowPathSegments(config.AllowedPathSegments...)
+	passSubdomainsCheck := urlfilter.PassSubdomains(config.PassSubdomains...)
+	passPathSegmentsCheck := urlfilter.PassPathSegments(config.PassPathSegments...)
 	blockSubdomainCheck := urlfilter.BlockSubdomains(config.BlockedSubdomains...)
 	blockPathSegmentsCheck := urlfilter.BlockPathSegments(config.BlockedPathSegments...)
 	blockHostnames := urlfilter.BlockHostnames(config.BlockedHostnames...)
+	allowedTLDs := urlfilter.AllowedTLDs(config.AllowedTLDs...)
 
 	urlFilter := filter.Chain[string](
 		invalidURLCheck,
-		allowSubdomainsCheck,
-		allowPathSegmentsCheck,
+		allowedTLDs,
+		passSubdomainsCheck,
+		passPathSegmentsCheck,
 		blockSubdomainCheck,
 		blockPathSegmentsCheck,
 		blockHostnames,

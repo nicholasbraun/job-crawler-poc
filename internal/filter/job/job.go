@@ -1,4 +1,4 @@
-// package jobfilter implements logic to filter Content for relevant job postings
+// Package jobfilter implements logic to filter Content for relevant job postings
 package jobfilter
 
 import (

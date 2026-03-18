@@ -49,15 +49,34 @@ func BlockHostnames(hostnames ...string) filter.CheckFn[string] {
 	}
 }
 
-func AllowPathSegments(pathSegments ...string) filter.CheckFn[string] {
+func AllowedTLDs(tlds ...string) filter.CheckFn[string] {
 	return func(u string) error {
-		return checkPathSegments(u, filter.ErrAllowed, pathSegments...)
+		parsed, err := url.Parse(u)
+		if err != nil {
+			return fmt.Errorf("filter: error parsing url: %s. err: %w", u, err)
+		}
+
+		hostname := parsed.Hostname()
+		domains := strings.Split(hostname, ".")
+		tld := domains[len(domains)-1]
+
+		if !slices.Contains(tlds, tld) {
+			return fmt.Errorf("filter: blocked because of TLD: %s", tld)
+		}
+
+		return filter.ErrPass
 	}
 }
 
-func AllowSubdomains(subdomains ...string) filter.CheckFn[string] {
+func PassPathSegments(pathSegments ...string) filter.CheckFn[string] {
 	return func(u string) error {
-		err := filter.ErrAllowed
+		return checkPathSegments(u, filter.ErrPass, pathSegments...)
+	}
+}
+
+func PassSubdomains(subdomains ...string) filter.CheckFn[string] {
+	return func(u string) error {
+		err := filter.ErrPass
 		return checkSubdomains(u, err, subdomains...)
 	}
 }

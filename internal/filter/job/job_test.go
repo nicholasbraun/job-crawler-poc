@@ -19,7 +19,7 @@ func TestTitleContains(t *testing.T) {
 	}{
 		{"match", &crawler.Content{
 			Title: "Senior Software Engineer",
-		}, filter.ErrAllowed},
+		}, filter.ErrPass},
 		{"no match", &crawler.Content{
 			Title: "Senior Something Else",
 		}, nil},
@@ -48,7 +48,7 @@ func TestMainContentContains(t *testing.T) {
 	}{
 		{"match", &crawler.Content{
 			MainContent: "apply for this golang role",
-		}, filter.ErrAllowed},
+		}, filter.ErrPass},
 		{"single match", &crawler.Content{
 			MainContent: "only and article about golang",
 		}, nil},

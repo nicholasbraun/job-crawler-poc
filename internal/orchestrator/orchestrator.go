@@ -124,16 +124,16 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 		}
 
 		for _, contentURL := range content.URLs {
-			if err := o.urlFilter(contentURL); err != nil {
-				slog.Info("url filtered out", "cause", err)
-				continue
-			}
-
 			parsed, err := nextURL.Parse(contentURL)
 			if err != nil {
 				slog.Error("error parsing content url", "err", err, "url", contentURL)
 				continue
 			}
+			if err := o.urlFilter(parsed.RawURL); err != nil {
+				slog.Info("url filtered out", "url", parsed.RawURL, "cause", err)
+				continue
+			}
+
 			visited, err := o.urlRepository.Visited(ctx, parsed.RawURL)
 			if err != nil {
 				slog.Error("error querying URLRepository", "err", err, "url", parsed)

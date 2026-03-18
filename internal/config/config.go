@@ -7,11 +7,12 @@ type Config struct {
 	MaxDepth            int      `json:"maxDepth"`
 	MaxDomains          int      `json:"maxDomains"`
 	SeedURLs            []string `json:"seedURLs"`
+	AllowedTLDs         []string `json:"allowedTLDs"`
 	BlockedSubdomains   []string `json:"blockedSubdomains"`
 	BlockedPathSegments []string `json:"blockedPathSegments"`
 	BlockedHostnames    []string `json:"blockedHostnames"`
-	AllowedSubdomains   []string `json:"allowedSubdomains"`
-	AllowedPathSegments []string `json:"allowedPathSegments"`
+	PassSubdomains      []string `json:"passSubdomains"`
+	PassPathSegments    []string `json:"passPathSegments"`
 }
 
 type Loader interface {
