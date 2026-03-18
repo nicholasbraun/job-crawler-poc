@@ -28,6 +28,10 @@ func (c *Client) Get(ctx context.Context, url string) (*Response, error) {
 		return nil, fmt.Errorf("error creating request for url (%s). %w", url, err)
 	}
 
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:147.0) Gecko/20100101 Firefox/147.0")
+
 	res, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("error downloading url (%s). %w", url, err)
