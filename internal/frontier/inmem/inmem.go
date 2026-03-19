@@ -10,16 +10,20 @@ import (
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 )
 
 type FrontierOption func(*Frontier)
 
 type Frontier struct {
-	queues     map[string]*queue
-	cooldown   time.Duration
-	mu         sync.Mutex
-	signal     chan struct{}
-	maxDomains int
+	queues           map[string]*queue
+	cooldown         time.Duration
+	mu               sync.Mutex
+	signal           chan struct{}
+	maxDomains       int
+	urlsGauge        metric.Int64UpDownCounter
+	hostnamesCounter metric.Int64UpDownCounter
 }
 
 var _ frontier.Frontier = &Frontier{}
@@ -37,12 +41,18 @@ func WithMaxDomains(md int) FrontierOption {
 }
 
 func NewFrontier(opts ...FrontierOption) *Frontier {
+	meter := otel.Meter("frontier")
+	urlsGauge, _ := meter.Int64UpDownCounter("crawler.frontier.urls.size")
+	hostnamesCounter, _ := meter.Int64UpDownCounter("crawler.frontier.hostnames.size")
+
 	f := &Frontier{
-		queues:     map[string]*queue{},
-		cooldown:   time.Second,
-		maxDomains: 50,
-		mu:         sync.Mutex{},
-		signal:     make(chan struct{}, 1),
+		queues:           map[string]*queue{},
+		cooldown:         time.Second,
+		maxDomains:       50,
+		mu:               sync.Mutex{},
+		signal:           make(chan struct{}, 1),
+		urlsGauge:        urlsGauge,
+		hostnamesCounter: hostnamesCounter,
 	}
 
 	for _, fn := range opts {
@@ -64,9 +74,11 @@ func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 			return frontier.ErrMaxDomainLimit
 		}
 		f.queues[url.Hostname] = newQueue()
+		f.hostnamesCounter.Add(ctx, 1)
 	}
 
 	f.queues[url.Hostname].push(url)
+	f.urlsGauge.Add(ctx, 1)
 
 	f.mu.Unlock()
 
@@ -97,6 +109,7 @@ func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 			if time.Until(q.deadline) <= 0 {
 				url, _ := q.pop()
 				q.deadline = time.Now().Add(f.cooldown)
+				f.urlsGauge.Add(ctx, -1)
 				f.mu.Unlock()
 				return url, nil
 			}

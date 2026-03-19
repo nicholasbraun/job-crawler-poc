@@ -21,6 +21,7 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier/inmem"
 	"github.com/nicholasbraun/job-crawler-poc/internal/http"
 	"github.com/nicholasbraun/job-crawler-poc/internal/orchestrator"
+	myotel "github.com/nicholasbraun/job-crawler-poc/internal/otel"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
 	inmemprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/inmem"
 )
@@ -51,6 +52,16 @@ func main() {
 	slog.SetDefault(slog.New(handler))
 
 	slog.Debug("loaded config from json", "config", config)
+
+	otelShutdown, err := myotel.Setup(ctx)
+	if err != nil {
+		log.Fatalf("error setting up otel %v", err)
+	}
+	defer otelShutdown(context.Background())
+
+	// downloadDuration, _ := meter.Float64Histogram("crawler.download.duration",
+	// 	metric.WithUnit("s"),
+	// )
 	// create SQLite DB + setup
 	db, err := sqlite.Open(*dbPath)
 	if err != nil {

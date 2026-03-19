@@ -3,8 +3,7 @@
   "maxDepth": 4,
   "maxDomains": 1000,
   "seedURLs": [
-    "https://www.deutschland.jobs/stellenangebote/rubrik/IT_Internet_Development_Telekommunikation",
-    "https://www.jobboard-deutschland.de/jobs/it/",
+    "https://www.deutsche-startups.de/verzeichnisse/startups-a-z/",
     "https://news.ycombinator.com/jobs",
     "https://berlinstartupjobs.com/engineering/"
   ],

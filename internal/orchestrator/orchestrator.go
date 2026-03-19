@@ -13,6 +13,9 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/http"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
 	"github.com/nicholasbraun/job-crawler-poc/internal/processor"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 )
 
 type Config struct {
@@ -29,30 +32,35 @@ type Config struct {
 }
 
 type Orchestrator struct {
-	frontier        frontier.Frontier
-	downloader      http.Downloader
-	parser          parser.Parser
-	urlRepository   crawler.URLRepository
-	jobRepository   crawler.JobRepository
-	contentFilter   filter.CheckFn[*crawler.Content]
-	urlFilter       filter.CheckFn[string]
-	relevanceFilter filter.CheckFn[*crawler.Content]
-	maxDepth        int
-	processor       processor.Processor
+	frontier             frontier.Frontier
+	downloader           http.Downloader
+	parser               parser.Parser
+	urlRepository        crawler.URLRepository
+	jobRepository        crawler.JobRepository
+	contentFilter        filter.CheckFn[*crawler.Content]
+	urlFilter            filter.CheckFn[string]
+	relevanceFilter      filter.CheckFn[*crawler.Content]
+	maxDepth             int
+	processor            processor.Processor
+	urlsProcessedCounter metric.Int64Counter
 }
 
 func NewOrchestrator(cfg Config) *Orchestrator {
+	meter := otel.Meter("orchestrator")
+	urlsProcessedCounter, _ := meter.Int64Counter("crawler.urls.processed")
+
 	return &Orchestrator{
-		frontier:        cfg.Frontier,
-		downloader:      cfg.Downloader,
-		parser:          cfg.Parser,
-		urlRepository:   cfg.URLRepository,
-		jobRepository:   cfg.JobRepository,
-		contentFilter:   cfg.ContentFilter,
-		urlFilter:       cfg.URLFilter,
-		relevanceFilter: cfg.RelevanceFilter,
-		maxDepth:        cfg.MaxDepth,
-		processor:       cfg.Processor,
+		frontier:             cfg.Frontier,
+		downloader:           cfg.Downloader,
+		parser:               cfg.Parser,
+		urlRepository:        cfg.URLRepository,
+		jobRepository:        cfg.JobRepository,
+		contentFilter:        cfg.ContentFilter,
+		urlFilter:            cfg.URLFilter,
+		relevanceFilter:      cfg.RelevanceFilter,
+		maxDepth:             cfg.MaxDepth,
+		processor:            cfg.Processor,
+		urlsProcessedCounter: urlsProcessedCounter,
 	}
 }
 
@@ -122,6 +130,8 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 				slog.Error("error processing content", "err", err)
 			}
 		}
+
+		o.urlsProcessedCounter.Add(ctx, 1)
 
 		for _, contentURL := range content.URLs {
 			parsed, err := nextURL.Parse(contentURL)
