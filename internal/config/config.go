@@ -4,6 +4,7 @@ package config
 import "context"
 
 type Config struct {
+	LogLevel            string   `json:"logLevel"`
 	MaxDepth            int      `json:"maxDepth"`
 	MaxDomains          int      `json:"maxDomains"`
 	SeedURLs            []string `json:"seedURLs"`

@@ -38,8 +38,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("error loading config: %v", err)
 	}
-	slog.Info("config loaded: %+v", "config", config)
 
+	var logLevel slog.LevelVar
+	if err := logLevel.UnmarshalText([]byte(config.LogLevel)); err != nil {
+		log.Fatalf("error parsing logLevel from config: %v", err)
+	}
+
+	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: &logLevel,
+	})
+
+	slog.SetDefault(slog.New(handler))
+
+	slog.Debug("loaded config from json", "config", config)
 	// create SQLite DB + setup
 	db, err := sqlite.Open(*dbPath)
 	if err != nil {

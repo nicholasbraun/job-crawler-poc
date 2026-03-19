@@ -1,4 +1,5 @@
 {
+  "logLevel": "DEBUG",
   "maxDepth": 4,
   "maxDomains": 1000,
   "seedURLs": [
@@ -9,6 +10,7 @@
   ],
   "allowedTLDs": ["de", "com", "org", "ai", "io", "jobs"],
   "blockedSubdomains": [
+    "apps",
     "wiki",
     "foundation",
     "docs",
