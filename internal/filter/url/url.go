@@ -64,7 +64,7 @@ func AllowedTLDs(tlds ...string) filter.CheckFn[string] {
 			return fmt.Errorf("filter: blocked because of TLD: %s", tld)
 		}
 
-		return filter.ErrPass
+		return nil
 	}
 }
 
