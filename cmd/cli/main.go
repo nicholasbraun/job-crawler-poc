@@ -98,8 +98,10 @@ func main() {
 			jobfilter.MainContentContains(
 				filter.Contains("apply", "bewerben"),
 				filter.Contains("golang", "go"),
-				filter.Contains("experience", "erfahrung"),
-				filter.Contains("remote", "europa", "europe", "germany", "deutschland", "berlin", "frankfurt", "hamburg"),
+				filter.Contains("microservice"),
+				filter.Contains("experience", "erfahrung", "years", "jahre"),
+				filter.Contains("remote"),
+				filter.Contains("europa", "europe", "germany", "deutschland", "berlin", "frankfurt", "hamburg", "nürnberg", "münchen", "munich", "nuremberg", "bremen", "stuttgart", "hannover"),
 			),
 		),
 		filter.Reject[*crawler.Content](),
