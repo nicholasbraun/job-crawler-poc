@@ -15,15 +15,16 @@ type URLRepository struct {
 
 var _ crawler.URLRepository = &URLRepository{}
 
-func (ur *URLRepository) Save(ctx context.Context, url string) error {
-	_, err := ur.db.ExecContext(ctx, `
+func (ur *URLRepository) Save(ctx context.Context, url string) (bool, error) {
+	res, err := ur.db.ExecContext(ctx, `
 		INSERT OR IGNORE INTO url (url) VALUES (?);
 		`, url)
 	if err != nil {
-		return fmt.Errorf("error saving url %s: %w", url, err)
+		return false, fmt.Errorf("error saving url %s: %w", url, err)
 	}
 
-	return nil
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 func (ur *URLRepository) Visited(ctx context.Context, url string) (bool, error) {

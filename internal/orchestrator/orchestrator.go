@@ -71,8 +71,7 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 			continue
 		}
 
-		err = o.urlRepository.Save(ctx, seedURL)
-		if err != nil {
+		if _, err = o.urlRepository.Save(ctx, seedURL); err != nil {
 			slog.Error("error saving url", "err", err)
 			continue
 		}

@@ -22,14 +22,20 @@ func TestSQLiteURLRepository(t *testing.T) {
 	var urlRepository crawler.URLRepository = sqlite.NewURLRepository(db)
 
 	testURL := "https://example.de"
-	err = urlRepository.Save(t.Context(), testURL)
+	isNew, err := urlRepository.Save(t.Context(), testURL)
 	if err != nil {
 		t.Fatalf("error saving url: %v", err)
 	}
+	if !isNew {
+		t.Error("first save should report url as new")
+	}
 
-	err = urlRepository.Save(t.Context(), testURL)
+	isNew, err = urlRepository.Save(t.Context(), testURL)
 	if err != nil {
 		t.Fatalf("error saving same url twice: %v", err)
+	}
+	if isNew {
+		t.Error("second save should report url as duplicate")
 	}
 
 	visited, err := urlRepository.Visited(t.Context(), testURL)

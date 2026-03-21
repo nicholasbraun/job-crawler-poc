@@ -1,6 +1,7 @@
 {
   "logLevel": "INFO",
   "maxDepth": 4,
+  "maxWorkers": 8,
   "maxDomains": 1000,
   "seedURLs": [
     "https://news.ycombinator.com/jobs",

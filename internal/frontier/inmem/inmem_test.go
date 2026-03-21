@@ -30,6 +30,11 @@ func TestFrontierAddAndRetrieveSingleURL(t *testing.T) {
 			t.Errorf("nextUrl and url should be the same. nextUrl: %v", url2)
 		}
 
+		err = inmemFrontier.MarkDone(t.Context())
+		if err != nil {
+			t.Fatalf("error marking url as done: %v", err)
+		}
+
 		_, err = inmemFrontier.Next(t.Context())
 		if !errors.Is(err, frontier.ErrDone) {
 			t.Fatalf("expected %v, got %v", frontier.ErrDone, err)

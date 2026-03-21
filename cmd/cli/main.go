@@ -136,6 +136,7 @@ func main() {
 		URLFilter:       urlFilter,
 		RelevanceFilter: relevanceFilter,
 		MaxDepth:        config.MaxDepth,
+		MaxWorkers:      config.MaxWorkers,
 		Processor:       processor,
 	}
 	o := orchestrator.NewOrchestrator(cfg)

@@ -47,6 +47,6 @@ func (base *URL) Parse(u string) (URL, error) {
 }
 
 type URLRepository interface {
-	Save(ctx context.Context, url string) error
+	Save(ctx context.Context, url string) (bool, error)
 	Visited(ctx context.Context, url string) (bool, error)
 }

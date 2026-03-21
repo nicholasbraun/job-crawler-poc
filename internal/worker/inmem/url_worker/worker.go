@@ -102,9 +102,13 @@ func (w *Worker) Process(ctx context.Context, nextURL crawler.URL) error {
 			continue
 		}
 
-		err = w.urlRepository.Save(ctx, parsed.RawURL)
+		isNew, err := w.urlRepository.Save(ctx, parsed.RawURL)
 		if err != nil {
 			slog.Error("worker: error saving url", "err", err)
+			continue
+		}
+
+		if !isNew {
 			continue
 		}
 
