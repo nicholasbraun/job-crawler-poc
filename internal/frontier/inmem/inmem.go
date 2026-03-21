@@ -22,8 +22,11 @@ type Frontier struct {
 	mu               sync.Mutex
 	signal           chan struct{}
 	maxDomains       int
+	maxDepth         int
 	urlsGauge        metric.Int64UpDownCounter
 	hostnamesCounter metric.Int64UpDownCounter
+	inFlightGauge    metric.Int64UpDownCounter
+	inFlightCounter  int
 }
 
 var _ frontier.Frontier = &Frontier{}
@@ -40,19 +43,29 @@ func WithMaxDomains(md int) FrontierOption {
 	}
 }
 
+func WithMaxDepth(md int) FrontierOption {
+	return func(f *Frontier) {
+		f.maxDepth = md
+	}
+}
+
 func NewFrontier(opts ...FrontierOption) *Frontier {
 	meter := otel.Meter("frontier")
 	urlsGauge, _ := meter.Int64UpDownCounter("crawler.frontier.urls.size")
+	inFlightGauge, _ := meter.Int64UpDownCounter("crawler.frontier.inflighturls.size")
 	hostnamesCounter, _ := meter.Int64UpDownCounter("crawler.frontier.hostnames.size")
 
 	f := &Frontier{
 		queues:           map[string]*queue{},
 		cooldown:         time.Second,
 		maxDomains:       50,
+		maxDepth:         3,
 		mu:               sync.Mutex{},
 		signal:           make(chan struct{}, 1),
 		urlsGauge:        urlsGauge,
 		hostnamesCounter: hostnamesCounter,
+		inFlightGauge:    inFlightGauge,
+		inFlightCounter:  0,
 	}
 
 	for _, fn := range opts {
@@ -67,6 +80,11 @@ func NewFrontier(opts ...FrontierOption) *Frontier {
 // AddURL adds an URL to the frontier
 func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 	f.mu.Lock()
+
+	if url.Depth > f.maxDepth {
+		f.mu.Unlock()
+		return frontier.ErrMaxDepth
+	}
 
 	if _, ok := f.queues[url.Hostname]; !ok {
 		if len(f.queues) >= f.maxDomains {
@@ -110,6 +128,8 @@ func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 				url, _ := q.pop()
 				q.deadline = time.Now().Add(f.cooldown)
 				f.urlsGauge.Add(ctx, -1)
+				f.inFlightGauge.Add(ctx, 1)
+				f.inFlightCounter++
 				f.mu.Unlock()
 				return url, nil
 			}
@@ -135,7 +155,36 @@ func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 			}
 		}
 
+		// queues are empty but workers are still processing — wait for signal
+		f.mu.Lock()
+		if f.inFlightCounter > 0 {
+			f.mu.Unlock()
+			select {
+			case <-f.signal:
+				continue
+			case <-ctx.Done():
+				return crawler.URL{}, ctx.Err()
+			}
+		}
+
+		f.mu.Unlock()
 		// no urls left in the queues, signal work done
 		return crawler.URL{}, frontier.ErrDone
 	}
+}
+
+func (f *Frontier) MarkDone(ctx context.Context) error {
+	f.mu.Lock()
+	f.inFlightCounter--
+	f.inFlightGauge.Add(ctx, -1)
+	f.mu.Unlock()
+
+	select {
+	case f.signal <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	return nil
 }

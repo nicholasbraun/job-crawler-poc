@@ -13,9 +13,7 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/http"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
 	"github.com/nicholasbraun/job-crawler-poc/internal/processor"
-
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/metric"
+	urlworker "github.com/nicholasbraun/job-crawler-poc/internal/worker/inmem/url_worker"
 )
 
 type Config struct {
@@ -28,39 +26,37 @@ type Config struct {
 	URLFilter       filter.CheckFn[string]
 	RelevanceFilter filter.CheckFn[*crawler.Content]
 	MaxDepth        int
+	MaxWorkers      int
 	Processor       processor.Processor
 }
 
 type Orchestrator struct {
-	frontier             frontier.Frontier
-	downloader           http.Downloader
-	parser               parser.Parser
-	urlRepository        crawler.URLRepository
-	jobRepository        crawler.JobRepository
-	contentFilter        filter.CheckFn[*crawler.Content]
-	urlFilter            filter.CheckFn[string]
-	relevanceFilter      filter.CheckFn[*crawler.Content]
-	maxDepth             int
-	processor            processor.Processor
-	urlsProcessedCounter metric.Int64Counter
+	frontier        frontier.Frontier
+	downloader      http.Downloader
+	parser          parser.Parser
+	urlRepository   crawler.URLRepository
+	jobRepository   crawler.JobRepository
+	contentFilter   filter.CheckFn[*crawler.Content]
+	urlFilter       filter.CheckFn[string]
+	relevanceFilter filter.CheckFn[*crawler.Content]
+	maxDepth        int
+	maxWorkers      int
+	processor       processor.Processor
 }
 
 func NewOrchestrator(cfg Config) *Orchestrator {
-	meter := otel.Meter("orchestrator")
-	urlsProcessedCounter, _ := meter.Int64Counter("crawler.urls.processed")
-
 	return &Orchestrator{
-		frontier:             cfg.Frontier,
-		downloader:           cfg.Downloader,
-		parser:               cfg.Parser,
-		urlRepository:        cfg.URLRepository,
-		jobRepository:        cfg.JobRepository,
-		contentFilter:        cfg.ContentFilter,
-		urlFilter:            cfg.URLFilter,
-		relevanceFilter:      cfg.RelevanceFilter,
-		maxDepth:             cfg.MaxDepth,
-		processor:            cfg.Processor,
-		urlsProcessedCounter: urlsProcessedCounter,
+		frontier:        cfg.Frontier,
+		downloader:      cfg.Downloader,
+		parser:          cfg.Parser,
+		urlRepository:   cfg.URLRepository,
+		jobRepository:   cfg.JobRepository,
+		contentFilter:   cfg.ContentFilter,
+		urlFilter:       cfg.URLFilter,
+		relevanceFilter: cfg.RelevanceFilter,
+		maxDepth:        cfg.MaxDepth,
+		processor:       cfg.Processor,
+		maxWorkers:      cfg.MaxWorkers,
 	}
 }
 
@@ -92,6 +88,21 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 		}
 	}
 
+	pool := urlworker.NewInMemURLWorkerPool(ctx, &urlworker.Config{
+		URLRepository:   o.urlRepository,
+		Frontier:        o.frontier,
+		Downloader:      o.downloader,
+		Parser:          o.parser,
+		JobRepository:   o.jobRepository,
+		ContentFilter:   o.contentFilter,
+		URLFilter:       o.urlFilter,
+		RelevanceFilter: o.relevanceFilter,
+		MaxDepth:        o.maxDepth,
+		Processor:       o.processor,
+	}, urlworker.WithMaxWorkers(o.maxWorkers))
+
+	defer pool.Close()
+
 	for {
 		nextURL, err := o.frontier.Next(ctx)
 		if errors.Is(err, frontier.ErrDone) {
@@ -106,74 +117,10 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 		}
 		slog.Info("got nextURL", "url", nextURL.RawURL)
 
-		rawHTML, err := o.downloader.Get(ctx, nextURL.RawURL)
+		err = pool.Process(ctx, nextURL)
 		if err != nil {
-			slog.Error("error downloading raw html", "err", err)
-			continue
-		}
-
-		content, err := o.parser.Parse(rawHTML.Content)
-		if err != nil {
-			slog.Error("error parsing content", "err", err)
-			continue
-		}
-
-		if err := o.contentFilter(content); err != nil {
-			slog.Info("content filtered out", "cause", err)
-			continue
-		}
-
-		if err := o.relevanceFilter(content); err == nil {
-			slog.Info("content passed relevance filter", "title", content.Title, "url", nextURL)
-			err := o.processor.Process(ctx, processor.WorkLoad{URL: nextURL, Content: *content})
-			if err != nil {
-				slog.Error("error processing content", "err", err)
-			}
-		}
-
-		o.urlsProcessedCounter.Add(ctx, 1)
-
-		for _, contentURL := range content.URLs {
-			parsed, err := nextURL.Parse(contentURL)
-			if err != nil {
-				slog.Error("error parsing content url", "err", err, "url", contentURL)
-				continue
-			}
-			if err := o.urlFilter(parsed.RawURL); err != nil {
-				slog.Info("url filtered out", "url", parsed.RawURL, "cause", err)
-				continue
-			}
-
-			visited, err := o.urlRepository.Visited(ctx, parsed.RawURL)
-			if err != nil {
-				slog.Error("error querying URLRepository", "err", err, "url", parsed)
-				continue
-			}
-			if visited {
-				slog.Info("already visited url. skipping", "url", parsed.RawURL)
-				continue
-			}
-
-			err = o.urlRepository.Save(ctx, parsed.RawURL)
-			if err != nil {
-				slog.Error("error saving url", "err", err)
-				continue
-			}
-
-			if parsed.Depth > o.maxDepth {
-				slog.Info("max depth reached for URL", "url", parsed.RawURL)
-				continue
-			}
-
-			err = o.frontier.AddURL(ctx, parsed)
-			if errors.Is(err, frontier.ErrMaxDomainLimit) {
-				slog.Info("max domain limit reached, dropping new domains")
-				continue
-			}
-			if err != nil {
-				slog.Error("error adding url", "err", err)
-				continue
-			}
+			cancel(err)
+			return err
 		}
 
 		select {

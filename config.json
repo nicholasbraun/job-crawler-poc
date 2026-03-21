@@ -1,7 +1,7 @@
 {
-  "logLevel": "DEBUG",
+  "logLevel": "INFO",
   "maxDepth": 4,
-  "maxDomains": 10000,
+  "maxDomains": 1000,
   "seedURLs": [
     "https://news.ycombinator.com/jobs",
     "https://berlinstartupjobs.com/engineering/",
@@ -455,6 +455,7 @@
     "events"
   ],
   "blockedPathSegments": [
+    "add_to",
     "blog",
     "wiki",
     "signin",
@@ -584,6 +585,7 @@
     "team"
   ],
   "blockedHostnames": [
+    "www.addtoany.com",
     "trustpilot.com",
     "www.apple.com",
     "x.com",

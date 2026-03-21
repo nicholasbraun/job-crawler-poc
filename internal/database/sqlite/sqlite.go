@@ -14,6 +14,10 @@ func Open(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("error opening sqlite db with path: %s, %w", path, err)
 	}
 
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		return nil, fmt.Errorf("error enabling WAL mode: %w", err)
+	}
+
 	return db, nil
 }
 

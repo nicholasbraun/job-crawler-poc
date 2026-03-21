@@ -6,6 +6,7 @@ import "context"
 type Config struct {
 	LogLevel            string   `json:"logLevel"`
 	MaxDepth            int      `json:"maxDepth"`
+	MaxWorkers          int      `json:"maxWorkers"`
 	MaxDomains          int      `json:"maxDomains"`
 	SeedURLs            []string `json:"seedURLs"`
 	AllowedTLDs         []string `json:"allowedTLDs"`
