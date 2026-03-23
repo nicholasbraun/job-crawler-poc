@@ -102,9 +102,6 @@ Domain types and repository interfaces live at the `internal/` root. Infrastruct
 git clone https://github.com/nicholasbraun/job-crawler-poc.git
 cd job-crawler-poc
 
-# Create the data directory for SQLite
-mkdir -p data
-
 # Run the crawler
 go run ./cmd/cli
 ```
@@ -113,8 +110,8 @@ Configuration is loaded from `config.json`. Seed URLs, filters, and crawl limits
 
 ### CLI Flags
 
-| Flag | Default              | Description                      |
-| ---- | -------------------- | -------------------------------- |
+| Flag  | Default              | Description                      |
+| ----- | -------------------- | -------------------------------- |
 | `-db` | `./data/database.db` | Path to the SQLite database file |
 
 ### Observability
@@ -191,19 +188,19 @@ downloader := http.NewRetryClient(httpClient)
 
 All runtime configuration lives in `config.json`:
 
-| Field                | Description                                         |
-| -------------------- | --------------------------------------------------- |
-| `maxWorkers`         | Number of concurrent URL workers                    |
-| `maxDepth`           | Maximum crawl depth from seed URLs                  |
-| `maxDomains`         | Maximum number of unique domains in the frontier     |
-| `seedURLs`           | Starting URLs for the crawl                         |
-| `allowedTLDs`        | Only crawl URLs with these TLDs                     |
-| `passSubdomains`     | Subdomains that bypass blocking (e.g. jobs, careers) |
-| `passPathSegments`   | Path segments that bypass blocking                  |
-| `blockedSubdomains`  | Subdomains to skip (e.g. blog, docs, shop)          |
-| `blockedPathSegments`| Path segments to skip (e.g. login, pricing, api)    |
-| `blockedHostnames`   | Specific hostnames to never crawl                   |
-| `logLevel`           | Log level (DEBUG, INFO, WARN, ERROR)                |
+| Field                 | Description                                          |
+| --------------------- | ---------------------------------------------------- |
+| `maxWorkers`          | Number of concurrent URL workers                     |
+| `maxDepth`            | Maximum crawl depth from seed URLs                   |
+| `maxDomains`          | Maximum number of unique domains in the frontier     |
+| `seedURLs`            | Starting URLs for the crawl                          |
+| `allowedTLDs`         | Only crawl URLs with these TLDs                      |
+| `passSubdomains`      | Subdomains that bypass blocking (e.g. jobs, careers) |
+| `passPathSegments`    | Path segments that bypass blocking                   |
+| `blockedSubdomains`   | Subdomains to skip (e.g. blog, docs, shop)           |
+| `blockedPathSegments` | Path segments to skip (e.g. login, pricing, api)     |
+| `blockedHostnames`    | Specific hostnames to never crawl                    |
+| `logLevel`            | Log level (DEBUG, INFO, WARN, ERROR)                 |
 
 ## Dependencies
 

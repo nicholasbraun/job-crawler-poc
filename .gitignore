@@ -1,3 +1,2 @@
 .DS_Store
-*.db
-data/
+data/*.db*
