@@ -11,7 +11,7 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 	"github.com/nicholasbraun/job-crawler-poc/internal/http"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
-	"github.com/nicholasbraun/job-crawler-poc/internal/processor"
+	workerpool "github.com/nicholasbraun/job-crawler-poc/internal/worker_pool"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -21,48 +21,44 @@ type Config struct {
 	Downloader      http.Downloader
 	Parser          parser.Parser
 	URLRepository   crawler.URLRepository
-	JobRepository   crawler.JobRepository
 	ContentFilter   filter.CheckFn[*crawler.Content]
 	URLFilter       filter.CheckFn[string]
 	RelevanceFilter filter.CheckFn[*crawler.Content]
-	MaxDepth        int
-	Processor       processor.Processor
+	OnJobListing    func(ctx context.Context, jobListing *crawler.RawJobListing) error
 }
 
-type Worker struct {
+type urlWorker struct {
 	frontier             frontier.Frontier
 	downloader           http.Downloader
 	parser               parser.Parser
 	urlRepository        crawler.URLRepository
-	jobRepository        crawler.JobRepository
 	contentFilter        filter.CheckFn[*crawler.Content]
 	urlFilter            filter.CheckFn[string]
 	relevanceFilter      filter.CheckFn[*crawler.Content]
-	maxDepth             int
-	processor            processor.Processor
 	urlsProcessedCounter metric.Int64Counter
+	onJobListing         func(ctx context.Context, jobListing *crawler.RawJobListing) error
 }
 
-func NewWorker(cfg *Config) *Worker {
-	meter := otel.Meter("worker")
+var _ workerpool.Worker[crawler.URL] = &urlWorker{}
+
+func NewWorker(cfg *Config) *urlWorker {
+	meter := otel.Meter("url_worker")
 	urlsProcessedCounter, _ := meter.Int64Counter("crawler.urls.processed")
 
-	return &Worker{
+	return &urlWorker{
 		frontier:             cfg.Frontier,
 		downloader:           cfg.Downloader,
 		parser:               cfg.Parser,
 		urlRepository:        cfg.URLRepository,
-		jobRepository:        cfg.JobRepository,
 		contentFilter:        cfg.ContentFilter,
 		urlFilter:            cfg.URLFilter,
 		relevanceFilter:      cfg.RelevanceFilter,
-		maxDepth:             cfg.MaxDepth,
-		processor:            cfg.Processor,
 		urlsProcessedCounter: urlsProcessedCounter,
+		onJobListing:         cfg.OnJobListing,
 	}
 }
 
-func (w *Worker) Process(ctx context.Context, nextURL crawler.URL) error {
+func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 	defer w.frontier.MarkDone(context.Background())
 
 	slog.Info("worker: got nextURL", "url", nextURL.RawURL)
@@ -82,13 +78,15 @@ func (w *Worker) Process(ctx context.Context, nextURL crawler.URL) error {
 	}
 
 	if err := w.relevanceFilter(content); err == nil {
-		slog.Info("content passed relevance filter", "title", content.Title, "url", nextURL)
+		slog.Info("worker: content passed relevance filter", "title", content.Title, "url", nextURL)
 
-		err := w.processor.Process(ctx, processor.WorkLoad{URL: nextURL, Content: *content})
+		err := w.onJobListing(ctx, &crawler.RawJobListing{
+			URL:     *nextURL,
+			Content: *content,
+		})
 		if err != nil {
-			slog.Error("error processing content", "err", err)
+			slog.Error("worker: onJobListing returned an error", "err", err)
 		}
-
 	}
 
 	for _, contentURL := range content.URLs {

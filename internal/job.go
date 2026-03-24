@@ -1,6 +1,8 @@
 package crawler
 
-import "context"
+import (
+	"context"
+)
 
 type Job struct {
 	URL       string
@@ -8,6 +10,11 @@ type Job struct {
 	Company   string
 	Location  string
 	TechStack []string
+}
+
+type RawJobListing struct {
+	URL     URL
+	Content Content
 }
 
 type JobRepository interface {

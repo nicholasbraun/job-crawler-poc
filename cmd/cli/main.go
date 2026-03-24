@@ -23,7 +23,9 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/orchestrator"
 	myotel "github.com/nicholasbraun/job-crawler-poc/internal/otel"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
-	inmemprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/inmem"
+	workerpool "github.com/nicholasbraun/job-crawler-poc/internal/worker_pool"
+	joblistingworker "github.com/nicholasbraun/job-crawler-poc/internal/worker_pool/inmem/job_listing_worker"
+	urlworker "github.com/nicholasbraun/job-crawler-poc/internal/worker_pool/inmem/url_worker"
 )
 
 func main() {
@@ -77,7 +79,10 @@ func main() {
 	jobRepository := sqlite.NewJobRepository(db)
 
 	// create frontier
-	frontier := inmem.NewFrontier(inmem.WithMaxDomains(config.MaxDomains))
+	frontier := inmem.NewFrontier(
+		inmem.WithMaxDomains(config.MaxDomains),
+		inmem.WithMaxDepth(config.MaxDepth),
+	)
 
 	// create HTTP client + retry wrapper
 	httpClient := http.NewClient()
@@ -86,8 +91,6 @@ func main() {
 	// create parser
 	parser := parser.NewHTMLParser()
 
-	// create processor
-	processor := inmemprocessor.NewInMemProcessor(ctx, jobRepository)
 	// create filter chains (start with pass-through filters)
 	contentFilter := filter.Chain[*crawler.Content]() // empty chain = pass everything
 	relevanceFilter := filter.Chain(
@@ -125,26 +128,43 @@ func main() {
 		blockHostnames,
 	)
 
+	// create worker pools
+	jobListingWorkerPool := workerpool.NewPool(
+		ctx, "job_listing_worker_pool", func() workerpool.Worker[crawler.RawJobListing] {
+			return joblistingworker.NewWorker(&joblistingworker.Config{
+				JobRepository: jobRepository,
+			})
+		})
+
+	urlWorkerPool := workerpool.NewPool(
+		ctx, "url_worker_pool", func() workerpool.Worker[crawler.URL] {
+			return urlworker.NewWorker(&urlworker.Config{
+				Frontier:        frontier,
+				Downloader:      retryHTTPClient,
+				Parser:          parser,
+				URLRepository:   urlRepository,
+				ContentFilter:   contentFilter,
+				URLFilter:       urlFilter,
+				RelevanceFilter: relevanceFilter,
+				OnJobListing:    jobListingWorkerPool.Process,
+			})
+		}, workerpool.WithMaxWorkers[crawler.URL](10))
+
+	defer jobListingWorkerPool.Close()
+	defer urlWorkerPool.Close()
+
 	// create orchestrator
 	cfg := orchestrator.Config{
-		Frontier:        frontier,
-		Downloader:      retryHTTPClient,
-		Parser:          parser,
-		URLRepository:   urlRepository,
-		JobRepository:   jobRepository,
-		ContentFilter:   contentFilter,
-		URLFilter:       urlFilter,
-		RelevanceFilter: relevanceFilter,
-		MaxDepth:        config.MaxDepth,
-		MaxWorkers:      config.MaxWorkers,
-		Processor:       processor,
+		Frontier:      frontier,
+		URLRepository: urlRepository,
+		OnNextURL:     urlWorkerPool.Process,
 	}
 	o := orchestrator.NewOrchestrator(cfg)
 
 	// run
 	err = o.Run(ctx, config.SeedURLs)
 	if err != nil {
-		log.Fatalf("crawl failed: %v", err)
+		log.Fatalf("crawl ended: %v", err)
 	}
 	slog.Info("crawl complete")
 }

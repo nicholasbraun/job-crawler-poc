@@ -8,61 +8,31 @@ import (
 	"log/slog"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
-	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
-	"github.com/nicholasbraun/job-crawler-poc/internal/http"
-	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
-	"github.com/nicholasbraun/job-crawler-poc/internal/processor"
-	urlworker "github.com/nicholasbraun/job-crawler-poc/internal/worker/inmem/url_worker"
 )
 
 type Config struct {
-	Frontier        frontier.Frontier
-	Downloader      http.Downloader
-	Parser          parser.Parser
-	URLRepository   crawler.URLRepository
-	JobRepository   crawler.JobRepository
-	ContentFilter   filter.CheckFn[*crawler.Content]
-	URLFilter       filter.CheckFn[string]
-	RelevanceFilter filter.CheckFn[*crawler.Content]
-	MaxDepth        int
-	MaxWorkers      int
-	Processor       processor.Processor
+	Frontier      frontier.Frontier
+	URLRepository crawler.URLRepository
+	OnNextURL     func(ctx context.Context, nextURL *crawler.URL) error
 }
 
 type Orchestrator struct {
-	frontier        frontier.Frontier
-	downloader      http.Downloader
-	parser          parser.Parser
-	urlRepository   crawler.URLRepository
-	jobRepository   crawler.JobRepository
-	contentFilter   filter.CheckFn[*crawler.Content]
-	urlFilter       filter.CheckFn[string]
-	relevanceFilter filter.CheckFn[*crawler.Content]
-	maxDepth        int
-	maxWorkers      int
-	processor       processor.Processor
+	frontier      frontier.Frontier
+	urlRepository crawler.URLRepository
+	onNextURL     func(ctx context.Context, nextURL *crawler.URL) error
 }
 
 func NewOrchestrator(cfg Config) *Orchestrator {
 	return &Orchestrator{
-		frontier:        cfg.Frontier,
-		downloader:      cfg.Downloader,
-		parser:          cfg.Parser,
-		urlRepository:   cfg.URLRepository,
-		jobRepository:   cfg.JobRepository,
-		contentFilter:   cfg.ContentFilter,
-		urlFilter:       cfg.URLFilter,
-		relevanceFilter: cfg.RelevanceFilter,
-		maxDepth:        cfg.MaxDepth,
-		processor:       cfg.Processor,
-		maxWorkers:      cfg.MaxWorkers,
+		frontier:      cfg.Frontier,
+		urlRepository: cfg.URLRepository,
+		onNextURL:     cfg.OnNextURL,
 	}
 }
 
 func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 	ctx, cancel := context.WithCancelCause(ctx)
-	defer o.processor.Close()
 
 	for _, seedURL := range seedURLs {
 		parsed, err := crawler.NewURL(seedURL)
@@ -87,21 +57,6 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 		}
 	}
 
-	pool := urlworker.NewInMemURLWorkerPool(ctx, &urlworker.Config{
-		URLRepository:   o.urlRepository,
-		Frontier:        o.frontier,
-		Downloader:      o.downloader,
-		Parser:          o.parser,
-		JobRepository:   o.jobRepository,
-		ContentFilter:   o.contentFilter,
-		URLFilter:       o.urlFilter,
-		RelevanceFilter: o.relevanceFilter,
-		MaxDepth:        o.maxDepth,
-		Processor:       o.processor,
-	}, urlworker.WithMaxWorkers(o.maxWorkers))
-
-	defer pool.Close()
-
 	for {
 		nextURL, err := o.frontier.Next(ctx)
 		if errors.Is(err, frontier.ErrDone) {
@@ -116,7 +71,7 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 		}
 		slog.Info("got nextURL", "url", nextURL.RawURL)
 
-		err = pool.Process(ctx, nextURL)
+		err = o.onNextURL(ctx, &nextURL)
 		if err != nil {
 			cancel(err)
 			return err
