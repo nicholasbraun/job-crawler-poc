@@ -24,7 +24,11 @@ var _ workerpool.Worker[crawler.RawJobListing] = &JobListingWorker{}
 
 func NewWorker(cfg *Config) *JobListingWorker {
 	meter := otel.Meter("job_listing_worker")
-	jobListingsProcessedCounter, _ := meter.Int64Counter("crawler.job_listings.processed")
+	name := "crawler.job_listings.processed"
+	jobListingsProcessedCounter, err := meter.Int64Counter(name)
+	if err != nil {
+		slog.Error("job_listings_worker: error setting up metrics", "err", err, "name", name)
+	}
 
 	return &JobListingWorker{
 		jobRepository:               cfg.JobRepository,

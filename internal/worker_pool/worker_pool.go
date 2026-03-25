@@ -2,9 +2,12 @@ package workerpool
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 )
+
+var ErrPoolClosed = errors.New("ErrPoolClosed")
 
 type PoolOption[T any] func(*Pool[T])
 
@@ -27,9 +30,18 @@ type Pool[T any] struct {
 	channelSize int
 	newWorker   func() Worker[T]
 	name        string
+	closed      bool
+	mu          sync.RWMutex
 }
 
-func (p *Pool[T]) Process(ctx context.Context, workload *T) error {
+func (p *Pool[T]) Enqueue(ctx context.Context, workload *T) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.closed {
+		return ErrPoolClosed
+	}
+
 	select {
 	case p.workStream <- workload:
 	case <-ctx.Done():
@@ -41,7 +53,18 @@ func (p *Pool[T]) Process(ctx context.Context, workload *T) error {
 }
 
 func (p *Pool[T]) Close() {
+	p.mu.Lock()
+
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+
+	p.closed = true
 	close(p.workStream)
+
+	p.mu.Unlock()
+
 	p.wg.Wait()
 }
 

@@ -43,7 +43,11 @@ var _ workerpool.Worker[crawler.URL] = &urlWorker{}
 
 func NewWorker(cfg *Config) *urlWorker {
 	meter := otel.Meter("url_worker")
-	urlsProcessedCounter, _ := meter.Int64Counter("crawler.urls.processed")
+	name := "crawler.url.processed"
+	urlsProcessedCounter, err := meter.Int64Counter(name)
+	if err != nil {
+		slog.Error("url_worker: error setting up metrics", "err", err, "name", name)
+	}
 
 	return &urlWorker{
 		frontier:             cfg.Frontier,
@@ -59,7 +63,7 @@ func NewWorker(cfg *Config) *urlWorker {
 }
 
 func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
-	defer w.frontier.MarkDone(context.Background())
+	defer w.frontier.MarkDone(ctx)
 
 	slog.Info("worker: got nextURL", "url", nextURL.RawURL)
 

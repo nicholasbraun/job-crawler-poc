@@ -146,7 +146,7 @@ func main() {
 				ContentFilter:   contentFilter,
 				URLFilter:       urlFilter,
 				RelevanceFilter: relevanceFilter,
-				OnJobListing:    jobListingWorkerPool.Process,
+				OnJobListing:    jobListingWorkerPool.Enqueue,
 			})
 		}, workerpool.WithMaxWorkers[crawler.URL](10))
 
@@ -157,7 +157,7 @@ func main() {
 	cfg := orchestrator.Config{
 		Frontier:      frontier,
 		URLRepository: urlRepository,
-		OnNextURL:     urlWorkerPool.Process,
+		OnNextURL:     urlWorkerPool.Enqueue,
 	}
 	o := orchestrator.NewOrchestrator(cfg)
 
