@@ -60,7 +60,7 @@ job-crawler-poc/
 │   ├── frontier/
 │   │   ├── frontier.go                # Frontier interface + sentinel errors
 │   │   └── inmem/                     # In-memory frontier (per-domain queues, cooldown, in-flight tracking)
-│   ├── http/
+│   ├── downloader/
 │   │   ├── client.go                  # HTTP client with timeout
 │   │   ├── retry.go                   # Retry decorator with exponential backoff
 │   │   ├── downloader.go              # Downloader interface
@@ -71,17 +71,15 @@ job-crawler-poc/
 │   │   └── otel.go                    # OpenTelemetry + Prometheus metrics + pprof endpoints
 │   ├── parser/
 │   │   └── parser.go                  # HTML parser (goquery)
-│   ├── processor/
-│   │   ├── processor.go               # Processor interface
-│   │   └── inmem/                     # In-memory processor with worker pool
-│   └── worker/
-│       ├── worker.go                  # Worker interface
-│       └── inmem/
-│           └── url_worker/            # URL worker + pool (download, parse, filter, discover URLs)
+│   ├── pool/
+│   │   └── pool.go                    # Generic worker pool
+│   └── processor/
+│       ├── processor.go               # Processor interface
+│       ├── url_processor/             # URL processor (download, parse, filter, discover URLs)
+│       └── job_listing_processor/     # Job listing processor (relevance filtering, job storage)
 ├── config.json                        # Runtime config (seeds, filters, limits)
 ├── docker-compose.yml                 # Prometheus + Grafana
 ├── prometheus.yml                     # Prometheus scrape config
-├── todo.md                            # Production readiness TODO
 ├── data/                              # SQLite database (gitignored)
 ├── go.mod
 └── go.sum
@@ -208,6 +206,46 @@ All runtime configuration lives in `config.json`:
 - [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) — Pure Go SQLite driver (no CGO)
 - [OpenTelemetry](https://opentelemetry.io/) — Metrics instrumentation
 - [Prometheus client](https://github.com/prometheus/client_golang) — Metrics export
+
+## Production Readiness TODO
+
+### Reliability & Resilience
+
+- [x] Add body size limit — wrap `io.ReadAll(res.Body)` with `io.LimitReader` to prevent OOM from large responses
+- [x] Check Content-Type header before reading body — skip non-HTML responses (PDFs, images, videos)
+- [x] Retry loop retries non-retryable errors — `ErrNoHTML` and similar errors from `Client.Get` get retried `maxTries` times; `isRetryable`'s `err != nil` branch is dead code
+- [ ] Fix retry client treating non-2xx as success — 403/451 responses get parsed as valid content; return error for non-retryable non-2xx
+- [ ] RetryClient.Get swallows error on non-retryable path — `return res, nil` should be `return res, err`; currently discards errors like `ErrNoHTML`
+- [ ] Retry loop swallows last error — on exhaustion returns generic message without wrapping the underlying error (DNS, TLS, status code info lost)
+- [ ] Off-by-one wait in retry loop — after the last failed attempt, waits for backoff before returning error; adds unnecessary latency
+- [ ] Classify errors — distinguish infrastructure errors (DB unreachable, disk full) from domain errors (404, parse failure); infrastructure errors should halt the crawl
+
+### Correctness
+
+- [ ] URL normalization — canonicalize URLs before dedup (lowercase scheme+host, strip trailing slashes, sort query params, remove fragments)
+
+### Legal/Ethical
+
+- [ ] Add robots.txt support — check and cache per-domain robots.txt before downloading pages
+- [ ] Honest User-Agent — replace fake Firefox UA with `JobCrawler/1.0 (+https://yoursite.com/bot)`
+- [ ] Honor Crawl-delay — adapt per-domain politeness from robots.txt instead of hardcoded 1s cooldown
+
+### Observability
+
+- [ ] Record metric on Content-Type rejection — currently no metric is emitted when Content-Type check fails; add a "rejected" or "non_html" status
+- [ ] Fix 404 test asserting success — test asserts 404 returns no error; update when non-2xx handling is fixed
+
+### Operability
+
+- [ ] Graceful shutdown — two-phase: stop accepting new work, drain in-flight with deadline
+- [ ] Handle metrics server errors — check and log error from `ListenAndServe` if port is taken
+- [ ] Structured error context in workers — log URL, domain, HTTP status, and failure stage (download/parse/filter)
+- [ ] Health check endpoint — expose a `/healthz` for process managers to detect deadlocks/stalls
+
+### Scalability
+
+- [ ] Batch SQLite writes — collect discovered URLs per page, insert in single transaction
+- [ ] Cap per-domain queue size — prevent unbounded growth from large sites
 
 ## License
 
