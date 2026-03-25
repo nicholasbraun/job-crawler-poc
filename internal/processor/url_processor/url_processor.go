@@ -1,4 +1,5 @@
-package urlworker
+// Package urlprocessor implements the main crawl processor
+package urlprocessor
 
 import (
 	"context"
@@ -11,7 +12,6 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 	"github.com/nicholasbraun/job-crawler-poc/internal/http"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
-	workerpool "github.com/nicholasbraun/job-crawler-poc/internal/worker_pool"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -39,9 +39,7 @@ type urlWorker struct {
 	onJobListing         func(ctx context.Context, jobListing *crawler.RawJobListing) error
 }
 
-var _ workerpool.Worker[crawler.URL] = &urlWorker{}
-
-func NewWorker(cfg *Config) *urlWorker {
+func NewProcessor(cfg *Config) *urlWorker {
 	meter := otel.Meter("url_worker")
 	name := "crawler.url.processed"
 	urlsProcessedCounter, err := meter.Int64Counter(name)

@@ -23,9 +23,10 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/orchestrator"
 	myotel "github.com/nicholasbraun/job-crawler-poc/internal/otel"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
-	workerpool "github.com/nicholasbraun/job-crawler-poc/internal/worker_pool"
-	joblistingworker "github.com/nicholasbraun/job-crawler-poc/internal/worker_pool/inmem/job_listing_worker"
-	urlworker "github.com/nicholasbraun/job-crawler-poc/internal/worker_pool/inmem/url_worker"
+	"github.com/nicholasbraun/job-crawler-poc/internal/pool"
+	"github.com/nicholasbraun/job-crawler-poc/internal/processor"
+	joblistingprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/job_listing_processor"
+	urlprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/url_processor"
 )
 
 func main() {
@@ -129,16 +130,16 @@ func main() {
 	)
 
 	// create worker pools
-	jobListingWorkerPool := workerpool.NewPool(
-		ctx, "job_listing_worker_pool", func() workerpool.Worker[crawler.RawJobListing] {
-			return joblistingworker.NewWorker(&joblistingworker.Config{
+	jobListingWorkerPool := pool.NewPool(
+		ctx, "job_listing_worker_pool", func() processor.Processor[crawler.RawJobListing] {
+			return joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
 				JobRepository: jobRepository,
 			})
 		})
 
-	urlWorkerPool := workerpool.NewPool(
-		ctx, "url_worker_pool", func() workerpool.Worker[crawler.URL] {
-			return urlworker.NewWorker(&urlworker.Config{
+	urlWorkerPool := pool.NewPool(
+		ctx, "url_worker_pool", func() processor.Processor[crawler.URL] {
+			return urlprocessor.NewProcessor(&urlprocessor.Config{
 				Frontier:        frontier,
 				Downloader:      retryHTTPClient,
 				Parser:          parser,
@@ -148,7 +149,7 @@ func main() {
 				RelevanceFilter: relevanceFilter,
 				OnJobListing:    jobListingWorkerPool.Enqueue,
 			})
-		}, workerpool.WithMaxWorkers[crawler.URL](10))
+		}, pool.WithMaxWorkers[crawler.URL](10))
 
 	defer jobListingWorkerPool.Close()
 	defer urlWorkerPool.Close()

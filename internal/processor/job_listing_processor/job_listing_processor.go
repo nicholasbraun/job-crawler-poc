@@ -1,4 +1,4 @@
-package joblistingworker
+package joblistingprocessor
 
 import (
 	"context"
@@ -6,7 +6,6 @@ import (
 	"log/slog"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
-	workerpool "github.com/nicholasbraun/job-crawler-poc/internal/worker_pool"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -20,9 +19,7 @@ type JobListingWorker struct {
 	jobListingsProcessedCounter metric.Int64Counter
 }
 
-var _ workerpool.Worker[crawler.RawJobListing] = &JobListingWorker{}
-
-func NewWorker(cfg *Config) *JobListingWorker {
+func NewProcessor(cfg *Config) *JobListingWorker {
 	meter := otel.Meter("job_listing_worker")
 	name := "crawler.job_listings.processed"
 	jobListingsProcessedCounter, err := meter.Int64Counter(name)

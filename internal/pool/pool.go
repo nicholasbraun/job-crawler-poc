@@ -1,10 +1,13 @@
-package workerpool
+// Package pool implements a generic worker pool.
+package pool
 
 import (
 	"context"
 	"errors"
 	"log/slog"
 	"sync"
+
+	"github.com/nicholasbraun/job-crawler-poc/internal/processor"
 )
 
 var ErrPoolClosed = errors.New("ErrPoolClosed")
@@ -28,7 +31,7 @@ type Pool[T any] struct {
 	wg          sync.WaitGroup
 	maxWorkers  int
 	channelSize int
-	newWorker   func() Worker[T]
+	newWorker   func() processor.Processor[T]
 	name        string
 	closed      bool
 	mu          sync.RWMutex
@@ -82,7 +85,7 @@ func (p *Pool[T]) run(ctx context.Context) {
 	}
 }
 
-func NewPool[T any](ctx context.Context, name string, factoryFn func() Worker[T], opts ...PoolOption[T]) *Pool[T] {
+func NewPool[T any](ctx context.Context, name string, factoryFn func() processor.Processor[T], opts ...PoolOption[T]) *Pool[T] {
 	p := &Pool[T]{
 		maxWorkers:  4,
 		channelSize: 10,
