@@ -8,9 +8,9 @@ import (
 	"log/slog"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
+	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
-	"github.com/nicholasbraun/job-crawler-poc/internal/http"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -18,7 +18,7 @@ import (
 
 type Config struct {
 	Frontier        frontier.Frontier
-	Downloader      http.Downloader
+	Downloader      downloader.Downloader
 	Parser          parser.Parser
 	URLRepository   crawler.URLRepository
 	ContentFilter   filter.CheckFn[*crawler.Content]
@@ -29,7 +29,7 @@ type Config struct {
 
 type urlWorker struct {
 	frontier             frontier.Frontier
-	downloader           http.Downloader
+	downloader           downloader.Downloader
 	parser               parser.Parser
 	urlRepository        crawler.URLRepository
 	contentFilter        filter.CheckFn[*crawler.Content]

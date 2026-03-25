@@ -1,7 +1,8 @@
-package http
+package downloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -54,8 +55,8 @@ func (rc *RetryClient) Get(ctx context.Context, url string) (*Response, error) {
 
 	for i := 1; i <= rc.maxTries; i++ {
 		res, err := rc.inner.Get(ctx, url)
-		if err == nil && !isRetryable(res, err) {
-			return res, nil
+		if !isRetryable(res, err) {
+			return res, err
 		}
 
 		select {
@@ -70,6 +71,10 @@ func (rc *RetryClient) Get(ctx context.Context, url string) (*Response, error) {
 }
 
 func isRetryable(res *Response, err error) bool {
+	if errors.Is(err, ErrNoHTML) {
+		return false
+	}
+
 	if err != nil {
 		// network errors, etc.
 		return true

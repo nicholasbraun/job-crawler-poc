@@ -1,18 +1,22 @@
-// Package http is an adapter for the net/http standard library package.
+// Package downloader is an adapter for the net/http standard library package.
 // This is where we download URLs
-package http
+package downloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
+
+var ErrNoHTML = errors.New("content type is not 'text/html'")
 
 type Client struct {
 	httpClient            *http.Client
@@ -38,7 +42,6 @@ func (c *Client) Get(ctx context.Context, url string) (*Response, error) {
 	}
 
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:147.0) Gecko/20100101 Firefox/147.0")
 
 	res, err := c.httpClient.Do(req)
@@ -48,13 +51,27 @@ func (c *Client) Get(ctx context.Context, url string) (*Response, error) {
 		c.downloadTimeHistogram.Record(ctx, time, metric.WithAttributes(attribute.String("status", "error")))
 		return nil, fmt.Errorf("error downloading url (%s). %w", url, err)
 	}
-	c.downloadTimeHistogram.Record(ctx, time, metric.WithAttributes(attribute.String("status", "success")))
+
 	defer res.Body.Close()
 
-	body, err := io.ReadAll(res.Body)
+	limitReader := io.LimitReader(res.Body, 5000000)
+	body, err := io.ReadAll(limitReader)
 	if err != nil {
 		return nil, fmt.Errorf("error reading the body. %w", err)
 	}
+
+	headerContentType := res.Header.Get("content-type")
+	const expectedContentType = "text/html"
+
+	if headerContentType == "" {
+		if detectedContentType := http.DetectContentType(body); !strings.Contains(detectedContentType, expectedContentType) {
+			return nil, fmt.Errorf("downloader: got content-type: %s. %w", detectedContentType, ErrNoHTML)
+		}
+	} else if !strings.Contains(headerContentType, expectedContentType) {
+		return nil, fmt.Errorf("downloader: got content-type: %s. %w", headerContentType, ErrNoHTML)
+	}
+
+	c.downloadTimeHistogram.Record(ctx, time, metric.WithAttributes(attribute.String("status", "success")))
 
 	return &Response{res.StatusCode, body}, nil
 }

@@ -15,11 +15,11 @@ import (
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	jsonloader "github.com/nicholasbraun/job-crawler-poc/internal/config/json_loader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/sqlite"
+	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
 	jobfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/job"
 	urlfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/url"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier/inmem"
-	"github.com/nicholasbraun/job-crawler-poc/internal/http"
 	"github.com/nicholasbraun/job-crawler-poc/internal/orchestrator"
 	myotel "github.com/nicholasbraun/job-crawler-poc/internal/otel"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
@@ -86,8 +86,8 @@ func main() {
 	)
 
 	// create HTTP client + retry wrapper
-	httpClient := http.NewClient()
-	retryHTTPClient := http.NewRetryClient(httpClient)
+	httpClient := downloader.NewClient()
+	retryHTTPClient := downloader.NewRetryClient(httpClient)
 
 	// create parser
 	parser := parser.NewHTMLParser()
