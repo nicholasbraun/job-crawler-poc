@@ -2,6 +2,8 @@
 
 A web crawler written in Go that discovers job listings across the web and filters them for relevance. Built as a portfolio project to demonstrate system design, concurrency patterns, and idiomatic Go.
 
+This project also serves as a playground for learning how to effectively use agentic LLMs as coding assistants. AI is used strictly for code review and documentation — every line of code is written by hand.
+
 ## Motivation
 
 I'm a backend engineer transitioning into Go-focused roles. Rather than building something abstract, I wanted a tool that solves a real problem for me: finding remote Go backend positions available in Germany. The crawler automates the tedious process of checking multiple job boards and company career pages.
