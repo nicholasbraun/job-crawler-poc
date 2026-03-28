@@ -9,7 +9,7 @@ Review comments across the codebase (or a specific path) and produce a report of
 
 ## Steps
 
-1. **Load guidelines.** Read `commenting-guidelines.md` in this skill's directory. These are the rules for judging comment quality.
+1. **Load guidelines.** Read `.claude/skills/comment/commenting-guidelines.md`. These are the rules for judging comment quality.
 
 2. **Determine scope.** If the user provided a path argument (`$ARGUMENTS`), review only that path (file or directory, recursive). If no argument was provided, review all `.go` files under the project root, excluding vendored dependencies and generated files.
 

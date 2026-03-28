@@ -1,5 +1,6 @@
-// Package downloader is an adapter for the net/http standard library package.
-// This is where we download URLs
+// Package downloader provides HTTP clients for fetching web pages. The base
+// Client handles single requests; RetryClient wraps any Downloader with
+// exponential backoff.
 package downloader
 
 import (
@@ -16,6 +17,8 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+// ErrNoHTML is returned when the response content type is not text/html.
+// This error is non-retryable — wrapping it with RetryClient will not retry.
 var ErrNoHTML = errors.New("content type is not 'text/html'")
 
 type Client struct {

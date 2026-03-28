@@ -1,3 +1,5 @@
+// Package otel sets up OpenTelemetry metrics with a Prometheus exporter
+// and serves a /metrics endpoint alongside pprof debug handlers.
 package otel
 
 import (
@@ -12,6 +14,10 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
+// Setup initializes the OpenTelemetry meter provider with a Prometheus
+// exporter and starts an HTTP server on :2223 serving /metrics and
+// /debug/pprof/ endpoints. Returns a shutdown function that flushes
+// and closes the meter provider.
 func Setup(ctx context.Context) (func(context.Context), error) {
 	var shutdownFuncs []func(context.Context) error
 	var err error

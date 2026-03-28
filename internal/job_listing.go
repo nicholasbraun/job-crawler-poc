@@ -12,6 +12,8 @@ type JobListing struct {
 	TechStack []string
 }
 
+// RawJobListing pairs a crawled URL with its parsed page content before
+// any structured extraction (company, location, tech stack) has occurred.
 type RawJobListing struct {
 	URL     URL
 	Content Content

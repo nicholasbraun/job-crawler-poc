@@ -1,5 +1,6 @@
-// Package filter is responsible for the filtering logic.
-// It implements all the filters for content, urls and relevant jobs.
+// Package filter provides a generic filter chain built on CheckFn. Compose
+// checks with Chain (short-circuit on first failure or ErrPass) and Every
+// (logical AND). Domain-specific filters live in sub-packages.
 package filter
 
 import (
@@ -7,9 +8,14 @@ import (
 	"strings"
 )
 
+// CheckFn evaluates an item and returns nil to pass, a non-nil error to
+// reject, or ErrPass to short-circuit a Chain and explicitly pass.
 type CheckFn[T any] func(T) error
 
 var (
+	// ErrPass is returned by a CheckFn to short-circuit a Chain and explicitly
+	// pass the item, skipping any remaining checks. Used for allowlist rules
+	// (e.g., a URL subdomain that should always be crawled).
 	ErrPass     = errors.New("filter: explicitly pass")
 	ErrRejected = errors.New("filter: explicitly rejected")
 )
@@ -50,6 +56,10 @@ func Contains(keywords ...string) CheckFn[string] {
 	}
 }
 
+// Every returns a CheckFn that passes (returns ErrPass) only when all
+// provided checks pass. If any check does not return ErrPass, Every
+// returns nil (allowing the Chain to continue). This is the logical AND
+// of pass-style checks.
 func Every[T any](checks ...CheckFn[T]) CheckFn[T] {
 	return func(item T) error {
 		for _, fn := range checks {

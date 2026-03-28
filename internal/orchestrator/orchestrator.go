@@ -1,5 +1,6 @@
-// Package orchestrator is where everything is tied together.
-// This is the entrypoint for our cmd/*/main.go.
+// Package orchestrator runs the crawl loop: seeding the frontier with
+// initial URLs, then pulling URLs from the frontier and dispatching them
+// to workers until all work is complete.
 package orchestrator
 
 import (
@@ -11,10 +12,13 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 )
 
+// Config holds the dependencies for an Orchestrator.
 type Config struct {
 	Frontier      frontier.Frontier
 	URLRepository crawler.URLRepository
-	OnNextURL     func(ctx context.Context, nextURL *crawler.URL) error
+	// OnNextURL is called for each URL pulled from the frontier. Typically
+	// this enqueues the URL into a worker pool. A non-nil error stops the crawl.
+	OnNextURL func(ctx context.Context, nextURL *crawler.URL) error
 }
 
 type Orchestrator struct {
@@ -31,6 +35,10 @@ func NewOrchestrator(cfg Config) *Orchestrator {
 	}
 }
 
+// Run seeds the frontier with the provided URLs, then enters the main crawl
+// loop: pulling URLs from the frontier and dispatching them via onNextURL.
+// Returns nil when the frontier signals ErrDone (all work complete),
+// or an error if the frontier or dispatch fails.
 func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 

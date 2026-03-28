@@ -10,6 +10,7 @@ import (
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 )
 
+// Parser extracts structured content (title, main text, links) from raw HTML.
 type Parser interface {
 	Parse(b []byte) (*crawler.Content, error)
 }

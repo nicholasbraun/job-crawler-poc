@@ -1,6 +1,6 @@
 // Package main is responsible for:
 //
-// - parsng args (seed urls)
+// - parsing args (seed urls)
 // - running the crawl orchestrator
 package main
 

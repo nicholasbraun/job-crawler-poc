@@ -6,10 +6,13 @@ import (
 	"net/url"
 )
 
+// URL is a parsed crawl target. It is a value type — safe to copy and compare.
 type URL struct {
 	Hostname string
 	RawURL   string
-	Depth    int
+	// Depth is the number of links followed from a seed URL to reach this URL.
+	// Seed URLs have depth 0.
+	Depth int
 }
 
 func NewURL(u string) (URL, error) {
@@ -46,7 +49,10 @@ func (base *URL) Parse(u string) (URL, error) {
 	}, nil
 }
 
+// URLRepository tracks which URLs have been seen during a crawl.
 type URLRepository interface {
+	// Save records that a URL has been seen. Returns true if the URL was new,
+	// false if it was already saved.
 	Save(ctx context.Context, url string) (bool, error)
 	Visited(ctx context.Context, url string) (bool, error)
 }

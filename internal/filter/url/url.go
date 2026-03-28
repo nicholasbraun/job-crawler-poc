@@ -1,4 +1,6 @@
-// Package urlfilter implements the url filtering logic
+// Package urlfilter provides CheckFn factories for filtering URLs by TLD,
+// subdomain, path segment, and hostname. Filters return either a blocking
+// error or filter.ErrPass for allowlist rules.
 package urlfilter
 
 import (

@@ -4,6 +4,8 @@ package processor
 
 import "context"
 
+// Processor handles a single unit of work. Implementations are used as
+// workers in a Pool or as consumers of a message broker.
 type Processor[T any] interface {
 	Process(ctx context.Context, workload *T) error
 }

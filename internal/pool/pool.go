@@ -26,6 +26,8 @@ func WithMaxWorkers[T any](n int) PoolOption[T] {
 	}
 }
 
+// Pool is a bounded worker pool that distributes work items to a fixed
+// number of Processor workers via a buffered channel.
 type Pool[T any] struct {
 	workStream  chan *T
 	wg          sync.WaitGroup
@@ -55,6 +57,8 @@ func (p *Pool[T]) Enqueue(ctx context.Context, workload *T) error {
 	return nil
 }
 
+// Close stops accepting new work, drains the work channel, and blocks until
+// all workers have finished processing. Safe to call multiple times.
 func (p *Pool[T]) Close() {
 	p.mu.Lock()
 

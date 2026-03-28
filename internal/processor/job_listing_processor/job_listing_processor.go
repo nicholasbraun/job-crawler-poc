@@ -1,3 +1,5 @@
+// Package joblistingprocessor converts raw job listings into structured
+// JobListing records and persists them via the JobListingRepository.
 package joblistingprocessor
 
 import (

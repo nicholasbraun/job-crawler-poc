@@ -1,5 +1,5 @@
-// Package jsonloader implements the config.Loader interface.
-// This will read a config.json file
+// Package jsonloader implements config.Loader by reading and unmarshalling
+// a JSON file from disk.
 package jsonloader
 
 import (

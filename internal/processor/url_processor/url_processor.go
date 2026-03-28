@@ -1,4 +1,6 @@
-// Package urlprocessor implements the main crawl processor
+// Package urlprocessor implements the crawl worker that downloads a URL,
+// parses its content, applies filters, discovers new URLs, and dispatches
+// matching pages as job listings.
 package urlprocessor
 
 import (
@@ -17,14 +19,20 @@ import (
 )
 
 type Config struct {
-	Frontier        frontier.Frontier
-	Downloader      downloader.Downloader
-	Parser          parser.Parser
-	URLRepository   crawler.URLRepository
-	ContentFilter   filter.CheckFn[*crawler.Content]
-	URLFilter       filter.CheckFn[string]
+	Frontier      frontier.Frontier
+	Downloader    downloader.Downloader
+	Parser        parser.Parser
+	URLRepository crawler.URLRepository
+	// ContentFilter rejects pages that should not be processed at all
+	// (e.g., empty or non-textual content). Applied before link discovery.
+	ContentFilter filter.CheckFn[*crawler.Content]
+	URLFilter     filter.CheckFn[string]
+	// RelevanceFilter identifies pages that look like job listings.
+	// Pages that pass this filter are forwarded to OnJobListing.
 	RelevanceFilter filter.CheckFn[*crawler.Content]
-	OnJobListing    func(ctx context.Context, jobListing *crawler.RawJobListing) error
+	// OnJobListing is called when a page passes the relevance filter.
+	// Typically this enqueues the raw listing into a job listing worker pool.
+	OnJobListing func(ctx context.Context, jobListing *crawler.RawJobListing) error
 }
 
 type urlWorker struct {

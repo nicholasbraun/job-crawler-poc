@@ -10,8 +10,12 @@ import (
 
 type RetryClientOption func(*RetryClient)
 
+// RetryClient is a Downloader decorator that retries failed requests with
+// exponential backoff. Non-retryable errors (e.g., ErrNoHTML) fail immediately.
 type RetryClient struct {
-	inner         Downloader
+	inner Downloader
+	// backoff is the initial delay before the first retry. Multiplied by
+	// multiplicator after each subsequent attempt. Default: 2s.
 	backoff       time.Duration
 	multiplicator int
 	maxTries      int

@@ -1,5 +1,6 @@
-// Package inmem is the adapter for the in-memory url frontier.
-// This is where the logic is implemented
+// Package inmem implements an in-memory URL frontier with per-domain queues,
+// configurable cooldowns, and in-flight tracking. Next blocks until a URL
+// is available or all work is done.
 package inmem
 
 import (
@@ -17,16 +18,20 @@ import (
 type FrontierOption func(*Frontier)
 
 type Frontier struct {
-	queues           map[string]*queue
-	cooldown         time.Duration
-	mu               sync.Mutex
+	queues   map[string]*queue
+	cooldown time.Duration
+	mu       sync.Mutex
+	// signal wakes up goroutines blocked in Next when a URL is added or marked done.
+	// Buffered with capacity 1 to avoid blocking senders.
 	signal           chan struct{}
 	maxDomains       int
 	maxDepth         int
 	urlsGauge        metric.Int64UpDownCounter
 	hostnamesCounter metric.Int64UpDownCounter
 	inFlightGauge    metric.Int64UpDownCounter
-	inFlightCounter  int
+	// inFlightCounter tracks URLs returned by Next that have not yet been marked done.
+	// When all queues are empty and inFlightCounter is 0, Next returns ErrDone.
+	inFlightCounter int
 }
 
 var _ frontier.Frontier = &Frontier{}
@@ -77,7 +82,9 @@ func NewFrontier(opts ...FrontierOption) *Frontier {
 	return f
 }
 
-// AddURL adds an URL to the frontier
+// AddURL enqueues a URL for crawling, creating a new per-domain queue if needed.
+// Returns frontier.ErrMaxDepth if the URL exceeds the configured crawl depth,
+// or frontier.ErrMaxDomainLimit if the hostname would exceed the domain cap.
 func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 	f.mu.Lock()
 

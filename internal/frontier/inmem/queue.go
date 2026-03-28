@@ -7,6 +7,8 @@ import (
 )
 
 type queue struct {
+	// deadline is the earliest time a URL may be popped from this queue.
+	// Set to now + cooldown after each pop to enforce per-domain rate limiting.
 	deadline time.Time
 	urls     []crawler.URL
 }
@@ -18,12 +20,10 @@ func newQueue() *queue {
 	}
 }
 
-// push adds an element to the queue
 func (q *queue) push(url crawler.URL) {
 	q.urls = append(q.urls, url)
 }
 
-// pop returns the first element from the queue and removes it from the queue
 func (q *queue) pop() (crawler.URL, bool) {
 	if len(q.urls) == 0 {
 		return crawler.URL{}, false
