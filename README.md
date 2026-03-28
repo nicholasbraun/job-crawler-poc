@@ -14,6 +14,8 @@ The system follows a pipeline architecture with two decoupled responsibilities:
 
 **Relevance Evaluation** — a filter chain that runs against crawled content to identify job listings matching specific criteria (tech stack, location, remote availability).
 
+**Structured Extraction** — pages that pass the relevance filter are sent to an LLM (via the OpenRouter API) which extracts structured fields (title, company, location, remote, tech stack) from the raw HTML and returns them as JSON.
+
 ```
 Seed URLs → Frontier → Orchestrator → Worker Pool ──→ Downloader → Parser
                 ↑                                                      │
@@ -23,7 +25,7 @@ Seed URLs → Frontier → Orchestrator → Worker Pool ──→ Downloader →
                                                 │
                                         Relevance Filter
                                                 │
-                                        Processor Pool → Job Listing Store
+                                        Processor Pool → LLM Extractor → Job Listing Store
 ```
 
 ### Key Design Decisions
@@ -34,6 +36,7 @@ Seed URLs → Frontier → Orchestrator → Worker Pool ──→ Downloader →
 - **Atomic URL deduplication**: `INSERT OR IGNORE` + `RowsAffected()` in SQLite provides lock-free, atomic dedup. Workers skip URLs already seen without requiring a separate `Visited()` check.
 - **Composable filter chains**: filters use a generic `CheckFn[T]` type. Individual checks are composed via `Chain` and `Every` combinators, making it trivial to add or remove filtering logic.
 - **Retry with exponential backoff**: the HTTP client is wrapped in a retry decorator that handles transient failures without leaking retry logic into the core pipeline.
+- **LLM-based structured extraction**: raw HTML pages are sent to an LLM via the OpenRouter API. The model returns structured JSON (title, description, company, location, remote, tech stack) which is unmarshaled into domain types and persisted to SQLite.
 - **OpenTelemetry metrics**: frontier size, in-flight URLs, hostnames, and URLs processed are all instrumented and exported via Prometheus.
 
 ## Project Structure
@@ -69,6 +72,8 @@ job-crawler-poc/
 │   │   └── orchestrator.go            # Crawl loop: seeds frontier, dispatches to worker pool
 │   ├── otel/
 │   │   └── otel.go                    # OpenTelemetry + Prometheus metrics + pprof endpoints
+│   ├── openrouter/
+│   │   └── job_listing_extractor.go   # OpenRouter LLM-based job listing extraction
 │   ├── parser/
 │   │   └── parser.go                  # HTML parser (goquery)
 │   ├── pool/
@@ -76,7 +81,7 @@ job-crawler-poc/
 │   └── processor/
 │       ├── processor.go               # Processor interface
 │       ├── url_processor/             # URL processor (download, parse, filter, discover URLs)
-│       └── job_listing_processor/     # Job listing processor (relevance filtering, job storage)
+│       └── job_listing_processor/     # Job listing processor (LLM extraction, persistence)
 ├── config.json                        # Runtime config (seeds, filters, limits)
 ├── docker-compose.yml                 # Prometheus + Grafana
 ├── prometheus.yml                     # Prometheus scrape config
@@ -92,6 +97,7 @@ Domain types and repository interfaces live at the `internal/` root. Infrastruct
 ### Prerequisites
 
 - Go 1.26+
+- An [OpenRouter](https://openrouter.ai/) API key
 
 ### Build & Run
 
@@ -100,11 +106,14 @@ Domain types and repository interfaces live at the `internal/` root. Infrastruct
 git clone https://github.com/nicholasbraun/job-crawler-poc.git
 cd job-crawler-poc
 
+# Create a .env file with your OpenRouter API key
+echo 'OPENROUTER_API_KEY=your-key-here' > .env
+
 # Run the crawler
 go run ./cmd/cli
 ```
 
-Configuration is loaded from `config.json`. Seed URLs, filters, and crawl limits are all configurable there.
+Configuration is loaded from `config.json`. Seed URLs, filters, and crawl limits are all configurable there. The OpenRouter API key is loaded from a `.env` file via [godotenv](https://github.com/joho/godotenv).
 
 ### CLI Flags
 
@@ -159,6 +168,18 @@ relevanceFilter := filter.Chain(
 )
 ```
 
+### LLM-Based Structured Extraction
+
+Rather than writing brittle per-site scrapers, the crawler delegates structured extraction to an LLM via the OpenRouter API. A `JobListingExtractor` interface decouples the processor from the extraction strategy:
+
+```go
+type JobListingExtractor interface {
+    Extract(ctx context.Context, raw crawler.RawJobListing) (crawler.JobListing, error)
+}
+```
+
+The OpenRouter implementation sends the page's main content to a chat completions endpoint with a prompt that requests JSON output. The response is unmarshaled directly into the `JobListing` domain type. This approach generalizes across job boards without site-specific parsing logic.
+
 ### Concurrent Frontier
 
 The in-memory frontier uses per-domain queues with deadline-based cooldowns. An in-flight counter tracks URLs being processed by workers — the frontier only returns `ErrDone` when all queues are empty and no workers are still processing. A signal channel allows `AddURL` and `MarkDone` to wake up a blocked `Next` call without polling.
@@ -204,6 +225,7 @@ All runtime configuration lives in `config.json`:
 
 - [goquery](https://github.com/PuerkitoBio/goquery) — HTML parsing with CSS selectors
 - [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) — Pure Go SQLite driver (no CGO)
+- [godotenv](https://github.com/joho/godotenv) — `.env` file loading
 - [OpenTelemetry](https://opentelemetry.io/) — Metrics instrumentation
 - [Prometheus client](https://github.com/prometheus/client_golang) — Metrics export
 
