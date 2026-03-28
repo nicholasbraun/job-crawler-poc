@@ -49,11 +49,8 @@ func getMainContent(doc *goquery.Document) string {
 	for _, m := range matchers {
 		selection := doc.FindMatcher(m)
 		if selection.Length() == 1 {
-			html, err := selection.Html()
-
-			if err == nil {
-				return html
-			}
+			text := selection.Text()
+			return text
 		}
 	}
 

@@ -182,6 +182,8 @@ type JobListingExtractor interface {
 
 The OpenRouter implementation sends the page's main content to a chat completions endpoint with a prompt that requests JSON output. The response is unmarshaled directly into the `JobListing` domain type. This approach generalizes across job boards without site-specific parsing logic.
 
+Since the crawler processes arbitrary web pages, the LLM is inherently exposed to prompt injection via crafted page content. A few precautions are in place: extraction instructions are sent as a `system` message to separate them from untrusted user content, and all string fields in the LLM response are stripped of HTML tags before being stored in the database. These are not foolproof defenses, but they reduce the surface area for injection in a POC context.
+
 ### Concurrent Frontier
 
 The in-memory frontier uses per-domain queues with deadline-based cooldowns. An in-flight counter tracks URLs being processed by workers — the frontier only returns `ErrDone` when all queues are empty and no workers are still processing. A signal channel allows `AddURL` and `MarkDone` to wake up a blocked `Next` call without polling.

@@ -10,26 +10,48 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
+	"time"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 )
 
+var htmlTagRegex = regexp.MustCompile("<[^>]*>")
+
+func stripHTML(s string) string {
+	return htmlTagRegex.ReplaceAllString(s, "")
+}
+
+func sanitizeJobListing(j crawler.JobListing) crawler.JobListing {
+	sanitizedJobListing := crawler.JobListing{}
+	sanitizedJobListing.Title = stripHTML(j.Title)
+	sanitizedJobListing.Description = stripHTML(j.Description)
+	sanitizedJobListing.Company = stripHTML(j.Company)
+	sanitizedJobListing.Location = stripHTML(j.Location)
+	sanitizedJobListing.Remote = j.Remote
+	sanitizedJobListing.TechStack = []string{}
+
+	for _, ts := range j.TechStack {
+		sanitizedJobListing.TechStack = append(sanitizedJobListing.TechStack, stripHTML(ts))
+	}
+
+	return sanitizedJobListing
+}
+
 const (
 	openrouterAPIURL = "https://openrouter.ai/api/v1/chat/completions"
 	openrouterPrompt = `
-	Parse the HTML below '____' and return only a valid json string with the following fields:
-	- "title": title of the document. Usually inside the <h1></h1> tag (type: string)
+	Parse the text below and return only a valid json string with the following fields:
+	- "title": title of the document. Usually the first prominent heading on the page (type: string)
 	- "description": a short description of the job listing (type: string)
 	- "company": the name of the company that this job listing is for (type: string)
 	- "location": the location of the office were that job is available at (type: string)
-	- "remote": if this job is available remotely (type: number: 1 for true, 0 for false)
+	- "remote": if this job is available remotely (type: JSON boolean true/false, not a string)
 	- "tech_stack": specific programming languages, frameworks, databases, 
 cloud platforms, and tools mentioned (e.g. "Go", "PostgreSQL", "Kubernetes"). 
 Do NOT include generic terms like "algorithms" or "data". (type: array of strings)
-	____
-	
-	`
+`
 )
 
 type chatRequest struct {
@@ -53,12 +75,14 @@ type chatResponse struct {
 // JobListingExtractor sends raw page content to the OpenRouter chat API
 // and parses the LLM's JSON response into a JobListing.
 type JobListingExtractor struct {
-	apiKey string
+	apiKey     string
+	httpClient *http.Client
 }
 
 func NewJobListingExtractor(apiKey string) *JobListingExtractor {
 	return &JobListingExtractor{
-		apiKey: apiKey,
+		apiKey:     apiKey,
+		httpClient: &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
@@ -69,7 +93,8 @@ func (jle *JobListingExtractor) Extract(ctx context.Context, raw crawler.RawJobL
 	reqBody := chatRequest{
 		Model: "openai/gpt-5.4-nano",
 		Messages: []message{
-			{"user", strings.Join([]string{openrouterPrompt, raw.Content.MainContent}, "")},
+			{"system", openrouterPrompt},
+			{"user", raw.Content.MainContent},
 		},
 	}
 	bodyBytes, err := json.Marshal(reqBody)
@@ -84,7 +109,7 @@ func (jle *JobListingExtractor) Extract(ctx context.Context, raw crawler.RawJobL
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+jle.apiKey)
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := jle.httpClient.Do(req)
 	if err != nil {
 		return crawler.JobListing{}, fmt.Errorf("error sending request: %w", err)
 	}
@@ -95,8 +120,9 @@ func (jle *JobListingExtractor) Extract(ctx context.Context, raw crawler.RawJobL
 		return crawler.JobListing{}, fmt.Errorf("openrouter: status %d: %s", res.StatusCode, body)
 	}
 
+	const maxResponseBytes = 1 << 20 // 1 MB
 	var chatRes chatResponse
-	if err := json.NewDecoder(res.Body).Decode(&chatRes); err != nil {
+	if err := json.NewDecoder(io.LimitReader(res.Body, maxResponseBytes)).Decode(&chatRes); err != nil {
 		return crawler.JobListing{}, fmt.Errorf("error decoding openrouter response: %w", err)
 	}
 
@@ -115,6 +141,8 @@ func (jle *JobListingExtractor) Extract(ctx context.Context, raw crawler.RawJobL
 	if err := json.Unmarshal([]byte(content), &jobListing); err != nil {
 		return crawler.JobListing{}, fmt.Errorf("error parsing job listing JSON: %w", err)
 	}
+
+	jobListing = sanitizeJobListing(jobListing)
 
 	jobListing.URL = raw.URL.RawURL
 

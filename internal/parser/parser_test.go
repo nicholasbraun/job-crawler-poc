@@ -39,11 +39,11 @@ func TestParser(t *testing.T) {
 			t.Errorf("expected title to be 'Hello World', got: %v", content.Title)
 		}
 
-		if !strings.Contains(content.MainContent, "<h1>This is the h1 headline</h1>") {
+		if !strings.Contains(content.MainContent, "This is the h1 headline") {
 			t.Errorf("main content should include the h1 headline, got: %s", content.MainContent)
 		}
 
-		if !strings.Contains(content.MainContent, "<p>Text with an") {
+		if !strings.Contains(content.MainContent, "Text with an") {
 			t.Errorf("main content should include the text snippet")
 		}
 
