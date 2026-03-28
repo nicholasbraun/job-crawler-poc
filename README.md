@@ -23,7 +23,7 @@ Seed URLs → Frontier → Orchestrator → Worker Pool ──→ Downloader →
                                                 │
                                         Relevance Filter
                                                 │
-                                        Processor Pool → Job Store
+                                        Processor Pool → Job Listing Store
 ```
 
 ### Key Design Decisions
@@ -46,16 +46,16 @@ job-crawler-poc/
 ├── internal/
 │   ├── content.go                     # Content domain type
 │   ├── url.go                         # URL domain type + URLRepository interface
-│   ├── job.go                         # Job domain type + JobRepository interface
+│   ├── job_listing.go                 # JobListing domain type + JobListingRepository interface
 │   ├── config/
 │   │   ├── config.go                  # Config struct
 │   │   └── json_loader/              # JSON config loader
 │   ├── database/
-│   │   └── sqlite/                    # SQLite repositories (URL dedup, job storage, WAL mode)
+│   │   └── sqlite/                    # SQLite repositories (URL dedup, job listing storage, WAL mode)
 │   ├── filter/
 │   │   ├── filter.go                  # Generic CheckFn[T], Chain, Every combinators
 │   │   ├── content.go                 # Content filter helpers
-│   │   ├── job/                       # Job-specific filters (title, main content keywords)
+│   │   ├── job_listing_filter/        # Job listing filters (title, main content keywords)
 │   │   └── url/                       # URL filters (TLD, subdomain, path, hostname)
 │   ├── frontier/
 │   │   ├── frontier.go                # Frontier interface + sentinel errors
@@ -146,11 +146,11 @@ type CheckFn[T any] func(T) error
 
 relevanceFilter := filter.Chain(
     filter.Every(
-        jobfilter.TitleContains(
+        joblistingfilter.TitleContains(
             filter.Contains("developer", "engineer"),
             filter.Contains("golang", "go", "backend"),
         ),
-        jobfilter.MainContentContains(
+        joblistingfilter.MainContentContains(
             filter.Contains("remote"),
             filter.Contains("germany", "europe"),
         ),
