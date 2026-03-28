@@ -58,7 +58,7 @@ func TestSQLiteURLRepository(t *testing.T) {
 	}
 }
 
-func TestSQLiteJobRepository(t *testing.T) {
+func TestSQLiteJobListingRepository(t *testing.T) {
 	db, err := sqlite.Open(":memory:")
 	if err != nil {
 		t.Fatalf("error creating in memory db: %v", err)
@@ -69,9 +69,9 @@ func TestSQLiteJobRepository(t *testing.T) {
 		t.Fatalf("error setting up tables: %v", err)
 	}
 
-	var jobRepository crawler.JobRepository = sqlite.NewJobRepository(db)
+	var jobListingRepository crawler.JobListingRepository = sqlite.NewJobListingRepository(db)
 
-	job := &crawler.Job{
+	jobListing := &crawler.JobListing{
 		URL:       "https://netflix.com/jobs/123", // yeah right, lol
 		Title:     "Senior Software Engineer",
 		Company:   "netflix",
@@ -79,31 +79,31 @@ func TestSQLiteJobRepository(t *testing.T) {
 		TechStack: []string{"golang", "sqlite"},
 	}
 
-	err = jobRepository.Save(t.Context(), job)
+	err = jobListingRepository.Save(t.Context(), jobListing)
 	if err != nil {
-		t.Fatalf("error saving job: %v", err)
+		t.Fatalf("error saving job listing: %v", err)
 	}
 
-	jobs, err := jobRepository.Find(t.Context())
+	jobListings, err := jobListingRepository.Find(t.Context())
 	if err != nil {
-		t.Fatalf("error finding jobs: %v", err)
+		t.Fatalf("error finding job listings: %v", err)
 	}
 
-	if len(jobs) != 1 {
-		t.Fatalf("should have found one job")
+	if len(jobListings) != 1 {
+		t.Fatalf("should have found one job listing")
 	}
 
-	wantURL := job.URL
-	gotURL := jobs[0].URL
+	wantURL := jobListing.URL
+	gotURL := jobListings[0].URL
 	if wantURL != gotURL {
 		t.Errorf("want url: %s, got: %s", wantURL, gotURL)
 	}
 
-	if len(jobs[0].TechStack) != 2 {
-		t.Fatalf("should have found two tech stack items, found: %v", jobs[0].TechStack)
+	if len(jobListings[0].TechStack) != 2 {
+		t.Fatalf("should have found two tech stack items, found: %v", jobListings[0].TechStack)
 	}
-	wantTechStack1 := job.TechStack[0]
-	gotTechStack1 := jobs[0].TechStack[0]
+	wantTechStack1 := jobListing.TechStack[0]
+	gotTechStack1 := jobListings[0].TechStack[0]
 	if wantTechStack1 != gotTechStack1 {
 		t.Errorf("want tech stack item: %s, got: %s", wantTechStack1, gotTechStack1)
 	}

@@ -1,5 +1,5 @@
-// Package jobfilter implements logic to filter Content for relevant job postings
-package jobfilter
+// Package joblistingfilter implements logic to filter Content for relevant job postings
+package joblistingfilter
 
 import (
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"

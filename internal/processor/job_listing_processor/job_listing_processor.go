@@ -11,11 +11,11 @@ import (
 )
 
 type Config struct {
-	JobRepository crawler.JobRepository
+	JobListingRepository crawler.JobListingRepository
 }
 
 type JobListingWorker struct {
-	jobRepository               crawler.JobRepository
+	jobListingRepository        crawler.JobListingRepository
 	jobListingsProcessedCounter metric.Int64Counter
 }
 
@@ -28,17 +28,17 @@ func NewProcessor(cfg *Config) *JobListingWorker {
 	}
 
 	return &JobListingWorker{
-		jobRepository:               cfg.JobRepository,
+		jobListingRepository:        cfg.JobListingRepository,
 		jobListingsProcessedCounter: jobListingsProcessedCounter,
 	}
 }
 
 func (w *JobListingWorker) Process(ctx context.Context, workload *crawler.RawJobListing) error {
 	slog.Info("process workload", "workload", workload)
-	job := &crawler.Job{Title: workload.Content.Title, URL: workload.URL.RawURL, Company: "", Location: "", TechStack: nil}
-	err := w.jobRepository.Save(ctx, job)
+	jobListing := &crawler.JobListing{Title: workload.Content.Title, URL: workload.URL.RawURL, Company: "", Location: "", TechStack: nil}
+	err := w.jobListingRepository.Save(ctx, jobListing)
 	if err != nil {
-		return fmt.Errorf("job_listing_worker: error saving processed job %v: %v", *workload, err)
+		return fmt.Errorf("job_listing_worker: error saving processed job listing %v: %v", *workload, err)
 	}
 
 	w.jobListingsProcessedCounter.Add(ctx, 1)

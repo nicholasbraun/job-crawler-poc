@@ -32,7 +32,7 @@ func Setup(ctx context.Context, db *sql.DB) error {
 	}
 
 	_, err = db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS job (
+		CREATE TABLE IF NOT EXISTS job_listing (
 			url TEXT PRIMARY KEY,
 			title TEXT NOT NULL,
 			company TEXT,
@@ -41,7 +41,7 @@ func Setup(ctx context.Context, db *sql.DB) error {
 		)
 		`)
 	if err != nil {
-		return fmt.Errorf("error creating job table %w", err)
+		return fmt.Errorf("error creating job_listing table %w", err)
 	}
 
 	return nil

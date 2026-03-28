@@ -1,4 +1,4 @@
-package jobfilter_test
+package joblistingfilter_test
 
 import (
 	"errors"
@@ -6,11 +6,11 @@ import (
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
-	jobfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/job"
+	joblistingfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/job_listing_filter"
 )
 
 func TestTitleContains(t *testing.T) {
-	checkFn := jobfilter.TitleContains(filter.Contains("developer", "engineer"))
+	checkFn := joblistingfilter.TitleContains(filter.Contains("developer", "engineer"))
 
 	tests := []struct {
 		name        string
@@ -36,7 +36,7 @@ func TestTitleContains(t *testing.T) {
 }
 
 func TestMainContentContains(t *testing.T) {
-	checkFn := jobfilter.MainContentContains(
+	checkFn := joblistingfilter.MainContentContains(
 		filter.Contains("apply", "requirements"),
 		filter.Contains("golang"),
 	)
@@ -66,11 +66,11 @@ func TestMainContentContains(t *testing.T) {
 
 func TestRelevanceFilterComposition(t *testing.T) {
 	chainFn := filter.Chain(
-		filter.Every(jobfilter.TitleContains(
+		filter.Every(joblistingfilter.TitleContains(
 			filter.Contains("developer", "engineer", "entwickler"),
 			filter.Contains("golang", "go", "backend", "software"),
 		),
-			jobfilter.MainContentContains(
+			joblistingfilter.MainContentContains(
 				filter.Contains("apply", "bewerben"),
 				filter.Contains("golang", "go"),
 				filter.Contains("experience"),

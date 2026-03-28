@@ -4,7 +4,7 @@ import (
 	"context"
 )
 
-type Job struct {
+type JobListing struct {
 	URL       string
 	Title     string
 	Company   string
@@ -17,7 +17,7 @@ type RawJobListing struct {
 	Content Content
 }
 
-type JobRepository interface {
-	Save(ctx context.Context, job *Job) error
-	Find(ctx context.Context) ([]*Job, error)
+type JobListingRepository interface {
+	Save(ctx context.Context, jobListing *JobListing) error
+	Find(ctx context.Context) ([]*JobListing, error)
 }

@@ -17,7 +17,7 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/sqlite"
 	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
-	jobfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/job"
+	joblistingfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/job_listing_filter"
 	urlfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/url"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier/inmem"
 	"github.com/nicholasbraun/job-crawler-poc/internal/orchestrator"
@@ -77,7 +77,7 @@ func main() {
 
 	// create repositories
 	urlRepository := sqlite.NewURLRepository(db)
-	jobRepository := sqlite.NewJobRepository(db)
+	jobListingRepository := sqlite.NewJobListingRepository(db)
 
 	// create frontier
 	frontier := inmem.NewFrontier(
@@ -95,11 +95,11 @@ func main() {
 	// create filter chains (start with pass-through filters)
 	contentFilter := filter.Chain[*crawler.Content]() // empty chain = pass everything
 	relevanceFilter := filter.Chain(
-		filter.Every(jobfilter.TitleContains(
+		filter.Every(joblistingfilter.TitleContains(
 			filter.Contains("developer", "engineer", "entwickler"),
 			filter.Contains("golang", "go", "backend", "software"),
 		),
-			jobfilter.MainContentContains(
+			joblistingfilter.MainContentContains(
 				filter.Contains("apply", "bewerben"),
 				filter.Contains("golang", "go"),
 				filter.Contains("microservice"),
@@ -133,7 +133,7 @@ func main() {
 	jobListingWorkerPool := pool.NewPool(
 		ctx, "job_listing_worker_pool", func() processor.Processor[crawler.RawJobListing] {
 			return joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
-				JobRepository: jobRepository,
+				JobListingRepository: jobListingRepository,
 			})
 		})
 
