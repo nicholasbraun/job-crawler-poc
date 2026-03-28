@@ -4,6 +4,7 @@
   "maxWorkers": 8,
   "maxDomains": 1000,
   "seedURLs": [
+    "https://muzz.com",
     "https://news.ycombinator.com/jobs",
     "https://berlinstartupjobs.com/engineering/",
     "http://www.algolia.com",

@@ -23,9 +23,9 @@ func (jr *JobListingRepository) Save(ctx context.Context, jobListing *crawler.Jo
 	}
 
 	_, err = jr.db.ExecContext(ctx, `
-		INSERT OR IGNORE INTO job_listing (url, title, company, location, tech_stack)
-		VALUES (?, ?, ?, ?, ?);
-		`, jobListing.URL, jobListing.Title, jobListing.Company, jobListing.Location, techJSON)
+		INSERT OR IGNORE INTO job_listing (url, title, description, company, location, remote, tech_stack)
+		VALUES (?, ?, ?, ?, ?, ?, ?);
+		`, jobListing.URL, jobListing.Title, jobListing.Description, jobListing.Company, jobListing.Location, jobListing.Remote, techJSON)
 	if err != nil {
 		return fmt.Errorf("error saving job listing %v: %w", jobListing, err)
 	}
@@ -37,7 +37,7 @@ func (jr *JobListingRepository) Find(ctx context.Context) ([]*crawler.JobListing
 	var jobListings []*crawler.JobListing
 
 	rows, err := jr.db.QueryContext(ctx, `
-		SELECT url, title, company, location, tech_stack FROM job_listing;
+		SELECT url, title, description, company, location, remote, tech_stack FROM job_listing;
 		`)
 	if err != nil {
 		return nil, fmt.Errorf("error querying job listings: %w", err)
@@ -50,8 +50,10 @@ func (jr *JobListingRepository) Find(ctx context.Context) ([]*crawler.JobListing
 		err := rows.Scan(
 			&jobListing.URL,
 			&jobListing.Title,
+			&jobListing.Description,
 			&jobListing.Company,
 			&jobListing.Location,
+			&jobListing.Remote,
 			&techJSON)
 		if err != nil {
 			slog.Error("error scanning job listing", "err", err)

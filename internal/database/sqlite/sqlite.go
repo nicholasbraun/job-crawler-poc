@@ -35,8 +35,10 @@ func Setup(ctx context.Context, db *sql.DB) error {
 		CREATE TABLE IF NOT EXISTS job_listing (
 			url TEXT PRIMARY KEY,
 			title TEXT NOT NULL,
+			description TEXT,
 			company TEXT,
 			location TEXT,
+			remote INTEGER,
 			tech_stack TEXT
 		)
 		`)

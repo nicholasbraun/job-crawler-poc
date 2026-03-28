@@ -72,11 +72,13 @@ func TestSQLiteJobListingRepository(t *testing.T) {
 	var jobListingRepository crawler.JobListingRepository = sqlite.NewJobListingRepository(db)
 
 	jobListing := &crawler.JobListing{
-		URL:       "https://netflix.com/jobs/123", // yeah right, lol
-		Title:     "Senior Software Engineer",
-		Company:   "netflix",
-		Location:  "Germany/remote",
-		TechStack: []string{"golang", "sqlite"},
+		URL:         "https://netflix.com/jobs/123", // yeah right, lol
+		Title:       "Senior Software Engineer",
+		Description: "At Netflix you will be doing cool stuff",
+		Company:     "netflix",
+		Location:    "Germany",
+		Remote:      true,
+		TechStack:   []string{"golang", "sqlite"},
 	}
 
 	err = jobListingRepository.Save(t.Context(), jobListing)
@@ -90,7 +92,7 @@ func TestSQLiteJobListingRepository(t *testing.T) {
 	}
 
 	if len(jobListings) != 1 {
-		t.Fatalf("should have found one job listing")
+		t.Fatalf("should have found one job listing, got: %d", len(jobListings))
 	}
 
 	wantURL := jobListing.URL

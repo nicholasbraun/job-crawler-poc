@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/joho/godotenv"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	jsonloader "github.com/nicholasbraun/job-crawler-poc/internal/config/json_loader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/sqlite"
@@ -20,6 +21,7 @@ import (
 	joblistingfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/job_listing_filter"
 	urlfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/url"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier/inmem"
+	"github.com/nicholasbraun/job-crawler-poc/internal/openrouter"
 	"github.com/nicholasbraun/job-crawler-poc/internal/orchestrator"
 	myotel "github.com/nicholasbraun/job-crawler-poc/internal/otel"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
@@ -32,6 +34,12 @@ import (
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
+	openrouterAPIKey := os.Getenv("OPENROUTER_API_KEY")
 
 	// config
 	dbPath := flag.String("db", "./data/database.db", "path to sqlite database")
@@ -102,10 +110,10 @@ func main() {
 			joblistingfilter.MainContentContains(
 				filter.Contains("apply", "bewerben"),
 				filter.Contains("golang", "go"),
-				filter.Contains("microservice"),
+				// filter.Contains("microservice"),
 				filter.Contains("experience", "erfahrung", "years", "jahre"),
-				filter.Contains("remote"),
-				filter.Contains("europa", "europe", "germany", "deutschland", "berlin", "frankfurt", "hamburg", "nürnberg", "münchen", "munich", "nuremberg", "bremen", "stuttgart", "hannover"),
+				// filter.Contains("remote"),
+				// filter.Contains("europa", "europe", "germany", "deutschland", "berlin", "frankfurt", "hamburg", "nürnberg", "münchen", "munich", "nuremberg", "bremen", "stuttgart", "hannover"),
 			),
 		),
 		filter.Reject[*crawler.Content](),
@@ -134,6 +142,7 @@ func main() {
 		ctx, "job_listing_worker_pool", func() processor.Processor[crawler.RawJobListing] {
 			return joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
 				JobListingRepository: jobListingRepository,
+				JobListingExtractor:  openrouter.NewJobListingExtractor(openrouterAPIKey),
 			})
 		})
 
