@@ -33,7 +33,7 @@ go test -v -run TestParseURL/valid_url ./internal/
 # Run all tests in one package
 go test -v ./internal/database/sqlite/
 go test -v ./internal/frontier/inmem/
-go test -v ./internal/http/
+go test -v ./internal/downloader/
 go test -v ./internal/parser/
 go test -v ./internal/filter/
 
@@ -53,14 +53,23 @@ There is no Makefile, Dockerfile, CI/CD pipeline, or linter configuration.
 cmd/cli/main.go              # Entry point, wires all dependencies
 internal/
   doc.go                     # Package "crawler" -- domain root
-  url.go, job.go, content.go # Domain types + repository interfaces
+  url.go, job_listing.go, content.go # Domain types + repository interfaces
+  config/                    # Config struct
+  config/json_loader/        # JSON config loader
   database/sqlite/           # SQLite repository implementations
+  downloader/                # Downloader interface, HTTP client, retry decorator
   filter/                    # Generic filter chain (CheckFn[T], Chain)
+  filter/job_listing_filter/ # Job listing filters (title, main content keywords)
+  filter/url/                # URL filters (TLD, subdomain, path, hostname)
   frontier/                  # Frontier interface + sentinel errors
   frontier/inmem/            # In-memory frontier implementation
-  http/                      # Downloader interface, HTTP client, retry decorator
   orchestrator/              # Crawl loop wiring all components
+  otel/                      # OpenTelemetry + Prometheus metrics + pprof
   parser/                    # HTML parser (goquery)
+  pool/                      # Generic worker pool
+  processor/                 # Processor interface
+  processor/job_listing_processor/ # Job listing processor
+  processor/url_processor/   # URL processor (download, parse, filter, discover)
 ```
 
 ## Code Style
@@ -88,7 +97,7 @@ internal/
 ### Types and Generics
 
 - Domain types are simple structs with exported fields.
-- `URL` is a value type; `Content` and `Job` are used as pointer types.
+- `URL` is a value type; `Content` and `JobListing` are used as pointer types.
 - Generics are used sparingly (e.g., `filter.CheckFn[T any]`, `filter.Chain[T]`).
 - Initialize empty slices with `[]Type{}` literals, not `make`.
 
