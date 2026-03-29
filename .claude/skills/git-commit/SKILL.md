@@ -137,3 +137,4 @@ All implementations must be updated.
   diff contains multiple unrelated changes
 - Do NOT stage files the user didn't intend to commit — always verify with
   `git status` first
+- Do NOT add 'Co-Authored by Claude..' in the commit body
