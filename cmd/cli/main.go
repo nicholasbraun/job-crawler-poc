@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/joho/godotenv"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	jsonloader "github.com/nicholasbraun/job-crawler-poc/internal/config/json_loader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/sqlite"
@@ -35,10 +34,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env file")
-	}
+	// err := godotenv.Load()
+	// if err != nil {
+	// 	log.Fatal("Error loading .env file")
+	// }
 	openrouterAPIKey := os.Getenv("OPENROUTER_API_KEY")
 
 	// config
@@ -56,7 +55,7 @@ func main() {
 		log.Fatalf("error parsing logLevel from config: %v", err)
 	}
 
-	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: &logLevel,
 	})
 
