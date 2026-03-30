@@ -158,7 +158,7 @@ func main() {
 				RelevanceFilter: relevanceFilter,
 				OnJobListing:    jobListingWorkerPool.Enqueue,
 			})
-		}, pool.WithMaxWorkers[crawler.URL](10))
+		}, pool.WithMaxWorkers[crawler.URL](config.MaxWorkers))
 
 	defer jobListingWorkerPool.Close()
 	defer urlWorkerPool.Close()

@@ -18,6 +18,10 @@ func Open(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("error enabling WAL mode: %w", err)
 	}
 
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		return nil, fmt.Errorf("error setting busy timeout: %w", err)
+	}
+
 	return db, nil
 }
 

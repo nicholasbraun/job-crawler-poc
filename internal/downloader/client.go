@@ -34,7 +34,7 @@ func NewClient() *Client {
 	downloadTimeHistogram, _ := meter.Float64Histogram("crawler.http-client.downloads.time", metric.WithUnit("ms"))
 	return &Client{
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 10 * time.Second,
 		},
 		downloadTimeHistogram: downloadTimeHistogram,
 	}
