@@ -8,7 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,11 +40,11 @@ func NewClient() *Client {
 	}
 }
 
-func (c *Client) Get(ctx context.Context, url string) (*Response, error) {
+func (c *Client) Get(ctx context.Context, u string) (*Response, error) {
 	start := time.Now()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, fmt.Errorf("error creating request for url (%s). %w", url, err)
+		return nil, fmt.Errorf("error creating request for url (%s). %w", u, err)
 	}
 
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
@@ -49,10 +52,11 @@ func (c *Client) Get(ctx context.Context, url string) (*Response, error) {
 
 	res, err := c.httpClient.Do(req)
 	end := time.Now()
-	time := float64(end.Sub(start).Milliseconds())
+	downloadTime := float64(end.Sub(start).Milliseconds())
 	if err != nil {
-		c.downloadTimeHistogram.Record(ctx, time, metric.WithAttributes(attribute.String("status", "error")))
-		return nil, fmt.Errorf("error downloading url (%s). %w", url, err)
+		status, errorType := classifyError(err)
+		c.downloadTimeHistogram.Record(ctx, downloadTime, metric.WithAttributes(attribute.String("status", status), attribute.String("errorType", errorType)))
+		return nil, fmt.Errorf("error downloading url (%s). %w", u, err)
 	}
 
 	defer res.Body.Close()
@@ -74,7 +78,36 @@ func (c *Client) Get(ctx context.Context, url string) (*Response, error) {
 		return nil, fmt.Errorf("downloader: got content-type: %s. %w", headerContentType, ErrNoHTML)
 	}
 
-	c.downloadTimeHistogram.Record(ctx, time, metric.WithAttributes(attribute.String("status", "success")))
+	c.downloadTimeHistogram.Record(ctx, downloadTime, metric.WithAttributes(attribute.String("status", strconv.Itoa(res.StatusCode))))
 
 	return &Response{res.StatusCode, body}, nil
+}
+
+func classifyError(err error) (status string, errorType string) {
+	if err == nil {
+		return "success", ""
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "error", "timeout"
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return "error", "timeout"
+		}
+	}
+
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "error", "dns"
+	}
+
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return "error", "connection"
+	}
+
+	return "error", "unknown"
 }

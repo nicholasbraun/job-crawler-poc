@@ -31,7 +31,8 @@ type Frontier struct {
 	inFlightGauge    metric.Int64UpDownCounter
 	// inFlightCounter tracks URLs returned by Next that have not yet been marked done.
 	// When all queues are empty and inFlightCounter is 0, Next returns ErrDone.
-	inFlightCounter int
+	inFlightCounter           int
+	nextBlockingTimeHistogram metric.Float64Histogram
 }
 
 var _ frontier.Frontier = &Frontier{}
@@ -59,18 +60,20 @@ func NewFrontier(opts ...FrontierOption) *Frontier {
 	urlsGauge, _ := meter.Int64UpDownCounter("crawler.frontier.urls.size")
 	inFlightGauge, _ := meter.Int64UpDownCounter("crawler.frontier.inflighturls.size")
 	hostnamesCounter, _ := meter.Int64UpDownCounter("crawler.frontier.hostnames.size")
+	nextBlockingTimeHistogram, _ := meter.Float64Histogram("crawler.frontier.blocking.time", metric.WithUnit("ms"))
 
 	f := &Frontier{
-		queues:           map[string]*queue{},
-		cooldown:         time.Second,
-		maxDomains:       50,
-		maxDepth:         3,
-		mu:               sync.Mutex{},
-		signal:           make(chan struct{}, 1),
-		urlsGauge:        urlsGauge,
-		hostnamesCounter: hostnamesCounter,
-		inFlightGauge:    inFlightGauge,
-		inFlightCounter:  0,
+		queues:                    map[string]*queue{},
+		cooldown:                  time.Second,
+		maxDomains:                50,
+		maxDepth:                  3,
+		mu:                        sync.Mutex{},
+		signal:                    make(chan struct{}, 1),
+		urlsGauge:                 urlsGauge,
+		hostnamesCounter:          hostnamesCounter,
+		inFlightGauge:             inFlightGauge,
+		inFlightCounter:           0,
+		nextBlockingTimeHistogram: nextBlockingTimeHistogram,
 	}
 
 	for _, fn := range opts {
@@ -120,6 +123,7 @@ func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 
 // Next blocks until the next URL is available and returns it from the frontier
 func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
+	start := time.Now()
 	for {
 		f.mu.Lock()
 
@@ -138,6 +142,10 @@ func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 				f.inFlightGauge.Add(ctx, 1)
 				f.inFlightCounter++
 				f.mu.Unlock()
+
+				end := time.Now()
+				blockingTime := float64(end.Sub(start).Milliseconds())
+				f.nextBlockingTimeHistogram.Record(ctx, blockingTime)
 				return url, nil
 			}
 
