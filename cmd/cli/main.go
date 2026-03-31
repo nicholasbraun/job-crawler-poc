@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/joho/godotenv"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	jsonloader "github.com/nicholasbraun/job-crawler-poc/internal/config/json_loader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/sqlite"
@@ -34,10 +35,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	// err := godotenv.Load()
-	// if err != nil {
-	// 	log.Fatal("Error loading .env file")
-	// }
+	if os.Getenv("OPENROUTER_API_KEY") == "" {
+		if err := godotenv.Load(); err != nil {
+			log.Fatal("error loading .env file and OPENROUTER_API_KEY not set")
+		}
+	}
+
 	openrouterAPIKey := os.Getenv("OPENROUTER_API_KEY")
 
 	// config
