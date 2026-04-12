@@ -29,7 +29,11 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/processor"
 	joblistingprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/job_listing_processor"
 	urlprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/url_processor"
+	"github.com/nicholasbraun/job-crawler-poc/internal/robotstxt"
+	"github.com/nicholasbraun/job-crawler-poc/internal/robotstxt/temoto"
 )
+
+const userAgent = "JobCrawlerBot/0.1 (+https://github.com/nicholasbraun/job-crawler-poc)"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -96,7 +100,7 @@ func main() {
 	)
 
 	// create HTTP client + retry wrapper
-	httpClient := downloader.NewClient()
+	httpClient := downloader.NewClient(userAgent)
 	retryHTTPClient := downloader.NewRetryClient(httpClient)
 
 	// create parser
@@ -120,6 +124,10 @@ func main() {
 		),
 		filter.Reject[*crawler.Content](),
 	)
+
+	robotsTxtParser := temoto.NewRobotsTxtParser(userAgent)
+	robotsTxtDownloader := robotstxt.NewRobotsTxtDownloader(userAgent)
+	robotsTxtCheckFn := robotstxt.NewRobotsTxtCheckFn(ctx, robotsTxtParser, robotsTxtDownloader, userAgent)
 
 	invalidURLCheck := urlfilter.BlockInvalidURLs()
 	passSubdomainsCheck := urlfilter.PassSubdomains(config.PassSubdomains...)
@@ -157,6 +165,7 @@ func main() {
 				URLRepository:   urlRepository,
 				ContentFilter:   contentFilter,
 				URLFilter:       urlFilter,
+				RobotsTxtFilter: robotsTxtCheckFn,
 				RelevanceFilter: relevanceFilter,
 				OnJobListing:    jobListingWorkerPool.Enqueue,
 			})

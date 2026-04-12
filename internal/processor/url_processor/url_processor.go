@@ -25,8 +25,9 @@ type Config struct {
 	URLRepository crawler.URLRepository
 	// ContentFilter rejects pages that should not be processed at all
 	// (e.g., empty or non-textual content). Applied before link discovery.
-	ContentFilter filter.CheckFn[*crawler.Content]
-	URLFilter     filter.CheckFn[string]
+	ContentFilter   filter.CheckFn[*crawler.Content]
+	URLFilter       filter.CheckFn[string]
+	RobotsTxtFilter filter.CheckFn[string]
 	// RelevanceFilter identifies pages that look like job listings.
 	// Pages that pass this filter are forwarded to OnJobListing.
 	RelevanceFilter filter.CheckFn[*crawler.Content]
@@ -42,6 +43,7 @@ type urlWorker struct {
 	urlRepository        crawler.URLRepository
 	contentFilter        filter.CheckFn[*crawler.Content]
 	urlFilter            filter.CheckFn[string]
+	robotsTxtFilter      filter.CheckFn[string]
 	relevanceFilter      filter.CheckFn[*crawler.Content]
 	urlsProcessedCounter metric.Int64Counter
 	onJobListing         func(ctx context.Context, jobListing *crawler.RawJobListing) error
@@ -62,6 +64,7 @@ func NewProcessor(cfg *Config) *urlWorker {
 		urlRepository:        cfg.URLRepository,
 		contentFilter:        cfg.ContentFilter,
 		urlFilter:            cfg.URLFilter,
+		robotsTxtFilter:      cfg.RobotsTxtFilter,
 		relevanceFilter:      cfg.RelevanceFilter,
 		urlsProcessedCounter: urlsProcessedCounter,
 		onJobListing:         cfg.OnJobListing,
@@ -72,6 +75,10 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 	defer w.frontier.MarkDone(ctx)
 
 	slog.Info("worker: got nextURL", "url", nextURL.RawURL)
+
+	if err := w.robotsTxtFilter(nextURL.RawURL); err != nil {
+		return fmt.Errorf("worker: robots.txt filtered out url (%s): %w", nextURL.RawURL, err)
+	}
 
 	rawHTML, err := w.downloader.Get(ctx, nextURL.RawURL)
 	if err != nil {
@@ -107,6 +114,11 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 		}
 		if err := w.urlFilter(parsed.RawURL); err != nil {
 			slog.Info("worker: url filtered out", "url", parsed.RawURL, "cause", err)
+			continue
+		}
+
+		if err := w.robotsTxtFilter(parsed.RawURL); err != nil {
+			slog.Info("worker: robots.txt filtered out url", "url", parsed.RawURL, "cause", err)
 			continue
 		}
 

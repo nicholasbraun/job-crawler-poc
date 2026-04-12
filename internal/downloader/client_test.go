@@ -34,7 +34,7 @@ func TestGet200(t *testing.T) {
 
 	url := server.URL
 
-	client := downloader.NewClient()
+	client := downloader.NewClient("userAgent")
 
 	res, err := client.Get(t.Context(), url)
 	if err != nil {
@@ -65,7 +65,7 @@ func TestResponseType(t *testing.T) {
 
 	url := server.URL
 
-	client := downloader.NewClient()
+	client := downloader.NewClient("userAgent")
 
 	_, err := client.Get(t.Context(), url)
 

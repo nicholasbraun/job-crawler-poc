@@ -18,6 +18,7 @@ import (
 type FrontierOption func(*Frontier)
 
 type Frontier struct {
+	// key of the queue is a hostname
 	queues   map[string]*queue
 	cooldown time.Duration
 	mu       sync.Mutex

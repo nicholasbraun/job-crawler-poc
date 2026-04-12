@@ -27,9 +27,10 @@ var ErrNoHTML = errors.New("content type is not 'text/html'")
 type Client struct {
 	httpClient            *http.Client
 	downloadTimeHistogram metric.Float64Histogram
+	userAgent             string
 }
 
-func NewClient() *Client {
+func NewClient(userAgent string) *Client {
 	meter := otel.Meter("http_client")
 	downloadTimeHistogram, _ := meter.Float64Histogram("crawler.http-client.downloads.time", metric.WithUnit("ms"))
 	return &Client{
@@ -37,6 +38,7 @@ func NewClient() *Client {
 			Timeout: 10 * time.Second,
 		},
 		downloadTimeHistogram: downloadTimeHistogram,
+		userAgent:             userAgent,
 	}
 }
 
@@ -48,7 +50,7 @@ func (c *Client) Get(ctx context.Context, u string) (*Response, error) {
 	}
 
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:147.0) Gecko/20100101 Firefox/147.0")
+	req.Header.Set("User-Agent", c.userAgent)
 
 	res, err := c.httpClient.Do(req)
 	end := time.Now()
