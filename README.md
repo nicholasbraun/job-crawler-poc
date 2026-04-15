@@ -19,15 +19,15 @@ The system follows a pipeline architecture with two decoupled responsibilities:
 **Structured Extraction** — pages that pass the relevance filter are sent to an LLM (via the OpenRouter API) which extracts structured fields (title, company, location, remote, tech stack) from the raw HTML and returns them as JSON.
 
 ```
-Seed URLs → Frontier → Orchestrator → Worker Pool ──→ Downloader → Parser
-                ↑                                                      │
-                │                         Content Filter ←─────────────┘
-                │                              │
-                └── URL Filter ← URL Dedup ← Extract URLs
-                                                │
-                                        Relevance Filter
-                                                │
-                                        Processor Pool → LLM Extractor → Job Listing Store
+Seed URLs → Frontier → Orchestrator → Worker Pool → Robots.txt → Downloader → Parser
+                ↑                                                                  │
+                │                                    Content Filter ←──────────────┘
+                │                                         │
+                └── URL Filter ← URL Dedup ← Robots.txt ← Extract URLs
+                                                          │
+                                                  Relevance Filter
+                                                          │
+                                                  Processor Pool → LLM Extractor → Job Listing Store
 ```
 
 ### Key Design Decisions
@@ -38,6 +38,7 @@ Seed URLs → Frontier → Orchestrator → Worker Pool ──→ Downloader →
 - **Atomic URL deduplication**: `INSERT OR IGNORE` + `RowsAffected()` in SQLite provides lock-free, atomic dedup. Workers skip URLs already seen without requiring a separate `Visited()` check.
 - **Composable filter chains**: filters use a generic `CheckFn[T]` type. Individual checks are composed via `Chain` and `Every` combinators, making it trivial to add or remove filtering logic.
 - **Retry with exponential backoff**: the HTTP client is wrapped in a retry decorator that handles transient failures without leaking retry logic into the core pipeline.
+- **Robots.txt compliance**: before downloading a page or enqueueing a discovered URL, the crawler checks the target host's `robots.txt`. Rules are cached per hostname and concurrent fetches to the same host are deduplicated via `singleflight`, so a site is only fetched once regardless of how many workers race to crawl it. 404/410 → allow all, 5xx → disallow all, per RFC 9309 §2.3.1.3.
 - **LLM-based structured extraction**: raw HTML pages are sent to an LLM via the OpenRouter API. The model returns structured JSON (title, description, company, location, remote, tech stack) which is unmarshaled into domain types and persisted to SQLite.
 - **OpenTelemetry metrics**: frontier size, in-flight URLs, hostnames, and URLs processed are all instrumented and exported via Prometheus.
 
@@ -80,6 +81,11 @@ job-crawler-poc/
 │   │   └── parser.go                  # HTML parser (goquery)
 │   ├── pool/
 │   │   └── pool.go                    # Generic worker pool
+│   ├── robotstxt/
+│   │   ├── robotstxt.go               # Checker: per-hostname cache + singleflight dedup
+│   │   ├── cache.go                   # Hostname → Rules cache
+│   │   ├── downloader.go              # HTTP fetcher for robots.txt (1 MB cap)
+│   │   └── temoto/                    # Adapter over github.com/temoto/robotstxt
 │   └── processor/
 │       ├── processor.go               # Processor interface
 │       ├── url_processor/             # URL processor (download, parse, filter, discover URLs)
@@ -198,6 +204,16 @@ pool := urlworker.NewInMemURLWorkerPool(ctx, workerCfg,
 )
 ```
 
+### Robots.txt Checker
+
+The `robotstxt` package exposes a `Checker` with a single method:
+
+```go
+func (c *Checker) Check(ctx context.Context, url string) error
+```
+
+It returns `nil` for allowed URLs and a non-nil error for anything blocked or unreachable. Internally it parses the URL, derives the robots.txt URL for the host, and goes through a two-level dedup: a per-hostname cache guards against re-parsing on every check, and `golang.org/x/sync/singleflight` collapses concurrent first-time fetches to the same host into one HTTP request. The parser is abstracted behind a `Parser` interface so [temoto/robotstxt](https://github.com/temoto/robotstxt) can be swapped out. Status-code handling follows RFC 9309 §2.3.1.3: 404/410 → allow-all, 5xx → disallow-all. The URL processor consumes the checker through a small `RobotsTxtChecker` interface defined at the consumer, keeping the processor decoupled from the concrete type.
+
 ### Retry Decorator
 
 The retry client wraps any `Downloader` implementation, adding exponential backoff and context-aware cancellation:
@@ -230,6 +246,8 @@ All runtime configuration lives in `config.json`:
 - [goquery](https://github.com/PuerkitoBio/goquery) — HTML parsing with CSS selectors
 - [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) — Pure Go SQLite driver (no CGO)
 - [godotenv](https://github.com/joho/godotenv) — `.env` file loading
+- [temoto/robotstxt](https://github.com/temoto/robotstxt) — robots.txt parsing
+- [golang.org/x/sync/singleflight](https://pkg.go.dev/golang.org/x/sync/singleflight) — duplicate-call suppression
 - [OpenTelemetry](https://opentelemetry.io/) — Metrics instrumentation
 - [Prometheus client](https://github.com/prometheus/client_golang) — Metrics export
 
@@ -252,9 +270,9 @@ All runtime configuration lives in `config.json`:
 
 ### Legal/Ethical
 
-- [ ] Add robots.txt support — check and cache per-domain robots.txt before downloading pages
-- [ ] Honest User-Agent — replace fake Firefox UA with `JobCrawler/1.0 (+https://yoursite.com/bot)`
-- [ ] Honor Crawl-delay — adapt per-domain politeness from robots.txt instead of hardcoded 1s cooldown
+- [x] Add robots.txt support — check and cache per-domain robots.txt before downloading pages
+- [x] Honest User-Agent — replace fake Firefox UA with `JobCrawler/1.0 (+https://yoursite.com/bot)`
+- [ ] Honor Crawl-delay — adapt per-domain politeness from robots.txt instead of hardcoded 1s cooldown (parsed but not yet wired into the frontier cooldown)
 
 ### Observability
 
