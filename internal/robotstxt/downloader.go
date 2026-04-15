@@ -22,7 +22,7 @@ type RobotsTxtDownloader struct {
 	userAgent  string
 }
 
-// New creates a RobotsTxtDownloader with a 5-second HTTP timeout.
+// NewRobotsTxtDownloader creates a RobotsTxtDownloader with a 5-second HTTP timeout.
 func NewRobotsTxtDownloader(userAgent string) *RobotsTxtDownloader {
 	return &RobotsTxtDownloader{
 		httpClient: &http.Client{

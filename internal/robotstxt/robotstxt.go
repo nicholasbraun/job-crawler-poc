@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"slices"
 	"time"
 
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
@@ -41,14 +40,23 @@ func (a allowAll) CrawlDelay() time.Duration {
 	return 0
 }
 
+type disallowAll struct{}
+
+func (a disallowAll) IsAllowed(path string) bool {
+	return false
+}
+
+func (a disallowAll) CrawlDelay() time.Duration {
+	return 0
+}
+
 // NewRobotsTxtCheckFn returns a filter.CheckFn that rejects URLs disallowed
 // by the target host's robots.txt. Rules are cached per hostname and concurrent
 // fetches to the same host are deduplicated. Returns a non-nil error for
 // blocked URLs or if the robots.txt cannot be retrieved.
-func NewRobotsTxtCheckFn(ctx context.Context, parser Parser, downloader Getter, userAgent string) filter.CheckFn[string] {
+func NewRobotsTxtCheckFn(ctx context.Context, parser Parser, downloader Getter) filter.CheckFn[string] {
 	cache := newCache()
 	g := new(singleflight.Group)
-	noRobotsCodes := []int{404, 410}
 
 	return func(u string) error {
 		parsedURL, err := url.Parse(u)
@@ -59,7 +67,7 @@ func NewRobotsTxtCheckFn(ctx context.Context, parser Parser, downloader Getter, 
 		hostname := parsedURL.Hostname()
 
 		fetchFn := func() (Rules, error) {
-			res, err, _ := g.Do(hostname, func() (interface{}, error) {
+			res, err, _ := g.Do(hostname, func() (any, error) {
 				baseURL := parsedURL.Scheme + "://" + hostname
 				robotsURL := baseURL + "/robots.txt"
 				response, err := downloader.Get(ctx, robotsURL)
@@ -67,10 +75,15 @@ func NewRobotsTxtCheckFn(ctx context.Context, parser Parser, downloader Getter, 
 					return nil, fmt.Errorf("robotstxt: error downloading '%s'. %w", robotsURL, err)
 				}
 
-				// Treat missing (404/410) or unavailable (5xx) robots.txt as allowing
-				// all paths, per the robots.txt specification (RFC 9309 §2.4).
-				if slices.Contains(noRobotsCodes, response.StatusCode) || response.StatusCode >= 500 {
+				// Treat missing (404/410)  robots.txt as allowing
+				// all paths, and unavailable (5xx) as disallow
+				// all paths per the robots.txt specification (RFC 9309 §2.4).
+				if response.StatusCode == 404 || response.StatusCode == 410 {
 					return allowAll{}, nil
+				}
+
+				if response.StatusCode >= 500 {
+					return disallowAll{}, nil
 				}
 
 				return parser.Parse(response.Content)

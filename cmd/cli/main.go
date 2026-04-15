@@ -127,7 +127,7 @@ func main() {
 
 	robotsTxtParser := temoto.NewRobotsTxtParser(userAgent)
 	robotsTxtDownloader := robotstxt.NewRobotsTxtDownloader(userAgent)
-	robotsTxtCheckFn := robotstxt.NewRobotsTxtCheckFn(ctx, robotsTxtParser, robotsTxtDownloader, userAgent)
+	robotsTxtCheckFn := robotstxt.NewRobotsTxtCheckFn(ctx, robotsTxtParser, robotsTxtDownloader)
 
 	invalidURLCheck := urlfilter.BlockInvalidURLs()
 	passSubdomainsCheck := urlfilter.PassSubdomains(config.PassSubdomains...)
