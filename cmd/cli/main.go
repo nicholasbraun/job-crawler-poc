@@ -127,7 +127,7 @@ func main() {
 
 	robotsTxtParser := temoto.NewRobotsTxtParser(userAgent)
 	robotsTxtDownloader := robotstxt.NewRobotsTxtDownloader(userAgent)
-	robotsTxtCheckFn := robotstxt.NewRobotsTxtCheckFn(ctx, robotsTxtParser, robotsTxtDownloader)
+	robotsTxtChecker := robotstxt.NewChecker(robotsTxtParser, robotsTxtDownloader)
 
 	invalidURLCheck := urlfilter.BlockInvalidURLs()
 	passSubdomainsCheck := urlfilter.PassSubdomains(config.PassSubdomains...)
@@ -159,15 +159,15 @@ func main() {
 	urlWorkerPool := pool.NewPool(
 		ctx, "url_worker_pool", func() processor.Processor[crawler.URL] {
 			return urlprocessor.NewProcessor(&urlprocessor.Config{
-				Frontier:        frontier,
-				Downloader:      retryHTTPClient,
-				Parser:          parser,
-				URLRepository:   urlRepository,
-				ContentFilter:   contentFilter,
-				URLFilter:       urlFilter,
-				RobotsTxtFilter: robotsTxtCheckFn,
-				RelevanceFilter: relevanceFilter,
-				OnJobListing:    jobListingWorkerPool.Enqueue,
+				Frontier:         frontier,
+				Downloader:       retryHTTPClient,
+				Parser:           parser,
+				URLRepository:    urlRepository,
+				ContentFilter:    contentFilter,
+				URLFilter:        urlFilter,
+				RobotsTxtChecker: robotsTxtChecker,
+				RelevanceFilter:  relevanceFilter,
+				OnJobListing:     jobListingWorkerPool.Enqueue,
 			})
 		}, pool.WithMaxWorkers[crawler.URL](config.MaxWorkers))
 

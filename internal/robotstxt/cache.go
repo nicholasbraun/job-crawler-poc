@@ -4,6 +4,10 @@ import (
 	"sync"
 )
 
+// cache stores parsed robots.txt Rules keyed by hostname. It is safe for
+// concurrent use and deduplicates concurrent misses via double-checked
+// locking (the Checker pairs this with singleflight to dedupe the actual
+// fetch).
 type cache struct {
 	rulesByHostname map[string]Rules
 	mu              sync.RWMutex

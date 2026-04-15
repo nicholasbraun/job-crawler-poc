@@ -1,4 +1,5 @@
-// Package temoto implements robotstxt/Parser
+// Package temoto adapts the github.com/temoto/robotstxt library to the
+// robotstxt.Parser and robotstxt.Rules interfaces.
 package temoto
 
 import (
