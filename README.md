@@ -266,7 +266,7 @@ All runtime configuration lives in `config.json`:
 
 ### Correctness
 
-- [ ] URL normalization — canonicalize URLs before dedup (lowercase scheme+host, strip trailing slashes, sort query params, remove fragments)
+- [x] URL normalization — canonicalize URLs before dedup (lowercase scheme+host, strip trailing slashes, sort query params, remove fragments)
 
 ### Legal/Ethical
 

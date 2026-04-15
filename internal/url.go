@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"strings"
 )
 
 // URL is a parsed crawl target. It is a value type — safe to copy and compare.
+// RawURL is always in canonical form (see normalize).
 type URL struct {
 	Hostname string
 	RawURL   string
@@ -24,6 +26,7 @@ func NewURL(u string) (URL, error) {
 	if err != nil {
 		return URL{}, err
 	}
+	normalize(parsed)
 
 	return URL{
 		Hostname: parsed.Hostname(),
@@ -41,12 +44,29 @@ func (base *URL) Parse(u string) (URL, error) {
 	if err != nil {
 		return URL{}, err
 	}
+	normalize(parsed)
 
 	return URL{
 		Hostname: parsed.Hostname(),
 		RawURL:   parsed.String(),
 		Depth:    base.Depth + 1,
 	}, nil
+}
+
+// normalize canonicalizes a URL so that trivially-equivalent variants dedup
+// to the same string: lowercases scheme and host, drops the fragment, sorts
+// query parameters, and strips a trailing slash from non-root paths.
+func normalize(u *url.URL) {
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	u.Fragment = ""
+	u.RawFragment = ""
+	if u.RawQuery != "" {
+		u.RawQuery = u.Query().Encode()
+	}
+	if len(u.Path) > 1 {
+		u.Path = strings.TrimRight(u.Path, "/")
+	}
 }
 
 // URLRepository tracks which URLs have been seen during a crawl.

@@ -115,3 +115,39 @@ func TestURLs(t *testing.T) {
 		assertStrings(t, wantRawURL, gotRawURL)
 	})
 }
+
+func TestURLNormalize(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"lowercase scheme", "HTTPS://example.com/jobs", "https://example.com/jobs"},
+		{"lowercase host", "https://Example.COM/jobs", "https://example.com/jobs"},
+		{"strip fragment", "https://example.com/jobs#apply", "https://example.com/jobs"},
+		{"sort query params", "https://example.com/jobs?b=2&a=1", "https://example.com/jobs?a=1&b=2"},
+		{"strip trailing slash", "https://example.com/jobs/", "https://example.com/jobs"},
+		{"strip trailing slash deep path", "https://example.com/jobs/golang/", "https://example.com/jobs/golang"},
+		{"keep root path", "https://example.com/", "https://example.com/"},
+		{"combined", "HTTPS://Example.COM/Jobs/?b=2&a=1#apply", "https://example.com/Jobs?a=1&b=2"},
+	}
+
+	for _, tc := range cases {
+		t.Run("NewURL: "+tc.name, func(t *testing.T) {
+			got, err := crawler.NewURL(tc.in)
+			if err != nil {
+				t.Fatalf("error parsing url %v", err)
+			}
+			assertStrings(t, tc.want, got.RawURL)
+		})
+
+		t.Run("Parse: "+tc.name, func(t *testing.T) {
+			base, _ := crawler.NewURL("https://seed.example/")
+			got, err := base.Parse(tc.in)
+			if err != nil {
+				t.Fatalf("error parsing url %v", err)
+			}
+			assertStrings(t, tc.want, got.RawURL)
+		})
+	}
+}

@@ -49,7 +49,7 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 			continue
 		}
 
-		if _, err = o.urlRepository.Save(ctx, seedURL); err != nil {
+		if _, err = o.urlRepository.Save(ctx, parsed.RawURL); err != nil {
 			slog.Error("error saving url", "err", err)
 			continue
 		}
