@@ -33,7 +33,9 @@ slice; it defers the risky Redis frontier and the crawler kinds.
 - `web/` — Vite + React + TS. One page: list crawls (React Query, `refetchInterval: 1500`)
   + Start/Stop buttons. API base from `VITE_API_BASE_URL` (default `/api`). Vite dev proxy
   `/api` → `:8080`.
-- Embed: `//go:embed all:web/dist` served with SPA fallback in `cmd/server`.
+- Embed: the built `web/dist` is embedded via `//go:embed all:dist` in a small `web`
+  package (`web/web.go`, exposing `web.DistFS`) because `go:embed` cannot traverse parent
+  directories from `cmd/server`; `cmd/server` imports it and serves it with SPA fallback.
 - `docker-compose.yml` — add a Postgres service (the compose file already runs Grafana/
   Prometheus/Loki).
 

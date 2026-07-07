@@ -12,6 +12,11 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 )
 
+// ErrStopRequested signals that the crawl was stopped on request (via
+// ShouldStop) rather than running to completion. Callers should treat this
+// as a clean, intentional stop, not a failure.
+var ErrStopRequested = errors.New("orchestrator: stop requested")
+
 // Config holds the dependencies for an Orchestrator.
 type Config struct {
 	Frontier      frontier.Frontier
@@ -19,12 +24,17 @@ type Config struct {
 	// OnNextURL is called for each URL pulled from the frontier. Typically
 	// this enqueues the URL into a worker pool. A non-nil error stops the crawl.
 	OnNextURL func(ctx context.Context, nextURL *crawler.URL) error
+	// ShouldStop is polled once per loop iteration before pulling the next URL.
+	// Returning true stops the crawl with ErrStopRequested. Nil means never
+	// stop on request (the CLI's behavior).
+	ShouldStop func(ctx context.Context) bool
 }
 
 type Orchestrator struct {
 	frontier      frontier.Frontier
 	urlRepository crawler.URLRepository
 	onNextURL     func(ctx context.Context, nextURL *crawler.URL) error
+	shouldStop    func(ctx context.Context) bool
 }
 
 func NewOrchestrator(cfg Config) *Orchestrator {
@@ -32,6 +42,7 @@ func NewOrchestrator(cfg Config) *Orchestrator {
 		frontier:      cfg.Frontier,
 		urlRepository: cfg.URLRepository,
 		onNextURL:     cfg.OnNextURL,
+		shouldStop:    cfg.ShouldStop,
 	}
 }
 
@@ -66,6 +77,12 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 	}
 
 	for {
+		if o.shouldStop != nil && o.shouldStop(ctx) {
+			slog.Info("stop requested. ending crawl")
+			cancel(ErrStopRequested)
+			return ErrStopRequested
+		}
+
 		nextURL, err := o.frontier.Next(ctx)
 		if errors.Is(err, frontier.ErrDone) {
 			slog.Info("received Done signal. ending crawl")

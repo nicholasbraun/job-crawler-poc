@@ -2,3 +2,16 @@
 data/*.db*
 .env
 .*.env
+
+# Node / Vite
+web/node_modules/
+
+# tsc build artifacts (vite reads vite.config.ts directly)
+web/*.tsbuildinfo
+web/vite.config.js
+web/vite.config.d.ts
+
+# Built frontend assets — but keep the committed placeholder so the Go embed
+# compiles before the first `vite build`.
+web/dist/*
+!web/dist/index.html

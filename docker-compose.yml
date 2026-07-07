@@ -1,14 +1,29 @@
 services:
   crawler:
     build: .
+    ports:
+      - "8080:8080"
     volumes:
       - ./data:/app/data
     environment:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - DATABASE_URL=postgres://crawler:crawler@postgres:5432/crawler?sslmode=disable
     depends_on:
       - loki
+      - postgres
     labels:
       - "app=job-crawler"
+
+  postgres:
+    image: postgres:17
+    environment:
+      - POSTGRES_USER=crawler
+      - POSTGRES_PASSWORD=crawler
+      - POSTGRES_DB=crawler
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
 
   prometheus:
     image: prom/prometheus:latest
@@ -43,3 +58,6 @@ services:
     depends_on:
       - prometheus
       - loki
+
+volumes:
+  pgdata:
