@@ -5,6 +5,7 @@ const BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 export type RunStatus =
   | "running"
   | "stopping"
+  | "paused"
   | "stopped"
   | "completed"
   | "failed";

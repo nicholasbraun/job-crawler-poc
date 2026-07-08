@@ -365,6 +365,94 @@ func TestConcurrentRunsIndependent(t *testing.T) {
 	r.Shutdown(t.Context())
 }
 
+// TestShutdownParksRunsForResume verifies that a graceful Shutdown leaves an
+// un-stopped run resumable rather than terminating it: the row is marked paused
+// (no FinishedAt) and its frontier is preserved (the cleaner is not invoked), so
+// a later Reconcile can adopt it. A run the user explicitly Stopped before the
+// drain must still terminate as stopped and have its frontier cleaned.
+func TestShutdownParksRunsForResume(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   blockingFrontier{},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: shouldStop,
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	var cleanMu sync.Mutex
+	cleaned := map[uuid.UUID]bool{}
+	cleaner := func(ctx context.Context, runID uuid.UUID) error {
+		cleanMu.Lock()
+		defer cleanMu.Unlock()
+		cleaned[runID] = true
+		return nil
+	}
+
+	r := New(runs, defs, factory, WithFrontierCleaner(cleaner))
+
+	parked, err := r.Start(t.Context(), defID)
+	if err != nil {
+		t.Fatalf("Start parked: %v", err)
+	}
+	stopped, err := r.Start(t.Context(), defID)
+	if err != nil {
+		t.Fatalf("Start stopped: %v", err)
+	}
+
+	// Explicitly stop one run and let it drain terminal before the shutdown, so
+	// the two fates are unambiguous.
+	if err := r.Stop(t.Context(), stopped.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	s := waitForFinish(t, runs, stopped.ID)
+	if s.Status != crawler.RunStatusStopped {
+		t.Errorf("stopped run: got %q, want stopped", s.Status)
+	}
+
+	// Graceful shutdown parks the still-running run instead of terminating it.
+	r.Shutdown(t.Context())
+
+	got, err := runs.Get(t.Context(), parked.ID)
+	if err != nil {
+		t.Fatalf("Get parked: %v", err)
+	}
+	if got.Status != crawler.RunStatusPaused {
+		t.Errorf("parked run status: got %q, want paused (resumable)", got.Status)
+	}
+	if got.FinishedAt != nil {
+		t.Errorf("parked run must not be finished; got FinishedAt=%v", got.FinishedAt)
+	}
+
+	cleanMu.Lock()
+	if cleaned[parked.ID] {
+		t.Error("parked run's frontier must be preserved for resume, not cleaned")
+	}
+	if !cleaned[stopped.ID] {
+		t.Error("explicitly stopped run's frontier must be cleaned")
+	}
+	cleanMu.Unlock()
+
+	// A fresh process reconciles: the paused run is adopted and flipped back to
+	// running (it is no longer paused once it is live again).
+	r2 := New(runs, defs, factory, WithFrontierCleaner(cleaner))
+	if err := r2.Reconcile(t.Context()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	resumed, err := runs.Get(t.Context(), parked.ID)
+	if err != nil {
+		t.Fatalf("Get resumed: %v", err)
+	}
+	if resumed.Status != crawler.RunStatusRunning {
+		t.Errorf("resumed run status: got %q, want running", resumed.Status)
+	}
+	r2.Shutdown(t.Context())
+}
+
 func TestStartRejectedWhileDraining(t *testing.T) {
 	defID := uuid.New()
 	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}

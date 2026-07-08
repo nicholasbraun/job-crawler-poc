@@ -11,6 +11,8 @@ import (
 //
 //	running    the crawl loop is active
 //	stopping   a stop was requested; the loop is draining (desired state)
+//	paused     the run was parked by a graceful shutdown; non-terminal and
+//	           resumable — boot-time reconcile re-adopts it (finished_at stays null)
 //	stopped    the run halted on request
 //	completed  the run drained the frontier and finished on its own
 //	failed     the run ended on an unexpected error (see CrawlRun.Error)
@@ -19,6 +21,7 @@ type RunStatus string
 const (
 	RunStatusRunning   RunStatus = "running"
 	RunStatusStopping  RunStatus = "stopping"
+	RunStatusPaused    RunStatus = "paused"
 	RunStatusStopped   RunStatus = "stopped"
 	RunStatusCompleted RunStatus = "completed"
 	RunStatusFailed    RunStatus = "failed"
@@ -50,8 +53,9 @@ type CrawlRunRepository interface {
 	Get(ctx context.Context, id uuid.UUID) (*CrawlRun, error)
 	List(ctx context.Context) ([]*CrawlRun, error)
 	// ListByStatus returns every run whose status is one of statuses. Used by
-	// the boot-time reconcile loop to find runs (running or stopping) left
-	// non-terminal by a previous process, so they can be adopted and resumed.
+	// the boot-time reconcile loop to find runs (running, stopping, or paused)
+	// left non-terminal by a previous process, so they can be adopted and
+	// resumed.
 	ListByStatus(ctx context.Context, statuses ...RunStatus) ([]*CrawlRun, error)
 	// GetStatus reads just the status column — the hot path polled by the
 	// crawl loop to detect a desired-state stop.

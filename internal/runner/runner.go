@@ -1,7 +1,10 @@
 // Package runner owns the lifecycle of crawl runs: starting a run from a
-// definition, stopping it via desired state, draining every active run on
-// shutdown, and — on boot — adopting runs a previous process left non-terminal
-// and resuming them from externalized state (Reconcile). The actual crawl
+// definition, stopping it via desired state, parking every active run on
+// shutdown (leaving it resumable rather than terminal), and — on boot —
+// adopting runs a previous process left non-terminal and resuming them from
+// externalized state (Reconcile). A graceful shutdown parks its runs as paused
+// with their Redis frontier intact, so a restart/redeploy continues them where
+// they left off (reconcile flips paused back to running). The actual crawl
 // wiring is supplied by a Factory closure (owned by cmd/server), which keeps
 // the runner testable and independent of the concrete downloader/parser/pool
 // stack. Concurrent runs are isolated: each has its own engine, worker pools,
@@ -74,6 +77,11 @@ type Factory func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinit
 
 type activeRun struct {
 	cancel context.CancelFunc
+	// stopRequested is set by Stop to mark this run for a terminal stop. It lets
+	// supervise tell an explicit user stop (terminate, clean the frontier) apart
+	// from a shutdown drain (park as resumable) when both cancel the same
+	// context. Guarded by Runner.mu.
+	stopRequested bool
 }
 
 // FrontierCleaner drops a run's externalized frontier state once the run reaches
@@ -153,16 +161,17 @@ func (r *Runner) Start(ctx context.Context, definitionID uuid.UUID) (*crawler.Cr
 	return run, nil
 }
 
-// Reconcile adopts runs left non-terminal (running or stopping) by a previous
-// process and resumes them from their externalized state: the factory
+// Reconcile adopts runs left non-terminal (running, stopping, or paused) by a
+// previous process and resumes them from their externalized state: the factory
 // re-attaches to the run's Redis frontier by runID, and the persisted counters
 // carry progress forward. A run that was stopping resumes and then immediately
-// drains to stopped via the desired-state poll. Per-run failures (a missing
-// definition, a factory error) are logged and skipped so one bad run can't
-// block the rest; only a failure to list the runs is returned. Call once at
-// boot, before serving, so it cannot race Start/Stop.
+// drains to stopped via the desired-state poll; a paused run (parked by a
+// graceful shutdown) is flipped back to running so its status reflects reality.
+// Per-run failures (a missing definition, a factory error) are logged and
+// skipped so one bad run can't block the rest; only a failure to list the runs
+// is returned. Call once at boot, before serving, so it cannot race Start/Stop.
 func (r *Runner) Reconcile(ctx context.Context) error {
-	runs, err := r.runs.ListByStatus(ctx, crawler.RunStatusRunning, crawler.RunStatusStopping)
+	runs, err := r.runs.ListByStatus(ctx, crawler.RunStatusRunning, crawler.RunStatusStopping, crawler.RunStatusPaused)
 	if err != nil {
 		return fmt.Errorf("runner: listing interrupted runs: %w", err)
 	}
@@ -173,6 +182,15 @@ func (r *Runner) Reconcile(ctx context.Context) error {
 		if err != nil {
 			slog.Error("runner: error loading definition for interrupted run, skipping", "err", err, "run_id", run.ID)
 			continue
+		}
+		// A paused run was parked by a graceful shutdown; as we resume it, clear
+		// the paused marker so the status reflects that it is running again.
+		if run.Status == crawler.RunStatusPaused {
+			if err := r.runs.UpdateStatus(ctx, run.ID, crawler.RunStatusRunning, nil, ""); err != nil {
+				slog.Error("runner: error resuming paused run, skipping", "err", err, "run_id", run.ID)
+				continue
+			}
+			run.Status = crawler.RunStatusRunning
 		}
 		// Seed live counters from the persisted snapshot so the first flush does
 		// not regress the row toward zero.
@@ -218,12 +236,13 @@ func (r *Runner) launch(run *crawler.CrawlRun, def *crawler.CrawlDefinition, cou
 		return err
 	}
 
+	ar := &activeRun{cancel: cancel}
 	r.mu.Lock()
-	r.active[run.ID] = &activeRun{cancel: cancel}
+	r.active[run.ID] = ar
 	r.wg.Add(1)
 	r.mu.Unlock()
 
-	go r.supervise(runCtx, cancel, run.ID, engine, counters)
+	go r.supervise(runCtx, cancel, run.ID, ar, engine, counters)
 
 	return nil
 }
@@ -241,6 +260,9 @@ func (r *Runner) Stop(ctx context.Context, runID uuid.UUID) error {
 		return ErrRunNotActive
 	}
 
+	// Mark this as an explicit stop so a concurrent Shutdown drain terminates it
+	// (status stopped, frontier cleaned) rather than parking it for resume.
+	active.stopRequested = true
 	if err := r.runs.UpdateStatus(ctx, runID, crawler.RunStatusStopping, nil, ""); err != nil {
 		return err
 	}
@@ -249,20 +271,25 @@ func (r *Runner) Stop(ctx context.Context, runID uuid.UUID) error {
 	return nil
 }
 
-// Shutdown closes intake, requests every active run to stop, then blocks until
-// all have drained or the context deadline elapses. It never calls os.Exit; the
-// caller exits only after this returns. The drain is bounded by ctx: if a
-// worker is stuck in a call that ignores cancellation, Shutdown returns once ctx
-// is done rather than hanging forever (see #15).
+// Shutdown closes intake, cancels every active run, then blocks until all have
+// drained or the context deadline elapses. It never calls os.Exit; the caller
+// exits only after this returns. The drain is bounded by ctx: if a worker is
+// stuck in a call that ignores cancellation, Shutdown returns once ctx is done
+// rather than hanging forever (see #15).
+//
+// Unlike Stop, Shutdown does NOT write a stopping desired-state: a drain is not
+// a stop. It only cancels each run's context to unblock it; supervise then parks
+// the run (marking it paused, keeping its Redis frontier intact) so the next
+// process adopts and resumes it via Reconcile. Writing stopping here would
+// instead make Reconcile resume the run only to immediately drain it to stopped.
 func (r *Runner) Shutdown(ctx context.Context) {
 	r.mu.Lock()
 	// Latch draining so Start rejects any new run for the rest of the process
 	// lifetime; a run added after this point would race r.wg.Wait (see #14).
+	// draining also tells supervise to park (rather than terminate) any run it
+	// finds cancelled without an explicit stop.
 	r.draining = true
-	for runID, active := range r.active {
-		if err := r.runs.UpdateStatus(ctx, runID, crawler.RunStatusStopping, nil, ""); err != nil {
-			slog.Error("runner: error marking run stopping on shutdown", "err", err, "run_id", runID)
-		}
+	for _, active := range r.active {
 		active.cancel()
 	}
 	r.mu.Unlock()
@@ -281,11 +308,13 @@ func (r *Runner) Shutdown(ctx context.Context) {
 }
 
 // supervise blocks on the crawl, flushing counters periodically, then drains
-// the engine and records the terminal status. Terminal DB writes use
-// context.Background because the run context is cancelled on stop. cancel is the
-// run context's cancel, invoked by the desired-state watcher when it observes a
-// stop request that the orchestrator loop cannot see (see #16).
-func (r *Runner) supervise(runCtx context.Context, cancel context.CancelFunc, runID uuid.UUID, engine *Engine, counters *Counters) {
+// the engine and either parks the run for resume or records its terminal
+// status. Terminal DB writes use context.Background because the run context is
+// cancelled on stop. cancel is the run context's cancel, invoked by the
+// desired-state watcher when it observes a stop request that the orchestrator
+// loop cannot see (see #16). ar is this run's active entry, read to tell a
+// user-requested stop apart from a shutdown drain.
+func (r *Runner) supervise(runCtx context.Context, cancel context.CancelFunc, runID uuid.UUID, ar *activeRun, engine *Engine, counters *Counters) {
 	defer r.wg.Done()
 
 	// Both helper goroutines are joined before the final flush so no late write
@@ -352,12 +381,28 @@ func (r *Runner) supervise(runCtx context.Context, cancel context.CancelFunc, ru
 		slog.Error("runner: error flushing final counters", "err", err, "run_id", runID)
 	}
 
+	// Serialize the fate decision + deregistration against Stop so a run that
+	// finishes just as Stop fires cannot be left stuck in 'stopping'.
+	r.mu.Lock()
+	// A shutdown drain that cancelled a run the user did not explicitly Stop is
+	// a resumable interruption, not a completion: mark it paused (non-terminal,
+	// finishedAt stays nil) and keep its Redis frontier intact so the next
+	// process re-adopts it (Reconcile). A user Stop, a natural completion (nil),
+	// or a real error all fall through to a terminal status. errors.Is covers
+	// the wrapped context.Canceled the redis frontier returns when Next is
+	// cancelled mid-wait.
+	if r.draining && !ar.stopRequested && errors.Is(runErr, context.Canceled) {
+		if err := r.runs.UpdateStatus(context.Background(), runID, crawler.RunStatusPaused, nil, ""); err != nil {
+			slog.Error("runner: error pausing run on shutdown", "err", err, "run_id", runID)
+		}
+		delete(r.active, runID)
+		r.mu.Unlock()
+		slog.Info("runner: paused run for resume", "run_id", runID)
+		return
+	}
+
 	finishedAt := time.Now()
 	status, errMsg := terminalStatus(runErr)
-
-	// Serialize the terminal transition + deregistration against Stop so a run
-	// that finishes just as Stop fires cannot be left stuck in 'stopping'.
-	r.mu.Lock()
 	if err := r.runs.UpdateStatus(context.Background(), runID, status, &finishedAt, errMsg); err != nil {
 		slog.Error("runner: error setting terminal status", "err", err, "run_id", runID)
 	}
