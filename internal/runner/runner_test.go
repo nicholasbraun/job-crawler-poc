@@ -105,6 +105,7 @@ func (f *fakeDefRepo) Get(ctx context.Context, id uuid.UUID) (*crawler.CrawlDefi
 	return f.def, nil
 }
 func (f *fakeDefRepo) List(ctx context.Context) ([]*crawler.CrawlDefinition, error) { return nil, nil }
+func (f *fakeDefRepo) Delete(ctx context.Context, id uuid.UUID) error               { return nil }
 
 // doneFrontier hands out no URLs and immediately reports the work complete.
 type doneFrontier struct{}
@@ -126,6 +127,18 @@ func (blockingFrontier) Next(ctx context.Context) (crawler.URL, error) {
 	return crawler.URL{}, ctx.Err()
 }
 func (blockingFrontier) MarkDone(ctx context.Context, url string) error { return nil }
+
+// hangFrontier blocks Next until its release channel is closed, ignoring
+// context cancellation entirely. It models a worker stuck in a call that does
+// not honor ctx, so a run's WaitGroup entry never completes on stop.
+type hangFrontier struct{ release chan struct{} }
+
+func (hangFrontier) AddURL(ctx context.Context, url crawler.URL) error { return nil }
+func (h hangFrontier) Next(ctx context.Context) (crawler.URL, error) {
+	<-h.release
+	return crawler.URL{}, context.Canceled
+}
+func (hangFrontier) MarkDone(ctx context.Context, url string) error { return nil }
 
 // --- tests ---
 
@@ -350,6 +363,145 @@ func TestConcurrentRunsIndependent(t *testing.T) {
 
 	// Drain B so its goroutine exits cleanly.
 	r.Shutdown(t.Context())
+}
+
+func TestStartRejectedWhileDraining(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   doneFrontier{},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: shouldStop,
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	r := New(runs, defs, factory)
+
+	// Shutdown with no active runs latches draining and returns immediately.
+	r.Shutdown(t.Context())
+
+	if _, err := r.Start(t.Context(), defID); !errors.Is(err, ErrShuttingDown) {
+		t.Fatalf("Start after shutdown: got %v, want ErrShuttingDown", err)
+	}
+}
+
+func TestShutdownBoundedByContext(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	// The run's Next ignores cancellation, so its WaitGroup entry never
+	// completes; keep it released only when the test ends so the goroutine can
+	// unwind without leaking past the process.
+	release := make(chan struct{})
+	defer close(release)
+
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   hangFrontier{release: release},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: func(context.Context) bool { return false },
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	r := New(runs, defs, factory)
+	if _, err := r.Start(t.Context(), defID); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		r.Shutdown(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown did not honor its context deadline; drain hung")
+	}
+}
+
+func TestDesiredStateStopViaWatcher(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	// blockingFrontier parks inside Next (honoring ctx.Done), and the in-loop
+	// ShouldStop is disabled, so the only thing that can stop this run is the
+	// per-run desired-state watcher polling GetStatus (see #16).
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   blockingFrontier{},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: func(context.Context) bool { return false },
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	r := New(runs, defs, factory)
+	run, err := r.Start(t.Context(), defID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Flip the desired state directly (not via Stop, which also cancels): only
+	// the watcher's status poll can drive this run to stopped.
+	runs.setStatus(run.ID, crawler.RunStatusStopping)
+
+	final := waitForFinish(t, runs, run.ID)
+	if final.Status != crawler.RunStatusStopped {
+		t.Errorf("run status: got %q, want stopped", final.Status)
+	}
+}
+
+func TestFactoryErrorCleansFrontier(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		return nil, errors.New("boom")
+	}
+
+	var cleanMu sync.Mutex
+	cleaned := map[uuid.UUID]bool{}
+	cleaner := func(ctx context.Context, runID uuid.UUID) error {
+		cleanMu.Lock()
+		defer cleanMu.Unlock()
+		cleaned[runID] = true
+		return nil
+	}
+
+	r := New(runs, defs, factory, WithFrontierCleaner(cleaner))
+
+	if _, err := r.Start(t.Context(), defID); err == nil {
+		t.Fatal("Start: expected factory error, got nil")
+	}
+
+	// The just-created run is marked failed and its frontier keys are cleaned
+	// even though it never reached supervise (see #24).
+	failed, err := runs.ListByStatus(t.Context(), crawler.RunStatusFailed)
+	if err != nil {
+		t.Fatalf("ListByStatus: %v", err)
+	}
+	if len(failed) != 1 {
+		t.Fatalf("failed runs: got %d, want 1", len(failed))
+	}
+
+	cleanMu.Lock()
+	defer cleanMu.Unlock()
+	if !cleaned[failed[0].ID] {
+		t.Errorf("frontier cleaner was not invoked for the failed run %s", failed[0].ID)
+	}
 }
 
 // waitFor polls cond until it returns true or the test times out.
