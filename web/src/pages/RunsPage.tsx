@@ -103,6 +103,9 @@ function RunRow({
 }) {
   const active = isActive(run.status);
 
+  // Only failed runs carry a diagnostic message worth surfacing.
+  const failure = run.status === "failed" && run.error ? run.error : null;
+
   // Only active runs have a live frontier; polling stops once terminal.
   const status = useQuery({
     queryKey: ["run-status", run.id],
@@ -121,6 +124,15 @@ function RunRow({
       </td>
       <td className="px-3 py-2">
         <StatusBadge status={run.status} />
+        {failure && (
+          <div
+            className="mt-1 max-w-xs truncate text-xs text-rose-600"
+            title={failure}
+            aria-label={`Failure reason: ${failure}`}
+          >
+            {failure}
+          </div>
+        )}
       </td>
       <td className="px-3 py-2 text-right tabular-nums">{run.pagesCrawled}</td>
       <td className="px-3 py-2 text-right tabular-nums">{run.listingsFound}</td>
