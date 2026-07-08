@@ -61,6 +61,15 @@ func (r *CrawlDefinitionRepository) Create(ctx context.Context, def *crawler.Cra
 	return nil
 }
 
+// Delete removes the definition by ID. Deleting a row that is not present is
+// not an error, so the fused createCrawl rollback can call it unconditionally.
+func (r *CrawlDefinitionRepository) Delete(ctx context.Context, id uuid.UUID) error {
+	if _, err := r.pool.Exec(ctx, `DELETE FROM crawl_definition WHERE id = $1`, id); err != nil {
+		return fmt.Errorf("postgres: error deleting crawl definition: %w", err)
+	}
+	return nil
+}
+
 func (r *CrawlDefinitionRepository) Get(ctx context.Context, id uuid.UUID) (*crawler.CrawlDefinition, error) {
 	row := r.pool.QueryRow(ctx, `
 		SELECT id, name, kind, seed_urls, keywords, max_depth, max_domains, url_filter, created_at

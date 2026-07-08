@@ -253,11 +253,38 @@ func (h *Handler) createCrawl(w http.ResponseWriter, r *http.Request) {
 	run, err := h.cfg.Runner.Start(r.Context(), def.ID)
 	if err != nil {
 		slog.Error("api: error starting crawl", "err", err)
+		// The definition was committed but its run never started, leaving an
+		// orphan. Best-effort roll it back so the fused endpoint stays atomic.
+		// The cleanup uses a context detached from the request's cancellation
+		// (a cancelled request context is itself a Start failure mode) and only
+		// logs if the rollback fails.
+		h.deleteOrphanDefinition(r.Context(), def.ID)
 		writeError(w, http.StatusInternalServerError, "could not start crawl")
 		return
 	}
 
 	writeJSON(w, http.StatusCreated, toRunDTO(run))
+}
+
+// definitionDeleter is the optional rollback capability the fused createCrawl
+// endpoint uses to drop an orphaned definition when the start step fails. A
+// repository that does not implement it simply skips the cleanup.
+type definitionDeleter interface {
+	Delete(ctx context.Context, id uuid.UUID) error
+}
+
+// deleteOrphanDefinition best-effort removes a just-created definition whose run
+// failed to start. It detaches from the caller's context so a cancelled request
+// (itself a start-failure cause) does not also abort the rollback, and logs but
+// does not surface a failed cleanup. No-op when the repository cannot delete.
+func (h *Handler) deleteOrphanDefinition(ctx context.Context, id uuid.UUID) {
+	deleter, ok := h.cfg.Definitions.(definitionDeleter)
+	if !ok {
+		return
+	}
+	if err := deleter.Delete(context.WithoutCancel(ctx), id); err != nil {
+		slog.Error("api: error deleting orphaned crawl definition", "err", err, "definitionId", id)
+	}
 }
 
 func (h *Handler) listCrawls(w http.ResponseWriter, r *http.Request) {

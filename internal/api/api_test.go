@@ -40,15 +40,21 @@ func (f *fakeRunner) Stop(ctx context.Context, runID uuid.UUID) error {
 }
 
 type fakeDefRepo struct {
-	created *crawler.CrawlDefinition
-	list    []*crawler.CrawlDefinition
-	get     *crawler.CrawlDefinition
+	created   *crawler.CrawlDefinition
+	list      []*crawler.CrawlDefinition
+	get       *crawler.CrawlDefinition
+	deleted   uuid.UUID
+	deleteErr error
 }
 
 func (f *fakeDefRepo) Create(ctx context.Context, def *crawler.CrawlDefinition) error {
 	def.ID = uuid.New()
 	f.created = def
 	return nil
+}
+func (f *fakeDefRepo) Delete(ctx context.Context, id uuid.UUID) error {
+	f.deleted = id
+	return f.deleteErr
 }
 func (f *fakeDefRepo) Get(ctx context.Context, id uuid.UUID) (*crawler.CrawlDefinition, error) {
 	if f.get != nil && f.get.ID == id {
@@ -189,6 +195,51 @@ func TestCreateCrawlFillsDefaults(t *testing.T) {
 	if rnr.started != defs.created.ID {
 		t.Errorf("runner started %v, want created def id %v", rnr.started, defs.created.ID)
 	}
+}
+
+func TestCreateCrawlRollsBackDefinitionWhenStartFails(t *testing.T) {
+	t.Run("deletes the orphaned definition and still 500s", func(t *testing.T) {
+		rnr := &fakeRunner{startErr: crawler.ErrNotFound}
+		defs := &fakeDefRepo{}
+		srv := newHandler(api.Config{Runner: rnr, Definitions: defs})
+
+		body, _ := json.Marshal(map[string]any{
+			"name":     "start-fails",
+			"seedUrls": []string{"https://example.com"},
+		})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status: got %d, want 500; body=%s", rec.Code, rec.Body)
+		}
+		if defs.created == nil {
+			t.Fatal("expected a definition to have been created")
+		}
+		if defs.deleted != defs.created.ID {
+			t.Errorf("orphaned definition not rolled back: deleted %v, want %v", defs.deleted, defs.created.ID)
+		}
+	})
+
+	t.Run("a failed rollback is swallowed, response stays 500", func(t *testing.T) {
+		rnr := &fakeRunner{startErr: crawler.ErrNotFound}
+		defs := &fakeDefRepo{deleteErr: crawler.ErrNotFound}
+		srv := newHandler(api.Config{Runner: rnr, Definitions: defs})
+
+		body, _ := json.Marshal(map[string]any{
+			"name":     "cleanup-fails",
+			"seedUrls": []string{"https://example.com"},
+		})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status: got %d, want 500; body=%s", rec.Code, rec.Body)
+		}
+		if defs.deleted != defs.created.ID {
+			t.Errorf("rollback should still be attempted: deleted %v, want %v", defs.deleted, defs.created.ID)
+		}
+	})
 }
 
 func TestCreateCrawlRejectsMissingFields(t *testing.T) {
