@@ -223,31 +223,6 @@ func New(client *redis.Client, runID uuid.UUID, opts ...Option) *Frontier {
 
 func (f *Frontier) key(name string) string { return f.keyPrefix + name }
 
-// DeleteRun removes every Redis key for a run's frontier (all keys under the
-// frontier:{runID}: namespace: the per-domain queues, visited set, and lease
-// bookkeeping). Used to reclaim the transient state of a run that has ended.
-// It is a no-op for a run that has no keys, and uses SCAN (not KEYS) so it does
-// not block Redis on a large keyspace.
-func DeleteRun(ctx context.Context, client *redis.Client, runID uuid.UUID) error {
-	pattern := "frontier:" + runID.String() + ":*"
-	var cursor uint64
-	for {
-		keys, next, err := client.Scan(ctx, cursor, pattern, 100).Result()
-		if err != nil {
-			return fmt.Errorf("frontier: scanning keys to delete: %w", err)
-		}
-		if len(keys) > 0 {
-			if err := client.Del(ctx, keys...).Err(); err != nil {
-				return fmt.Errorf("frontier: deleting run keys: %w", err)
-			}
-		}
-		cursor = next
-		if cursor == 0 {
-			return nil
-		}
-	}
-}
-
 // AddURL dedups and enqueues a URL in a single atomic script. An already-seen
 // URL is a silent no-op (returns nil). Returns frontier.ErrMaxDepth if the URL
 // is too deep, or frontier.ErrMaxDomainLimit if it introduces a domain past the

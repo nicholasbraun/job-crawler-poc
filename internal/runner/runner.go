@@ -67,69 +67,24 @@ type activeRun struct {
 	cancel context.CancelFunc
 }
 
-// FrontierCleaner drops a run's transient frontier state (e.g. its Redis keys)
-// once the run is permanently done. Injected by the caller so the runner stays
-// decoupled from the concrete frontier implementation.
-type FrontierCleaner func(ctx context.Context, runID uuid.UUID) error
-
-// Option configures a Runner.
-type Option func(*Runner)
-
-// WithFrontierCleaner sets the hook used to discard a finished run's frontier
-// state. Without it, that state is left in place.
-func WithFrontierCleaner(c FrontierCleaner) Option {
-	return func(r *Runner) { r.frontierCleaner = c }
-}
-
 // Runner starts, stops, and drains crawl runs.
 type Runner struct {
-	runs            crawler.CrawlRunRepository
-	defs            crawler.CrawlDefinitionRepository
-	factory         Factory
-	frontierCleaner FrontierCleaner
+	runs    crawler.CrawlRunRepository
+	defs    crawler.CrawlDefinitionRepository
+	factory Factory
 
 	mu     sync.Mutex
 	active map[uuid.UUID]*activeRun
 	wg     sync.WaitGroup
 }
 
-func New(runs crawler.CrawlRunRepository, defs crawler.CrawlDefinitionRepository, factory Factory, opts ...Option) *Runner {
-	r := &Runner{
+func New(runs crawler.CrawlRunRepository, defs crawler.CrawlDefinitionRepository, factory Factory) *Runner {
+	return &Runner{
 		runs:    runs,
 		defs:    defs,
 		factory: factory,
 		active:  map[uuid.UUID]*activeRun{},
 	}
-	for _, opt := range opts {
-		opt(r)
-	}
-	return r
-}
-
-// Reconcile fails any run left non-terminal by a previous process. A freshly
-// started process supervises no runs, so a running or stopping row is an orphan
-// whose process crashed or was killed mid-run; it can never resume and its stop
-// endpoint would 409 forever. Marking it failed clears it from the API and
-// dashboard. Call once at startup before serving.
-func (r *Runner) Reconcile(ctx context.Context) error {
-	ids, err := r.runs.FailInterrupted(ctx, "interrupted by server restart")
-	if err != nil {
-		return err
-	}
-	// A failed orphan can never resume, so its frontier state is dead weight;
-	// drop it. Cleanup failure is logged, not fatal — the run is already failed.
-	for _, id := range ids {
-		if r.frontierCleaner == nil {
-			break
-		}
-		if err := r.frontierCleaner(ctx, id); err != nil {
-			slog.Error("runner: error cleaning frontier state for orphaned run", "err", err, "run_id", id)
-		}
-	}
-	if len(ids) > 0 {
-		slog.Info("runner: reconciled orphaned runs on startup", "count", len(ids))
-	}
-	return nil
 }
 
 // Start looks up the definition, records a running run, wires the engine, and

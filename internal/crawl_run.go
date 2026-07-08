@@ -56,8 +56,4 @@ type CrawlRunRepository interface {
 	// errMsg. finishedAt is nil for non-terminal transitions.
 	UpdateStatus(ctx context.Context, id uuid.UUID, status RunStatus, finishedAt *time.Time, errMsg string) error
 	UpdateCounters(ctx context.Context, id uuid.UUID, counters RunCounters) error
-	// FailInterrupted marks every run still in a non-terminal state (running or
-	// stopping) as failed, with errMsg and a finishedAt of now. It reconciles
-	// runs orphaned by a previous process and returns the IDs it failed.
-	FailInterrupted(ctx context.Context, errMsg string) ([]uuid.UUID, error)
 }

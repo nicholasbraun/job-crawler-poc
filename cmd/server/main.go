@@ -106,18 +106,7 @@ func main() {
 	runRepository := postgres.NewCrawlRunRepository(pgPool)
 
 	factory := newFactory(cfg, openrouterAPIKey, redisClient, jobListingRepository)
-	crawlRunner := runner.New(runRepository, defRepository, factory,
-		runner.WithFrontierCleaner(func(ctx context.Context, runID uuid.UUID) error {
-			return redisfrontier.DeleteRun(ctx, redisClient, runID)
-		}),
-	)
-
-	// Fail any run left running/stopping by a previous process: after a crash
-	// or kill those rows are orphans that can never resume, and their stop
-	// endpoint would 409 forever.
-	if err := crawlRunner.Reconcile(ctx); err != nil {
-		log.Fatalf("error reconciling orphaned runs: %v", err)
-	}
+	crawlRunner := runner.New(runRepository, defRepository, factory)
 
 	apiHandler := api.New(crawlRunner, runRepository, defRepository, api.Defaults{
 		MaxDepth:   cfg.MaxDepth,
