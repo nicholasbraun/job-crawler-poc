@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 )
 
@@ -16,7 +17,11 @@ type JobListingRepository struct {
 
 var _ crawler.JobListingRepository = &JobListingRepository{}
 
-func (jr *JobListingRepository) Save(ctx context.Context, jobListing *crawler.JobListing) error {
+// Save ignores definitionID: this store keys listings by url alone and only
+// backs cmd/cli, which has no crawl-definition concept. The param exists to
+// satisfy the shared JobListingRepository interface (Postgres uses it). This
+// store is retired in Step 8.
+func (jr *JobListingRepository) Save(ctx context.Context, definitionID uuid.UUID, jobListing *crawler.JobListing) error {
 	techJSON, err := json.Marshal(jobListing.TechStack)
 	if err != nil {
 		return fmt.Errorf("error marschalling tech stack: %w", err)

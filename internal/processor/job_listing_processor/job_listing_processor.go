@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -22,6 +23,10 @@ type JobListingExtractor interface {
 type Config struct {
 	JobListingRepository crawler.JobListingRepository
 	JobListingExtractor  JobListingExtractor
+	// DefinitionID identifies the crawl definition whose run produced these
+	// listings; it is passed through to Save as the listing key's first half.
+	// Zero (uuid.Nil) for stores that ignore it (cmd/cli's SQLite repo).
+	DefinitionID uuid.UUID
 }
 
 // JobListingProcessor extracts structured job data from raw crawled pages
@@ -30,6 +35,7 @@ type JobListingProcessor struct {
 	jobListingRepository        crawler.JobListingRepository
 	jobListingsProcessedCounter metric.Int64Counter
 	jobListingExtractor         JobListingExtractor
+	definitionID                uuid.UUID
 }
 
 func NewProcessor(cfg *Config) *JobListingProcessor {
@@ -44,6 +50,7 @@ func NewProcessor(cfg *Config) *JobListingProcessor {
 		jobListingRepository:        cfg.JobListingRepository,
 		jobListingsProcessedCounter: jobListingsProcessedCounter,
 		jobListingExtractor:         cfg.JobListingExtractor,
+		definitionID:                cfg.DefinitionID,
 	}
 }
 
@@ -57,7 +64,7 @@ func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.Raw
 		return fmt.Errorf("job_listing_processor: error extracting job listing %v: %w", *workload, err)
 	}
 
-	err = w.jobListingRepository.Save(ctx, &jobListing)
+	err = w.jobListingRepository.Save(ctx, w.definitionID, &jobListing)
 	if err != nil {
 		return fmt.Errorf("job_listing_processor: error saving processed job listing %v: %w", *workload, err)
 	}

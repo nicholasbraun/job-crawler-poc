@@ -3,6 +3,7 @@ package sqlite_test
 import (
 	"testing"
 
+	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/sqlite"
 	_ "modernc.org/sqlite"
@@ -81,7 +82,7 @@ func TestSQLiteJobListingRepository(t *testing.T) {
 		TechStack:   []string{"golang", "sqlite"},
 	}
 
-	err = jobListingRepository.Save(t.Context(), jobListing)
+	err = jobListingRepository.Save(t.Context(), uuid.New(), jobListing)
 	if err != nil {
 		t.Fatalf("error saving job listing: %v", err)
 	}

@@ -98,7 +98,7 @@ func main() {
 	}
 
 	urlRepository := sqlite.NewURLRepository(db)
-	jobListingRepository := sqlite.NewJobListingRepository(db)
+	jobListingRepository := postgres.NewJobListingRepository(pgPool)
 	defRepository := postgres.NewCrawlDefinitionRepository(pgPool)
 	runRepository := postgres.NewCrawlRunRepository(pgPool)
 
@@ -209,6 +209,7 @@ func newFactory(
 				return joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
 					JobListingRepository: jobListingRepository,
 					JobListingExtractor:  jobListingExtractor,
+					DefinitionID:         def.ID,
 				})
 			})
 
