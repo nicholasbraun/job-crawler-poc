@@ -167,10 +167,13 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
-	crawlRunner.Shutdown(shutdownCtx)
+	// Stop accepting new HTTP requests (and wait for in-flight handlers) before
+	// draining runs, so no run can be created mid-drain and race wg.Add against
+	// the in-progress wg.Wait inside crawlRunner.Shutdown.
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("error shutting down http server", "err", err)
 	}
+	crawlRunner.Shutdown(shutdownCtx)
 	otelShutdown(shutdownCtx)
 	pgPool.Close()
 	if err := redisClient.Close(); err != nil {

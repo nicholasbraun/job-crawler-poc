@@ -27,6 +27,11 @@ import (
 // running (already finished, or never started in this process).
 var ErrRunNotActive = errors.New("runner: run not active")
 
+// ErrShuttingDown is returned by Start once Shutdown has begun draining: the
+// intake path is closed so a new run cannot be launched into a WaitGroup that
+// is already being waited on.
+var ErrShuttingDown = errors.New("runner: shutting down")
+
 // counterFlushInterval is how often live counters are flushed to the run row
 // so the dashboard sees progress while a crawl is in flight.
 const counterFlushInterval = 1500 * time.Millisecond
@@ -93,9 +98,10 @@ type Runner struct {
 	factory         Factory
 	frontierCleaner FrontierCleaner
 
-	mu     sync.Mutex
-	active map[uuid.UUID]*activeRun
-	wg     sync.WaitGroup
+	mu       sync.Mutex
+	active   map[uuid.UUID]*activeRun
+	wg       sync.WaitGroup
+	draining bool
 }
 
 func New(runs crawler.CrawlRunRepository, defs crawler.CrawlDefinitionRepository, factory Factory, opts ...Option) *Runner {
@@ -116,6 +122,15 @@ func New(runs crawler.CrawlRunRepository, defs crawler.CrawlDefinitionRepository
 // row. The crawl outlives the calling request: its context derives from
 // context.Background, so only Stop/Shutdown can cancel it.
 func (r *Runner) Start(ctx context.Context, definitionID uuid.UUID) (*crawler.CrawlRun, error) {
+	// Refuse intake once shutdown has begun so we never Add to r.wg after
+	// Shutdown has started waiting on it (see #14).
+	r.mu.Lock()
+	draining := r.draining
+	r.mu.Unlock()
+	if draining {
+		return nil, ErrShuttingDown
+	}
+
 	def, err := r.defs.Get(ctx, definitionID)
 	if err != nil {
 		return nil, err
@@ -192,6 +207,14 @@ func (r *Runner) launch(run *crawler.CrawlRun, def *crawler.CrawlDefinition, cou
 		if uerr := r.runs.UpdateStatus(context.Background(), run.ID, crawler.RunStatusFailed, &finishedAt, err.Error()); uerr != nil {
 			slog.Error("runner: error marking run failed after factory error", "err", uerr, "run_id", run.ID)
 		}
+		// The factory may already have created the run's Redis frontier keys
+		// before failing; this run never reaches supervise, so clean them up
+		// here or they leak with no owner (see #24).
+		if r.frontierCleaner != nil {
+			if cerr := r.frontierCleaner(context.Background(), run.ID); cerr != nil {
+				slog.Error("runner: error cleaning up frontier after factory error", "err", cerr, "run_id", run.ID)
+			}
+		}
 		return err
 	}
 
@@ -200,7 +223,7 @@ func (r *Runner) launch(run *crawler.CrawlRun, def *crawler.CrawlDefinition, cou
 	r.wg.Add(1)
 	r.mu.Unlock()
 
-	go r.supervise(runCtx, run.ID, engine, counters)
+	go r.supervise(runCtx, cancel, run.ID, engine, counters)
 
 	return nil
 }
@@ -226,11 +249,16 @@ func (r *Runner) Stop(ctx context.Context, runID uuid.UUID) error {
 	return nil
 }
 
-// Shutdown requests every active run to stop, then blocks until all have
-// drained and flipped to a terminal status. It never calls os.Exit; the caller
-// exits only after this returns.
+// Shutdown closes intake, requests every active run to stop, then blocks until
+// all have drained or the context deadline elapses. It never calls os.Exit; the
+// caller exits only after this returns. The drain is bounded by ctx: if a
+// worker is stuck in a call that ignores cancellation, Shutdown returns once ctx
+// is done rather than hanging forever (see #15).
 func (r *Runner) Shutdown(ctx context.Context) {
 	r.mu.Lock()
+	// Latch draining so Start rejects any new run for the rest of the process
+	// lifetime; a run added after this point would race r.wg.Wait (see #14).
+	r.draining = true
 	for runID, active := range r.active {
 		if err := r.runs.UpdateStatus(ctx, runID, crawler.RunStatusStopping, nil, ""); err != nil {
 			slog.Error("runner: error marking run stopping on shutdown", "err", err, "run_id", runID)
@@ -239,17 +267,36 @@ func (r *Runner) Shutdown(ctx context.Context) {
 	}
 	r.mu.Unlock()
 
-	r.wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		r.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		slog.Warn("runner: shutdown timed out, exiting with runs still draining")
+	}
 }
 
 // supervise blocks on the crawl, flushing counters periodically, then drains
 // the engine and records the terminal status. Terminal DB writes use
-// context.Background because the run context is cancelled on stop.
-func (r *Runner) supervise(runCtx context.Context, runID uuid.UUID, engine *Engine, counters *Counters) {
+// context.Background because the run context is cancelled on stop. cancel is the
+// run context's cancel, invoked by the desired-state watcher when it observes a
+// stop request that the orchestrator loop cannot see (see #16).
+func (r *Runner) supervise(runCtx context.Context, cancel context.CancelFunc, runID uuid.UUID, engine *Engine, counters *Counters) {
 	defer r.wg.Done()
 
-	tickerDone := make(chan struct{})
+	// Both helper goroutines are joined before the final flush so no late write
+	// can land after it or after the engine's pools close (see #23), and the
+	// watcher is part of drain accounting (see #16).
+	var helpers sync.WaitGroup
+
+	flushDone := make(chan struct{})
+	helpers.Add(1)
 	go func() {
+		defer helpers.Done()
 		ticker := time.NewTicker(counterFlushInterval)
 		defer ticker.Stop()
 		for {
@@ -258,15 +305,47 @@ func (r *Runner) supervise(runCtx context.Context, runID uuid.UUID, engine *Engi
 				if err := r.runs.UpdateCounters(context.Background(), runID, counters.Snapshot()); err != nil {
 					slog.Error("runner: error flushing counters", "err", err, "run_id", runID)
 				}
-			case <-tickerDone:
+			case <-flushDone:
 				return
+			}
+		}
+	}()
+
+	// Desired-state stop watcher: polls the run's status independently of the
+	// orchestrator loop, so a parked perpetual run whose frontier.Next never
+	// returns still honors a stopping status by cancelling the run context.
+	watchDone := make(chan struct{})
+	helpers.Add(1)
+	go func() {
+		defer helpers.Done()
+		ticker := time.NewTicker(statusPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-watchDone:
+				return
+			case <-runCtx.Done():
+				return
+			case <-ticker.C:
+				status, err := r.runs.GetStatus(context.Background(), runID)
+				if err != nil {
+					slog.Error("runner: error polling run status in watcher", "err", err, "run_id", runID)
+					continue
+				}
+				if status == crawler.RunStatusStopping {
+					cancel()
+					return
+				}
 			}
 		}
 	}()
 
 	runErr := engine.Orchestrator.Run(runCtx, engine.SeedURLs)
 
-	close(tickerDone)
+	close(flushDone)
+	close(watchDone)
+	helpers.Wait()
+
 	engine.Close()
 
 	if err := r.runs.UpdateCounters(context.Background(), runID, counters.Snapshot()); err != nil {

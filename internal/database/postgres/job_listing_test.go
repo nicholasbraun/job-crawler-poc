@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -153,6 +154,51 @@ func TestJobListingRepository(t *testing.T) {
 			t.Errorf("want 0 listings, got %d", len(got))
 		}
 	})
+}
+
+func TestFindByDefinitionEscapesLikeMetacharacters(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewJobListingRepository(pool)
+	def := createDefinition(t, pool, "escape definition")
+
+	// literal encodes the metacharacter as a real character; wildcard is the
+	// row that a naive (unescaped) LIKE would spuriously match via that same
+	// metacharacter acting as a wildcard.
+	tests := []struct {
+		name     string
+		keyword  string
+		literal  string // title containing the metacharacter literally
+		wildcard string // title the metacharacter would wrongly match unescaped
+	}{
+		{name: "percent is literal not wildcard", keyword: "50% remote", literal: "50% remote role", wildcard: "50 something remote role"},
+		{name: "underscore is literal not any-char", keyword: "C_C title", literal: "C_C title", wildcard: "CXC title"},
+	}
+
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Distinct URLs keep the two rows from colliding on (definition_id, url).
+			literalURL := "https://example.com/escape/literal/" + strconv.Itoa(i)
+			wildcardURL := "https://example.com/escape/wildcard/" + strconv.Itoa(i)
+
+			if err := repo.Save(t.Context(), def, &crawler.JobListing{URL: literalURL, Title: tc.literal}); err != nil {
+				t.Fatalf("error saving literal listing: %v", err)
+			}
+			if err := repo.Save(t.Context(), def, &crawler.JobListing{URL: wildcardURL, Title: tc.wildcard}); err != nil {
+				t.Fatalf("error saving wildcard listing: %v", err)
+			}
+
+			got, err := repo.FindByDefinition(t.Context(), def, tc.keyword)
+			if err != nil {
+				t.Fatalf("error finding by keyword: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("want exactly 1 literal match for %q, got %d", tc.keyword, len(got))
+			}
+			if got[0].URL != literalURL {
+				t.Errorf("want literal match %q, got %q", literalURL, got[0].URL)
+			}
+		})
+	}
 }
 
 // createDefinition inserts a minimal crawl definition (job_listing.definition_id

@@ -126,6 +126,62 @@ func companyDomain(identity catalog.Identity, content *crawler.Content) string {
 	return organizationDomain(content.JSONLD)
 }
 
+// hasJobPostingJSONLD reports whether any JSON-LD block on the page carries a
+// schema.org JobPosting node. A JobPosting is the strongest structured-data
+// signal that a gate-passing page belongs to a hiring flow, so its presence
+// lets the career-page processor accept the candidate without an LLM call.
+func hasJobPostingJSONLD(blocks []string) bool {
+	for _, block := range blocks {
+		var v any
+		if err := json.Unmarshal([]byte(block), &v); err != nil {
+			continue
+		}
+		if containsJobPostingType(v) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsJobPostingType walks a decoded JSON-LD value (including any @graph)
+// and reports whether it contains a node whose @type is JobPosting.
+func containsJobPostingType(v any) bool {
+	switch node := v.(type) {
+	case []any:
+		for _, item := range node {
+			if containsJobPostingType(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		if isJobPostingType(node["@type"]) {
+			return true
+		}
+		if graph, ok := node["@graph"]; ok {
+			if containsJobPostingType(graph) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isJobPostingType reports whether a JSON-LD @type value denotes a JobPosting.
+// The value may be a bare string, a schema.org URL, or an array of either.
+func isJobPostingType(t any) bool {
+	switch tv := t.(type) {
+	case string:
+		return strings.Contains(strings.ToLower(tv), "jobposting")
+	case []any:
+		for _, item := range tv {
+			if s, ok := item.(string); ok && strings.Contains(strings.ToLower(s), "jobposting") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // organizationDomain scans JSON-LD blocks for an Organization (or a
 // hiringOrganization) URL and returns its registrable domain, or "" if none is
 // found.

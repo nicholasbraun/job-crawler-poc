@@ -98,7 +98,7 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 	}
 
 	if err := w.relevanceFilter(content); err == nil {
-		slog.Info("worker: content passed relevance filter", "title", content.Title, "url", nextURL)
+		slog.Info("worker: content passed relevance filter", "title", content.Title, "url", nextURL.RawURL)
 
 		err := w.onJobListing(ctx, &crawler.RawJobListing{
 			URL:     *nextURL,
@@ -128,12 +128,17 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 		// AddURL fuses dedup with enqueue: an already-seen URL is a silent
 		// no-op, so there is no separate visited check to race against.
 		err = w.frontier.AddURL(ctx, parsed)
-		if errors.Is(err, frontier.ErrMaxDomainLimit) {
-			slog.Info("worker: max domain limit reached, dropping new domains")
+		switch {
+		case errors.Is(err, frontier.ErrMaxDomainLimit):
+			slog.Debug("worker: max domain limit reached, dropping new domain", "url", parsed.RawURL)
 			continue
-		}
-		if err != nil {
-			slog.Error("worker: error adding url", "err", err)
+		case errors.Is(err, frontier.ErrMaxDepth):
+			// Reaching maxDepth is an expected client-side rejection during
+			// normal crawling, not an error worth flagging per URL.
+			slog.Debug("worker: max depth reached, dropping url", "url", parsed.RawURL)
+			continue
+		case err != nil:
+			slog.Error("worker: error adding url", "err", err, "url", parsed.RawURL)
 			continue
 		}
 	}

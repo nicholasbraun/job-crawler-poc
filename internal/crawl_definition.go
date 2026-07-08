@@ -55,6 +55,9 @@ type CrawlDefinitionRepository interface {
 	Create(ctx context.Context, def *CrawlDefinition) error
 	Get(ctx context.Context, id uuid.UUID) (*CrawlDefinition, error)
 	List(ctx context.Context) ([]*CrawlDefinition, error)
+	// Delete removes a definition by ID. It is idempotent: deleting a
+	// nonexistent definition is not an error.
+	Delete(ctx context.Context, id uuid.UUID) error
 }
 
 // DefaultURLFilterConfig returns the built-in URL filtering rules applied to a

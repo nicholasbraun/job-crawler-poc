@@ -136,7 +136,67 @@ func TestContains(t *testing.T) {
 		{"not found", "hello world", false},
 		{"found", "hello foo", true},
 		{"found (case insensitive)", "hello BAR", true},
-		{"found (case insensitive + in longer word)", "hello FOOFoo", true},
+		{"whole word only (not in longer word)", "hello FOOFoo", false},
+		{"whole word with punctuation boundary", "we love foo.", true},
+		{"whole word between other words", "the bar is open", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkFn(tt.testString)
+			if err != nil && !tt.wantMatch {
+				t.Errorf("expected nil, got: %v", err)
+			}
+			if err == nil && tt.wantMatch {
+				t.Errorf("expected an error, got: nil")
+			}
+		})
+	}
+}
+
+// TestContainsShortKeyword guards the ADR-0004 pruning behavior: a short
+// keyword like "go" must not match inside unrelated words, or nearly every
+// page body would pass the relevance filter and reach the LLM.
+func TestContainsShortKeyword(t *testing.T) {
+	checkFn := filter.Contains("go")
+
+	tests := []struct {
+		name       string
+		testString string
+		wantMatch  bool
+	}{
+		{"substring in logout", "please logout", false},
+		{"substring in category", "browse the category", false},
+		{"substring in Chicago", "based in Chicago", false},
+		{"whole word", "we write go every day", true},
+		{"whole word with punctuation", "written in go.", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkFn(tt.testString)
+			if err != nil && !tt.wantMatch {
+				t.Errorf("expected nil, got: %v", err)
+			}
+			if err == nil && tt.wantMatch {
+				t.Errorf("expected an error, got: nil")
+			}
+		})
+	}
+}
+
+func TestContainsSubstring(t *testing.T) {
+	checkFn := filter.ContainsSubstring("foo", "bar")
+
+	tests := []struct {
+		name       string
+		testString string
+		wantMatch  bool
+	}{
+		{"not found", "hello world", false},
+		{"found", "hello foo", true},
+		{"found (case insensitive)", "hello BAR", true},
+		{"found in longer word", "hello FOOFoo", true},
 	}
 
 	for _, tt := range tests {
@@ -171,7 +231,7 @@ func TestChainOneOfReject(t *testing.T) {
 	rejectFn := filter.Reject[string]()
 	chain := filter.Chain(checkFn, rejectFn)
 
-	err := chain("hello Fooworld")
+	err := chain("hello Foo world")
 	if err != nil {
 		t.Errorf("expected nil, got: %v", err)
 	}

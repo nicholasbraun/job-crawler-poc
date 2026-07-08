@@ -203,6 +203,96 @@ func TestRedisFrontier(t *testing.T) {
 		}
 	})
 
+	t.Run("cooldown WAIT is bounded by pollInterval", func(t *testing.T) {
+		// Domain "a" holds a long cooldown with a URL queued behind it, so Next
+		// takes the bestScore>now WAIT branch. Clamping that sleep to
+		// pollInterval lets a live worker notice a brand-new eligible domain
+		// added mid-sleep, instead of blocking the full cooldown (there is no
+		// cross-process wakeup signal like the in-mem frontier's).
+		f := redisfrontier.New(client, uuid.New(),
+			redisfrontier.WithCooldown(10*time.Second),
+			redisfrontier.WithPollInterval(50*time.Millisecond),
+		)
+		if err := f.AddURL(t.Context(), url("a", "http://a/1", 0)); err != nil {
+			t.Fatalf("AddURL a/1: %v", err)
+		}
+		if err := f.AddURL(t.Context(), url("a", "http://a/2", 0)); err != nil {
+			t.Fatalf("AddURL a/2: %v", err)
+		}
+		first, err := f.Next(t.Context())
+		if err != nil {
+			t.Fatalf("Next a/1: %v", err)
+		}
+		if err := f.MarkDone(t.Context(), first.RawURL); err != nil {
+			t.Fatalf("MarkDone: %v", err)
+		}
+
+		// Add a fresh, immediately-eligible domain while the worker is asleep on
+		// domain a's 10s cooldown.
+		want := url("b", "http://b/1", 0)
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			_ = f.AddURL(context.Background(), want)
+		}()
+
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+		start := time.Now()
+		got, err := f.Next(ctx)
+		if err != nil {
+			t.Fatalf("Next b/1: %v", err)
+		}
+		if got != want {
+			t.Errorf("got %+v, want %+v", got, want)
+		}
+		// Far below the 10s cooldown: the WAIT was bounded, not slept to the
+		// domain deadline.
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Errorf("Next took %v; cooldown WAIT was not bounded by pollInterval", elapsed)
+		}
+	})
+
+	t.Run("reclaim tracks lease expiry under a long pollInterval", func(t *testing.T) {
+		// With a pollInterval far larger than leaseTTL, folding the earliest
+		// in-flight lease expiry into the WAIT deadline is what bounds
+		// crash-reclaim latency to ~leaseTTL. A tiny cooldown keeps the reclaimed
+		// domain immediately eligible so the observed latency is the reclaim,
+		// not a politeness delay.
+		f := redisfrontier.New(client, uuid.New(),
+			redisfrontier.WithLeaseTTL(300*time.Millisecond),
+			redisfrontier.WithPollInterval(30*time.Second),
+			redisfrontier.WithCooldown(10*time.Millisecond),
+		)
+		want := url("a", "http://a/1", 0)
+		if err := f.AddURL(t.Context(), want); err != nil {
+			t.Fatalf("AddURL: %v", err)
+		}
+		// Lease it and never MarkDone (crashed worker); its domain queue is now
+		// empty, so the next WAIT has no concrete domain deadline and would sleep
+		// the full 30s pollInterval without the lease-expiry fold.
+		got, err := f.Next(t.Context())
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		if got != want {
+			t.Fatalf("first pop: got %+v, want %+v", got, want)
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+		start := time.Now()
+		reclaimed, err := f.Next(ctx)
+		if err != nil {
+			t.Fatalf("Next (reclaim): %v", err)
+		}
+		if reclaimed != want {
+			t.Errorf("reclaimed: got %+v, want %+v", reclaimed, want)
+		}
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Errorf("reclaim took %v; WAIT was not bounded by lease expiry", elapsed)
+		}
+	})
+
 	t.Run("DeleteRun removes all of a run's keys", func(t *testing.T) {
 		runID := uuid.New()
 		f := redisfrontier.New(client, runID)

@@ -97,8 +97,10 @@ func (r *JobListingRepository) FindByDefinition(ctx context.Context, definitionI
 		WHERE definition_id = $1`
 	args := []any{definitionID}
 	if keyword != "" {
-		query += ` AND (title ILIKE $2 OR description ILIKE $2)`
-		args = append(args, "%"+keyword+"%")
+		// Escape LIKE metacharacters so a keyword's % and _ match literally
+		// rather than as wildcards; the pattern still binds as a parameter.
+		query += ` AND (title ILIKE $2 ESCAPE '\' OR description ILIKE $2 ESCAPE '\')`
+		args = append(args, "%"+escapeLike(keyword)+"%")
 	}
 	query += ` ORDER BY last_seen DESC`
 
@@ -121,6 +123,17 @@ func (r *JobListingRepository) FindByDefinition(ctx context.Context, definitionI
 	}
 
 	return jobListings, rows.Err()
+}
+
+// likeEscape rewrites the LIKE metacharacters \, % and _ into their escaped
+// forms so a caller's keyword is matched literally under a `LIKE ... ESCAPE '\'`
+// clause. The backslash must be replaced first, or it would double-escape the
+// backslashes introduced for % and _.
+var likeEscape = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+// escapeLike escapes the LIKE metacharacters in keyword. See likeEscape.
+func escapeLike(keyword string) string {
+	return likeEscape.Replace(keyword)
 }
 
 // contentHash returns a hex-encoded SHA-256 over the listing's meaningful

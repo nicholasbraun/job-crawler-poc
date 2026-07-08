@@ -4,22 +4,39 @@ This file provides guidance for AI coding agents working in this repository.
 
 ## Project Overview
 
-Go CLI application implementing a web crawler for job listings. Uses clean
-architecture (ports-and-adapters): domain types and interfaces in `internal/`,
-infrastructure implementations in sub-packages. No frameworks -- relies on the
-Go standard library for HTTP, logging, concurrency, and CLI flags.
+Go server application implementing a web crawler for job listings, exposing a
+REST API with an embedded React dashboard. Uses clean architecture
+(ports-and-adapters): domain types and interfaces in `internal/`, infrastructure
+implementations in sub-packages. Persists to PostgreSQL and holds transient
+per-run crawl state (frontier queues, visited sets) in Redis. No web framework
+-- relies on the Go standard library for HTTP, logging, and concurrency.
 
 ## Build / Run / Test Commands
 
-```bash
-# Build
-go build ./cmd/cli
+The single binary embeds the compiled dashboard, so the dashboard must be built
+before the server. A `Makefile` wires this together.
 
-# Run
-go run ./cmd/cli
+```bash
+# Build everything: dashboard (web/dist) then the server binary (bin/crawler)
+make build
+
+# Build only the server binary (embeds the current web/dist)
+make server-build      # == go build -o bin/crawler ./cmd/server
+
+# Build only the dashboard
+make web-build         # == cd web && npm ci && npm run build
+
+# Run the server (needs Postgres + Redis reachable; see env vars below)
+go run ./cmd/server
+
+# Run the Vite dev server (proxies /api to a locally running server)
+make dev
+
+# Bring up the full stack (Postgres, Redis, crawler, observability) in Docker
+make docker-up         # == docker compose up --build
 
 # Run all tests
-go test ./...
+go test ./...          # or: make test
 
 # Run tests with verbose output
 go test -v ./...
@@ -31,45 +48,58 @@ go test -v -run TestParseURL ./internal/
 go test -v -run TestParseURL/valid_url ./internal/
 
 # Run all tests in one package
-go test -v ./internal/database/sqlite/
+go test -v ./internal/database/postgres/
 go test -v ./internal/frontier/inmem/
 go test -v ./internal/downloader/
 go test -v ./internal/parser/
 go test -v ./internal/filter/
 
 # Run tests with race detector
-go test -race ./...
+go test -race ./...     # or: make test-race
 
 # Format code
 gofmt -w .
 goimports -w .
 ```
 
-There is no Makefile, Dockerfile, CI/CD pipeline, or linter configuration.
+The server reads configuration from the environment (a `.env` file is loaded via
+`godotenv` if present): `DATABASE_URL` (Postgres DSN), `REDIS_ADDR` (defaults to
+`localhost:6379`), and `OPENROUTER_API_KEY` for the LLM classifier/extractor.
+
+The repo has a `Makefile`, `Dockerfile`, and `docker-compose.yml`. There is no
+CI/CD pipeline or linter configuration.
 
 ## Project Structure
 
 ```
-cmd/cli/main.go              # Entry point, wires all dependencies
+cmd/server/main.go           # Entry point: wires deps, serves REST API + dashboard
+web/                         # React/Vite dashboard; web/dist is embedded into the binary
 internal/
   doc.go                     # Package "crawler" -- domain root
-  url.go, job_listing.go, content.go # Domain types + repository interfaces
-  config/                    # Config struct
-  config/json_loader/        # JSON config loader
-  database/sqlite/           # SQLite repository implementations
+  url.go, job_listing.go, content.go, company.go, career_page.go,
+    crawl_definition.go, crawl_run.go  # Domain types + repository interfaces
+  api/                       # REST API handlers over the repositories
+  runner/                    # Adopts/resumes runs, drives orchestrators per run
+  catalog/                   # Company/career-page catalog identity helpers
+  database/postgres/         # Postgres repositories + goose migrations
   downloader/                # Downloader interface, HTTP client, retry decorator
   filter/                    # Generic filter chain (CheckFn[T], Chain)
   filter/job_listing_filter/ # Job listing filters (title, main content keywords)
   filter/url/                # URL filters (TLD, subdomain, path, hostname)
   frontier/                  # Frontier interface + sentinel errors
   frontier/inmem/            # In-memory frontier implementation
+  frontier/redis/            # Redis-backed frontier (per-run queues, visited sets)
+  openrouter/                # LLM career-page classifier + job-listing extractor
   orchestrator/              # Crawl loop wiring all components
   otel/                      # OpenTelemetry + Prometheus metrics + pprof
   parser/                    # HTML parser (goquery)
   pool/                      # Generic worker pool
   processor/                 # Processor interface
-  processor/job_listing_processor/ # Job listing processor
-  processor/url_processor/   # URL processor (download, parse, filter, discover)
+  processor/url_processor/           # URL processor (download, parse, filter, discover)
+  processor/discovery_processor/     # Discovery crawl processor (fills the catalog)
+  processor/career_page_processor/   # Career-page classification processor
+  processor/job_listing_processor/   # Job listing processor
+  robotstxt/                 # robots.txt fetching, caching, and matching
 ```
 
 ## Code Style
@@ -148,7 +178,10 @@ internal/
 - **Table-driven tests:** Use `t.Run("description", ...)` subtests.
 - **Mocks:** Define mock/spy structs inline in test files. No code generation.
 - **HTTP tests:** Use `httptest.NewServer` for integration tests.
-- **Database tests:** Use in-memory SQLite (`:memory:`).
+- **Database tests:** Run against a real PostgreSQL instance spun up per test via
+  `testcontainers-go` (`internal/database/postgres/helpers_test.go`), with all
+  goose migrations applied. These require a running Docker daemon; a missing
+  daemon surfaces as a test failure rather than a silent skip.
 - **Time-dependent tests:** Use `testing/synctest` package:
   ```go
   synctest.Test(t, func(t *testing.T) {
@@ -176,10 +209,17 @@ internal/
 | Package | Purpose |
 |---|---|
 | `github.com/PuerkitoBio/goquery` | HTML parsing with CSS selectors |
-| `modernc.org/sqlite` | Pure-Go SQLite driver (no CGO) |
+| `github.com/jackc/pgx/v5` | PostgreSQL driver + connection pool |
+| `github.com/pressly/goose/v3` | SQL schema migrations |
+| `github.com/redis/go-redis/v9` | Redis client (per-run frontier state) |
+| `github.com/google/uuid` | UUID generation for run/entity IDs |
+| `github.com/temoto/robotstxt` | robots.txt parsing/matching |
+| `github.com/joho/godotenv` | Load `.env` into the environment |
+| `github.com/prometheus/client_golang`, `go.opentelemetry.io/otel/*` | Metrics + observability |
+| `github.com/testcontainers/testcontainers-go` (+ postgres/redis modules) | Throwaway Postgres/Redis for tests |
 
-All other functionality (HTTP, logging, testing, CLI flags, concurrency) uses
-the Go standard library.
+All other functionality (HTTP, logging, testing, concurrency) uses the Go
+standard library.
 
 ## Commit Messages
 
