@@ -6,4 +6,8 @@ type Content struct {
 	Title       string
 	MainContent string
 	URLs        []string
+	// JSONLD holds the raw contents of each <script type="application/ld+json">
+	// block on the page, for structured-data-aware consumers (e.g. JobPosting
+	// extraction). Other pipelines ignore it.
+	JSONLD []string
 }

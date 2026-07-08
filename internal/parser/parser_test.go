@@ -71,4 +71,30 @@ func TestParser(t *testing.T) {
 			t.Errorf("expected first URL to be %s, got: %s", wantURL2, gotURL2)
 		}
 	})
+
+	t.Run("extracts ld+json blocks into JSONLD", func(t *testing.T) {
+		html := `
+<html>
+	<head>
+		<title>Careers</title>
+		<script type="application/ld+json">{"@type":"JobPosting","title":"Go Dev"}</script>
+		<script type="application/json">{"not":"ld"}</script>
+		<script type="application/ld+json">{"@type":"Organization","name":"Acme"}</script>
+	</head>
+	<body><main>content</main></body>
+</html>
+`
+		content, err := parser.NewHTMLParser().Parse([]byte(html))
+		if err != nil {
+			t.Fatalf("error parsing content: %v", err)
+		}
+
+		if len(content.JSONLD) != 2 {
+			t.Fatalf("want 2 ld+json blocks (plain application/json excluded), got %d: %v",
+				len(content.JSONLD), content.JSONLD)
+		}
+		if !strings.Contains(content.JSONLD[0], "JobPosting") {
+			t.Errorf("first block should be the JobPosting script, got: %s", content.JSONLD[0])
+		}
+	})
 }

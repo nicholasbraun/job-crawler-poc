@@ -29,6 +29,7 @@ func (p *HTMLParser) Parse(b []byte) (*crawler.Content, error) {
 		Title:       getTitle(doc),
 		MainContent: getMainContent(doc),
 		URLs:        getUrls(doc),
+		JSONLD:      getJSONLD(doc),
 	}
 	return content, nil
 }
@@ -68,6 +69,18 @@ func getUrls(doc *goquery.Document) []string {
 	})
 
 	return urls
+}
+
+// getJSONLD returns the raw text of every <script type="application/ld+json">
+// block, in document order. Contents are not parsed or validated here.
+func getJSONLD(doc *goquery.Document) []string {
+	blocks := []string{}
+
+	doc.Find(`script[type="application/ld+json"]`).Each(func(i int, s *goquery.Selection) {
+		blocks = append(blocks, s.Text())
+	})
+
+	return blocks
 }
 
 func getTitle(doc *goquery.Document) string {

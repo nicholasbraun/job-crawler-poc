@@ -28,6 +28,7 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
 	joblistingfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/job_listing_filter"
 	urlfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/url"
+	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 	redisfrontier "github.com/nicholasbraun/job-crawler-poc/internal/frontier/redis"
 	"github.com/nicholasbraun/job-crawler-poc/internal/openrouter"
 	"github.com/nicholasbraun/job-crawler-poc/internal/orchestrator"
@@ -35,6 +36,8 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
 	"github.com/nicholasbraun/job-crawler-poc/internal/pool"
 	"github.com/nicholasbraun/job-crawler-poc/internal/processor"
+	careerpageprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/career_page_processor"
+	discoveryprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/discovery_processor"
 	joblistingprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/job_listing_processor"
 	urlprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/url_processor"
 	"github.com/nicholasbraun/job-crawler-poc/internal/robotstxt"
@@ -102,10 +105,13 @@ func main() {
 	}
 
 	jobListingRepository := postgres.NewJobListingRepository(pgPool)
+	companyRepository := postgres.NewCompanyRepository(pgPool)
+	careerPageRepository := postgres.NewCareerPageRepository(pgPool)
 	defRepository := postgres.NewCrawlDefinitionRepository(pgPool)
 	runRepository := postgres.NewCrawlRunRepository(pgPool)
 
-	factory := newFactory(cfg, openrouterAPIKey, redisClient, jobListingRepository)
+	factory := newFactory(cfg, openrouterAPIKey, redisClient,
+		jobListingRepository, companyRepository, careerPageRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory,
 		runner.WithFrontierCleaner(func(ctx context.Context, runID uuid.UUID) error {
 			return redisfrontier.DeleteRun(ctx, redisClient, runID)
@@ -175,6 +181,8 @@ func newFactory(
 	openrouterAPIKey string,
 	redisClient *redis.Client,
 	jobListingRepository crawler.JobListingRepository,
+	companyRepository crawler.CompanyRepository,
+	careerPageRepository crawler.CareerPageRepository,
 ) runner.Factory {
 	httpClient := downloader.NewClient(userAgent)
 	retryHTTPClient := downloader.NewRetryClient(httpClient)
@@ -185,6 +193,7 @@ func newFactory(
 	robotsTxtChecker := robotstxt.NewChecker(robotsTxtParser, robotsTxtDownloader)
 
 	jobListingExtractor := openrouter.NewJobListingExtractor(openrouterAPIKey)
+	careerPageConfirmer := openrouter.NewCareerPageClassifier(openrouterAPIKey)
 
 	contentFilter := filter.Chain[*crawler.Content]() // empty chain = pass everything
 	relevanceFilter := filter.Chain(
@@ -202,13 +211,6 @@ func newFactory(
 	)
 
 	return func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *runner.Counters, shouldStop func(context.Context) bool) (*runner.Engine, error) {
-		// Bounded mode: this run finishes when the frontier drains. Perpetual
-		// mode is first exercised in Step 5.
-		frontier := redisfrontier.New(redisClient, runID,
-			redisfrontier.WithMaxDomains(def.MaxDomains),
-			redisfrontier.WithMaxDepth(def.MaxDepth),
-		)
-
 		uf := def.URLFilter
 		urlFilter := filter.Chain[string](
 			urlfilter.BlockInvalidURLs(),
@@ -218,6 +220,77 @@ func newFactory(
 			urlfilter.BlockSubdomains(uf.BlockedSubdomains...),
 			urlfilter.BlockPathSegments(uf.BlockedPathSegments...),
 			urlfilter.BlockHostnames(uf.BlockedHostnames...),
+		)
+
+		if def.Kind == crawler.CrawlKindDiscovery {
+			// Perpetual mode: the run stays alive after the frontier drains,
+			// waiting for URLs discovered later. It ends only on a desired-state
+			// stop. The Catalog (company + career_page) is filled by the
+			// career-page pool.
+			discoveryFrontier := redisfrontier.New(redisClient, runID,
+				redisfrontier.WithMaxDomains(def.MaxDomains),
+				redisfrontier.WithMaxDepth(def.MaxDepth),
+				redisfrontier.WithMode(frontier.Perpetual),
+			)
+
+			careerPageWorkerPool := pool.NewPool(
+				ctx, "career_page_worker_pool", func() processor.Processor[crawler.RawCareerPage] {
+					return careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
+						CompanyRepository:    companyRepository,
+						CareerPageRepository: careerPageRepository,
+						Confirmer:            careerPageConfirmer,
+					})
+				})
+
+			// Counter tap: a gate-passing page becomes a catalog candidate.
+			// ListingsFound is reused as "catalog entries found" in Step 5.
+			onCareerPage := func(ctx context.Context, page *crawler.RawCareerPage) error {
+				counters.ListingsFound.Add(1)
+				return careerPageWorkerPool.Enqueue(ctx, page)
+			}
+
+			discoveryWorkerPool := pool.NewPool(
+				ctx, "discovery_worker_pool", func() processor.Processor[crawler.URL] {
+					return discoveryprocessor.NewProcessor(&discoveryprocessor.Config{
+						Frontier:         discoveryFrontier,
+						Downloader:       retryHTTPClient,
+						Parser:           htmlParser,
+						ContentFilter:    contentFilter,
+						URLFilter:        urlFilter,
+						RobotsTxtChecker: robotsTxtChecker,
+						OnCareerPage:     onCareerPage,
+					})
+				}, pool.WithMaxWorkers[crawler.URL](cfg.MaxWorkers))
+
+			onNextURL := func(ctx context.Context, u *crawler.URL) error {
+				counters.PagesCrawled.Add(1)
+				return discoveryWorkerPool.Enqueue(ctx, u)
+			}
+
+			o := orchestrator.NewOrchestrator(orchestrator.Config{
+				Frontier:   discoveryFrontier,
+				OnNextURL:  onNextURL,
+				ShouldStop: shouldStop,
+			})
+
+			return &runner.Engine{
+				Orchestrator: o,
+				SeedURLs:     def.SeedURLs,
+				// Close order: discovery pool first (its workers feed the
+				// career-page pool), then the career-page pool. Reversing loses
+				// in-flight candidates.
+				Close: func() {
+					discoveryWorkerPool.Close()
+					careerPageWorkerPool.Close()
+				},
+			}, nil
+		}
+
+		// Default (keyword): bounded run that finishes when the frontier drains,
+		// extracting Job Listings via the LLM. Reserved for Step 6.
+		boundedFrontier := redisfrontier.New(redisClient, runID,
+			redisfrontier.WithMaxDomains(def.MaxDomains),
+			redisfrontier.WithMaxDepth(def.MaxDepth),
 		)
 
 		jobListingWorkerPool := pool.NewPool(
@@ -238,7 +311,7 @@ func newFactory(
 		urlWorkerPool := pool.NewPool(
 			ctx, "url_worker_pool", func() processor.Processor[crawler.URL] {
 				return urlprocessor.NewProcessor(&urlprocessor.Config{
-					Frontier:         frontier,
+					Frontier:         boundedFrontier,
 					Downloader:       retryHTTPClient,
 					Parser:           htmlParser,
 					ContentFilter:    contentFilter,
@@ -256,7 +329,7 @@ func newFactory(
 		}
 
 		o := orchestrator.NewOrchestrator(orchestrator.Config{
-			Frontier:   frontier,
+			Frontier:   boundedFrontier,
 			OnNextURL:  onNextURL,
 			ShouldStop: shouldStop,
 		})
