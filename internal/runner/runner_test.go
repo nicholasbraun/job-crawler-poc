@@ -73,6 +73,20 @@ func (f *fakeRunRepo) UpdateCounters(ctx context.Context, id uuid.UUID, counters
 	return nil
 }
 
+func (f *fakeRunRepo) FailInterrupted(ctx context.Context, errMsg string) ([]uuid.UUID, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ids := []uuid.UUID{}
+	for id, run := range f.runs {
+		if run.Status == crawler.RunStatusRunning || run.Status == crawler.RunStatusStopping {
+			run.Status = crawler.RunStatusFailed
+			run.Error = errMsg
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
 func (f *fakeRunRepo) setStatus(id uuid.UUID, status crawler.RunStatus) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -108,6 +108,37 @@ func (r *CrawlRunRepository) UpdateStatus(ctx context.Context, id uuid.UUID, sta
 	return nil
 }
 
+// FailInterrupted marks every non-terminal run (running or stopping) as failed
+// with errMsg and finished_at = now. On a single-server deployment a process
+// that just started supervises no runs, so any such row is necessarily an
+// orphan left by a previous process that crashed or was killed mid-run.
+func (r *CrawlRunRepository) FailInterrupted(ctx context.Context, errMsg string) ([]uuid.UUID, error) {
+	rows, err := r.pool.Query(ctx, `
+		UPDATE crawl_run
+		SET status = $1, finished_at = now(), error = $2
+		WHERE status IN ($3, $4)
+		RETURNING id
+		`,
+		string(crawler.RunStatusFailed), errMsg,
+		string(crawler.RunStatusRunning), string(crawler.RunStatusStopping),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: error failing interrupted runs: %w", err)
+	}
+	defer rows.Close()
+
+	ids := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("postgres: error scanning failed run id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+
+	return ids, rows.Err()
+}
+
 func (r *CrawlRunRepository) UpdateCounters(ctx context.Context, id uuid.UUID, counters crawler.RunCounters) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE crawl_run SET pages_crawled = $2, listings_found = $3 WHERE id = $1

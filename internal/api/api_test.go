@@ -76,6 +76,9 @@ func (f *fakeRunRepo) UpdateStatus(ctx context.Context, id uuid.UUID, s crawler.
 func (f *fakeRunRepo) UpdateCounters(ctx context.Context, id uuid.UUID, c crawler.RunCounters) error {
 	return nil
 }
+func (f *fakeRunRepo) FailInterrupted(ctx context.Context, errMsg string) ([]uuid.UUID, error) {
+	return nil, nil
+}
 
 func defaults() api.Defaults {
 	return api.Defaults{
