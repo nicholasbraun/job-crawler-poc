@@ -29,7 +29,8 @@ type Runner interface {
 type FrontierSizer func(ctx context.Context, runID uuid.UUID) (int64, error)
 
 // Defaults fill in the fields a create request omits, so a minimal
-// {name, seedUrls} request behaves like today's CLI. Sourced from config.json.
+// {name, seedUrls} request yields a working crawl. Sourced from the built-in
+// defaults wired in cmd/server (see crawler.DefaultURLFilterConfig).
 type Defaults struct {
 	MaxDepth   int
 	MaxDomains int

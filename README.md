@@ -1,295 +1,220 @@
-# Job Crawler POC
+# Job Crawler
 
-A web crawler written in Go that discovers job listings across the web and filters them for relevance. Built as a portfolio project to demonstrate system design, concurrency patterns, and idiomatic Go.
+A long-running Go service that discovers company career pages across the web and
+extracts job listings from them by keyword. It serves a REST API and an embedded
+React dashboard from a single binary, and runs crawls as managed background jobs
+with all state in Postgres and Redis.
 
-This project also serves as a playground for learning how to effectively use agentic LLMs as coding assistants. AI is used strictly for code review and documentation — every line of code is written by hand.
+Built as a portfolio project to demonstrate system design, concurrency patterns,
+and idiomatic Go. AI is used strictly for code review and documentation — every
+line of code is written by hand.
 
-## Motivation
+## Domain
 
-I'm a backend engineer transitioning into Go-focused roles. Rather than building something abstract, I wanted a tool that solves a real problem for me: finding remote Go backend positions available in Germany. The crawler automates the tedious process of checking multiple job boards and company career pages.
+The crawler works in two phases (see `CONTEXT.md` for the full glossary):
+
+- **Discovery Crawl** — a perpetual, bounded-broad crawl that finds **Career
+  Pages** and attributes them to **Companies**, filling a durable **Catalog**.
+- **Keyword Crawl** — a bounded crawl seeded from the Catalog's Career Pages that
+  extracts **Job Listings** matching a set of OR-matched keywords.
+
+A **Crawl Definition** is the re-runnable configuration for a crawl; each
+execution is a **Crawl Run** with a live status and counters.
 
 ## Architecture
 
-The system follows a pipeline architecture with two decoupled responsibilities:
+A stateless Go monolith serves a REST API + the embedded dashboard on `:8080` and
+runs crawl goroutines. No authoritative state lives in Go memory:
 
-**Page Discovery** — a concurrent crawl loop that fetches pages, extracts URLs, and feeds them back into a frontier for further crawling.
+- **Postgres** holds durable state: the Catalog (companies, career pages), crawl
+  definitions, runs, and extracted job listings.
+- **Redis** holds transient per-run state: the URL **Frontier** (per-domain FIFO
+  queues with cooldown), the visited set, and in-flight leases — all keyed per run
+  so a restarted process resumes an in-progress run.
 
-**Relevance Evaluation** — a filter chain that runs against crawled content to identify job listings matching specific criteria (tech stack, location, remote availability).
-
-**Structured Extraction** — pages that pass the relevance filter are sent to an LLM (via the OpenRouter API) which extracts structured fields (title, company, location, remote, tech stack) from the raw HTML and returns them as JSON.
-
-```
-Seed URLs → Frontier → Orchestrator → Worker Pool → Robots.txt → Downloader → Parser
-                ↑                                                                  │
-                │                                    Content Filter ←──────────────┘
-                │                                         │
-                └── URL Filter ← URL Dedup ← Robots.txt ← Extract URLs
-                                                          │
-                                                  Relevance Filter
-                                                          │
-                                                  Processor Pool → LLM Extractor → Job Listing Store
-```
-
-### Key Design Decisions
-
-- **Concurrent worker pool**: configurable number of workers process URLs in parallel via a buffered channel. Worker count and channel buffer size are tunable.
-- **URL Frontier with per-domain queuing**: prevents overwhelming any single server. Each domain has its own FIFO queue with configurable cooldown between requests.
-- **In-flight tracking**: the frontier tracks URLs currently being processed by workers. It only signals crawl completion (`ErrDone`) when all queues are empty AND no workers are in-flight, preventing premature termination.
-- **Atomic URL deduplication**: `INSERT OR IGNORE` + `RowsAffected()` in SQLite provides lock-free, atomic dedup. Workers skip URLs already seen without requiring a separate `Visited()` check.
-- **Composable filter chains**: filters use a generic `CheckFn[T]` type. Individual checks are composed via `Chain` and `Every` combinators, making it trivial to add or remove filtering logic.
-- **Retry with exponential backoff**: the HTTP client is wrapped in a retry decorator that handles transient failures without leaking retry logic into the core pipeline.
-- **Robots.txt compliance**: before downloading a page or enqueueing a discovered URL, the crawler checks the target host's `robots.txt`. Rules are cached per hostname and concurrent fetches to the same host are deduplicated via `singleflight`, so a site is only fetched once regardless of how many workers race to crawl it. 404/410 → allow all, 5xx → disallow all, per RFC 9309 §2.3.1.3.
-- **LLM-based structured extraction**: raw HTML pages are sent to an LLM via the OpenRouter API. The model returns structured JSON (title, description, company, location, remote, tech stack) which is unmarshaled into domain types and persisted to SQLite.
-- **OpenTelemetry metrics**: frontier size, in-flight URLs, hostnames, and URLs processed are all instrumented and exported via Prometheus.
-
-## Project Structure
+Because state is external, a stopped or crashed process loses nothing: on startup
+the server adopts and resumes any run a previous process left running. Stopping a
+run is a desired-state flip (`crawl_run.status = 'stopping'`) that the crawl loop
+polls — SIGINT drains active runs before the process exits.
 
 ```
-job-crawler-poc/
-├── cmd/
-│   └── cli/
-│       └── main.go                    # CLI entry point, wires dependencies
-├── internal/
-│   ├── content.go                     # Content domain type
-│   ├── url.go                         # URL domain type + URLRepository interface
-│   ├── job_listing.go                 # JobListing domain type + JobListingRepository interface
-│   ├── config/
-│   │   ├── config.go                  # Config struct
-│   │   └── json_loader/              # JSON config loader
-│   ├── database/
-│   │   └── sqlite/                    # SQLite repositories (URL dedup, job listing storage, WAL mode)
-│   ├── filter/
-│   │   ├── filter.go                  # Generic CheckFn[T], Chain, Every combinators
-│   │   ├── content.go                 # Content filter helpers
-│   │   ├── job_listing_filter/        # Job listing filters (title, main content keywords)
-│   │   └── url/                       # URL filters (TLD, subdomain, path, hostname)
-│   ├── frontier/
-│   │   ├── frontier.go                # Frontier interface + sentinel errors
-│   │   └── inmem/                     # In-memory frontier (per-domain queues, cooldown, in-flight tracking)
-│   ├── downloader/
-│   │   ├── client.go                  # HTTP client with timeout
-│   │   ├── retry.go                   # Retry decorator with exponential backoff
-│   │   ├── downloader.go              # Downloader interface
-│   │   └── response.go               # Response type
-│   ├── orchestrator/
-│   │   └── orchestrator.go            # Crawl loop: seeds frontier, dispatches to worker pool
-│   ├── otel/
-│   │   └── otel.go                    # OpenTelemetry + Prometheus metrics + pprof endpoints
-│   ├── openrouter/
-│   │   └── job_listing_extractor.go   # OpenRouter LLM-based job listing extraction
-│   ├── parser/
-│   │   └── parser.go                  # HTML parser (goquery)
-│   ├── pool/
-│   │   └── pool.go                    # Generic worker pool
-│   ├── robotstxt/
-│   │   ├── robotstxt.go               # Checker: per-hostname cache + singleflight dedup
-│   │   ├── cache.go                   # Hostname → Rules cache
-│   │   ├── downloader.go              # HTTP fetcher for robots.txt (1 MB cap)
-│   │   └── temoto/                    # Adapter over github.com/temoto/robotstxt
-│   └── processor/
-│       ├── processor.go               # Processor interface
-│       ├── url_processor/             # URL processor (download, parse, filter, discover URLs)
-│       └── job_listing_processor/     # Job listing processor (LLM extraction, persistence)
-├── config.json                        # Runtime config (seeds, filters, limits)
-├── docker-compose.yml                 # Prometheus + Grafana
-├── prometheus.yml                     # Prometheus scrape config
-├── data/                              # SQLite database (gitignored)
-├── go.mod
-└── go.sum
+Seed URLs → Frontier (Redis) → Orchestrator → Worker Pool → Robots.txt → Downloader → Parser
+                 ↑                                                                       │
+                 │                                          URL Filter ←─ Extract URLs ←─┘
+                 │                                               │
+                 └───────────────────────────────────────────────
+                                                                 │
+                              Discovery: Career-Page gate → Catalog (Postgres)
+                              Keyword:   Relevance filter → LLM Extractor → Job Listings (Postgres)
 ```
-
-Domain types and repository interfaces live at the `internal/` root. Infrastructure implementations (SQLite, HTTP, in-memory frontier) live in their own packages and depend inward toward the domain — never the reverse.
 
 ## Getting Started
 
 ### Prerequisites
 
 - Go 1.26+
+- Node 24+ (`.nvmrc`) to build the dashboard
+- Docker (for Postgres + Redis, or the full stack via Compose)
 - An [OpenRouter](https://openrouter.ai/) API key
 
-### Build & Run
+### Run the whole stack with Docker
 
 ```bash
-# Clone the repository
-git clone https://github.com/nicholasbraun/job-crawler-poc.git
-cd job-crawler-poc
-
-# Create a .env file with your OpenRouter API key
+# Provide your OpenRouter API key (used for career-page classification and
+# job-listing extraction).
 echo 'OPENROUTER_API_KEY=your-key-here' > .env
 
-# Run the crawler
-go run ./cmd/cli
+# Build the image (dashboard + server) and start crawler + Postgres + Redis +
+# the observability stack.
+docker compose up --build   # or: make docker-up
 ```
 
-Configuration is loaded from `config.json`. Seed URLs, filters, and crawl limits are all configurable there. The OpenRouter API key is loaded from a `.env` file via [godotenv](https://github.com/joho/godotenv).
+Then open the dashboard at http://localhost:8080.
 
-### CLI Flags
-
-| Flag  | Default              | Description                      |
-| ----- | -------------------- | -------------------------------- |
-| `-db` | `./data/database.db` | Path to the SQLite database file |
-
-### Observability
+### Run locally
 
 ```bash
-# Start Prometheus + Grafana
-docker-compose up
+# Start just Postgres + Redis (plus observability) from Compose, or point
+# DATABASE_URL / REDIS_ADDR at your own instances.
+docker compose up postgres redis
 
-# Metrics endpoint (served by the crawler)
-curl localhost:2223/metrics
+# Build the dashboard and server into a single binary (vite build → go build),
+# then run it. Migrations are applied automatically on startup.
+make build
+OPENROUTER_API_KEY=your-key-here ./bin/crawler
+```
 
-# pprof endpoints
-curl localhost:2223/debug/pprof/goroutine?debug=2  # goroutine dump
-curl localhost:2223/debug/pprof/heap?debug=1        # heap profile
+For frontend development, `make dev` runs the Vite dev server (proxying `/api` to
+a locally running `go run ./cmd/server`) with hot reload.
+
+### Kick off a crawl
+
+Create a Discovery definition and start a run (or do the same from the dashboard):
+
+```bash
+curl -X POST localhost:8080/api/definitions -H 'Content-Type: application/json' -d '{
+  "name": "startup discovery",
+  "kind": "discovery",
+  "seedUrls": ["https://news.ycombinator.com/jobs"]
+}'
+# → returns the definition; omitted urlFilter/maxDepth are filled with the
+#   built-in defaults (see internal/crawl_definition.go DefaultURLFilterConfig).
+
+curl -X POST localhost:8080/api/definitions/{id}/runs   # start a run
+```
+
+## Configuration
+
+All configuration is via environment variables (loaded from `.env` in local dev
+via [godotenv](https://github.com/joho/godotenv)):
+
+| Variable             | Default                                     | Description                          |
+| -------------------- | ------------------------------------------- | ------------------------------------ |
+| `OPENROUTER_API_KEY` | —                                           | OpenRouter key for LLM calls         |
+| `DATABASE_URL`       | `postgres://crawler:crawler@localhost:5432/crawler?sslmode=disable` | Postgres DSN |
+| `REDIS_ADDR`         | `localhost:6379`                            | Redis `host:port`                    |
+| `LOG_LEVEL`          | `INFO`                                      | slog level (DEBUG/INFO/WARN/ERROR)   |
+
+Crawl tuning defaults (max depth, worker count, and the URL-filter lists that
+steer crawls toward career pages) live in Go — `defaultMax*` constants in
+`cmd/server/main.go` and `crawler.DefaultURLFilterConfig()` in
+`internal/crawl_definition.go`. Depth and the URL filters are overridable per
+Crawl Definition via the API/dashboard.
+
+## Observability
+
+The Compose stack includes Prometheus, Grafana, and Loki. The server exposes
+metrics and pprof on `:2223`:
+
+```bash
+curl localhost:2223/metrics                          # Prometheus metrics
+curl localhost:2223/debug/pprof/goroutine?debug=2    # goroutine dump
 ```
 
 - Prometheus: http://localhost:9090
 - Grafana: http://localhost:3000
 
-### Run Tests
+## Tests
 
 ```bash
-go test ./...
+make test          # go test ./...
+make test-race     # go test -race ./...
 ```
+
+Postgres and Redis repository tests spin up real instances via
+[testcontainers](https://testcontainers.com/); Docker must be running.
+
+## Project Structure
+
+```
+cmd/server/main.go             # Entry point: wires deps, serves API + dashboard, manages runs
+internal/
+  *.go                         # Domain types + repository interfaces (crawler package)
+  api/                         # REST API handlers over the repositories + runner
+  catalog/                     # ATS-aware Company identity
+  database/postgres/           # Postgres repositories + goose migrations
+  downloader/                  # HTTP client + retry decorator
+  filter/                      # Generic filter chain; url/ and job_listing_filter/ rules
+  frontier/redis/              # Redis-backed, crash-safe, resumable URL frontier
+  openrouter/                  # LLM career-page classifier + job-listing extractor
+  orchestrator/                # Crawl loop: frontier → worker pool
+  pool/                        # Generic worker pool
+  processor/                   # discovery_/career_page_/url_/job_listing_ processors
+  robotstxt/                   # robots.txt checker (per-host cache + singleflight)
+  runner/                      # Multi-run lifecycle: start, stop, resume, drain
+web/                           # React + Vite + Tailwind dashboard (embedded via //go:embed)
+```
+
+Domain types and repository interfaces live at the `internal/` root; infrastructure
+implementations depend inward toward the domain, never the reverse.
 
 ## Technical Highlights
 
-### Generic Filter Chain
+### Crash-safe, resumable frontier
 
-Filters use a generic function type that composes via `Chain` and `Every` combinators:
+The Redis frontier keeps per-domain FIFO queues with deadline-based cooldowns, a
+visited set for dedup, and in-flight leases. `Next` and `AddURL` are each a single
+Lua script, so concurrent workers can never double-pop a URL or race the dedup. A
+worker that crashes mid-URL has its lease reclaimed once the TTL elapses, so no URL
+is lost or duplicated across restarts.
 
-```go
-type CheckFn[T any] func(T) error
+### Composable filter chains
 
-relevanceFilter := filter.Chain(
-    filter.Every(
-        joblistingfilter.TitleContains(
-            filter.Contains("developer", "engineer"),
-            filter.Contains("golang", "go", "backend"),
-        ),
-        joblistingfilter.MainContentContains(
-            filter.Contains("remote"),
-            filter.Contains("germany", "europe"),
-        ),
-    ),
-    filter.Reject[*crawler.Content](),
-)
-```
+Filters use a generic `CheckFn[T]` composed via `Chain` and `Every`. URL filtering
+short-circuits: hiring-related subdomains/paths (`careers`, `jobs`, …) pass, while
+blogs, docs, shops, auth, and social hosts are blocked — steering crawls toward
+career pages before any expensive work.
 
-### LLM-Based Structured Extraction
+### LLM-based structured extraction
 
-Rather than writing brittle per-site scrapers, the crawler delegates structured extraction to an LLM via the OpenRouter API. A `JobListingExtractor` interface decouples the processor from the extraction strategy:
+Rather than brittle per-site scrapers, the crawler delegates career-page
+classification and job-listing extraction to an LLM via OpenRouter, behind small
+`Confirmer` / `JobListingExtractor` interfaces. Extraction instructions are sent as
+a `system` message and response fields are HTML-stripped before storage to reduce
+prompt-injection surface.
 
-```go
-type JobListingExtractor interface {
-    Extract(ctx context.Context, raw crawler.RawJobListing) (crawler.JobListing, error)
-}
-```
+### Robots.txt compliance
 
-The OpenRouter implementation sends the page's main content to a chat completions endpoint with a prompt that requests JSON output. The response is unmarshaled directly into the `JobListing` domain type. This approach generalizes across job boards without site-specific parsing logic.
+Before fetching or enqueueing a URL, the crawler checks the host's `robots.txt`.
+Rules are cached per hostname and concurrent first-time fetches are collapsed with
+`singleflight`. Status handling follows RFC 9309 §2.3.1.3 (404/410 → allow-all,
+5xx → disallow-all).
 
-Since the crawler processes arbitrary web pages, the LLM is inherently exposed to prompt injection via crafted page content. A few precautions are in place: extraction instructions are sent as a `system` message to separate them from untrusted user content, and all string fields in the LLM response are stripped of HTML tags before being stored in the database. These are not foolproof defenses, but they reduce the surface area for injection in a POC context.
+### Retry with backoff
 
-### Concurrent Frontier
-
-The in-memory frontier uses per-domain queues with deadline-based cooldowns. An in-flight counter tracks URLs being processed by workers — the frontier only returns `ErrDone` when all queues are empty and no workers are still processing. A signal channel allows `AddURL` and `MarkDone` to wake up a blocked `Next` call without polling.
-
-### Worker Pool
-
-Workers run as goroutines reading from a buffered channel. The orchestrator dispatches URLs from the frontier to the pool. Each worker downloads, parses, filters, discovers new URLs (with atomic dedup via SQLite), and feeds them back into the frontier:
-
-```go
-pool := urlworker.NewInMemURLWorkerPool(ctx, workerCfg,
-    urlworker.WithMaxWorkers(8),
-)
-```
-
-### Robots.txt Checker
-
-The `robotstxt` package exposes a `Checker` with a single method:
-
-```go
-func (c *Checker) Check(ctx context.Context, url string) error
-```
-
-It returns `nil` for allowed URLs and a non-nil error for anything blocked or unreachable. Internally it parses the URL, derives the robots.txt URL for the host, and goes through a two-level dedup: a per-hostname cache guards against re-parsing on every check, and `golang.org/x/sync/singleflight` collapses concurrent first-time fetches to the same host into one HTTP request. The parser is abstracted behind a `Parser` interface so [temoto/robotstxt](https://github.com/temoto/robotstxt) can be swapped out. Status-code handling follows RFC 9309 §2.3.1.3: 404/410 → allow-all, 5xx → disallow-all. The URL processor consumes the checker through a small `RobotsTxtChecker` interface defined at the consumer, keeping the processor decoupled from the concrete type.
-
-### Retry Decorator
-
-The retry client wraps any `Downloader` implementation, adding exponential backoff and context-aware cancellation:
-
-```go
-httpClient := http.NewClient()
-downloader := http.NewRetryClient(httpClient)
-```
-
-## Configuration
-
-All runtime configuration lives in `config.json`:
-
-| Field                 | Description                                          |
-| --------------------- | ---------------------------------------------------- |
-| `maxWorkers`          | Number of concurrent URL workers                     |
-| `maxDepth`            | Maximum crawl depth from seed URLs                   |
-| `maxDomains`          | Maximum number of unique domains in the frontier     |
-| `seedURLs`            | Starting URLs for the crawl                          |
-| `allowedTLDs`         | Only crawl URLs with these TLDs                      |
-| `passSubdomains`      | Subdomains that bypass blocking (e.g. jobs, careers) |
-| `passPathSegments`    | Path segments that bypass blocking                   |
-| `blockedSubdomains`   | Subdomains to skip (e.g. blog, docs, shop)           |
-| `blockedPathSegments` | Path segments to skip (e.g. login, pricing, api)     |
-| `blockedHostnames`    | Specific hostnames to never crawl                    |
-| `logLevel`            | Log level (DEBUG, INFO, WARN, ERROR)                 |
+The HTTP client is wrapped in a retry decorator adding exponential backoff and
+context-aware cancellation, keeping retry logic out of the core pipeline.
 
 ## Dependencies
 
-- [goquery](https://github.com/PuerkitoBio/goquery) — HTML parsing with CSS selectors
-- [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) — Pure Go SQLite driver (no CGO)
-- [godotenv](https://github.com/joho/godotenv) — `.env` file loading
+- [pgx](https://github.com/jackc/pgx) — PostgreSQL driver + pool
+- [goose](https://github.com/pressly/goose) — SQL migrations
+- [go-redis](https://github.com/redis/go-redis) — Redis client
+- [goquery](https://github.com/PuerkitoBio/goquery) — HTML parsing
 - [temoto/robotstxt](https://github.com/temoto/robotstxt) — robots.txt parsing
-- [golang.org/x/sync/singleflight](https://pkg.go.dev/golang.org/x/sync/singleflight) — duplicate-call suppression
-- [OpenTelemetry](https://opentelemetry.io/) — Metrics instrumentation
-- [Prometheus client](https://github.com/prometheus/client_golang) — Metrics export
-
-## Production Readiness TODO
-
-### Reliability & Resilience
-
-- [x] Add body size limit — wrap `io.ReadAll(res.Body)` with `io.LimitReader` to prevent OOM from large responses
-- [x] Check Content-Type header before reading body — skip non-HTML responses (PDFs, images, videos)
-- [x] Retry loop retries non-retryable errors — `ErrNoHTML` and similar errors from `Client.Get` get retried `maxTries` times; `isRetryable`'s `err != nil` branch is dead code
-- [ ] Fix retry client treating non-2xx as success — 403/451 responses get parsed as valid content; return error for non-retryable non-2xx
-- [ ] RetryClient.Get swallows error on non-retryable path — `return res, nil` should be `return res, err`; currently discards errors like `ErrNoHTML`
-- [ ] Retry loop swallows last error — on exhaustion returns generic message without wrapping the underlying error (DNS, TLS, status code info lost)
-- [ ] Off-by-one wait in retry loop — after the last failed attempt, waits for backoff before returning error; adds unnecessary latency
-- [ ] Classify errors — distinguish infrastructure errors (DB unreachable, disk full) from domain errors (404, parse failure); infrastructure errors should halt the crawl
-
-### Correctness
-
-- [x] URL normalization — canonicalize URLs before dedup (lowercase scheme+host, strip trailing slashes, sort query params, remove fragments)
-
-### Legal/Ethical
-
-- [x] Add robots.txt support — check and cache per-domain robots.txt before downloading pages
-- [x] Honest User-Agent — replace fake Firefox UA with `JobCrawler/1.0 (+https://yoursite.com/bot)`
-- [ ] Honor Crawl-delay — adapt per-domain politeness from robots.txt instead of hardcoded 1s cooldown (parsed but not yet wired into the frontier cooldown)
-
-### Observability
-
-- [ ] Record metric on Content-Type rejection — currently no metric is emitted when Content-Type check fails; add a "rejected" or "non_html" status
-- [ ] Fix 404 test asserting success — test asserts 404 returns no error; update when non-2xx handling is fixed
-
-### Operability
-
-- [ ] Graceful shutdown — two-phase: stop accepting new work, drain in-flight with deadline
-- [ ] Handle metrics server errors — check and log error from `ListenAndServe` if port is taken
-- [ ] Structured error context in workers — log URL, domain, HTTP status, and failure stage (download/parse/filter)
-- [ ] Health check endpoint — expose a `/healthz` for process managers to detect deadlocks/stalls
-
-### Scalability
-
-- [ ] Batch SQLite writes — collect discovered URLs per page, insert in single transaction
-- [ ] Cap per-domain queue size — prevent unbounded growth from large sites
+- [godotenv](https://github.com/joho/godotenv) — `.env` loading
+- [OpenTelemetry](https://opentelemetry.io/) + [Prometheus client](https://github.com/prometheus/client_golang) — metrics
+- [React](https://react.dev/) + [Vite](https://vitejs.dev/) + [Tailwind](https://tailwindcss.com/) — dashboard
 
 ## License
 

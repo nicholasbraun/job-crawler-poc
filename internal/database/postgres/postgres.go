@@ -1,9 +1,9 @@
 // Package postgres implements the crawl_definition, crawl_run, job_listing,
 // company, and career_page repositories over a PostgreSQL database using pgx.
-// It also embeds and applies the schema migrations (see migrate.go). SQLite
-// still backs only the visited-URL set (moving to Redis in Step 3); Postgres
-// holds the crawl-management state, the extracted job listings, and the
-// discovery Catalog (companies and their career pages).
+// It also embeds and applies the schema migrations (see migrate.go). Postgres
+// holds the durable crawl-management state, the extracted job listings, and the
+// discovery Catalog (companies and their career pages); the transient frontier
+// and visited-URL set live in Redis.
 package postgres
 
 import (

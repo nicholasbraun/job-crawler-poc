@@ -25,7 +25,6 @@ type Config struct {
 	JobListingExtractor  JobListingExtractor
 	// DefinitionID identifies the crawl definition whose run produced these
 	// listings; it is passed through to Save as the listing key's first half.
-	// Zero (uuid.Nil) for stores that ignore it (cmd/cli's SQLite repo).
 	DefinitionID uuid.UUID
 }
 

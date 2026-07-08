@@ -3,8 +3,6 @@ services:
     build: .
     ports:
       - "8080:8080"
-    volumes:
-      - ./data:/app/data
     environment:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - DATABASE_URL=postgres://crawler:crawler@postgres:5432/crawler?sslmode=disable

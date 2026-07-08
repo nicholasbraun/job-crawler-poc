@@ -20,9 +20,9 @@ type FrontierOption func(*Frontier)
 type Frontier struct {
 	// key of the queue is a hostname
 	queues map[string]*queue
-	// visited dedups URLs by RawURL. Dedup used to live in the SQLite
-	// URLRepository; it now lives inside the frontier so AddURL is the single
-	// enqueue+dedup entry point (mirrors the redis impl's visited SET).
+	// visited dedups URLs by RawURL. Dedup lives inside the frontier so AddURL
+	// is the single enqueue+dedup entry point (mirrors the redis impl's visited
+	// SET).
 	visited  map[string]struct{}
 	cooldown time.Duration
 	mode     frontier.Mode
@@ -102,7 +102,8 @@ func NewFrontier(opts ...FrontierOption) *Frontier {
 
 // AddURL enqueues a URL for crawling, creating a new per-domain queue if needed.
 // A URL already seen in this frontier is a silent no-op (returns nil without
-// enqueueing) — dedup lives here now that the SQLite URLRepository is gone.
+// enqueueing) — dedup lives here, so AddURL is the single enqueue+dedup entry
+// point.
 // Returns frontier.ErrMaxDepth if the URL exceeds the configured crawl depth,
 // or frontier.ErrMaxDomainLimit if the hostname would exceed the domain cap.
 func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {

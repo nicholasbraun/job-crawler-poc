@@ -1,7 +1,9 @@
 .DS_Store
-data/*.db*
 .env
 .*.env
+
+# Go build output (see Makefile server-build)
+/bin/
 
 # Node / Vite
 web/node_modules/

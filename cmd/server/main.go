@@ -1,7 +1,7 @@
 // Package main is the long-running crawler server. It serves the REST API and
 // the embedded React dashboard on :8080, and manages crawl runs via the runner.
-// Unlike cmd/cli, it never log.Fatal/os.Exit after it starts serving: SIGINT
-// drains active runs (desired-state stop) before the process exits.
+// It never log.Fatal/os.Exit after it starts serving: SIGINT drains active runs
+// (desired-state stop) before the process exits.
 package main
 
 import (
@@ -22,8 +22,6 @@ import (
 	"github.com/joho/godotenv"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/api"
-	"github.com/nicholasbraun/job-crawler-poc/internal/config"
-	jsonloader "github.com/nicholasbraun/job-crawler-poc/internal/config/json_loader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/postgres"
 	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
@@ -54,6 +52,14 @@ const (
 	defaultDatabaseURL = "postgres://crawler:crawler@localhost:5432/crawler?sslmode=disable"
 	defaultRedisAddr   = "localhost:6379"
 	shutdownTimeout    = 30 * time.Second
+
+	// Crawl tuning defaults, previously sourced from config.json. maxDepth and
+	// maxDomains seed a new crawl definition's fields (overridable per
+	// definition via the API); maxWorkers sizes the per-run worker pools.
+	defaultLogLevel   = "INFO"
+	defaultMaxDepth   = 4
+	defaultMaxWorkers = 50
+	defaultMaxDomains = 10000
 )
 
 func main() {
@@ -65,15 +71,9 @@ func main() {
 	_ = godotenv.Load()
 	openrouterAPIKey := os.Getenv("OPENROUTER_API_KEY")
 
-	jsonConfigLoader := jsonloader.NewJSONLoader("config.json")
-	cfg, err := jsonConfigLoader.Load(ctx)
-	if err != nil {
-		log.Fatalf("error loading config: %v", err)
-	}
-
 	var logLevel slog.LevelVar
-	if err := logLevel.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
-		log.Fatalf("error parsing logLevel from config: %v", err)
+	if err := logLevel.UnmarshalText([]byte(envOr("LOG_LEVEL", defaultLogLevel))); err != nil {
+		log.Fatalf("error parsing LOG_LEVEL: %v", err)
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: &logLevel})))
 
@@ -111,7 +111,7 @@ func main() {
 	defRepository := postgres.NewCrawlDefinitionRepository(pgPool)
 	runRepository := postgres.NewCrawlRunRepository(pgPool)
 
-	factory := newFactory(cfg, openrouterAPIKey, redisClient,
+	factory := newFactory(defaultMaxWorkers, openrouterAPIKey, redisClient,
 		jobListingRepository, companyRepository, careerPageRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory,
 		runner.WithFrontierCleaner(func(ctx context.Context, runID uuid.UUID) error {
@@ -139,16 +139,9 @@ func main() {
 			return redisfrontier.Len(ctx, redisClient, runID)
 		},
 		Defaults: api.Defaults{
-			MaxDepth:   cfg.MaxDepth,
-			MaxDomains: cfg.MaxDomains,
-			URLFilter: crawler.URLFilterConfig{
-				AllowedTLDs:         cfg.AllowedTLDs,
-				BlockedSubdomains:   cfg.BlockedSubdomains,
-				BlockedPathSegments: cfg.BlockedPathSegments,
-				BlockedHostnames:    cfg.BlockedHostnames,
-				PassSubdomains:      cfg.PassSubdomains,
-				PassPathSegments:    cfg.PassPathSegments,
-			},
+			MaxDepth:   defaultMaxDepth,
+			MaxDomains: defaultMaxDomains,
+			URLFilter:  crawler.DefaultURLFilterConfig(),
 		},
 	})
 
@@ -191,7 +184,7 @@ func main() {
 // (HTTP client, parser, robots checker, extractor, filters) are built once
 // here and shared across runs; per-run state (frontier, pools) is built inside.
 func newFactory(
-	cfg *config.Config,
+	maxWorkers int,
 	openrouterAPIKey string,
 	redisClient *redis.Client,
 	jobListingRepository crawler.JobListingRepository,
@@ -261,7 +254,7 @@ func newFactory(
 						RobotsTxtChecker: robotsTxtChecker,
 						OnCareerPage:     onCareerPage,
 					})
-				}, pool.WithMaxWorkers[crawler.URL](cfg.MaxWorkers))
+				}, pool.WithMaxWorkers[crawler.URL](maxWorkers))
 
 			onNextURL := func(ctx context.Context, u *crawler.URL) error {
 				counters.PagesCrawled.Add(1)
@@ -345,7 +338,7 @@ func newFactory(
 					RelevanceFilter:  keywordFilter,
 					OnJobListing:     onJobListing,
 				})
-			}, pool.WithMaxWorkers[crawler.URL](cfg.MaxWorkers))
+			}, pool.WithMaxWorkers[crawler.URL](maxWorkers))
 
 		// Counter tap: a URL pulled from the frontier and dispatched to a worker.
 		onNextURL := func(ctx context.Context, u *crawler.URL) error {
@@ -370,6 +363,15 @@ func newFactory(
 			},
 		}, nil
 	}
+}
+
+// envOr returns the value of environment variable key, or fallback if it is
+// unset or empty.
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // spaHandler serves the API under /api and the embedded SPA everywhere else,
