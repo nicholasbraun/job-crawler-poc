@@ -84,10 +84,6 @@ function DefinitionRow({
   onStart: () => void;
   starting: boolean;
 }) {
-  const detail =
-    definition.kind === "keyword"
-      ? definition.keywords.join(", ")
-      : definition.seedUrls.join(", ");
   return (
     <li className="flex items-center justify-between gap-4 py-3">
       <div className="min-w-0">
@@ -95,10 +91,30 @@ function DefinitionRow({
           <span className="font-medium text-slate-800">{definition.name}</span>
           <KindBadge kind={definition.kind} />
         </div>
-        <div className="truncate text-xs text-slate-400" title={detail}>
-          {detail || "—"}
-        </div>
-        <div className="text-xs text-slate-400">
+        {definition.kind === "keyword" ? (
+          <div
+            className="truncate text-xs text-slate-400"
+            title={definition.keywords.join(", ")}
+          >
+            {definition.keywords.join(", ") || "—"}
+          </div>
+        ) : (
+          <ul className="mt-1 grid gap-0.5">
+            {definition.seedUrls.map((url) => (
+              <li
+                key={url}
+                className="truncate font-mono text-xs text-slate-400"
+                title={url}
+              >
+                {url}
+              </li>
+            ))}
+            {definition.seedUrls.length === 0 && (
+              <li className="text-xs text-slate-400">—</li>
+            )}
+          </ul>
+        )}
+        <div className="mt-1 text-xs text-slate-400">
           created {formatTime(definition.createdAt)}
         </div>
       </div>
