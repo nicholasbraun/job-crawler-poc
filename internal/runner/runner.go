@@ -56,10 +56,12 @@ type Engine struct {
 	Close        func()
 }
 
-// Factory builds an Engine for a single run. counters are the taps the wiring
-// increments; shouldStop is the desired-state poll to hand to the orchestrator.
-// ctx is the run context (derived from context.Background, not a request).
-type Factory func(ctx context.Context, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error)
+// Factory builds an Engine for a single run. runID is the just-created run's
+// id, used to namespace per-run state (e.g. the Redis frontier keys). counters
+// are the taps the wiring increments; shouldStop is the desired-state poll to
+// hand to the orchestrator. ctx is the run context (derived from
+// context.Background, not a request).
+type Factory func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error)
 
 type activeRun struct {
 	cancel context.CancelFunc
@@ -109,7 +111,7 @@ func (r *Runner) Start(ctx context.Context, definitionID uuid.UUID) (*crawler.Cr
 	counters := &Counters{}
 	shouldStop := r.newStopPoller(run.ID)
 
-	engine, err := r.factory(runCtx, *def, counters, shouldStop)
+	engine, err := r.factory(runCtx, run.ID, *def, counters, shouldStop)
 	if err != nil {
 		cancel()
 		finishedAt := time.Now()

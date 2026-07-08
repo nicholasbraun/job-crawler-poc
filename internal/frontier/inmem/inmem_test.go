@@ -30,7 +30,7 @@ func TestFrontierAddAndRetrieveSingleURL(t *testing.T) {
 			t.Errorf("nextUrl and url should be the same. nextUrl: %v", url2)
 		}
 
-		err = inmemFrontier.MarkDone(t.Context())
+		err = inmemFrontier.MarkDone(t.Context(), url.RawURL)
 		if err != nil {
 			t.Fatalf("error marking url as done: %v", err)
 		}
@@ -98,22 +98,57 @@ func TestFrontierCooldown(t *testing.T) {
 	})
 }
 
+func TestFrontierDedup(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		inmemFrontier := inmem.NewFrontier(inmem.WithCooldown(time.Second))
+
+		url := crawler.URL{Hostname: "base", RawURL: "path"}
+		// Adding the same URL twice: the second is a silent no-op, so only one
+		// URL should ever be popped.
+		if err := inmemFrontier.AddURL(t.Context(), url); err != nil {
+			t.Fatalf("error adding URL: %v", err)
+		}
+		if err := inmemFrontier.AddURL(t.Context(), url); err != nil {
+			t.Fatalf("error adding duplicate URL: %v", err)
+		}
+
+		got, err := inmemFrontier.Next(t.Context())
+		if err != nil {
+			t.Fatalf("error getting next URL: %v", err)
+		}
+		if got != url {
+			t.Errorf("expected %v, got %v", url, got)
+		}
+
+		if err := inmemFrontier.MarkDone(t.Context(), url.RawURL); err != nil {
+			t.Fatalf("error marking done: %v", err)
+		}
+
+		// The duplicate must not have been enqueued: the frontier is now done.
+		if _, err := inmemFrontier.Next(t.Context()); !errors.Is(err, frontier.ErrDone) {
+			t.Fatalf("expected %v, got %v", frontier.ErrDone, err)
+		}
+	})
+}
+
 func TestMaxDomains(t *testing.T) {
 	inmemFrontier := inmem.NewFrontier(inmem.WithMaxDomains(1))
 
-	url := crawler.URL{Hostname: "base", RawURL: "path"}
+	// Distinct RawURLs so dedup doesn't short-circuit before the domain cap.
+	url := crawler.URL{Hostname: "base", RawURL: "path1"}
 	err := inmemFrontier.AddURL(t.Context(), url)
 	if err != nil {
 		t.Fatalf("error adding URL to frontier. error: %v", err)
 	}
 
-	url2 := crawler.URL{Hostname: "base", RawURL: "path"}
+	url2 := crawler.URL{Hostname: "base", RawURL: "path2"}
 	err = inmemFrontier.AddURL(t.Context(), url2)
 	if err != nil {
 		t.Fatalf("error adding URL to frontier. error: %v", err)
 	}
 
-	url3 := crawler.URL{Hostname: "base2", RawURL: "path"}
+	// A brand-new hostname past the cap is rejected.
+	url3 := crawler.URL{Hostname: "base2", RawURL: "path3"}
 	err = inmemFrontier.AddURL(t.Context(), url3)
 	if !errors.Is(err, frontier.ErrMaxDomainLimit) {
 		t.Errorf("expected %v, got: %v", frontier.ErrMaxDomainLimit, err)

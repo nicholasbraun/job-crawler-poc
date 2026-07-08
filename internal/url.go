@@ -1,7 +1,6 @@
 package crawler
 
 import (
-	"context"
 	"errors"
 	"net/url"
 	"strings"
@@ -67,12 +66,4 @@ func normalize(u *url.URL) {
 	if len(u.Path) > 1 {
 		u.Path = strings.TrimRight(u.Path, "/")
 	}
-}
-
-// URLRepository tracks which URLs have been seen during a crawl.
-type URLRepository interface {
-	// Save records that a URL has been seen. Returns true if the URL was new,
-	// false if it was already saved.
-	Save(ctx context.Context, url string) (bool, error)
-	Visited(ctx context.Context, url string) (bool, error)
 }

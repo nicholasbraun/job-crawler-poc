@@ -25,10 +25,9 @@ type RobotsTxtChecker interface {
 }
 
 type Config struct {
-	Frontier      frontier.Frontier
-	Downloader    downloader.Downloader
-	Parser        parser.Parser
-	URLRepository crawler.URLRepository
+	Frontier   frontier.Frontier
+	Downloader downloader.Downloader
+	Parser     parser.Parser
 	// ContentFilter rejects pages that should not be processed at all
 	// (e.g., empty or non-textual content). Applied before link discovery.
 	ContentFilter    filter.CheckFn[*crawler.Content]
@@ -46,7 +45,6 @@ type urlWorker struct {
 	frontier             frontier.Frontier
 	downloader           downloader.Downloader
 	parser               parser.Parser
-	urlRepository        crawler.URLRepository
 	contentFilter        filter.CheckFn[*crawler.Content]
 	urlFilter            filter.CheckFn[string]
 	robotsTxtChecker     RobotsTxtChecker
@@ -67,7 +65,6 @@ func NewProcessor(cfg *Config) *urlWorker {
 		frontier:             cfg.Frontier,
 		downloader:           cfg.Downloader,
 		parser:               cfg.Parser,
-		urlRepository:        cfg.URLRepository,
 		contentFilter:        cfg.ContentFilter,
 		urlFilter:            cfg.URLFilter,
 		robotsTxtChecker:     cfg.RobotsTxtChecker,
@@ -78,7 +75,7 @@ func NewProcessor(cfg *Config) *urlWorker {
 }
 
 func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
-	defer w.frontier.MarkDone(ctx)
+	defer w.frontier.MarkDone(ctx, nextURL.RawURL)
 
 	slog.Info("worker: got nextURL", "url", nextURL.RawURL)
 
@@ -128,16 +125,8 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 			continue
 		}
 
-		isNew, err := w.urlRepository.Save(ctx, parsed.RawURL)
-		if err != nil {
-			slog.Error("worker: error saving url", "err", err)
-			continue
-		}
-
-		if !isNew {
-			continue
-		}
-
+		// AddURL fuses dedup with enqueue: an already-seen URL is a silent
+		// no-op, so there is no separate visited check to race against.
 		err = w.frontier.AddURL(ctx, parsed)
 		if errors.Is(err, frontier.ErrMaxDomainLimit) {
 			slog.Info("worker: max domain limit reached, dropping new domains")

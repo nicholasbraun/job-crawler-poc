@@ -96,12 +96,7 @@ func (doneFrontier) AddURL(ctx context.Context, url crawler.URL) error { return 
 func (doneFrontier) Next(ctx context.Context) (crawler.URL, error) {
 	return crawler.URL{}, frontier.ErrDone
 }
-func (doneFrontier) MarkDone(ctx context.Context) error { return nil }
-
-type fakeURLRepo struct{}
-
-func (fakeURLRepo) Save(ctx context.Context, url string) (bool, error)    { return true, nil }
-func (fakeURLRepo) Visited(ctx context.Context, url string) (bool, error) { return false, nil }
+func (doneFrontier) MarkDone(ctx context.Context, url string) error { return nil }
 
 // --- tests ---
 
@@ -171,12 +166,11 @@ func TestStartRunCompletes(t *testing.T) {
 	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
 	runs := newFakeRunRepo()
 
-	factory := func(ctx context.Context, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
 		o := orchestrator.NewOrchestrator(orchestrator.Config{
-			Frontier:      doneFrontier{},
-			URLRepository: fakeURLRepo{},
-			OnNextURL:     func(context.Context, *crawler.URL) error { return nil },
-			ShouldStop:    shouldStop,
+			Frontier:   doneFrontier{},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: shouldStop,
 		})
 		return &Engine{Orchestrator: o, SeedURLs: nil, Close: func() {}}, nil
 	}

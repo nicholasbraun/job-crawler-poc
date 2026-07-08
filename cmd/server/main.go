@@ -17,18 +17,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/api"
 	"github.com/nicholasbraun/job-crawler-poc/internal/config"
 	jsonloader "github.com/nicholasbraun/job-crawler-poc/internal/config/json_loader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/postgres"
-	"github.com/nicholasbraun/job-crawler-poc/internal/database/sqlite"
 	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
 	joblistingfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/job_listing_filter"
 	urlfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/url"
-	"github.com/nicholasbraun/job-crawler-poc/internal/frontier/inmem"
+	redisfrontier "github.com/nicholasbraun/job-crawler-poc/internal/frontier/redis"
 	"github.com/nicholasbraun/job-crawler-poc/internal/openrouter"
 	"github.com/nicholasbraun/job-crawler-poc/internal/orchestrator"
 	myotel "github.com/nicholasbraun/job-crawler-poc/internal/otel"
@@ -41,12 +41,14 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/robotstxt/temoto"
 	"github.com/nicholasbraun/job-crawler-poc/internal/runner"
 	"github.com/nicholasbraun/job-crawler-poc/web"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
 	userAgent          = "JobCrawlerBot/0.1 (+https://github.com/nicholasbraun/job-crawler-poc)"
 	serverAddr         = ":8080"
 	defaultDatabaseURL = "postgres://crawler:crawler@localhost:5432/crawler?sslmode=disable"
+	defaultRedisAddr   = "localhost:6379"
 	shutdownTimeout    = 30 * time.Second
 )
 
@@ -76,13 +78,15 @@ func main() {
 		log.Fatalf("error setting up otel: %v", err)
 	}
 
-	// SQLite still backs the visited-URL set and extracted listings (verbatim).
-	db, err := sqlite.Open("./data/database.db")
-	if err != nil {
-		log.Fatalf("error opening sqlite db: %v", err)
+	// Redis holds transient per-run crawl state: the frontier queues, the
+	// visited set, and in-flight leases (keyed per run, so runs are resumable).
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = defaultRedisAddr
 	}
-	if err := sqlite.Setup(ctx, db); err != nil {
-		log.Fatalf("error setting up sqlite db: %v", err)
+	redisClient := redis.NewClient(&redis.Options{Addr: redisAddr})
+	if err := redisClient.Ping(ctx).Err(); err != nil {
+		log.Fatalf("error connecting to redis at %s: %v", redisAddr, err)
 	}
 
 	databaseURL := os.Getenv("DATABASE_URL")
@@ -97,12 +101,11 @@ func main() {
 		log.Fatalf("error opening postgres: %v", err)
 	}
 
-	urlRepository := sqlite.NewURLRepository(db)
 	jobListingRepository := postgres.NewJobListingRepository(pgPool)
 	defRepository := postgres.NewCrawlDefinitionRepository(pgPool)
 	runRepository := postgres.NewCrawlRunRepository(pgPool)
 
-	factory := newFactory(cfg, openrouterAPIKey, urlRepository, jobListingRepository)
+	factory := newFactory(cfg, openrouterAPIKey, redisClient, jobListingRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory)
 
 	apiHandler := api.New(crawlRunner, runRepository, defRepository, api.Defaults{
@@ -146,8 +149,8 @@ func main() {
 	}
 	otelShutdown(shutdownCtx)
 	pgPool.Close()
-	if err := db.Close(); err != nil {
-		slog.Error("error closing sqlite db", "err", err)
+	if err := redisClient.Close(); err != nil {
+		slog.Error("error closing redis client", "err", err)
 	}
 
 	slog.Info("shutdown complete")
@@ -159,7 +162,7 @@ func main() {
 func newFactory(
 	cfg *config.Config,
 	openrouterAPIKey string,
-	urlRepository crawler.URLRepository,
+	redisClient *redis.Client,
 	jobListingRepository crawler.JobListingRepository,
 ) runner.Factory {
 	httpClient := downloader.NewClient(userAgent)
@@ -187,10 +190,12 @@ func newFactory(
 		filter.Reject[*crawler.Content](),
 	)
 
-	return func(ctx context.Context, def crawler.CrawlDefinition, counters *runner.Counters, shouldStop func(context.Context) bool) (*runner.Engine, error) {
-		frontier := inmem.NewFrontier(
-			inmem.WithMaxDomains(def.MaxDomains),
-			inmem.WithMaxDepth(def.MaxDepth),
+	return func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *runner.Counters, shouldStop func(context.Context) bool) (*runner.Engine, error) {
+		// Bounded mode: this run finishes when the frontier drains. Perpetual
+		// mode is first exercised in Step 5.
+		frontier := redisfrontier.New(redisClient, runID,
+			redisfrontier.WithMaxDomains(def.MaxDomains),
+			redisfrontier.WithMaxDepth(def.MaxDepth),
 		)
 
 		uf := def.URLFilter
@@ -225,7 +230,6 @@ func newFactory(
 					Frontier:         frontier,
 					Downloader:       retryHTTPClient,
 					Parser:           htmlParser,
-					URLRepository:    urlRepository,
 					ContentFilter:    contentFilter,
 					URLFilter:        urlFilter,
 					RobotsTxtChecker: robotsTxtChecker,
@@ -241,10 +245,9 @@ func newFactory(
 		}
 
 		o := orchestrator.NewOrchestrator(orchestrator.Config{
-			Frontier:      frontier,
-			URLRepository: urlRepository,
-			OnNextURL:     onNextURL,
-			ShouldStop:    shouldStop,
+			Frontier:   frontier,
+			OnNextURL:  onNextURL,
+			ShouldStop: shouldStop,
 		})
 
 		return &runner.Engine{

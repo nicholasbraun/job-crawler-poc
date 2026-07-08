@@ -32,23 +32,14 @@ func (f *fakeFrontier) Next(ctx context.Context) (crawler.URL, error) {
 	return next, nil
 }
 
-func (f *fakeFrontier) MarkDone(ctx context.Context) error { return nil }
-
-// fakeURLRepository treats every URL as new and never errors.
-type fakeURLRepository struct{}
-
-func (fakeURLRepository) Save(ctx context.Context, url string) (bool, error) { return true, nil }
-func (fakeURLRepository) Visited(ctx context.Context, url string) (bool, error) {
-	return false, nil
-}
+func (f *fakeFrontier) MarkDone(ctx context.Context, url string) error { return nil }
 
 func TestRunStopRequested(t *testing.T) {
 	f := &fakeFrontier{}
 	dispatched := 0
 
 	o := orchestrator.NewOrchestrator(orchestrator.Config{
-		Frontier:      f,
-		URLRepository: fakeURLRepository{},
+		Frontier: f,
 		OnNextURL: func(ctx context.Context, nextURL *crawler.URL) error {
 			dispatched++
 			return nil
@@ -74,13 +65,12 @@ func TestRunCompletesWithNilShouldStop(t *testing.T) {
 	dispatched := 0
 
 	o := orchestrator.NewOrchestrator(orchestrator.Config{
-		Frontier:      f,
-		URLRepository: fakeURLRepository{},
+		Frontier: f,
 		OnNextURL: func(ctx context.Context, nextURL *crawler.URL) error {
 			dispatched++
 			return nil
 		},
-		// ShouldStop nil: the CLI's behavior — run to completion.
+		// ShouldStop nil: run to completion.
 	})
 
 	err := o.Run(t.Context(), []string{"https://example.com"})

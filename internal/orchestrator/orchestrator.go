@@ -19,30 +19,27 @@ var ErrStopRequested = errors.New("orchestrator: stop requested")
 
 // Config holds the dependencies for an Orchestrator.
 type Config struct {
-	Frontier      frontier.Frontier
-	URLRepository crawler.URLRepository
+	Frontier frontier.Frontier
 	// OnNextURL is called for each URL pulled from the frontier. Typically
 	// this enqueues the URL into a worker pool. A non-nil error stops the crawl.
 	OnNextURL func(ctx context.Context, nextURL *crawler.URL) error
 	// ShouldStop is polled once per loop iteration before pulling the next URL.
 	// Returning true stops the crawl with ErrStopRequested. Nil means never
-	// stop on request (the CLI's behavior).
+	// stop on request.
 	ShouldStop func(ctx context.Context) bool
 }
 
 type Orchestrator struct {
-	frontier      frontier.Frontier
-	urlRepository crawler.URLRepository
-	onNextURL     func(ctx context.Context, nextURL *crawler.URL) error
-	shouldStop    func(ctx context.Context) bool
+	frontier   frontier.Frontier
+	onNextURL  func(ctx context.Context, nextURL *crawler.URL) error
+	shouldStop func(ctx context.Context) bool
 }
 
 func NewOrchestrator(cfg Config) *Orchestrator {
 	return &Orchestrator{
-		frontier:      cfg.Frontier,
-		urlRepository: cfg.URLRepository,
-		onNextURL:     cfg.OnNextURL,
-		shouldStop:    cfg.ShouldStop,
+		frontier:   cfg.Frontier,
+		onNextURL:  cfg.OnNextURL,
+		shouldStop: cfg.ShouldStop,
 	}
 }
 
@@ -60,11 +57,7 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 			continue
 		}
 
-		if _, err = o.urlRepository.Save(ctx, parsed.RawURL); err != nil {
-			slog.Error("error saving url", "err", err)
-			continue
-		}
-
+		// AddURL dedups internally now, so no separate visited check is needed.
 		err = o.frontier.AddURL(ctx, parsed)
 		if errors.Is(err, frontier.ErrMaxDomainLimit) {
 			slog.Info("max domain limit reached, dropping new domains")

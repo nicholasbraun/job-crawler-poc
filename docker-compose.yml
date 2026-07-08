@@ -8,11 +8,18 @@ services:
     environment:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - DATABASE_URL=postgres://crawler:crawler@postgres:5432/crawler?sslmode=disable
+      - REDIS_ADDR=redis:6379
     depends_on:
       - loki
       - postgres
+      - redis
     labels:
       - "app=job-crawler"
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
 
   postgres:
     image: postgres:17

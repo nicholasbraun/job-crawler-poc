@@ -19,8 +19,13 @@ type FrontierOption func(*Frontier)
 
 type Frontier struct {
 	// key of the queue is a hostname
-	queues   map[string]*queue
+	queues map[string]*queue
+	// visited dedups URLs by RawURL. Dedup used to live in the SQLite
+	// URLRepository; it now lives inside the frontier so AddURL is the single
+	// enqueue+dedup entry point (mirrors the redis impl's visited SET).
+	visited  map[string]struct{}
 	cooldown time.Duration
+	mode     frontier.Mode
 	mu       sync.Mutex
 	// signal wakes up goroutines blocked in Next when a URL is added or marked done.
 	// Buffered with capacity 1 to avoid blocking senders.
@@ -56,6 +61,13 @@ func WithMaxDepth(md int) FrontierOption {
 	}
 }
 
+// WithMode selects bounded (default) or perpetual draining behavior for Next.
+func WithMode(m frontier.Mode) FrontierOption {
+	return func(f *Frontier) {
+		f.mode = m
+	}
+}
+
 func NewFrontier(opts ...FrontierOption) *Frontier {
 	meter := otel.Meter("frontier")
 	urlsGauge, _ := meter.Int64UpDownCounter("crawler.frontier.urls.size")
@@ -65,7 +77,9 @@ func NewFrontier(opts ...FrontierOption) *Frontier {
 
 	f := &Frontier{
 		queues:                    map[string]*queue{},
+		visited:                   map[string]struct{}{},
 		cooldown:                  time.Second,
+		mode:                      frontier.Bounded,
 		maxDomains:                50,
 		maxDepth:                  3,
 		mu:                        sync.Mutex{},
@@ -87,6 +101,8 @@ func NewFrontier(opts ...FrontierOption) *Frontier {
 }
 
 // AddURL enqueues a URL for crawling, creating a new per-domain queue if needed.
+// A URL already seen in this frontier is a silent no-op (returns nil without
+// enqueueing) — dedup lives here now that the SQLite URLRepository is gone.
 // Returns frontier.ErrMaxDepth if the URL exceeds the configured crawl depth,
 // or frontier.ErrMaxDomainLimit if the hostname would exceed the domain cap.
 func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
@@ -96,6 +112,14 @@ func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 		f.mu.Unlock()
 		return frontier.ErrMaxDepth
 	}
+
+	if _, seen := f.visited[url.RawURL]; seen {
+		f.mu.Unlock()
+		return nil
+	}
+	// Mark visited before the domain cap so a URL dropped for exceeding
+	// maxDomains is not retried later (matches the redis impl's ordering).
+	f.visited[url.RawURL] = struct{}{}
 
 	if _, ok := f.queues[url.Hostname]; !ok {
 		if len(f.queues) >= f.maxDomains {
@@ -173,8 +197,11 @@ func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 
 		// queues are empty but workers are still processing — wait for signal
 		f.mu.Lock()
-		if f.inFlightCounter > 0 {
+		if f.inFlightCounter > 0 || f.mode == frontier.Perpetual {
 			f.mu.Unlock()
+			// Perpetual mode never declares the work done: with nothing
+			// in-flight it blocks on the signal until a URL is added or ctx
+			// is cancelled.
 			select {
 			case <-f.signal:
 				continue
@@ -189,7 +216,10 @@ func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 	}
 }
 
-func (f *Frontier) MarkDone(ctx context.Context) error {
+// MarkDone releases the in-flight slot for a processed URL. The url argument is
+// part of the frontier.Frontier contract (the redis impl needs it to clear a
+// lease); the in-memory frontier only tracks a counter, so url is unused here.
+func (f *Frontier) MarkDone(ctx context.Context, url string) error {
 	f.mu.Lock()
 	f.inFlightCounter--
 	f.inFlightGauge.Add(ctx, -1)

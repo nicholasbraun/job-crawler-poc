@@ -1,0 +1,350 @@
+// Package redis implements a crash-safe, resumable URL frontier backed by
+// Redis, keyed per crawl run. It preserves the semantics of the in-memory
+// reference frontier (per-domain FIFO queues with a cooldown, a maxDomains cap,
+// a maxDepth reject, and dedup) while surviving process restarts: queued URLs,
+// the visited set, and in-flight leases all live in Redis under a
+// frontier:{runID}: namespace.
+//
+// Next and AddURL are each a single Lua script so concurrent workers can never
+// double-pop a URL or race the dedup. In-flight URLs are tracked as leases in a
+// processing ZSET (member=url, score=expiry); a worker that crashes without
+// calling MarkDone has its lease reclaimed by a later Next once the lease TTL
+// elapses, so no URL is lost or duplicated.
+package redis
+
+import (
+	"context"
+	"fmt"
+	"math/rand/v2"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
+	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
+	"github.com/redis/go-redis/v9"
+)
+
+// memberSep separates the fields of an encoded queue/inflight member
+// (depth, hostname, url). It is the ASCII unit separator (0x1f), a control
+// byte that never appears in a normalized URL or hostname.
+const memberSep = "\x1f"
+
+// maxJitter is the upper bound on the random delay added to every computed Next
+// sleep, spreading out workers that would otherwise wake on the same deadline.
+const maxJitter = 50 * time.Millisecond
+
+// addScript fuses dedup with enqueue. KEYS: visited, knowndomains, domains.
+// ARGV: queuePrefix, domain, member, url, maxDomains, now(ms). Returns one of
+// DUP (already visited), MAXDOMAINS (a new domain over the cap), or NEW.
+var addScript = redis.NewScript(`
+local visited      = KEYS[1]
+local knowndomains = KEYS[2]
+local domains      = KEYS[3]
+local queuePrefix  = ARGV[1]
+local domain       = ARGV[2]
+local member       = ARGV[3]
+local url          = ARGV[4]
+local maxDomains   = tonumber(ARGV[5])
+local now          = tonumber(ARGV[6])
+
+if redis.call('SADD', visited, url) == 0 then
+  return 'DUP'
+end
+
+-- A brand-new domain that would exceed the cap is rejected. The URL stays in
+-- visited (marked seen) so it is not retried, matching the in-mem reference.
+if redis.call('SISMEMBER', knowndomains, domain) == 0 then
+  if redis.call('SCARD', knowndomains) >= maxDomains then
+    return 'MAXDOMAINS'
+  end
+  redis.call('SADD', knowndomains, domain)
+end
+
+-- Make the domain eligible immediately; NX so an active cooldown is not reset.
+redis.call('ZADD', domains, 'NX', now, domain)
+redis.call('LPUSH', queuePrefix .. domain, member)
+return 'NEW'
+`)
+
+// nextScript reclaims expired leases, then hands out the earliest eligible URL.
+// KEYS: domains, processing, inflight. ARGV: queuePrefix, now(ms), leaseTTL(ms),
+// cooldown(ms), pollInterval(ms). Returns a 2-element table:
+//
+//	{'URL', member}   — a URL to crawl (member is depth\x1fhostname\x1furl)
+//	{'WAIT', wakeMs}   — nothing ready; caller sleeps until wakeMs then retries
+//	{'DONE'}           — queues empty and no leases in flight
+var nextScript = redis.NewScript(`
+local domains      = KEYS[1]
+local processing   = KEYS[2]
+local inflight     = KEYS[3]
+local queuePrefix  = ARGV[1]
+local now          = tonumber(ARGV[2])
+local leaseTTL     = tonumber(ARGV[3])
+local cooldown     = tonumber(ARGV[4])
+local pollInterval = tonumber(ARGV[5])
+local sep          = string.char(31)
+
+-- 1. Reclaim leases whose expiry has passed: re-enqueue the exact member (with
+-- its depth) onto its domain queue and make the domain eligible again.
+local expired = redis.call('ZRANGEBYSCORE', processing, '-inf', now)
+for _, u in ipairs(expired) do
+  local member = redis.call('HGET', inflight, u)
+  if member then
+    local i1 = string.find(member, sep, 1, true)
+    local i2 = string.find(member, sep, i1 + 1, true)
+    local hostname = string.sub(member, i1 + 1, i2 - 1)
+    redis.call('LPUSH', queuePrefix .. hostname, member)
+    redis.call('ZADD', domains, 'NX', now, hostname)
+  end
+  redis.call('ZREM', processing, u)
+  redis.call('HDEL', inflight, u)
+end
+
+-- 2. Pick the earliest-deadline domain whose queue is non-empty. domains is
+-- ascending by score, so the first non-empty one has the nearest deadline.
+local ranked = redis.call('ZRANGE', domains, 0, -1, 'WITHSCORES')
+local bestDomain, bestScore
+for i = 1, #ranked, 2 do
+  if redis.call('LLEN', queuePrefix .. ranked[i]) > 0 then
+    bestDomain = ranked[i]
+    bestScore = tonumber(ranked[i + 1])
+    break
+  end
+end
+
+if bestDomain == nil then
+  if redis.call('ZCARD', processing) > 0 then
+    return {'WAIT', tostring(now + pollInterval)}
+  end
+  return {'DONE'}
+end
+
+if bestScore > now then
+  return {'WAIT', tostring(bestScore)}
+end
+
+local member = redis.call('RPOP', queuePrefix .. bestDomain)
+if not member then
+  return {'WAIT', tostring(now + pollInterval)}
+end
+
+redis.call('ZADD', domains, now + cooldown, bestDomain)
+local i2 = string.find(member, sep, string.find(member, sep, 1, true) + 1, true)
+local url = string.sub(member, i2 + 1)
+redis.call('ZADD', processing, now + leaseTTL, url)
+redis.call('HSET', inflight, url, member)
+return {'URL', member}
+`)
+
+// doneScript clears a completed URL's lease. KEYS: processing, inflight.
+// ARGV: url.
+var doneScript = redis.NewScript(`
+redis.call('ZREM', KEYS[1], ARGV[1])
+redis.call('HDEL', KEYS[2], ARGV[1])
+return 1
+`)
+
+// Option configures a Frontier.
+type Option func(*Frontier)
+
+// Frontier is a Redis-backed frontier.Frontier for a single crawl run.
+type Frontier struct {
+	client       *redis.Client
+	keyPrefix    string
+	queuePrefix  string
+	cooldown     time.Duration
+	leaseTTL     time.Duration
+	pollInterval time.Duration
+	maxDomains   int
+	maxDepth     int
+	mode         frontier.Mode
+}
+
+var _ frontier.Frontier = &Frontier{}
+
+// WithCooldown sets the per-domain politeness delay between pops (default 1s,
+// matching the in-mem frontier).
+func WithCooldown(c time.Duration) Option {
+	return func(f *Frontier) { f.cooldown = c }
+}
+
+// WithLeaseTTL sets how long an in-flight URL may be held before its lease is
+// considered lost and the URL is reclaimed by a later Next (default 2m).
+func WithLeaseTTL(t time.Duration) Option {
+	return func(f *Frontier) { f.leaseTTL = t }
+}
+
+// WithPollInterval sets how long Next sleeps when it is waiting on in-flight
+// work rather than a concrete domain deadline (default 250ms).
+func WithPollInterval(p time.Duration) Option {
+	return func(f *Frontier) { f.pollInterval = p }
+}
+
+// WithMaxDomains caps the number of distinct domains the frontier will accept.
+func WithMaxDomains(md int) Option {
+	return func(f *Frontier) { f.maxDomains = md }
+}
+
+// WithMaxDepth sets the maximum crawl depth; deeper URLs are rejected.
+func WithMaxDepth(md int) Option {
+	return func(f *Frontier) { f.maxDepth = md }
+}
+
+// WithMode selects bounded (default) or perpetual draining behavior for Next.
+func WithMode(m frontier.Mode) Option {
+	return func(f *Frontier) { f.mode = m }
+}
+
+// New builds a Frontier for runID against the given client. Multiple Frontiers
+// constructed with the same runID and client share the same Redis state, so a
+// restarted process resumes an in-progress run by re-constructing here.
+func New(client *redis.Client, runID uuid.UUID, opts ...Option) *Frontier {
+	keyPrefix := "frontier:" + runID.String() + ":"
+	f := &Frontier{
+		client:       client,
+		keyPrefix:    keyPrefix,
+		queuePrefix:  keyPrefix + "q:",
+		cooldown:     time.Second,
+		leaseTTL:     2 * time.Minute,
+		pollInterval: 250 * time.Millisecond,
+		maxDomains:   50,
+		maxDepth:     3,
+		mode:         frontier.Bounded,
+	}
+
+	for _, opt := range opts {
+		opt(f)
+	}
+
+	return f
+}
+
+func (f *Frontier) key(name string) string { return f.keyPrefix + name }
+
+// AddURL dedups and enqueues a URL in a single atomic script. An already-seen
+// URL is a silent no-op (returns nil). Returns frontier.ErrMaxDepth if the URL
+// is too deep, or frontier.ErrMaxDomainLimit if it introduces a domain past the
+// cap.
+func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
+	if url.Depth > f.maxDepth {
+		return frontier.ErrMaxDepth
+	}
+
+	keys := []string{f.key("visited"), f.key("knowndomains"), f.key("domains")}
+	res, err := addScript.Run(ctx, f.client, keys,
+		f.queuePrefix, url.Hostname, encodeMember(url), url.RawURL,
+		f.maxDomains, time.Now().UnixMilli(),
+	).Result()
+	if err != nil {
+		return fmt.Errorf("frontier: add url: %w", err)
+	}
+
+	switch res {
+	case "MAXDOMAINS":
+		return frontier.ErrMaxDomainLimit
+	case "NEW", "DUP":
+		return nil
+	default:
+		return fmt.Errorf("frontier: unexpected add result %v", res)
+	}
+}
+
+// Next blocks until a URL is ready and returns it. In bounded mode it returns
+// frontier.ErrDone once all queues are empty and no leases are in flight; in
+// perpetual mode it keeps polling instead. It reclaims expired leases before
+// each pick, so a URL orphaned by a crashed worker is handed out again.
+func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
+	keys := []string{f.key("domains"), f.key("processing"), f.key("inflight")}
+	for {
+		res, err := nextScript.Run(ctx, f.client, keys,
+			f.queuePrefix, time.Now().UnixMilli(),
+			f.leaseTTL.Milliseconds(), f.cooldown.Milliseconds(),
+			f.pollInterval.Milliseconds(),
+		).Result()
+		if err != nil {
+			return crawler.URL{}, fmt.Errorf("frontier: next: %w", err)
+		}
+
+		reply, ok := res.([]interface{})
+		if !ok || len(reply) == 0 {
+			return crawler.URL{}, fmt.Errorf("frontier: unexpected next result %v", res)
+		}
+
+		switch reply[0] {
+		case "URL":
+			member, _ := reply[1].(string)
+			return decodeMember(member)
+		case "WAIT":
+			wakeMs, perr := strconv.ParseInt(fmt.Sprint(reply[1]), 10, 64)
+			if perr != nil {
+				return crawler.URL{}, fmt.Errorf("frontier: bad wait deadline %v: %w", reply[1], perr)
+			}
+			if err := f.sleepUntil(ctx, wakeMs); err != nil {
+				return crawler.URL{}, err
+			}
+		case "DONE":
+			if f.mode == frontier.Bounded {
+				return crawler.URL{}, frontier.ErrDone
+			}
+			// Perpetual mode never finishes: poll and re-evaluate.
+			if err := f.sleep(ctx, f.pollInterval); err != nil {
+				return crawler.URL{}, err
+			}
+		default:
+			return crawler.URL{}, fmt.Errorf("frontier: unexpected next tag %v", reply[0])
+		}
+	}
+}
+
+// MarkDone releases the in-flight lease for url. Must be called once per URL
+// returned by Next.
+func (f *Frontier) MarkDone(ctx context.Context, url string) error {
+	keys := []string{f.key("processing"), f.key("inflight")}
+	if err := doneScript.Run(ctx, f.client, keys, url).Err(); err != nil {
+		return fmt.Errorf("frontier: mark done: %w", err)
+	}
+	return nil
+}
+
+// sleepUntil blocks until the wall-clock reaches wakeMs (plus jitter), or ctx
+// is cancelled.
+func (f *Frontier) sleepUntil(ctx context.Context, wakeMs int64) error {
+	d := time.Until(time.UnixMilli(wakeMs))
+	if d < 0 {
+		d = 0
+	}
+	return f.sleep(ctx, d)
+}
+
+func (f *Frontier) sleep(ctx context.Context, d time.Duration) error {
+	d += rand.N(maxJitter)
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// encodeMember serializes a URL into a queue member: depth, hostname, and raw
+// URL joined by memberSep. Hostname is embedded so the reclaim path can route
+// an expired lease back to its domain queue without parsing the URL.
+func encodeMember(u crawler.URL) string {
+	return strconv.Itoa(u.Depth) + memberSep + u.Hostname + memberSep + u.RawURL
+}
+
+func decodeMember(member string) (crawler.URL, error) {
+	parts := strings.SplitN(member, memberSep, 3)
+	if len(parts) != 3 {
+		return crawler.URL{}, fmt.Errorf("frontier: malformed member %q", member)
+	}
+	depth, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return crawler.URL{}, fmt.Errorf("frontier: bad depth in member %q: %w", member, err)
+	}
+	return crawler.URL{Depth: depth, Hostname: parts[1], RawURL: parts[2]}, nil
+}
