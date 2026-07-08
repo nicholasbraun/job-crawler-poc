@@ -49,6 +49,10 @@ type CrawlRunRepository interface {
 	Create(ctx context.Context, run *CrawlRun) error
 	Get(ctx context.Context, id uuid.UUID) (*CrawlRun, error)
 	List(ctx context.Context) ([]*CrawlRun, error)
+	// ListByStatus returns every run whose status is one of statuses. Used by
+	// the boot-time reconcile loop to find runs (running or stopping) left
+	// non-terminal by a previous process, so they can be adopted and resumed.
+	ListByStatus(ctx context.Context, statuses ...RunStatus) ([]*CrawlRun, error)
 	// GetStatus reads just the status column — the hot path polled by the
 	// crawl loop to detect a desired-state stop.
 	GetStatus(ctx context.Context, id uuid.UUID) (RunStatus, error)

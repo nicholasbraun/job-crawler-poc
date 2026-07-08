@@ -106,7 +106,18 @@ func main() {
 	runRepository := postgres.NewCrawlRunRepository(pgPool)
 
 	factory := newFactory(cfg, openrouterAPIKey, redisClient, jobListingRepository)
-	crawlRunner := runner.New(runRepository, defRepository, factory)
+	crawlRunner := runner.New(runRepository, defRepository, factory,
+		runner.WithFrontierCleaner(func(ctx context.Context, runID uuid.UUID) error {
+			return redisfrontier.DeleteRun(ctx, redisClient, runID)
+		}),
+	)
+
+	// Adopt and resume any run a previous process left running/stopping: its
+	// Redis frontier and Postgres counters survived the restart. Best-effort —
+	// a reconcile failure must not stop the server from serving new crawls.
+	if err := crawlRunner.Reconcile(ctx); err != nil {
+		slog.Error("error reconciling interrupted runs", "err", err)
+	}
 
 	apiHandler := api.New(crawlRunner, runRepository, defRepository, api.Defaults{
 		MaxDepth:   cfg.MaxDepth,

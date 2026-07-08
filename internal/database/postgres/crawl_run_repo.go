@@ -84,6 +84,35 @@ func (r *CrawlRunRepository) List(ctx context.Context) ([]*crawler.CrawlRun, err
 	return runs, rows.Err()
 }
 
+// ListByStatus returns the runs whose status is one of statuses, newest first.
+// The status filter is backed by the crawl_run_status_idx index.
+func (r *CrawlRunRepository) ListByStatus(ctx context.Context, statuses ...crawler.RunStatus) ([]*crawler.CrawlRun, error) {
+	wanted := make([]string, len(statuses))
+	for i, s := range statuses {
+		wanted[i] = string(s)
+	}
+
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, definition_id, status, pages_crawled, listings_found, started_at, finished_at, error
+		FROM crawl_run WHERE status = ANY($1) ORDER BY started_at DESC
+		`, wanted)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: error listing crawl runs by status: %w", err)
+	}
+	defer rows.Close()
+
+	runs := []*crawler.CrawlRun{}
+	for rows.Next() {
+		run, err := scanRun(rows)
+		if err != nil {
+			return nil, fmt.Errorf("postgres: error scanning crawl run: %w", err)
+		}
+		runs = append(runs, run)
+	}
+
+	return runs, rows.Err()
+}
+
 func (r *CrawlRunRepository) GetStatus(ctx context.Context, id uuid.UUID) (crawler.RunStatus, error) {
 	var status string
 	err := r.pool.QueryRow(ctx, `SELECT status FROM crawl_run WHERE id = $1`, id).Scan(&status)

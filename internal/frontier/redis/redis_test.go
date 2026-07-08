@@ -203,6 +203,38 @@ func TestRedisFrontier(t *testing.T) {
 		}
 	})
 
+	t.Run("DeleteRun removes all of a run's keys", func(t *testing.T) {
+		runID := uuid.New()
+		f := redisfrontier.New(client, runID)
+		if err := f.AddURL(t.Context(), url("a", "http://a/1", 0)); err != nil {
+			t.Fatalf("AddURL: %v", err)
+		}
+		if _, err := f.Next(t.Context()); err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+
+		pattern := "frontier:" + runID.String() + ":*"
+		before, err := client.Keys(t.Context(), pattern).Result()
+		if err != nil {
+			t.Fatalf("Keys before: %v", err)
+		}
+		if len(before) == 0 {
+			t.Fatal("expected frontier keys to exist before delete")
+		}
+
+		if err := redisfrontier.DeleteRun(t.Context(), client, runID); err != nil {
+			t.Fatalf("DeleteRun: %v", err)
+		}
+
+		after, err := client.Keys(t.Context(), pattern).Result()
+		if err != nil {
+			t.Fatalf("Keys after: %v", err)
+		}
+		if len(after) != 0 {
+			t.Errorf("expected no frontier keys after delete, got %v", after)
+		}
+	})
+
 	t.Run("resume: a second frontier on the same run sees shared state", func(t *testing.T) {
 		runID := uuid.New()
 		f1 := redisfrontier.New(client, runID)

@@ -1,14 +1,18 @@
 // Package runner owns the lifecycle of crawl runs: starting a run from a
-// definition, stopping it via desired state, and draining every active run on
-// shutdown. The actual crawl wiring is supplied by a Factory closure (owned by
-// cmd/server), which keeps the runner testable and independent of the concrete
-// downloader/parser/pool stack. Shaped so multi-run (a later step) is a map
-// insert rather than a rewrite.
+// definition, stopping it via desired state, draining every active run on
+// shutdown, and — on boot — adopting runs a previous process left non-terminal
+// and resuming them from externalized state (Reconcile). The actual crawl
+// wiring is supplied by a Factory closure (owned by cmd/server), which keeps
+// the runner testable and independent of the concrete downloader/parser/pool
+// stack. Concurrent runs are isolated: each has its own engine, worker pools,
+// per-run Redis frontier namespace, and counters — the only shared state is the
+// active map, guarded by a mutex.
 package runner
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -67,24 +71,44 @@ type activeRun struct {
 	cancel context.CancelFunc
 }
 
+// FrontierCleaner drops a run's externalized frontier state once the run reaches
+// a terminal status, so its transient Redis keys don't leak. cmd/server wires
+// this to redisfrontier.DeleteRun; when left nil (e.g. in tests) terminal
+// cleanup is simply skipped.
+type FrontierCleaner func(ctx context.Context, runID uuid.UUID) error
+
+// Option configures a Runner.
+type Option func(*Runner)
+
+// WithFrontierCleaner sets the cleaner invoked after a run reaches a terminal
+// status.
+func WithFrontierCleaner(c FrontierCleaner) Option {
+	return func(r *Runner) { r.frontierCleaner = c }
+}
+
 // Runner starts, stops, and drains crawl runs.
 type Runner struct {
-	runs    crawler.CrawlRunRepository
-	defs    crawler.CrawlDefinitionRepository
-	factory Factory
+	runs            crawler.CrawlRunRepository
+	defs            crawler.CrawlDefinitionRepository
+	factory         Factory
+	frontierCleaner FrontierCleaner
 
 	mu     sync.Mutex
 	active map[uuid.UUID]*activeRun
 	wg     sync.WaitGroup
 }
 
-func New(runs crawler.CrawlRunRepository, defs crawler.CrawlDefinitionRepository, factory Factory) *Runner {
-	return &Runner{
+func New(runs crawler.CrawlRunRepository, defs crawler.CrawlDefinitionRepository, factory Factory, opts ...Option) *Runner {
+	r := &Runner{
 		runs:    runs,
 		defs:    defs,
 		factory: factory,
 		active:  map[uuid.UUID]*activeRun{},
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // Start looks up the definition, records a running run, wires the engine, and
@@ -107,18 +131,68 @@ func (r *Runner) Start(ctx context.Context, definitionID uuid.UUID) (*crawler.Cr
 		return nil, err
 	}
 
+	if err := r.launch(run, def, &Counters{}); err != nil {
+		return nil, err
+	}
+
+	return run, nil
+}
+
+// Reconcile adopts runs left non-terminal (running or stopping) by a previous
+// process and resumes them from their externalized state: the factory
+// re-attaches to the run's Redis frontier by runID, and the persisted counters
+// carry progress forward. A run that was stopping resumes and then immediately
+// drains to stopped via the desired-state poll. Per-run failures (a missing
+// definition, a factory error) are logged and skipped so one bad run can't
+// block the rest; only a failure to list the runs is returned. Call once at
+// boot, before serving, so it cannot race Start/Stop.
+func (r *Runner) Reconcile(ctx context.Context) error {
+	runs, err := r.runs.ListByStatus(ctx, crawler.RunStatusRunning, crawler.RunStatusStopping)
+	if err != nil {
+		return fmt.Errorf("runner: listing interrupted runs: %w", err)
+	}
+
+	adopted := 0
+	for _, run := range runs {
+		def, err := r.defs.Get(ctx, run.DefinitionID)
+		if err != nil {
+			slog.Error("runner: error loading definition for interrupted run, skipping", "err", err, "run_id", run.ID)
+			continue
+		}
+		// Seed live counters from the persisted snapshot so the first flush does
+		// not regress the row toward zero.
+		if err := r.launch(run, def, countersFrom(run.Counters)); err != nil {
+			slog.Error("runner: error adopting interrupted run, skipping", "err", err, "run_id", run.ID)
+			continue
+		}
+		adopted++
+		slog.Info("runner: adopted interrupted run", "run_id", run.ID, "status", run.Status)
+	}
+
+	if adopted > 0 {
+		slog.Info("runner: reconcile complete", "adopted", adopted)
+	}
+	return nil
+}
+
+// launch wires an engine for an already-persisted run and supervises it in the
+// background. Shared by Start (a fresh run, zero counters) and Reconcile (an
+// adopted run, counters seeded from Postgres). The run context derives from
+// context.Background so the crawl outlives the calling request/boot. On a
+// factory error the run is marked failed and the error is returned; the caller
+// decides whether that is fatal.
+func (r *Runner) launch(run *crawler.CrawlRun, def *crawler.CrawlDefinition, counters *Counters) error {
 	runCtx, cancel := context.WithCancel(context.Background())
-	counters := &Counters{}
 	shouldStop := r.newStopPoller(run.ID)
 
 	engine, err := r.factory(runCtx, run.ID, *def, counters, shouldStop)
 	if err != nil {
 		cancel()
 		finishedAt := time.Now()
-		if uerr := r.runs.UpdateStatus(ctx, run.ID, crawler.RunStatusFailed, &finishedAt, err.Error()); uerr != nil {
+		if uerr := r.runs.UpdateStatus(context.Background(), run.ID, crawler.RunStatusFailed, &finishedAt, err.Error()); uerr != nil {
 			slog.Error("runner: error marking run failed after factory error", "err", uerr, "run_id", run.ID)
 		}
-		return nil, err
+		return err
 	}
 
 	r.mu.Lock()
@@ -128,7 +202,7 @@ func (r *Runner) Start(ctx context.Context, definitionID uuid.UUID) (*crawler.Cr
 
 	go r.supervise(runCtx, run.ID, engine, counters)
 
-	return run, nil
+	return nil
 }
 
 // Stop requests a desired-state stop: it writes status=stopping (the source of
@@ -210,6 +284,15 @@ func (r *Runner) supervise(runCtx context.Context, runID uuid.UUID, engine *Engi
 	}
 	delete(r.active, runID)
 	r.mu.Unlock()
+
+	// Drop the run's transient frontier state now that it has ended. Done
+	// outside the lock: it is Redis I/O and must not block a concurrent
+	// Stop/Shutdown holding mu.
+	if r.frontierCleaner != nil {
+		if err := r.frontierCleaner(context.Background(), runID); err != nil {
+			slog.Error("runner: error cleaning up frontier for finished run", "err", err, "run_id", runID)
+		}
+	}
 }
 
 // newStopPoller returns a throttled desired-state poll: it reads the run's
@@ -245,6 +328,16 @@ func (r *Runner) newStopPoller(runID uuid.UUID) func(context.Context) bool {
 		}
 		return false
 	}
+}
+
+// countersFrom builds live Counters initialized to a persisted snapshot, so an
+// adopted run continues accumulating from where the previous process left off
+// rather than restarting at zero.
+func countersFrom(rc crawler.RunCounters) *Counters {
+	c := &Counters{}
+	c.PagesCrawled.Store(rc.PagesCrawled)
+	c.ListingsFound.Store(rc.ListingsFound)
+	return c
 }
 
 // terminalStatus maps a run's final error to its terminal status. A nil error
