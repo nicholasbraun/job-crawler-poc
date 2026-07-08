@@ -5,6 +5,7 @@ package filter
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 )
 
@@ -43,8 +44,41 @@ func Chain[T any](checks ...CheckFn[T]) CheckFn[T] {
 	}
 }
 
-// Contains checks if a string contains one of the provided keywords (case insensitive) and returns ErrPass if it does.
+// Contains returns a CheckFn that passes (ErrPass) when the input contains any
+// of the provided keywords as a whole word, matched case-insensitively.
+//
+// Matching is word-boundary based (regexp \b), not substring: this keeps short,
+// common keywords such as "go" from matching inside unrelated words like
+// "logout", "category", or "Chicago". That precision is what lets the keyword
+// relevance filter prune pages before the expensive LLM extraction (ADR-0004).
+// The keyword patterns are compiled once, when Contains is called.
+//
+// For plain substring matching (e.g. URL allowlists) use ContainsSubstring.
 func Contains(keywords ...string) CheckFn[string] {
+	patterns := []*regexp.Regexp{}
+	for _, keyword := range keywords {
+		if keyword == "" {
+			continue
+		}
+		patterns = append(patterns, regexp.MustCompile(`(?i)\b`+regexp.QuoteMeta(keyword)+`\b`))
+	}
+
+	return func(s string) error {
+		for _, pattern := range patterns {
+			if pattern.MatchString(s) {
+				return ErrPass
+			}
+		}
+
+		return nil
+	}
+}
+
+// ContainsSubstring returns a CheckFn that passes (ErrPass) when the input
+// contains any of the provided keywords as a substring, matched
+// case-insensitively. Unlike Contains it does not require word boundaries, so
+// it stays suitable for allowlist-style matches (e.g. a URL host or path).
+func ContainsSubstring(keywords ...string) CheckFn[string] {
 	return func(s string) error {
 		for _, keyword := range keywords {
 			if strings.Contains(strings.ToLower(s), strings.ToLower(keyword)) {
