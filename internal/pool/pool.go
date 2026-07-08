@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 
 	"github.com/nicholasbraun/job-crawler-poc/internal/processor"
@@ -80,12 +81,30 @@ func (p *Pool[T]) run(ctx context.Context) {
 		w := p.newWorker()
 		p.wg.Go(func() {
 			for workload := range p.workStream {
-				err := w.Process(ctx, workload)
-				if err != nil {
-					slog.Error("worker: error processing url", "worker_name", p.name, "err", err)
-				}
+				p.process(ctx, w, workload)
 			}
 		})
+	}
+}
+
+// process runs a single work item, recovering from any panic in the worker's
+// Process so one poisoned item can neither crash the pool goroutine nor the
+// process: the panic is logged with the offending item and the worker moves on
+// to the next item (see #19).
+func (p *Pool[T]) process(ctx context.Context, w processor.Processor[T], workload *T) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("worker: recovered from panic in Process",
+				"worker_name", p.name,
+				"panic", rec,
+				"item", workload,
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
+
+	if err := w.Process(ctx, workload); err != nil {
+		slog.Error("worker: error processing url", "worker_name", p.name, "err", err)
 	}
 }
 
