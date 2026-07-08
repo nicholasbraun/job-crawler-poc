@@ -74,16 +74,66 @@ func TestResponseType(t *testing.T) {
 	}
 }
 
+func TestGetNon2xx(t *testing.T) {
+	tests := []struct {
+		name          string
+		status        int
+		contentType   string
+		wantRetryable bool
+	}{
+		{"404 is permanent", http.StatusNotFound, "text/html", false},
+		{"403 is permanent", http.StatusForbidden, "text/html", false},
+		{"429 throttle is retryable", http.StatusTooManyRequests, "text/html", true},
+		{"503 is retryable", http.StatusServiceUnavailable, "text/html", true},
+		// A throttle is often served as text/plain; it must be classified by
+		// status (retryable), not rejected as non-HTML.
+		{"429 as text/plain is retryable, not ErrNoHTML", http.StatusTooManyRequests, "text/plain", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("content-type", tt.contentType)
+				w.WriteHeader(tt.status)
+				w.Write([]byte("error page body"))
+			}))
+			defer server.Close()
+
+			res, err := downloader.NewClient("userAgent").Get(t.Context(), server.URL)
+
+			if errors.Is(err, downloader.ErrNoHTML) {
+				t.Fatalf("status %d wrongly classified as ErrNoHTML", tt.status)
+			}
+			var statusErr *downloader.StatusError
+			if !errors.As(err, &statusErr) {
+				t.Fatalf("expected a StatusError, got: %v", err)
+			}
+			if res != nil {
+				t.Errorf("expected nil response on a non-2xx status, got: %v", res)
+			}
+			if statusErr.StatusCode != tt.status {
+				t.Errorf("StatusCode = %d, want %d", statusErr.StatusCode, tt.status)
+			}
+			if statusErr.Retryable != tt.wantRetryable {
+				t.Errorf("Retryable = %v, want %v", statusErr.Retryable, tt.wantRetryable)
+			}
+		})
+	}
+}
+
 func TestRetry(t *testing.T) {
 	t.Run("Retry on 500", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			mock := &mockDownloader{
 				responses: []*downloader.Response{
-					{StatusCode: 500},
-					{StatusCode: 500},
+					nil,
+					nil,
 					{StatusCode: 200, Content: []byte("hello world")},
 				},
-				errors: []error{nil, nil, nil},
+				errors: []error{
+					&downloader.StatusError{StatusCode: 500, Retryable: true},
+					&downloader.StatusError{StatusCode: 500, Retryable: true},
+					nil,
+				},
 			}
 			downloader := downloader.NewRetryClient(mock)
 
@@ -108,23 +158,22 @@ func TestRetry(t *testing.T) {
 
 	t.Run("Don't retry on 404", func(t *testing.T) {
 		mock := &mockDownloader{
-			responses: []*downloader.Response{
-				{StatusCode: 404},
-				{StatusCode: 200},
-			},
-			errors: []error{nil, nil},
+			responses: []*downloader.Response{nil},
+			errors:    []error{&downloader.StatusError{StatusCode: 404, Retryable: false}},
 		}
-		downloader := downloader.NewRetryClient(mock)
+		var statusErr *downloader.StatusError
+		retryClient := downloader.NewRetryClient(mock)
 
-		res, err := downloader.Get(t.Context(), "http://something.de")
-		if err != nil {
-			t.Fatalf("server did return an error: %v", err)
+		res, err := retryClient.Get(t.Context(), "http://something.de")
+
+		if !errors.As(err, &statusErr) {
+			t.Fatalf("expected a StatusError, got: %v", err)
 		}
-
-		wantCode := 404
-		gotCode := res.StatusCode
-		if gotCode != wantCode {
-			t.Errorf("expected status code %d. got: %d", wantCode, gotCode)
+		if statusErr.StatusCode != 404 {
+			t.Errorf("expected status code 404, got: %d", statusErr.StatusCode)
+		}
+		if res != nil {
+			t.Errorf("expected res to be nil, got: %v", res)
 		}
 
 		wantAttempts := 1
@@ -167,13 +216,13 @@ func TestRetry(t *testing.T) {
 	t.Run("Max retries exhausted", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			mock := &mockDownloader{
-				responses: []*downloader.Response{
-					{StatusCode: 500},
-					{StatusCode: 500},
-					{StatusCode: 500},
-					{StatusCode: 200},
+				responses: []*downloader.Response{nil, nil, nil, {StatusCode: 200}},
+				errors: []error{
+					&downloader.StatusError{StatusCode: 500, Retryable: true},
+					&downloader.StatusError{StatusCode: 500, Retryable: true},
+					&downloader.StatusError{StatusCode: 500, Retryable: true},
+					nil,
 				},
-				errors: []error{nil, nil, nil, nil},
 			}
 			maxRetries := 3
 			downloader := downloader.NewRetryClient(mock, downloader.WithMaxTries(maxRetries))
@@ -198,13 +247,13 @@ func TestRetry(t *testing.T) {
 	t.Run("Context cancels retries", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			mock := &mockDownloader{
-				responses: []*downloader.Response{
-					{StatusCode: 500},
-					{StatusCode: 500},
-					{StatusCode: 500},
-					{StatusCode: 200},
+				responses: []*downloader.Response{nil, nil, nil, {StatusCode: 200}},
+				errors: []error{
+					&downloader.StatusError{StatusCode: 500, Retryable: true},
+					&downloader.StatusError{StatusCode: 500, Retryable: true},
+					&downloader.StatusError{StatusCode: 500, Retryable: true},
+					nil,
 				},
-				errors: []error{nil, nil, nil, nil},
 			}
 
 			downloader := downloader.NewRetryClient(

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"time"
 )
 
@@ -59,7 +58,7 @@ func (rc *RetryClient) Get(ctx context.Context, url string) (*Response, error) {
 
 	for i := 1; i <= rc.maxTries; i++ {
 		res, err := rc.inner.Get(ctx, url)
-		if !isRetryable(res, err) {
+		if !isRetryable(err) {
 			return res, err
 		}
 
@@ -74,29 +73,20 @@ func (rc *RetryClient) Get(ctx context.Context, url string) (*Response, error) {
 	return nil, fmt.Errorf("could not GET %s after %d tries", url, rc.maxTries)
 }
 
-func isRetryable(res *Response, err error) bool {
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
 	if errors.Is(err, ErrNoHTML) {
 		return false
 	}
 
-	if err != nil {
-		// network errors, etc.
-		return true
+	// A non-2xx status carries its own transient/permanent verdict; anything
+	// else with an error (network failures, timeouts, body read errors) is
+	// treated as transient and retried.
+	var statusErr *StatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.Retryable
 	}
-
-	retryableCodes := []int{
-		http.StatusBadGateway,
-		http.StatusGatewayTimeout,
-		http.StatusInternalServerError,
-		http.StatusTooManyRequests,
-		http.StatusRequestTimeout,
-	}
-
-	for _, c := range retryableCodes {
-		if res.StatusCode == c {
-			return true
-		}
-	}
-
-	return false
+	return true
 }

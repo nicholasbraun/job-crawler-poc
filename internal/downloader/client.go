@@ -24,6 +24,31 @@ import (
 // This error is non-retryable — wrapping it with RetryClient will not retry.
 var ErrNoHTML = errors.New("content type is not 'text/html'")
 
+// StatusError is returned when a request completes but the server responds with
+// a non-2xx status. Retryable reports whether the status is a transient
+// throttle or server error (429, 408, any 5xx) worth retrying, as opposed to a
+// permanent client error (e.g. 404, 403, 410) whose body must not be mistaken
+// for a real page. Callers drop the URL on a non-retryable StatusError.
+type StatusError struct {
+	StatusCode int
+	Retryable  bool
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("downloader: unexpected http status %d", e.StatusCode)
+}
+
+// retryableStatus reports whether a non-2xx status is transient. Throttles
+// (429), request timeouts (408), and any 5xx are worth retrying; every other
+// 4xx is a permanent client error.
+func retryableStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests, http.StatusRequestTimeout:
+		return true
+	}
+	return code >= 500
+}
+
 type Client struct {
 	httpClient            *http.Client
 	downloadTimeHistogram metric.Float64Histogram
@@ -62,6 +87,15 @@ func (c *Client) Get(ctx context.Context, u string) (*Response, error) {
 	}
 
 	defer res.Body.Close()
+
+	// Classify the status before the content-type guard: a throttle (429) is
+	// often served as text/plain, so it must be recognized as a transient,
+	// retryable failure rather than rejected as non-HTML. A non-2xx body (e.g.
+	// a 404 "page not found") must never flow downstream as a real page.
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		c.downloadTimeHistogram.Record(ctx, downloadTime, metric.WithAttributes(attribute.String("status", strconv.Itoa(res.StatusCode))))
+		return nil, &StatusError{StatusCode: res.StatusCode, Retryable: retryableStatus(res.StatusCode)}
+	}
 
 	limitReader := io.LimitReader(res.Body, 5000000)
 	body, err := io.ReadAll(limitReader)
