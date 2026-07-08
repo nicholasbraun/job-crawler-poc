@@ -29,9 +29,14 @@ var ErrNoHTML = errors.New("content type is not 'text/html'")
 // throttle or server error (429, 408, any 5xx) worth retrying, as opposed to a
 // permanent client error (e.g. 404, 403, 410) whose body must not be mistaken
 // for a real page. Callers drop the URL on a non-retryable StatusError.
+//
+// RetryAfter holds the delay requested by the server's Retry-After header, or 0
+// when the header is absent, malformed, or points to the past. RetryClient
+// honors this hint in place of its exponential backoff.
 type StatusError struct {
 	StatusCode int
 	Retryable  bool
+	RetryAfter time.Duration
 }
 
 func (e *StatusError) Error() string {
@@ -47,6 +52,29 @@ func retryableStatus(code int) bool {
 		return true
 	}
 	return code >= 500
+}
+
+// parseRetryAfter interprets a Retry-After header value, which per RFC 9110 is
+// either a non-negative number of seconds (delta-seconds) or an HTTP-date. It
+// returns the delay to wait before retrying, or 0 if the header is absent,
+// malformed, or already in the past.
+func parseRetryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
 }
 
 type Client struct {
@@ -94,7 +122,11 @@ func (c *Client) Get(ctx context.Context, u string) (*Response, error) {
 	// a 404 "page not found") must never flow downstream as a real page.
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		c.downloadTimeHistogram.Record(ctx, downloadTime, metric.WithAttributes(attribute.String("status", strconv.Itoa(res.StatusCode))))
-		return nil, &StatusError{StatusCode: res.StatusCode, Retryable: retryableStatus(res.StatusCode)}
+		return nil, &StatusError{
+			StatusCode: res.StatusCode,
+			Retryable:  retryableStatus(res.StatusCode),
+			RetryAfter: parseRetryAfter(res.Header.Get("Retry-After")),
+		}
 	}
 
 	limitReader := io.LimitReader(res.Body, 5000000)

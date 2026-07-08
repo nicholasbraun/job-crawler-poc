@@ -18,6 +18,10 @@ type RetryClient struct {
 	backoff       time.Duration
 	multiplicator int
 	maxTries      int
+	// maxBackoff caps the delay before any single retry, bounding both the
+	// escalating exponential backoff and a server's Retry-After hint so a
+	// persistently-throttling host cannot stall a run indefinitely. Default: 2m.
+	maxBackoff time.Duration
 }
 
 func NewRetryClient(httpClient Downloader, opts ...RetryClientOption) *RetryClient {
@@ -26,6 +30,7 @@ func NewRetryClient(httpClient Downloader, opts ...RetryClientOption) *RetryClie
 		backoff:       2 * time.Second,
 		multiplicator: 2,
 		maxTries:      5,
+		maxBackoff:    2 * time.Minute,
 	}
 
 	for _, fn := range opts {
@@ -53,6 +58,15 @@ func WithMultiplicator(m int) RetryClientOption {
 	}
 }
 
+// WithMaxBackoff caps the delay before any single retry. A non-positive value
+// removes the ceiling, letting the exponential backoff and a server's
+// Retry-After hint apply unbounded.
+func WithMaxBackoff(mb time.Duration) RetryClientOption {
+	return func(client *RetryClient) {
+		client.maxBackoff = mb
+	}
+}
+
 func (rc *RetryClient) Get(ctx context.Context, url string) (*Response, error) {
 	currentBackoff := rc.backoff
 
@@ -62,10 +76,22 @@ func (rc *RetryClient) Get(ctx context.Context, url string) (*Response, error) {
 			return res, err
 		}
 
+		// Honor a server-provided Retry-After hint when present; otherwise fall
+		// back to exponential backoff. The backoff still advances so that a
+		// subsequent hint-less attempt waits the escalated delay.
+		wait := currentBackoff
+		var statusErr *StatusError
+		if errors.As(err, &statusErr) && statusErr.RetryAfter > 0 {
+			wait = statusErr.RetryAfter
+		}
+		if rc.maxBackoff > 0 && wait > rc.maxBackoff {
+			wait = rc.maxBackoff
+		}
+
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(currentBackoff):
+		case <-time.After(wait):
 			currentBackoff *= time.Duration(rc.multiplicator)
 		}
 	}

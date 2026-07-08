@@ -120,6 +120,80 @@ func TestGetNon2xx(t *testing.T) {
 	}
 }
 
+func TestGetRetryAfter(t *testing.T) {
+	t.Run("delta-seconds header is parsed onto the StatusError", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Retry-After", "30")
+			w.WriteHeader(http.StatusTooManyRequests)
+		}))
+		defer server.Close()
+
+		_, err := downloader.NewClient("userAgent").Get(t.Context(), server.URL)
+
+		var statusErr *downloader.StatusError
+		if !errors.As(err, &statusErr) {
+			t.Fatalf("expected a StatusError, got: %v", err)
+		}
+		if statusErr.RetryAfter != 30*time.Second {
+			t.Errorf("RetryAfter = %v, want 30s", statusErr.RetryAfter)
+		}
+	})
+
+	t.Run("HTTP-date header is parsed as a future delay", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Retry-After", time.Now().Add(time.Hour).UTC().Format(http.TimeFormat))
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		defer server.Close()
+
+		_, err := downloader.NewClient("userAgent").Get(t.Context(), server.URL)
+
+		var statusErr *downloader.StatusError
+		if !errors.As(err, &statusErr) {
+			t.Fatalf("expected a StatusError, got: %v", err)
+		}
+		// HTTP-date has second granularity; the delay is ~1h minus request time.
+		if statusErr.RetryAfter <= 0 || statusErr.RetryAfter > time.Hour {
+			t.Errorf("RetryAfter = %v, want (0, 1h]", statusErr.RetryAfter)
+		}
+	})
+
+	t.Run("absent header leaves RetryAfter zero", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusTooManyRequests)
+		}))
+		defer server.Close()
+
+		_, err := downloader.NewClient("userAgent").Get(t.Context(), server.URL)
+
+		var statusErr *downloader.StatusError
+		if !errors.As(err, &statusErr) {
+			t.Fatalf("expected a StatusError, got: %v", err)
+		}
+		if statusErr.RetryAfter != 0 {
+			t.Errorf("RetryAfter = %v, want 0", statusErr.RetryAfter)
+		}
+	})
+
+	t.Run("malformed header is ignored", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Retry-After", "soon")
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		defer server.Close()
+
+		_, err := downloader.NewClient("userAgent").Get(t.Context(), server.URL)
+
+		var statusErr *downloader.StatusError
+		if !errors.As(err, &statusErr) {
+			t.Fatalf("expected a StatusError, got: %v", err)
+		}
+		if statusErr.RetryAfter != 0 {
+			t.Errorf("RetryAfter = %v, want 0", statusErr.RetryAfter)
+		}
+	})
+}
+
 func TestRetry(t *testing.T) {
 	t.Run("Retry on 500", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
@@ -240,6 +314,53 @@ func TestRetry(t *testing.T) {
 			gotAttempts := mock.callCount
 			if gotAttempts != wantAttempts {
 				t.Errorf("expected %d attemps. got: %d", wantAttempts, gotAttempts)
+			}
+		})
+	})
+
+	t.Run("Honors Retry-After hint over backoff", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			mock := &mockDownloader{
+				responses: []*downloader.Response{nil, {StatusCode: 200}},
+				errors: []error{
+					&downloader.StatusError{StatusCode: 429, Retryable: true, RetryAfter: 30 * time.Second},
+					nil,
+				},
+			}
+			// Default backoff is 2s; the 30s hint must win.
+			retryClient := downloader.NewRetryClient(mock)
+
+			start := time.Now()
+			_, err := retryClient.Get(t.Context(), "http://something.de")
+			if err != nil {
+				t.Fatalf("server did return an error: %v", err)
+			}
+
+			if elapsed := time.Since(start); elapsed != 30*time.Second {
+				t.Errorf("waited %v, want 30s from Retry-After hint", elapsed)
+			}
+		})
+	})
+
+	t.Run("Caps an over-long Retry-After hint at maxBackoff", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			mock := &mockDownloader{
+				responses: []*downloader.Response{nil, {StatusCode: 200}},
+				errors: []error{
+					&downloader.StatusError{StatusCode: 503, Retryable: true, RetryAfter: 24 * time.Hour},
+					nil,
+				},
+			}
+			retryClient := downloader.NewRetryClient(mock, downloader.WithMaxBackoff(30*time.Second))
+
+			start := time.Now()
+			_, err := retryClient.Get(t.Context(), "http://something.de")
+			if err != nil {
+				t.Fatalf("server did return an error: %v", err)
+			}
+
+			if elapsed := time.Since(start); elapsed != 30*time.Second {
+				t.Errorf("waited %v, want the 30s ceiling, not the 24h hint", elapsed)
 			}
 		})
 	})
