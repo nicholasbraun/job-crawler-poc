@@ -268,4 +268,54 @@ func TestRedisFrontier(t *testing.T) {
 			t.Errorf("f2 pop: got %+v, want %+v (leased URL must not be re-handed)", got, inB)
 		}
 	})
+
+	t.Run("Len counts queued plus in-flight URLs", func(t *testing.T) {
+		runID := uuid.New()
+		f := redisfrontier.New(client, runID)
+
+		// A run with no keys reports 0.
+		if n, err := redisfrontier.Len(t.Context(), client, runID); err != nil {
+			t.Fatalf("Len empty: %v", err)
+		} else if n != 0 {
+			t.Errorf("empty frontier: want 0, got %d", n)
+		}
+
+		// Three URLs across two domains, all queued.
+		for _, u := range []crawler.URL{
+			url("a", "http://a/1", 0),
+			url("a", "http://a/2", 0),
+			url("b", "http://b/1", 0),
+		} {
+			if err := f.AddURL(t.Context(), u); err != nil {
+				t.Fatalf("AddURL: %v", err)
+			}
+		}
+		if n, err := redisfrontier.Len(t.Context(), client, runID); err != nil {
+			t.Fatalf("Len queued: %v", err)
+		} else if n != 3 {
+			t.Errorf("three queued urls: want 3, got %d", n)
+		}
+
+		// Leasing one URL (not yet MarkDone) moves it from a queue to the
+		// in-flight processing set; the total is unchanged.
+		leased, err := f.Next(t.Context())
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		if n, err := redisfrontier.Len(t.Context(), client, runID); err != nil {
+			t.Fatalf("Len with lease: %v", err)
+		} else if n != 3 {
+			t.Errorf("two queued + one in-flight: want 3, got %d", n)
+		}
+
+		// Marking it done drops it from the frontier entirely.
+		if err := f.MarkDone(t.Context(), leased.RawURL); err != nil {
+			t.Fatalf("MarkDone: %v", err)
+		}
+		if n, err := redisfrontier.Len(t.Context(), client, runID); err != nil {
+			t.Fatalf("Len after done: %v", err)
+		} else if n != 2 {
+			t.Errorf("after marking one done: want 2, got %d", n)
+		}
+	})
 }

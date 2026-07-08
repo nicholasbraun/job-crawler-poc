@@ -55,3 +55,31 @@ func (r *CareerPageRepository) ListURLs(ctx context.Context) ([]string, error) {
 
 	return urls, nil
 }
+
+// List returns every catalogued Career Page as a full entity, most-recently-seen
+// first. CompanyID is included so the dashboard can group pages under their
+// Company.
+func (r *CareerPageRepository) List(ctx context.Context) ([]*crawler.CareerPage, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, company_id, url, politeness_domain, first_seen, last_seen
+		FROM career_page ORDER BY last_seen DESC
+		`)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: error listing career pages: %w", err)
+	}
+	defer rows.Close()
+
+	pages := []*crawler.CareerPage{}
+	for rows.Next() {
+		p := &crawler.CareerPage{}
+		if err := rows.Scan(
+			&p.ID, &p.CompanyID, &p.URL, &p.PolitenessDomain,
+			&p.FirstSeen, &p.LastSeen,
+		); err != nil {
+			return nil, fmt.Errorf("postgres: error scanning career page: %w", err)
+		}
+		pages = append(pages, p)
+	}
+
+	return pages, rows.Err()
+}

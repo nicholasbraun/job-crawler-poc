@@ -33,4 +33,8 @@ type CompanyRepository interface {
 	// refreshes its mutable fields and advances last_seen while preserving
 	// first_seen. It writes the row's id back into c.ID.
 	Upsert(ctx context.Context, c *Company) error
+
+	// List returns every catalogued Company, most-recently-seen first. It never
+	// returns nil; an empty Catalog yields an empty slice.
+	List(ctx context.Context) ([]*Company, error)
 }

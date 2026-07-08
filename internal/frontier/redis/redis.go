@@ -248,6 +248,45 @@ func DeleteRun(ctx context.Context, client *redis.Client, runID uuid.UUID) error
 	}
 }
 
+// Len reports the size of a run's frontier: the number of URLs still waiting to
+// be crawled. That is the sum of every per-domain queue (the frontier:{runID}:q:*
+// LISTs) plus the in-flight leases (the processing ZSET) — URLs handed out to a
+// worker but not yet marked done, which a crash would return to the queues. It
+// mirrors DeleteRun: a package function (the API has no per-run Frontier
+// instance) that uses SCAN, not KEYS, so it never blocks Redis on a large
+// keyspace. A run with no keys reports 0.
+func Len(ctx context.Context, client *redis.Client, runID uuid.UUID) (int64, error) {
+	keyPrefix := "frontier:" + runID.String() + ":"
+	queuePattern := keyPrefix + "q:*"
+
+	var total int64
+	var cursor uint64
+	for {
+		keys, next, err := client.Scan(ctx, cursor, queuePattern, 100).Result()
+		if err != nil {
+			return 0, fmt.Errorf("frontier: scanning queue keys: %w", err)
+		}
+		for _, key := range keys {
+			n, err := client.LLen(ctx, key).Result()
+			if err != nil {
+				return 0, fmt.Errorf("frontier: measuring queue %q: %w", key, err)
+			}
+			total += n
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+
+	inflight, err := client.ZCard(ctx, keyPrefix+"processing").Result()
+	if err != nil {
+		return 0, fmt.Errorf("frontier: counting in-flight leases: %w", err)
+	}
+
+	return total + inflight, nil
+}
+
 // AddURL dedups and enqueues a URL in a single atomic script. An already-seen
 // URL is a silent no-op (returns nil). Returns frontier.ErrMaxDepth if the URL
 // is too deep, or frontier.ErrMaxDomainLimit if it introduces a domain past the

@@ -98,6 +98,44 @@ func TestCompanyRepository(t *testing.T) {
 			t.Errorf("self-hosted ats_provider should be NULL, got %q", *atsProvider)
 		}
 	})
+
+	t.Run("List returns every company and surfaces NULL ats_provider as empty", func(t *testing.T) {
+		companies, err := repo.List(t.Context())
+		if err != nil {
+			t.Fatalf("error listing companies: %v", err)
+		}
+		// Prior subtests inserted acme (updated), globex, and initech.
+		if len(companies) != 3 {
+			t.Fatalf("want 3 companies, got %d", len(companies))
+		}
+
+		byKey := map[string]*crawler.Company{}
+		for _, c := range companies {
+			byKey[c.CompanyKey] = c
+		}
+		if selfHosted := byKey["initech.com"]; selfHosted == nil {
+			t.Fatal("initech.com missing from list")
+		} else if selfHosted.ATSProvider != "" {
+			t.Errorf("self-hosted ats_provider should be empty, got %q", selfHosted.ATSProvider)
+		}
+		if acme := byKey["greenhouse:acme"]; acme == nil || acme.ATSProvider != "greenhouse" {
+			t.Errorf("greenhouse:acme should carry its provider, got %+v", acme)
+		}
+	})
+
+	t.Run("List returns an empty non-nil slice on an empty catalog", func(t *testing.T) {
+		emptyRepo := postgres.NewCompanyRepository(newTestPool(t))
+		companies, err := emptyRepo.List(t.Context())
+		if err != nil {
+			t.Fatalf("error listing companies: %v", err)
+		}
+		if companies == nil {
+			t.Error("want empty non-nil slice, got nil")
+		}
+		if len(companies) != 0 {
+			t.Errorf("want 0 companies, got %d", len(companies))
+		}
+	})
 }
 
 func companyTimestamps(t *testing.T, pool *pgxpool.Pool, companyKey string) (firstSeen, lastSeen time.Time) {

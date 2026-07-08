@@ -36,4 +36,10 @@ type JobListingRepository interface {
 	// inserting a duplicate.
 	Save(ctx context.Context, definitionID uuid.UUID, jobListing *JobListing) error
 	Find(ctx context.Context) ([]*JobListing, error)
+	// FindByDefinition returns the listings extracted under definitionID,
+	// most-recently-seen first. When keyword is non-empty it is matched
+	// case-insensitively against the listing title and description; an empty
+	// keyword applies no such filter. It never returns nil; no matches yields
+	// an empty slice.
+	FindByDefinition(ctx context.Context, definitionID uuid.UUID, keyword string) ([]*JobListing, error)
 }

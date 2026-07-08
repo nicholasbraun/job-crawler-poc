@@ -84,6 +84,45 @@ func (r *JobListingRepository) Find(ctx context.Context) ([]*crawler.JobListing,
 	return jobListings, rows.Err()
 }
 
+// FindByDefinition returns the listings saved under definitionID, most-recently
+// -seen first. A non-empty keyword filters to listings whose title or
+// description contains it, case-insensitively (an ILIKE substring match); an
+// empty keyword returns all of the definition's listings.
+func (r *JobListingRepository) FindByDefinition(ctx context.Context, definitionID uuid.UUID, keyword string) ([]*crawler.JobListing, error) {
+	// The keyword branches the WHERE clause rather than always binding a
+	// pattern, so the common "no keyword" case is a plain definition_id scan.
+	query := `
+		SELECT company, url, title, description, location, remote, tech_stack
+		FROM job_listing
+		WHERE definition_id = $1`
+	args := []any{definitionID}
+	if keyword != "" {
+		query += ` AND (title ILIKE $2 OR description ILIKE $2)`
+		args = append(args, "%"+keyword+"%")
+	}
+	query += ` ORDER BY last_seen DESC`
+
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: error finding job listings by definition: %w", err)
+	}
+	defer rows.Close()
+
+	jobListings := []*crawler.JobListing{}
+	for rows.Next() {
+		jl := &crawler.JobListing{}
+		if err := rows.Scan(
+			&jl.Company, &jl.URL, &jl.Title, &jl.Description,
+			&jl.Location, &jl.Remote, &jl.TechStack,
+		); err != nil {
+			return nil, fmt.Errorf("postgres: error scanning job listing: %w", err)
+		}
+		jobListings = append(jobListings, jl)
+	}
+
+	return jobListings, rows.Err()
+}
+
 // contentHash returns a hex-encoded SHA-256 over the listing's meaningful
 // fields, so an upsert can record whether the extracted content changed.
 func contentHash(jl *crawler.JobListing) string {

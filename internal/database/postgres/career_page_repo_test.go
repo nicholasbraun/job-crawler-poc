@@ -109,6 +109,32 @@ func TestCareerPageRepository(t *testing.T) {
 			}
 		}
 	})
+
+	// Runs after the upserts above, so the Catalog holds both career pages.
+	t.Run("List returns full entities including company_id", func(t *testing.T) {
+		pages, err := repo.List(t.Context())
+		if err != nil {
+			t.Fatalf("error listing career pages: %v", err)
+		}
+		if len(pages) != 2 {
+			t.Fatalf("want 2 career pages, got %d", len(pages))
+		}
+
+		byURL := map[string]*crawler.CareerPage{}
+		for _, p := range pages {
+			byURL[p.URL] = p
+		}
+		if acmePage := byURL[acmeURL]; acmePage == nil {
+			t.Fatalf("%q missing from list", acmeURL)
+		} else if acmePage.CompanyID != acme.ID {
+			t.Errorf("acme page company_id: want %v, got %v", acme.ID, acmePage.CompanyID)
+		}
+		if globexPage := byURL["https://boards.greenhouse.io/globex/jobs/2"]; globexPage == nil {
+			t.Error("globex page missing from list")
+		} else if globexPage.PolitenessDomain != "boards.greenhouse.io" {
+			t.Errorf("globex politeness_domain: want boards.greenhouse.io, got %q", globexPage.PolitenessDomain)
+		}
+	})
 }
 
 func TestCareerPageRepositoryListURLsEmpty(t *testing.T) {

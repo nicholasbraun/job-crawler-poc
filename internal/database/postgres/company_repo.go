@@ -48,3 +48,35 @@ func (r *CompanyRepository) Upsert(ctx context.Context, c *crawler.Company) erro
 
 	return nil
 }
+
+// List returns every catalogued Company, most-recently-seen first. ats_provider
+// is nullable in the schema (self-hosted companies store NULL); a NULL is
+// surfaced as the empty string, matching how Upsert encodes it.
+func (r *CompanyRepository) List(ctx context.Context) ([]*crawler.Company, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, company_key, ats_provider, display_domain, name, first_seen, last_seen
+		FROM company ORDER BY last_seen DESC
+		`)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: error listing companies: %w", err)
+	}
+	defer rows.Close()
+
+	companies := []*crawler.Company{}
+	for rows.Next() {
+		c := &crawler.Company{}
+		var atsProvider *string
+		if err := rows.Scan(
+			&c.ID, &c.CompanyKey, &atsProvider, &c.DisplayDomain, &c.Name,
+			&c.FirstSeen, &c.LastSeen,
+		); err != nil {
+			return nil, fmt.Errorf("postgres: error scanning company: %w", err)
+		}
+		if atsProvider != nil {
+			c.ATSProvider = *atsProvider
+		}
+		companies = append(companies, c)
+	}
+
+	return companies, rows.Err()
+}

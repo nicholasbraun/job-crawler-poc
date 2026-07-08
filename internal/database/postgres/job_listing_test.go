@@ -105,6 +105,54 @@ func TestJobListingRepository(t *testing.T) {
 			t.Fatalf("distinct definition_id + same url should be 2 rows, got %d", len(listings))
 		}
 	})
+
+	t.Run("FindByDefinition scopes to one definition", func(t *testing.T) {
+		got, err := repo.FindByDefinition(t.Context(), defA, "")
+		if err != nil {
+			t.Fatalf("error finding by definition: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("want 1 listing for defA, got %d", len(got))
+		}
+		if got[0].URL != listing.URL {
+			t.Errorf("want url %q, got %q", listing.URL, got[0].URL)
+		}
+	})
+
+	t.Run("FindByDefinition filters by keyword over title and description", func(t *testing.T) {
+		// defA's listing has title "Staff Software Engineer" and a description
+		// mentioning Netflix; both are matched case-insensitively.
+		if got, err := repo.FindByDefinition(t.Context(), defA, "STAFF"); err != nil {
+			t.Fatalf("error finding by keyword: %v", err)
+		} else if len(got) != 1 {
+			t.Errorf("title keyword should match; want 1, got %d", len(got))
+		}
+
+		if got, err := repo.FindByDefinition(t.Context(), defA, "netflix"); err != nil {
+			t.Fatalf("error finding by keyword: %v", err)
+		} else if len(got) != 1 {
+			t.Errorf("description keyword should match; want 1, got %d", len(got))
+		}
+
+		if got, err := repo.FindByDefinition(t.Context(), defA, "nonexistent"); err != nil {
+			t.Fatalf("error finding by keyword: %v", err)
+		} else if len(got) != 0 {
+			t.Errorf("non-matching keyword should return none; got %d", len(got))
+		}
+	})
+
+	t.Run("FindByDefinition returns empty (non-nil) for an unknown definition", func(t *testing.T) {
+		got, err := repo.FindByDefinition(t.Context(), uuid.New(), "")
+		if err != nil {
+			t.Fatalf("error finding by definition: %v", err)
+		}
+		if got == nil {
+			t.Error("want empty non-nil slice, got nil")
+		}
+		if len(got) != 0 {
+			t.Errorf("want 0 listings, got %d", len(got))
+		}
+	})
 }
 
 // createDefinition inserts a minimal crawl definition (job_listing.definition_id

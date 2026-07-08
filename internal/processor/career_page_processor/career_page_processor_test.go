@@ -24,6 +24,10 @@ func (r *spyCompanyRepo) Upsert(ctx context.Context, c *crawler.Company) error {
 	return nil
 }
 
+func (r *spyCompanyRepo) List(ctx context.Context) ([]*crawler.Company, error) {
+	return r.upserted, nil
+}
+
 type spyCareerPageRepo struct {
 	upserted []*crawler.CareerPage
 }
@@ -40,6 +44,10 @@ func (r *spyCareerPageRepo) ListURLs(ctx context.Context) ([]string, error) {
 		urls = append(urls, p.URL)
 	}
 	return urls, nil
+}
+
+func (r *spyCareerPageRepo) List(ctx context.Context) ([]*crawler.CareerPage, error) {
+	return r.upserted, nil
 }
 
 type spyConfirmer struct {

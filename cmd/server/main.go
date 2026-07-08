@@ -126,16 +126,29 @@ func main() {
 		slog.Error("error reconciling interrupted runs", "err", err)
 	}
 
-	apiHandler := api.New(crawlRunner, runRepository, defRepository, api.Defaults{
-		MaxDepth:   cfg.MaxDepth,
-		MaxDomains: cfg.MaxDomains,
-		URLFilter: crawler.URLFilterConfig{
-			AllowedTLDs:         cfg.AllowedTLDs,
-			BlockedSubdomains:   cfg.BlockedSubdomains,
-			BlockedPathSegments: cfg.BlockedPathSegments,
-			BlockedHostnames:    cfg.BlockedHostnames,
-			PassSubdomains:      cfg.PassSubdomains,
-			PassPathSegments:    cfg.PassPathSegments,
+	apiHandler := api.New(api.Config{
+		Runner:      crawlRunner,
+		Runs:        runRepository,
+		Definitions: defRepository,
+		Companies:   companyRepository,
+		CareerPages: careerPageRepository,
+		Listings:    jobListingRepository,
+		// Frontier size is a live Redis read, kept out of the api package so it
+		// stays decoupled from Redis (mirrors runner.WithFrontierCleaner).
+		FrontierSizer: func(ctx context.Context, runID uuid.UUID) (int64, error) {
+			return redisfrontier.Len(ctx, redisClient, runID)
+		},
+		Defaults: api.Defaults{
+			MaxDepth:   cfg.MaxDepth,
+			MaxDomains: cfg.MaxDomains,
+			URLFilter: crawler.URLFilterConfig{
+				AllowedTLDs:         cfg.AllowedTLDs,
+				BlockedSubdomains:   cfg.BlockedSubdomains,
+				BlockedPathSegments: cfg.BlockedPathSegments,
+				BlockedHostnames:    cfg.BlockedHostnames,
+				PassSubdomains:      cfg.PassSubdomains,
+				PassPathSegments:    cfg.PassPathSegments,
+			},
 		},
 	})
 

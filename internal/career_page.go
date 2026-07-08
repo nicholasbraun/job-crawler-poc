@@ -32,6 +32,12 @@ type CareerPageRepository interface {
 	// ListURLs returns every catalogued Career Page URL. A Keyword Crawl calls
 	// this at run start to seed the Frontier from the Catalog.
 	ListURLs(ctx context.Context) ([]string, error)
+
+	// List returns every catalogued Career Page as a full entity (including
+	// CompanyID so the dashboard can group pages under their Company),
+	// most-recently-seen first. It never returns nil; an empty Catalog yields
+	// an empty slice.
+	List(ctx context.Context) ([]*CareerPage, error)
 }
 
 // RawCareerPage is a candidate Career Page emitted by the discovery pool for
