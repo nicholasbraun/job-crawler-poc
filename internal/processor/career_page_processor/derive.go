@@ -62,6 +62,20 @@ func nameFallback(identity catalog.Identity) string {
 	return identity.CompanyKey
 }
 
+// companyNameFrom derives the company name for a career page, preferring the
+// page's structured data over the HTML <title>. The <title> is unreliable on
+// individual job postings, nav sections, and job boards (where it names the
+// board, not the employer), so a JSON-LD company name -- a JobPosting's
+// hiringOrganization, else a standalone Organization node -- wins when present.
+// The title heuristic (companyName) is the fallback, and the tenant slug
+// (fallback) the last resort.
+func companyNameFrom(content *crawler.Content, fallback string) string {
+	if name := organizationName(content.JSONLD); name != "" {
+		return name
+	}
+	return companyName(content.Title, fallback)
+}
+
 // companyName derives a human-readable company name from a career-page title by
 // stripping common board boilerplate. It falls back to fallback (the tenant
 // slug) when nothing usable remains.
@@ -180,6 +194,104 @@ func isJobPostingType(t any) bool {
 		}
 	}
 	return false
+}
+
+// organizationName scans JSON-LD blocks for a company name, preferring a
+// JobPosting's hiringOrganization (on a job board this is the employer, not the
+// board) over a standalone Organization node. The two-pass search lets a
+// hiringOrganization anywhere on the page win over an Organization node that may
+// merely describe the hosting site. Returns "" when neither is present.
+func organizationName(blocks []string) string {
+	for _, block := range blocks {
+		var v any
+		if err := json.Unmarshal([]byte(block), &v); err != nil {
+			continue
+		}
+		if name := hiringOrganizationName(v); name != "" {
+			return name
+		}
+	}
+	for _, block := range blocks {
+		var v any
+		if err := json.Unmarshal([]byte(block), &v); err != nil {
+			continue
+		}
+		if name := standaloneOrganizationName(v); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+// hiringOrganizationName walks a decoded JSON-LD value (including any @graph) and
+// returns the name of the first JobPosting hiringOrganization it finds.
+func hiringOrganizationName(v any) string {
+	switch node := v.(type) {
+	case []any:
+		for _, item := range node {
+			if name := hiringOrganizationName(item); name != "" {
+				return name
+			}
+		}
+	case map[string]any:
+		if graph, ok := node["@graph"]; ok {
+			if name := hiringOrganizationName(graph); name != "" {
+				return name
+			}
+		}
+		if org, ok := node["hiringOrganization"]; ok {
+			if name := nameFromOrgValue(org); name != "" {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+// standaloneOrganizationName walks a decoded JSON-LD value (including any @graph)
+// and returns the name of the first top-level Organization node it finds.
+func standaloneOrganizationName(v any) string {
+	switch node := v.(type) {
+	case []any:
+		for _, item := range node {
+			if name := standaloneOrganizationName(item); name != "" {
+				return name
+			}
+		}
+	case map[string]any:
+		if graph, ok := node["@graph"]; ok {
+			if name := standaloneOrganizationName(graph); name != "" {
+				return name
+			}
+		}
+		if isOrganizationType(node["@type"]) {
+			if name := nameFromOrgValue(node); name != "" {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+// nameFromOrgValue extracts the "name" from a JSON-LD organization value, which
+// is normally an object carrying a "name", but may be a bare string (the name
+// itself) or an array of either.
+func nameFromOrgValue(v any) string {
+	switch val := v.(type) {
+	case string:
+		return strings.TrimSpace(val)
+	case map[string]any:
+		if s, ok := val["name"].(string); ok {
+			return strings.TrimSpace(s)
+		}
+	case []any:
+		for _, item := range val {
+			if name := nameFromOrgValue(item); name != "" {
+				return name
+			}
+		}
+	}
+	return ""
 }
 
 // organizationDomain scans JSON-LD blocks for an Organization (or a

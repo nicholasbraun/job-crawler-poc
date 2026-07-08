@@ -34,6 +34,80 @@ func TestCompanyName(t *testing.T) {
 	}
 }
 
+func TestOrganizationName(t *testing.T) {
+	tests := []struct {
+		name   string
+		blocks []string
+		want   string
+	}{
+		{"nil blocks", nil, ""},
+		{"no usable node", []string{`{"@type":"WebPage"}`}, ""},
+		{
+			"hiringOrganization name",
+			[]string{`{"@type":"JobPosting","hiringOrganization":{"@type":"Organization","name":"paretos GmbH"}}`},
+			"paretos GmbH",
+		},
+		{
+			"hiringOrganization inside @graph",
+			[]string{`{"@graph":[{"@type":"WebSite"},{"@type":"JobPosting","hiringOrganization":{"name":"Acme"}}]}`},
+			"Acme",
+		},
+		{
+			"standalone Organization name",
+			[]string{`{"@type":"Organization","name":"Slack"}`},
+			"Slack",
+		},
+		{
+			"hiringOrganization wins over a site Organization node",
+			[]string{
+				`{"@type":"Organization","name":"join.com"}`,
+				`{"@type":"JobPosting","hiringOrganization":{"@type":"Organization","name":"paretos GmbH"}}`,
+			},
+			"paretos GmbH",
+		},
+		{
+			"hiringOrganization as a bare string",
+			[]string{`{"@type":"JobPosting","hiringOrganization":"xAI"}`},
+			"xAI",
+		},
+		{"name is trimmed", []string{`{"@type":"Organization","name":"  Remote  "}`}, "Remote"},
+		{"malformed json is skipped", []string{`{not json`, `{"@type":"Organization","name":"Globex"}`}, "Globex"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := organizationName(tt.blocks); got != tt.want {
+				t.Errorf("organizationName(%v) = %q, want %q", tt.blocks, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCompanyNameFrom(t *testing.T) {
+	t.Run("JSON-LD company name is preferred over the title", func(t *testing.T) {
+		content := &crawler.Content{
+			Title:  "Referent*in Politik (m/w/d)",
+			JSONLD: []string{`{"@type":"JobPosting","hiringOrganization":{"name":"softgarden"}}`},
+		}
+		if got := companyNameFrom(content, "softgarden.io"); got != "softgarden" {
+			t.Errorf("companyNameFrom = %q, want softgarden", got)
+		}
+	})
+
+	t.Run("falls back to the title heuristic when no JSON-LD name", func(t *testing.T) {
+		content := &crawler.Content{Title: "Acme Careers"}
+		if got := companyNameFrom(content, "acme"); got != "Acme" {
+			t.Errorf("companyNameFrom = %q, want Acme", got)
+		}
+	})
+
+	t.Run("falls back to the tenant slug when nothing is usable", func(t *testing.T) {
+		content := &crawler.Content{Title: "Careers"}
+		if got := companyNameFrom(content, "acme"); got != "acme" {
+			t.Errorf("companyNameFrom = %q, want acme", got)
+		}
+	})
+}
+
 func TestHasJobPostingJSONLD(t *testing.T) {
 	tests := []struct {
 		name   string

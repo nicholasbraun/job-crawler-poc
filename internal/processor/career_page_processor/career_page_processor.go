@@ -79,7 +79,7 @@ func (w *CareerPageProcessor) Process(ctx context.Context, raw *crawler.RawCaree
 		CompanyKey:    identity.CompanyKey,
 		ATSProvider:   identity.ATSProvider,
 		DisplayDomain: companyDomain(identity, &raw.Content),
-		Name:          companyName(raw.Content.Title, nameFallback(identity)),
+		Name:          companyNameFrom(&raw.Content, nameFallback(identity)),
 	}
 	if err := w.companyRepository.Upsert(ctx, company); err != nil {
 		return fmt.Errorf("career_page_processor: error upserting company %s: %w", identity.CompanyKey, err)
