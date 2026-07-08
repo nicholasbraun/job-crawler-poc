@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -66,10 +67,34 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Best-effort .env load for local development (OPENROUTER_API_KEY,
-	// DATABASE_URL). Missing file is fine if the vars are set in the environment.
+	// Best-effort .env load for local development (LLM_API_KEY, DATABASE_URL).
+	// Missing file is fine if the vars are set in the environment.
 	_ = godotenv.Load()
-	openrouterAPIKey := os.Getenv("OPENROUTER_API_KEY")
+
+	// The classifier/extractor talk to any OpenAI-compatible chat API. Leave
+	// LLM_BASE_URL/LLM_MODEL unset for OpenRouter's defaults, or point them at a
+	// local server, e.g. LLM_BASE_URL=http://localhost:11434/v1/chat/completions
+	// with LLM_MODEL=qwen3.5:9b for a local Ollama.
+	//
+	// LLM_TIMEOUT and LLM_MAX_WORKERS default to values tuned for a local model:
+	// a long per-request timeout (a laptop model generates serially, so queued
+	// requests wait) and few concurrent workers (matching that serialization
+	// avoids a deep server-side queue that would blow the timeout). Raise both
+	// for a fast, highly-parallel cloud API.
+	llmTimeout, err := time.ParseDuration(envOr("LLM_TIMEOUT", "5m"))
+	if err != nil {
+		log.Fatalf("error parsing LLM_TIMEOUT: %v", err)
+	}
+	llmMaxWorkers, err := strconv.Atoi(envOr("LLM_MAX_WORKERS", "2"))
+	if err != nil || llmMaxWorkers < 1 {
+		log.Fatalf("error parsing LLM_MAX_WORKERS: must be a positive integer, got %q", os.Getenv("LLM_MAX_WORKERS"))
+	}
+	llmConfig := openrouter.Config{
+		APIKey:  os.Getenv("LLM_API_KEY"),
+		BaseURL: os.Getenv("LLM_BASE_URL"),
+		Model:   os.Getenv("LLM_MODEL"),
+		Timeout: llmTimeout,
+	}
 
 	var logLevel slog.LevelVar
 	if err := logLevel.UnmarshalText([]byte(envOr("LOG_LEVEL", defaultLogLevel))); err != nil {
@@ -111,7 +136,7 @@ func main() {
 	defRepository := postgres.NewCrawlDefinitionRepository(pgPool)
 	runRepository := postgres.NewCrawlRunRepository(pgPool)
 
-	factory := newFactory(defaultMaxWorkers, openrouterAPIKey, redisClient,
+	factory := newFactory(defaultMaxWorkers, llmMaxWorkers, llmConfig, redisClient,
 		jobListingRepository, companyRepository, careerPageRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory,
 		runner.WithFrontierCleaner(func(ctx context.Context, runID uuid.UUID) error {
@@ -188,7 +213,8 @@ func main() {
 // here and shared across runs; per-run state (frontier, pools) is built inside.
 func newFactory(
 	maxWorkers int,
-	openrouterAPIKey string,
+	llmMaxWorkers int,
+	llmConfig openrouter.Config,
 	redisClient *redis.Client,
 	jobListingRepository crawler.JobListingRepository,
 	companyRepository crawler.CompanyRepository,
@@ -202,8 +228,8 @@ func newFactory(
 	robotsTxtDownloader := robotstxt.NewRobotsTxtDownloader(userAgent)
 	robotsTxtChecker := robotstxt.NewChecker(robotsTxtParser, robotsTxtDownloader)
 
-	jobListingExtractor := openrouter.NewJobListingExtractor(openrouterAPIKey)
-	careerPageConfirmer := openrouter.NewCareerPageClassifier(openrouterAPIKey)
+	jobListingExtractor := openrouter.NewJobListingExtractor(llmConfig)
+	careerPageConfirmer := openrouter.NewCareerPageClassifier(llmConfig)
 
 	contentFilter := filter.Chain[*crawler.Content]() // empty chain = pass everything
 
@@ -237,7 +263,7 @@ func newFactory(
 						CareerPageRepository: careerPageRepository,
 						Confirmer:            careerPageConfirmer,
 					})
-				})
+				}, pool.WithMaxWorkers[crawler.RawCareerPage](llmMaxWorkers))
 
 			// Counter tap: a gate-passing page becomes a catalog candidate.
 			// ListingsFound is reused as "catalog entries found" in Step 5.
@@ -321,7 +347,7 @@ func newFactory(
 					JobListingExtractor:  jobListingExtractor,
 					DefinitionID:         def.ID,
 				})
-			})
+			}, pool.WithMaxWorkers[crawler.RawJobListing](llmMaxWorkers))
 
 		// Counter tap: a matching page found becomes a job listing.
 		onJobListing := func(ctx context.Context, jl *crawler.RawJobListing) error {

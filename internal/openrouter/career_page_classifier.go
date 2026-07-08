@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 )
@@ -46,13 +45,18 @@ type careerPageConfirmation struct {
 // discovery scale.
 type CareerPageClassifier struct {
 	apiKey     string
+	baseURL    string
+	model      string
 	httpClient *http.Client
 }
 
-func NewCareerPageClassifier(apiKey string) *CareerPageClassifier {
+func NewCareerPageClassifier(cfg Config) *CareerPageClassifier {
+	cfg = cfg.withDefaults()
 	return &CareerPageClassifier{
-		apiKey:     apiKey,
-		httpClient: &http.Client{Timeout: 60 * time.Second},
+		apiKey:     cfg.APIKey,
+		baseURL:    cfg.BaseURL,
+		model:      cfg.Model,
+		httpClient: &http.Client{Timeout: cfg.Timeout},
 	}
 }
 
@@ -68,17 +72,18 @@ func (c *CareerPageClassifier) Confirm(ctx context.Context, url string, content 
 		untrustedClose,
 	)
 	reqBody := chatRequest{
-		Model: "openai/gpt-5.4-nano",
+		Model: c.model,
 		Messages: []message{
 			{"system", careerPagePrompt},
 			{"user", userContent},
 		},
+		ResponseFormat: jsonObjectFormat,
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return false, fmt.Errorf("error marshaling request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openrouterAPIURL, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return false, fmt.Errorf("error creating request: %w", err)
 	}

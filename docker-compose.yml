@@ -4,7 +4,11 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - LLM_MODEL=${LLM_MODEL}
+      - LLM_TIMEOUT=${LLM_TIMEOUT}
+      - LLM_MAX_WORKERS=${LLM_MAX_WORKERS}
       - DATABASE_URL=postgres://crawler:crawler@postgres:5432/crawler?sslmode=disable
       - REDIS_ADDR=redis:6379
     depends_on:

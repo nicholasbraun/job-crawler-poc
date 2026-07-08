@@ -64,7 +64,10 @@ goimports -w .
 
 The server reads configuration from the environment (a `.env` file is loaded via
 `godotenv` if present): `DATABASE_URL` (Postgres DSN), `REDIS_ADDR` (defaults to
-`localhost:6379`), and `OPENROUTER_API_KEY` for the LLM classifier/extractor.
+`localhost:6379`), and `LLM_API_KEY` for the LLM classifier/extractor. The
+classifier/extractor speak the OpenAI-compatible chat-completions API; override
+`LLM_BASE_URL` and `LLM_MODEL` (defaulting to OpenRouter) to target any
+compatible server, e.g. a local Ollama.
 
 The repo has a `Makefile`, `Dockerfile`, and `docker-compose.yml`. There is no
 CI/CD pipeline or linter configuration.

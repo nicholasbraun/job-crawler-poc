@@ -40,7 +40,17 @@ func sanitizeJobListing(j crawler.JobListing) crawler.JobListing {
 }
 
 const (
-	openrouterAPIURL = "https://openrouter.ai/api/v1/chat/completions"
+	// defaultBaseURL and defaultModel target OpenRouter's hosted API. Override
+	// them (see Config) to point at any OpenAI-compatible endpoint, e.g. a local
+	// Ollama server at http://localhost:11434/v1/chat/completions.
+	defaultBaseURL = "https://openrouter.ai/api/v1/chat/completions"
+	defaultModel   = "openai/gpt-5.4-nano"
+
+	// defaultTimeout is generous because a local model (e.g. Ollama on a laptop)
+	// generates serially: a request can wait in the server's queue behind others
+	// before its first token, and the timeout must cover that whole wait.
+	defaultTimeout = 5 * time.Minute
+
 	openrouterPrompt = `
 	Parse the crawled page text and return only a valid json string with the following fields:
 	- "title": title of the document. Usually the first prominent heading on the page (type: string)
@@ -73,9 +83,44 @@ func sealUntrusted(s string) string {
 	return s
 }
 
+// Config configures an OpenAI-compatible chat completions client. BaseURL and
+// Model default to OpenRouter's endpoint and a small hosted model when empty;
+// set them to run against any OpenAI-compatible server (e.g. a local Ollama).
+// Timeout bounds a single request end-to-end (including time queued on the
+// server) and defaults to defaultTimeout when zero.
+type Config struct {
+	APIKey  string
+	BaseURL string
+	Model   string
+	Timeout time.Duration
+}
+
+func (c Config) withDefaults() Config {
+	if c.BaseURL == "" {
+		c.BaseURL = defaultBaseURL
+	}
+	if c.Model == "" {
+		c.Model = defaultModel
+	}
+	if c.Timeout <= 0 {
+		c.Timeout = defaultTimeout
+	}
+	return c
+}
+
 type chatRequest struct {
-	Model    string    `json:"model"`
-	Messages []message `json:"messages"`
+	Model          string          `json:"model"`
+	Messages       []message       `json:"messages"`
+	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+}
+
+// jsonObjectFormat asks an OpenAI-compatible server to constrain output to a
+// valid JSON object. Ollama enforces this as a token-level grammar so the
+// response is always parseable JSON; OpenRouter honors the same field.
+var jsonObjectFormat = &responseFormat{Type: "json_object"}
+
+type responseFormat struct {
+	Type string `json:"type"`
 }
 
 type message struct {
@@ -95,13 +140,18 @@ type chatResponse struct {
 // and parses the LLM's JSON response into a JobListing.
 type JobListingExtractor struct {
 	apiKey     string
+	baseURL    string
+	model      string
 	httpClient *http.Client
 }
 
-func NewJobListingExtractor(apiKey string) *JobListingExtractor {
+func NewJobListingExtractor(cfg Config) *JobListingExtractor {
+	cfg = cfg.withDefaults()
 	return &JobListingExtractor{
-		apiKey:     apiKey,
-		httpClient: &http.Client{Timeout: 60 * time.Second},
+		apiKey:     cfg.APIKey,
+		baseURL:    cfg.BaseURL,
+		model:      cfg.Model,
+		httpClient: &http.Client{Timeout: cfg.Timeout},
 	}
 }
 
@@ -110,17 +160,18 @@ func NewJobListingExtractor(apiKey string) *JobListingExtractor {
 // The returned JobListing.URL is set to the source page URL.
 func (jle *JobListingExtractor) Extract(ctx context.Context, raw crawler.RawJobListing) (crawler.JobListing, error) {
 	reqBody := chatRequest{
-		Model: "openai/gpt-5.4-nano",
+		Model: jle.model,
 		Messages: []message{
 			{"system", openrouterPrompt},
 			{"user", fmt.Sprintf("%s\n%s\n%s", untrustedOpen, sealUntrusted(raw.Content.MainContent), untrustedClose)},
 		},
+		ResponseFormat: jsonObjectFormat,
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return crawler.JobListing{}, fmt.Errorf("error marshaling request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openrouterAPIURL, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, jle.baseURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return crawler.JobListing{}, fmt.Errorf("error creating request: %w", err)
 	}

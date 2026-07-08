@@ -55,14 +55,16 @@ Seed URLs → Frontier (Redis) → Orchestrator → Worker Pool → Robots.txt �
 - Go 1.26+
 - Node 24+ (`.nvmrc`) to build the dashboard
 - Docker (for Postgres + Redis, or the full stack via Compose)
-- An [OpenRouter](https://openrouter.ai/) API key
+- An LLM endpoint: an [OpenRouter](https://openrouter.ai/) API key, or any
+  OpenAI-compatible server (e.g. a local [Ollama](https://ollama.com/))
 
 ### Run the whole stack with Docker
 
 ```bash
-# Provide your OpenRouter API key (used for career-page classification and
-# job-listing extraction).
-echo 'OPENROUTER_API_KEY=your-key-here' > .env
+# Provide your LLM credentials (used for career-page classification and
+# job-listing extraction). LLM_BASE_URL/LLM_MODEL are optional and default to
+# OpenRouter; set them to use any OpenAI-compatible server instead.
+echo 'LLM_API_KEY=your-key-here' > .env
 
 # Build the image (dashboard + server) and start crawler + Postgres + Redis +
 # the observability stack.
@@ -81,7 +83,14 @@ docker compose up postgres redis
 # Build the dashboard and server into a single binary (vite build → go build),
 # then run it. Migrations are applied automatically on startup.
 make build
-OPENROUTER_API_KEY=your-key-here ./bin/crawler
+LLM_API_KEY=your-key-here ./bin/crawler
+
+# …or run fully local against Ollama (no API key needed). LLM_TIMEOUT and
+# LLM_MAX_WORKERS already default to local-friendly values (5m / 2), so this is
+# all you need:
+LLM_API_KEY=ollama \
+  LLM_BASE_URL=http://localhost:11434/v1/chat/completions \
+  LLM_MODEL=qwen3.5:9b ./bin/crawler
 ```
 
 For frontend development, `make dev` runs the Vite dev server (proxying `/api` to
@@ -110,7 +119,11 @@ via [godotenv](https://github.com/joho/godotenv)):
 
 | Variable             | Default                                     | Description                          |
 | -------------------- | ------------------------------------------- | ------------------------------------ |
-| `OPENROUTER_API_KEY` | —                                           | OpenRouter key for LLM calls         |
+| `LLM_API_KEY`        | —                                           | Bearer token for the LLM API (any value for Ollama) |
+| `LLM_BASE_URL`       | `https://openrouter.ai/api/v1/chat/completions` | OpenAI-compatible chat completions endpoint     |
+| `LLM_MODEL`          | `openai/gpt-5.4-nano`                       | Model name to request               |
+| `LLM_TIMEOUT`        | `5m`                                        | Per-request timeout (Go duration); covers time queued on the server |
+| `LLM_MAX_WORKERS`    | `2`                                         | Concurrent LLM calls; keep low for a serial local model, raise for a parallel cloud API |
 | `DATABASE_URL`       | `postgres://crawler:crawler@localhost:5432/crawler?sslmode=disable` | Postgres DSN |
 | `REDIS_ADDR`         | `localhost:6379`                            | Redis `host:port`                    |
 | `LOG_LEVEL`          | `INFO`                                      | slog level (DEBUG/INFO/WARN/ERROR)   |
