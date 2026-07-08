@@ -89,6 +89,42 @@ func TestCareerPageRepository(t *testing.T) {
 			t.Errorf("both career pages should share politeness_domain boards.greenhouse.io, got %v", domains)
 		}
 	})
+
+	// Runs after the upserts above, so the Catalog holds both career pages.
+	t.Run("ListURLs returns every catalogued url", func(t *testing.T) {
+		urls, err := repo.ListURLs(t.Context())
+		if err != nil {
+			t.Fatalf("error listing career page urls: %v", err)
+		}
+		want := map[string]bool{
+			acmeURL: true,
+			"https://boards.greenhouse.io/globex/jobs/2": true,
+		}
+		if len(urls) != len(want) {
+			t.Fatalf("want %d urls, got %d: %v", len(want), len(urls), urls)
+		}
+		for _, u := range urls {
+			if !want[u] {
+				t.Errorf("unexpected url in catalog: %q", u)
+			}
+		}
+	})
+}
+
+func TestCareerPageRepositoryListURLsEmpty(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCareerPageRepository(pool)
+
+	urls, err := repo.ListURLs(t.Context())
+	if err != nil {
+		t.Fatalf("error listing career page urls: %v", err)
+	}
+	if urls == nil {
+		t.Fatal("ListURLs must return a non-nil slice, got nil")
+	}
+	if len(urls) != 0 {
+		t.Errorf("empty catalog should yield no urls, got %v", urls)
+	}
 }
 
 func careerPageTimestamps(t *testing.T, pool *pgxpool.Pool, companyID uuid.UUID, url string) (firstSeen, lastSeen time.Time) {

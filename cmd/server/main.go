@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"log/slog"
@@ -196,19 +197,6 @@ func newFactory(
 	careerPageConfirmer := openrouter.NewCareerPageClassifier(openrouterAPIKey)
 
 	contentFilter := filter.Chain[*crawler.Content]() // empty chain = pass everything
-	relevanceFilter := filter.Chain(
-		filter.Every(joblistingfilter.TitleContains(
-			filter.Contains("developer", "engineer", "entwickler"),
-			filter.Contains("golang", "go", "backend", "software"),
-		),
-			joblistingfilter.MainContentContains(
-				filter.Contains("apply", "bewerben"),
-				filter.Contains("golang", "go"),
-				filter.Contains("experience", "erfahrung", "years", "jahre"),
-			),
-		),
-		filter.Reject[*crawler.Content](),
-	)
 
 	return func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *runner.Counters, shouldStop func(context.Context) bool) (*runner.Engine, error) {
 		uf := def.URLFilter
@@ -286,8 +274,32 @@ func newFactory(
 			}, nil
 		}
 
-		// Default (keyword): bounded run that finishes when the frontier drains,
-		// extracting Job Listings via the LLM. Reserved for Step 6.
+		// Keyword: bounded run that finishes when the frontier drains,
+		// extracting Job Listings via the LLM. Unknown kinds are rejected at the
+		// API, so this is the only other real kind.
+		if def.Kind != crawler.CrawlKindKeyword {
+			return nil, fmt.Errorf("unsupported crawl kind: %q", def.Kind)
+		}
+
+		// Seed a Keyword Crawl from the Catalog: every Career Page the Discovery
+		// Crawl catalogued. On re-adoption (Reconcile) re-seeding is a no-op --
+		// the per-run Redis visited set survived the restart and dedups.
+		seedURLs, err := careerPageRepository.ListURLs(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("resolving keyword crawl seeds from catalog: %w", err)
+		}
+
+		// Multi-keyword OR relevance filter built from the Definition: a page is
+		// relevant if its title OR main content contains any keyword. Prunes
+		// pages before the expensive LLM extraction (ADR-0004). A title match
+		// short-circuits via ErrPass; else fall through to the content check;
+		// else Reject.
+		keywordFilter := filter.Chain(
+			joblistingfilter.TitleContains(filter.Contains(def.Keywords...)),
+			joblistingfilter.MainContentContains(filter.Contains(def.Keywords...)),
+			filter.Reject[*crawler.Content](),
+		)
+
 		boundedFrontier := redisfrontier.New(redisClient, runID,
 			redisfrontier.WithMaxDomains(def.MaxDomains),
 			redisfrontier.WithMaxDepth(def.MaxDepth),
@@ -317,7 +329,7 @@ func newFactory(
 					ContentFilter:    contentFilter,
 					URLFilter:        urlFilter,
 					RobotsTxtChecker: robotsTxtChecker,
-					RelevanceFilter:  relevanceFilter,
+					RelevanceFilter:  keywordFilter,
 					OnJobListing:     onJobListing,
 				})
 			}, pool.WithMaxWorkers[crawler.URL](cfg.MaxWorkers))
@@ -336,7 +348,7 @@ func newFactory(
 
 		return &runner.Engine{
 			Orchestrator: o,
-			SeedURLs:     def.SeedURLs,
+			SeedURLs:     seedURLs,
 			// Close order: url pool first (its workers feed the job_listing
 			// pool), then the job_listing pool. Reversing loses listings.
 			Close: func() {

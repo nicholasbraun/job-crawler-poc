@@ -34,6 +34,14 @@ func (r *spyCareerPageRepo) Upsert(ctx context.Context, p *crawler.CareerPage) e
 	return nil
 }
 
+func (r *spyCareerPageRepo) ListURLs(ctx context.Context) ([]string, error) {
+	urls := []string{}
+	for _, p := range r.upserted {
+		urls = append(urls, p.URL)
+	}
+	return urls, nil
+}
+
 type spyConfirmer struct {
 	calls  int
 	result bool

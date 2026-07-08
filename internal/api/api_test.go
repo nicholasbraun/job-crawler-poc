@@ -133,6 +133,60 @@ func TestCreateCrawlRejectsMissingFields(t *testing.T) {
 	}
 }
 
+func TestCreateKeywordCrawl(t *testing.T) {
+	t.Run("keyword crawl needs keywords but not seedUrls", func(t *testing.T) {
+		rnr := &fakeRunner{}
+		defs := &fakeDefRepo{}
+		srv := api.New(rnr, &fakeRunRepo{}, defs, defaults()).Routes()
+
+		body, _ := json.Marshal(map[string]any{
+			"name":     "go-backend",
+			"kind":     "keyword",
+			"keywords": []string{"golang", "backend"},
+		})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status: got %d, want 201; body=%s", rec.Code, rec.Body)
+		}
+		if defs.created == nil || defs.created.Kind != crawler.CrawlKindKeyword {
+			t.Fatalf("expected a keyword definition, got %+v", defs.created)
+		}
+		if len(defs.created.Keywords) != 2 {
+			t.Errorf("keywords not persisted: %+v", defs.created.Keywords)
+		}
+	})
+
+	t.Run("keyword crawl with no keywords is rejected", func(t *testing.T) {
+		srv := api.New(&fakeRunner{}, &fakeRunRepo{}, &fakeDefRepo{}, defaults()).Routes()
+
+		body, _ := json.Marshal(map[string]any{"name": "no keywords", "kind": "keyword"})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status: got %d, want 400", rec.Code)
+		}
+	})
+
+	t.Run("unknown kind is rejected", func(t *testing.T) {
+		srv := api.New(&fakeRunner{}, &fakeRunRepo{}, &fakeDefRepo{}, defaults()).Routes()
+
+		body, _ := json.Marshal(map[string]any{
+			"name":     "bogus",
+			"kind":     "sitemap",
+			"seedUrls": []string{"https://example.com"},
+		})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status: got %d, want 400", rec.Code)
+		}
+	})
+}
+
 func TestGetCrawlNotFound(t *testing.T) {
 	srv := api.New(&fakeRunner{}, &fakeRunRepo{}, &fakeDefRepo{}, defaults()).Routes()
 

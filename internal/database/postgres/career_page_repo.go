@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 )
@@ -37,4 +38,20 @@ func (r *CareerPageRepository) Upsert(ctx context.Context, p *crawler.CareerPage
 	}
 
 	return nil
+}
+
+// ListURLs returns every catalogued Career Page URL, most-recently-seen first.
+// It never returns nil; an empty Catalog yields an empty slice.
+func (r *CareerPageRepository) ListURLs(ctx context.Context) ([]string, error) {
+	rows, err := r.pool.Query(ctx, `SELECT url FROM career_page ORDER BY last_seen DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: error listing career page urls: %w", err)
+	}
+
+	urls, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("postgres: error listing career page urls: %w", err)
+	}
+
+	return urls, nil
 }

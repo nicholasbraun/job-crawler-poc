@@ -92,14 +92,31 @@ func (h *Handler) createCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Name == "" || len(req.SeedURLs) == 0 {
-		writeError(w, http.StatusBadRequest, "name and seedUrls are required")
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
 
 	kind := crawler.CrawlKind(req.Kind)
 	if kind == "" {
 		kind = crawler.CrawlKindDiscovery
+	}
+	switch kind {
+	case crawler.CrawlKindKeyword:
+		// Seeds come from the Catalog, not the request; keywords drive the
+		// relevance filter, so an empty set would reject every page.
+		if len(req.Keywords) == 0 {
+			writeError(w, http.StatusBadRequest, "keywords are required for a keyword crawl")
+			return
+		}
+	case crawler.CrawlKindDiscovery:
+		if len(req.SeedURLs) == 0 {
+			writeError(w, http.StatusBadRequest, "seedUrls are required for a discovery crawl")
+			return
+		}
+	default:
+		writeError(w, http.StatusBadRequest, "unknown crawl kind")
+		return
 	}
 
 	def := &crawler.CrawlDefinition{

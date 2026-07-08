@@ -28,6 +28,10 @@ type CareerPageRepository interface {
 	// exists, refreshes its mutable fields and advances last_seen while
 	// preserving first_seen.
 	Upsert(ctx context.Context, p *CareerPage) error
+
+	// ListURLs returns every catalogued Career Page URL. A Keyword Crawl calls
+	// this at run start to seed the Frontier from the Catalog.
+	ListURLs(ctx context.Context) ([]string, error)
 }
 
 // RawCareerPage is a candidate Career Page emitted by the discovery pool for
