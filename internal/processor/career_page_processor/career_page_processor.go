@@ -57,9 +57,12 @@ func NewProcessor(cfg *Config) *CareerPageProcessor {
 // page already carries a JobPosting JSON-LD), then upserts the owning Company
 // and the Career Page. A candidate the Confirmer rejects is dropped.
 func (w *CareerPageProcessor) Process(ctx context.Context, raw *crawler.RawCareerPage) error {
-	// A structurally-confirmed ATS board root is catalogued directly; a
-	// content-heuristic match on an unrecognized host must clear the LLM first.
-	if !raw.Certain {
+	// Two arms bypass the LLM Confirmer: a structurally-confirmed ATS board root
+	// (raw.Certain), and any page already carrying a schema.org JobPosting
+	// JSON-LD block (the strongest possible signal). Only a content-heuristic
+	// match on an unrecognized host with no such structured data must clear the
+	// LLM first, bounding LLM cost at perpetual discovery scale.
+	if !raw.Certain && !hasJobPostingJSONLD(raw.Content.JSONLD) {
 		ok, err := w.confirmer.Confirm(ctx, raw.URL.RawURL, &raw.Content)
 		if err != nil {
 			return fmt.Errorf("career_page_processor: error confirming career page %s: %w", raw.URL.RawURL, err)

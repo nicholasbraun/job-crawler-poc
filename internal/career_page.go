@@ -45,8 +45,10 @@ type CareerPageRepository interface {
 // the downstream worker can identify the company. Certain reports whether the
 // candidate is a structurally-confirmed Career Page (an ATS board root); when
 // true the career-page pool skips the LLM confirmation, bounding cost at
-// perpetual scale. A false Certain (a content-heuristic match on an
-// unrecognized host) is confirmed by the LLM before it is catalogued.
+// perpetual scale. A false Certain (a content-heuristic match on an unrecognized
+// host) is confirmed by the LLM before it is catalogued -- unless the page
+// carries a schema.org JobPosting JSON-LD block, which is itself a definitive
+// accept that also bypasses the LLM.
 type RawCareerPage struct {
 	URL     URL
 	Content Content

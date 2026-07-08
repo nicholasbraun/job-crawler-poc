@@ -120,6 +120,38 @@ func TestCareerPageProcessorCertainSkipsLLM(t *testing.T) {
 	}
 }
 
+func TestCareerPageProcessorJobPostingJSONLDSkipsLLM(t *testing.T) {
+	companyRepo := &spyCompanyRepo{assignID: uuid.New()}
+	careerPageRepo := &spyCareerPageRepo{}
+	confirmer := &spyConfirmer{result: false} // would reject if consulted
+
+	proc := careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
+		CompanyRepository:    companyRepo,
+		CareerPageRepository: careerPageRepo,
+		Confirmer:            confirmer,
+	})
+
+	// Not structurally certain (self-hosted host), but the page carries a
+	// schema.org JobPosting JSON-LD block -- the strongest signal, which must
+	// bypass the LLM Confirmer and catalogue directly.
+	raw := &crawler.RawCareerPage{
+		URL:     newURL(t, "https://careers.acme.com/jobs"),
+		Content: crawler.Content{Title: "Careers at Acme", JSONLD: []string{`{"@type":"JobPosting"}`}},
+		Certain: false,
+	}
+	if err := proc.Process(t.Context(), raw); err != nil {
+		t.Fatalf("Process returned error: %v", err)
+	}
+
+	if confirmer.calls != 0 {
+		t.Errorf("a page carrying JobPosting JSON-LD should skip the LLM, but Confirm was called %d times", confirmer.calls)
+	}
+	if len(companyRepo.upserted) != 1 || len(careerPageRepo.upserted) != 1 {
+		t.Fatalf("want the candidate catalogued: companies=%d careerPages=%d",
+			len(companyRepo.upserted), len(careerPageRepo.upserted))
+	}
+}
+
 func TestCareerPageProcessorCanonicalizesPostingToBoardRoot(t *testing.T) {
 	companyRepo := &spyCompanyRepo{assignID: uuid.New()}
 	careerPageRepo := &spyCareerPageRepo{}
