@@ -73,7 +73,10 @@ return 'NEW'
 // cooldown(ms), pollInterval(ms). Returns a 2-element table:
 //
 //	{'URL', member}   — a URL to crawl (member is depth\x1fhostname\x1furl)
-//	{'WAIT', wakeMs}   — nothing ready; caller sleeps until wakeMs then retries
+//	{'WAIT', wakeMs}   — nothing ready; caller sleeps until wakeMs then retries.
+//	                     wakeMs is bounded by now+pollInterval and the earliest
+//	                     in-flight lease expiry, so reclaim latency tracks
+//	                     leaseTTL rather than a domain cooldown.
 //	{'DONE'}           — queues empty and no leases in flight
 var nextScript = redis.NewScript(`
 local domains      = KEYS[1]
@@ -85,6 +88,27 @@ local leaseTTL     = tonumber(ARGV[3])
 local cooldown     = tonumber(ARGV[4])
 local pollInterval = tonumber(ARGV[5])
 local sep          = string.char(31)
+
+-- wakeDeadline bounds a WAIT sleep so a live worker re-evaluates Redis at least
+-- once per pollInterval (catching URLs another process added, since there is no
+-- cross-process wakeup signal), and no later than the earliest in-flight lease
+-- expiry so crash-reclaim tracks leaseTTL rather than a domain cooldown. It is
+-- called after the reclaim loop, so every remaining processing score is in the
+-- future. candidate is a concrete domain deadline, or nil when there is none.
+local function wakeDeadline(candidate)
+  local deadline = now + pollInterval
+  if candidate ~= nil and candidate < deadline then
+    deadline = candidate
+  end
+  local proc = redis.call('ZRANGE', processing, 0, 0, 'WITHSCORES')
+  if #proc > 0 then
+    local expiry = tonumber(proc[2])
+    if expiry < deadline then
+      deadline = expiry
+    end
+  end
+  return deadline
+end
 
 -- 1. Reclaim leases whose expiry has passed: re-enqueue the exact member (with
 -- its depth) onto its domain queue and make the domain eligible again.
@@ -116,18 +140,18 @@ end
 
 if bestDomain == nil then
   if redis.call('ZCARD', processing) > 0 then
-    return {'WAIT', tostring(now + pollInterval)}
+    return {'WAIT', tostring(wakeDeadline(nil))}
   end
   return {'DONE'}
 end
 
 if bestScore > now then
-  return {'WAIT', tostring(bestScore)}
+  return {'WAIT', tostring(wakeDeadline(bestScore))}
 end
 
 local member = redis.call('RPOP', queuePrefix .. bestDomain)
 if not member then
-  return {'WAIT', tostring(now + pollInterval)}
+  return {'WAIT', tostring(wakeDeadline(nil))}
 end
 
 redis.call('ZADD', domains, now + cooldown, bestDomain)
