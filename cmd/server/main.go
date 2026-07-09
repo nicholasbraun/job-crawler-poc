@@ -31,6 +31,7 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 	redisfrontier "github.com/nicholasbraun/job-crawler-poc/internal/frontier/redis"
 	"github.com/nicholasbraun/job-crawler-poc/internal/llmobs"
+	"github.com/nicholasbraun/job-crawler-poc/internal/llmstream"
 	"github.com/nicholasbraun/job-crawler-poc/internal/openrouter"
 	"github.com/nicholasbraun/job-crawler-poc/internal/orchestrator"
 	myotel "github.com/nicholasbraun/job-crawler-poc/internal/otel"
@@ -81,7 +82,9 @@ func main() {
 	// a long per-request timeout (a laptop model generates serially, so queued
 	// requests wait) and few concurrent workers (matching that serialization
 	// avoids a deep server-side queue that would blow the timeout). Raise both
-	// for a fast, highly-parallel cloud API.
+	// for a fast, highly-parallel cloud API. LLM_MAX_WORKERS sizes the durable LLM
+	// stage's consumer group (how many goroutines drain the per-run Redis Stream
+	// in parallel), not an in-process pool.
 	llmTimeout, err := time.ParseDuration(envOr("LLM_TIMEOUT", "5m"))
 	if err != nil {
 		log.Fatalf("error parsing LLM_TIMEOUT: %v", err)
@@ -140,8 +143,15 @@ func main() {
 	factory := newFactory(defaultMaxWorkers, llmMaxWorkers, llmConfig, redisClient,
 		jobListingRepository, companyRepository, careerPageRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory,
+		// One cleaner sweeps all of a run's transient Redis state on a terminal
+		// status or factory error: the frontier keys and the LLM stage's streams
+		// (both kinds + dead-letter, via the llmstream:{runID}:* glob). A paused run
+		// (graceful shutdown) is not terminal, so its streams survive for a resumed
+		// run to redeliver.
 		runner.WithFrontierCleaner(func(ctx context.Context, runID uuid.UUID) error {
-			return redisfrontier.DeleteRun(ctx, redisClient, runID)
+			ferr := redisfrontier.DeleteRun(ctx, redisClient, runID)
+			serr := llmstream.DeleteRun(ctx, redisClient, runID)
+			return errors.Join(ferr, serr)
 		}),
 	)
 
@@ -269,21 +279,38 @@ func newFactory(
 				redisfrontier.WithMode(frontier.Perpetual),
 			)
 
-			careerPageWorkerPool := pool.NewPool(
-				ctx, "career_page_worker_pool", func() processor.Processor[crawler.RawCareerPage] {
+			// Durable LLM stage: gate-passing candidates are XADDed onto a per-run
+			// Redis Stream and drained by a consumer group into the career-page
+			// processor, so the crawl never blocks on the classifier and a crash or
+			// restart redelivers rather than loses the candidate (ADR-0007 step 4).
+			classifyStage := llmstream.NewStage(redisClient, runID, llmobs.KindClassify,
+				func() processor.Processor[crawler.RawCareerPage] {
 					return careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
 						CompanyRepository:    companyRepository,
 						CareerPageRepository: careerPageRepository,
 						Confirmer:            careerPageConfirmer,
 						Recorder:             llmRecorder,
 					})
-				}, pool.WithMaxWorkers[crawler.RawCareerPage](llmMaxWorkers))
+				},
+				llmstream.WithWorkers[crawler.RawCareerPage](llmMaxWorkers),
+				llmstream.WithRecorder[crawler.RawCareerPage](llmRecorder),
+				// The reclaim window must exceed one LLM call's timeout: a single
+				// Confirm is bounded by the http client's LLM_TIMEOUT, so a slow but
+				// alive worker still in that call must not have its entry reclaimed
+				// and double-called. Only a truly dead worker sits idle longer.
+				llmstream.WithMinIdle[crawler.RawCareerPage](llmConfig.Timeout+time.Minute),
+			)
+			if err := classifyStage.Start(ctx); err != nil {
+				return nil, fmt.Errorf("starting classify stage: %w", err)
+			}
 
 			// Counter tap: a gate-passing page becomes a catalog candidate.
-			// ListingsFound is reused as "catalog entries found" in Step 5.
+			// ListingsFound is reused as "catalog entries found" in Step 5. Counted
+			// once here on enqueue (not per process) so a redelivery does not
+			// double-count.
 			onCareerPage := func(ctx context.Context, page *crawler.RawCareerPage) error {
 				counters.ListingsFound.Add(1)
-				return careerPageWorkerPool.Enqueue(ctx, page)
+				return classifyStage.Enqueue(ctx, page)
 			}
 
 			discoveryWorkerPool := pool.NewPool(
@@ -314,13 +341,14 @@ func newFactory(
 			return &runner.Engine{
 				Orchestrator: o,
 				SeedURLs:     def.SeedURLs,
-				// Close order: discovery pool first (its workers feed the
-				// career-page pool), then the career-page pool. Reversing loses
-				// in-flight candidates.
+				// Close order: discovery pool first (the producer feeding the
+				// classify stage), then the stage. Closing the producer first means
+				// no new task is XADDed mid-drain; a clean finish then drains the
+				// stream to empty, while a stop/shutdown leaves the PEL for resume.
 				Close: func() {
 					discoveryWorkerPool.Close()
-					careerPageWorkerPool.Close()
-					// All LLM calls for this run are done once the pools drain;
+					classifyStage.Close()
+					// All LLM calls for this run are done once the stage drains;
 					// emit the ADR-0007 measurement summary (ADR-0007 step 1).
 					slog.Info("runner: llm stage summary", append([]any{"run_id", runID}, llmStats.Summary()...)...)
 				},
@@ -358,20 +386,36 @@ func newFactory(
 			redisfrontier.WithMaxDepth(def.MaxDepth),
 		)
 
-		jobListingWorkerPool := pool.NewPool(
-			ctx, "job_listing_worker_pool", func() processor.Processor[crawler.RawJobListing] {
+		// Durable LLM stage: relevance-passing pages are XADDed onto a per-run
+		// Redis Stream and drained by a consumer group into the job-listing
+		// extractor, so the crawl never blocks on the model and a crash or restart
+		// redelivers rather than loses the listing (ADR-0007 step 4, closes #32).
+		extractStage := llmstream.NewStage(redisClient, runID, llmobs.KindExtract,
+			func() processor.Processor[crawler.RawJobListing] {
 				return joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
 					JobListingRepository: jobListingRepository,
 					JobListingExtractor:  jobListingExtractor,
 					DefinitionID:         def.ID,
 					Recorder:             llmRecorder,
 				})
-			}, pool.WithMaxWorkers[crawler.RawJobListing](llmMaxWorkers))
+			},
+			llmstream.WithWorkers[crawler.RawJobListing](llmMaxWorkers),
+			llmstream.WithRecorder[crawler.RawJobListing](llmRecorder),
+			// The reclaim window must exceed one LLM call's timeout: a single
+			// Extract is bounded by the http client's LLM_TIMEOUT, so a slow but
+			// alive worker still in that call must not have its entry reclaimed and
+			// double-called. Only a truly dead worker sits idle longer.
+			llmstream.WithMinIdle[crawler.RawJobListing](llmConfig.Timeout+time.Minute),
+		)
+		if err := extractStage.Start(ctx); err != nil {
+			return nil, fmt.Errorf("starting extract stage: %w", err)
+		}
 
-		// Counter tap: a matching page found becomes a job listing.
+		// Counter tap: a matching page found becomes a job listing. Counted once
+		// here on enqueue (not per process) so a redelivery does not double-count.
 		onJobListing := func(ctx context.Context, jl *crawler.RawJobListing) error {
 			counters.ListingsFound.Add(1)
-			return jobListingWorkerPool.Enqueue(ctx, jl)
+			return extractStage.Enqueue(ctx, jl)
 		}
 
 		urlWorkerPool := pool.NewPool(
@@ -405,12 +449,14 @@ func newFactory(
 		return &runner.Engine{
 			Orchestrator: o,
 			SeedURLs:     seedURLs,
-			// Close order: url pool first (its workers feed the job_listing
-			// pool), then the job_listing pool. Reversing loses listings.
+			// Close order: url pool first (the producer feeding the extract stage),
+			// then the stage. Closing the producer first means no new task is XADDed
+			// mid-drain; a clean finish then drains the stream to empty, while a
+			// stop/shutdown leaves the PEL for resume.
 			Close: func() {
 				urlWorkerPool.Close()
-				jobListingWorkerPool.Close()
-				// All LLM calls for this run are done once the pools drain;
+				extractStage.Close()
+				// All LLM calls for this run are done once the stage drains;
 				// emit the ADR-0007 measurement summary (ADR-0007 step 1).
 				slog.Info("runner: llm stage summary", append([]any{"run_id", runID}, llmStats.Summary()...)...)
 			},

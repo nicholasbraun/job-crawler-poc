@@ -50,6 +50,10 @@ func (s *spyRecorder) Call(_ context.Context, k llmobs.Kind, o llmobs.Outcome, _
 }
 func (s *spyRecorder) Gated(context.Context, llmobs.Kind, llmobs.Reason)  {}
 func (s *spyRecorder) Content(_ context.Context, _ llmobs.Kind, _ string) { s.content++ }
+func (s *spyRecorder) Retry(context.Context, llmobs.Kind)                 {}
+func (s *spyRecorder) DeadLetter(context.Context, llmobs.Kind)            {}
+func (s *spyRecorder) QueueDepth(context.Context, llmobs.Kind, int64, int64) {
+}
 
 func newURL(t *testing.T, raw string) crawler.URL {
 	t.Helper()

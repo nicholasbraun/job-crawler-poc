@@ -58,7 +58,10 @@ func (s *spyRecorder) Call(context.Context, llmobs.Kind, llmobs.Outcome, time.Du
 func (s *spyRecorder) Gated(_ context.Context, _ llmobs.Kind, r llmobs.Reason) {
 	s.gates = append(s.gates, r)
 }
-func (s *spyRecorder) Content(context.Context, llmobs.Kind, string) {}
+func (s *spyRecorder) Content(context.Context, llmobs.Kind, string)          {}
+func (s *spyRecorder) Retry(context.Context, llmobs.Kind)                    {}
+func (s *spyRecorder) DeadLetter(context.Context, llmobs.Kind)               {}
+func (s *spyRecorder) QueueDepth(context.Context, llmobs.Kind, int64, int64) {}
 
 // captureLogs installs a JSON slog handler writing into buf for the duration of
 // fn, then restores the previous default logger.
