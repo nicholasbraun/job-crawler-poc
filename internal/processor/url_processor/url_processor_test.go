@@ -140,6 +140,57 @@ func TestProcessAddURLRejections(t *testing.T) {
 	}
 }
 
+func TestProcessRecordsURLStructureGate(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{name: "career-hub index is gated by URL structure", url: "https://acme.com/careers"},
+		{name: "reject path is gated by URL structure", url: "https://acme.com/blog/hello"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &spyRecorder{}
+			listed := 0
+			cfg := &urlprocessor.Config{
+				Frontier:         &stubFrontier{},
+				Downloader:       &stubDownloader{content: []byte("<html></html>")},
+				Parser:           &stubParser{content: &crawler.Content{Title: "role", MainContent: "body"}},
+				ContentFilter:    func(*crawler.Content) error { return nil },
+				URLFilter:        func(string) error { return nil },
+				RobotsTxtChecker: stubRobots{},
+				// A relevance filter that WOULD pass, to prove the URL-structure gate
+				// short-circuits before keyword relevance.
+				RelevanceFilter: func(*crawler.Content) error { return nil },
+				GateConfig:      crawler.DefaultLLMGateConfig(),
+				OnJobListing:    func(context.Context, *crawler.RawJobListing) error { listed++; return nil },
+				Recorder:        rec,
+			}
+
+			worker := urlprocessor.NewProcessor(cfg)
+			seed, err := crawler.NewURL(tt.url)
+			if err != nil {
+				t.Fatalf("NewURL: %v", err)
+			}
+			if err := worker.Process(t.Context(), &seed); err != nil {
+				t.Fatalf("Process returned error: %v", err)
+			}
+
+			want := []llmobs.Reason{llmobs.ReasonURLStructure}
+			if len(rec.gates) != len(want) {
+				t.Fatalf("recorded gates = %v, want %v", rec.gates, want)
+			}
+			if rec.gates[0] != want[0] {
+				t.Errorf("gate[0] = %v, want %v", rec.gates[0], want[0])
+			}
+			if listed != 0 {
+				t.Errorf("OnJobListing called %d times, want 0 (URL structure gate must short-circuit)", listed)
+			}
+		})
+	}
+}
+
 func TestProcessRecordsRelevanceGate(t *testing.T) {
 	tests := []struct {
 		name      string

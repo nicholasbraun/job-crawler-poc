@@ -240,6 +240,10 @@ func newFactory(
 
 	contentFilter := filter.Chain[*crawler.Content]() // empty chain = pass everything
 
+	// Pre-LLM gate signals (ADR-0007 step 2), shared across runs: cheap URL-path
+	// checks that resolve a page's classifier/extractor verdict without a model call.
+	gateConfig := crawler.DefaultLLMGateConfig()
+
 	return func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *runner.Counters, shouldStop func(context.Context) bool) (*runner.Engine, error) {
 		llmStats := &llmobs.Stats{}
 		llmRecorder := llmobs.NewRecorder(llmMetrics, llmDupProbe, llmStats)
@@ -291,6 +295,7 @@ func newFactory(
 						ContentFilter:    contentFilter,
 						URLFilter:        urlFilter,
 						RobotsTxtChecker: robotsTxtChecker,
+						GateConfig:       gateConfig,
 						OnCareerPage:     onCareerPage,
 					})
 				}, pool.WithMaxWorkers[crawler.URL](maxWorkers))
@@ -379,6 +384,7 @@ func newFactory(
 					URLFilter:        urlFilter,
 					RobotsTxtChecker: robotsTxtChecker,
 					RelevanceFilter:  keywordFilter,
+					GateConfig:       gateConfig,
 					OnJobListing:     onJobListing,
 					Recorder:         llmRecorder,
 				})

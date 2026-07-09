@@ -34,6 +34,32 @@ type URLFilterConfig struct {
 	PassPathSegments    []string `json:"passPathSegments"`
 }
 
+// LLMGateConfig holds pre-LLM gate signals (ADR-0007 step 2): cheap URL-path
+// checks that resolve a page's classifier/extractor verdict without a model
+// call. A CareerPath segment marks a page a Career Page hub confidently enough
+// to catalog it without the LLM classifier (and, on the keyword path, marks it
+// an index to crawl rather than extract); a RejectPath segment marks it
+// structurally not a job page, dropping it before any LLM call. A page with
+// neither signal is ambiguous and still goes to the model.
+type LLMGateConfig struct {
+	CareerPathSignals []string `json:"careerPathSignals"`
+	RejectPathSignals []string `json:"rejectPathSignals"`
+}
+
+// DefaultLLMGateConfig returns the built-in pre-LLM gate signals.
+func DefaultLLMGateConfig() LLMGateConfig {
+	return LLMGateConfig{
+		CareerPathSignals: []string{
+			"careers", "career", "jobs", "join", "join-us",
+			"karriere", "stellenangebote", "vacancies",
+		},
+		RejectPathSignals: []string{
+			"blog", "news", "press", "media", "legal", "privacy",
+			"terms", "imprint", "impressum", "cookie", "gdpr", "pricing",
+		},
+	}
+}
+
 // CrawlDefinition is the persisted specification of a crawl: what to crawl and
 // how. A definition is immutable once created; each execution of it is a
 // CrawlRun.

@@ -14,6 +14,7 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 	"github.com/nicholasbraun/job-crawler-poc/internal/llmobs"
+	"github.com/nicholasbraun/job-crawler-poc/internal/pagegate"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -37,6 +38,12 @@ type Config struct {
 	// RelevanceFilter identifies pages that look like job listings.
 	// Pages that pass this filter are forwarded to OnJobListing.
 	RelevanceFilter filter.CheckFn[*crawler.Content]
+	// GateConfig supplies the pre-LLM URL-path signals (ADR-0007 step 2) that
+	// resolve a page without the LLM extractor: an ATS board root or career-hub
+	// index (crawled for its postings, not extracted) and reject paths. A zero
+	// value applies no URL gating, so every page falls through to keyword
+	// relevance.
+	GateConfig crawler.LLMGateConfig
 	// OnJobListing is called when a page passes the relevance filter.
 	// Typically this enqueues the raw listing into a job listing worker pool.
 	OnJobListing func(ctx context.Context, jobListing *crawler.RawJobListing) error
@@ -54,6 +61,7 @@ type urlWorker struct {
 	urlFilter            filter.CheckFn[string]
 	robotsTxtChecker     RobotsTxtChecker
 	relevanceFilter      filter.CheckFn[*crawler.Content]
+	gateConfig           crawler.LLMGateConfig
 	recorder             llmobs.Recorder
 	urlsProcessedCounter metric.Int64Counter
 	onJobListing         func(ctx context.Context, jobListing *crawler.RawJobListing) error
@@ -80,6 +88,7 @@ func NewProcessor(cfg *Config) *urlWorker {
 		urlFilter:            cfg.URLFilter,
 		robotsTxtChecker:     cfg.RobotsTxtChecker,
 		relevanceFilter:      cfg.RelevanceFilter,
+		gateConfig:           cfg.GateConfig,
 		recorder:             recorder,
 		urlsProcessedCounter: urlsProcessedCounter,
 		onJobListing:         cfg.OnJobListing,
@@ -109,7 +118,10 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 		return fmt.Errorf("worker: content filtered out %w", err)
 	}
 
-	if err := w.relevanceFilter(content); err == nil {
+	if !pagegate.ShouldExtract(*nextURL, w.gateConfig) {
+		// A Career Page index or a reject path — resolved without the LLM extractor.
+		w.recorder.Gated(ctx, llmobs.KindExtract, llmobs.ReasonURLStructure)
+	} else if err := w.relevanceFilter(content); err == nil {
 		slog.Info("worker: content passed relevance filter", "title", content.Title, "url", nextURL.RawURL)
 
 		err := w.onJobListing(ctx, &crawler.RawJobListing{

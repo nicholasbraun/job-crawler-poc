@@ -46,6 +46,9 @@ const (
 	ReasonCertain    Reason = "certain"
 	ReasonJSONLD     Reason = "jsonld"
 	ReasonIrrelevant Reason = "irrelevant"
+	// ReasonURLStructure marks a page a URL-structure signal resolved (a Career
+	// Page index or a reject path) rather than keyword relevance.
+	ReasonURLStructure Reason = "url_structure"
 )
 
 // Classify maps the error an LLM call returned to a coarse Outcome. A nil error
