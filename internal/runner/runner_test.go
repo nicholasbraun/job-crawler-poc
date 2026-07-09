@@ -3,6 +3,8 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -140,25 +142,52 @@ func (h hangFrontier) Next(ctx context.Context) (crawler.URL, error) {
 }
 func (hangFrontier) MarkDone(ctx context.Context, url string) error { return nil }
 
+// timeoutFrontier models the redis frontier when Next is cancelled mid-read:
+// go-redis aborts the in-flight socket read via a past deadline, so Next returns
+// a net i/o timeout (os.ErrDeadlineExceeded), NOT a wrapped context.Canceled.
+// This is the failure shape (see #32) that supervise must key off the run
+// context to classify, since the error itself is not context.Canceled. entered,
+// if non-nil, is closed the first time Next is reached so a test can wait until
+// the crawl loop is blocked inside the read before cancelling it.
+type timeoutFrontier struct{ entered chan struct{} }
+
+func (timeoutFrontier) AddURL(ctx context.Context, url crawler.URL) error { return nil }
+func (f timeoutFrontier) Next(ctx context.Context) (crawler.URL, error) {
+	if f.entered != nil {
+		close(f.entered)
+	}
+	<-ctx.Done()
+	return crawler.URL{}, fmt.Errorf("frontier: next: %w", os.ErrDeadlineExceeded)
+}
+func (timeoutFrontier) MarkDone(ctx context.Context, url string) error { return nil }
+
 // --- tests ---
 
 func TestTerminalStatus(t *testing.T) {
+	ioTimeout := fmt.Errorf("frontier: next: %w", os.ErrDeadlineExceeded)
 	tests := []struct {
 		name       string
 		err        error
+		ctxErr     error
 		wantStatus crawler.RunStatus
 		wantErrMsg bool
 	}{
-		{"nil completes", nil, crawler.RunStatusCompleted, false},
-		{"stop requested", orchestrator.ErrStopRequested, crawler.RunStatusStopped, false},
-		{"context canceled", context.Canceled, crawler.RunStatusStopped, false},
-		{"wrapped stop requested", errors.Join(errors.New("ctx"), orchestrator.ErrStopRequested), crawler.RunStatusStopped, false},
-		{"other error fails", errors.New("boom"), crawler.RunStatusFailed, true},
+		{"nil completes", nil, nil, crawler.RunStatusCompleted, false},
+		{"stop requested", orchestrator.ErrStopRequested, nil, crawler.RunStatusStopped, false},
+		{"context canceled", context.Canceled, nil, crawler.RunStatusStopped, false},
+		{"wrapped stop requested", errors.Join(errors.New("ctx"), orchestrator.ErrStopRequested), nil, crawler.RunStatusStopped, false},
+		{"other error fails", errors.New("boom"), nil, crawler.RunStatusFailed, true},
+		// A cancellation that surfaced as an i/o timeout is stopped only because
+		// the run context was cancelled (Stop/Shutdown) — this is the #32 path.
+		{"io timeout under cancelled ctx is stopped", ioTimeout, context.Canceled, crawler.RunStatusStopped, false},
+		// The same error with a live context is a genuine transient failure and
+		// must still fail (the deferred, unrecoverable case stays failed).
+		{"io timeout under live ctx still fails", ioTimeout, nil, crawler.RunStatusFailed, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			status, msg := terminalStatus(tt.err)
+			status, msg := terminalStatus(tt.err, tt.ctxErr)
 			if status != tt.wantStatus {
 				t.Errorf("status: got %q, want %q", status, tt.wantStatus)
 			}
@@ -451,6 +480,127 @@ func TestShutdownParksRunsForResume(t *testing.T) {
 		t.Errorf("resumed run status: got %q, want running", resumed.Status)
 	}
 	r2.Shutdown(t.Context())
+}
+
+// TestShutdownParksRunDespiteFrontierTimeout is the regression test for #32: a
+// graceful Shutdown must park a busy run even when its frontier surfaces the
+// cancellation as a net i/o timeout rather than a wrapped context.Canceled. The
+// run must be marked paused (no FinishedAt) with its frontier preserved (the
+// cleaner is not invoked), so a later Reconcile can resume it — not marked failed
+// with its resume state destroyed. Unlike TestShutdownParksRunsForResume (whose
+// blockingFrontier returns context.Canceled on cancel, so it passes even with the
+// bug present), timeoutFrontier reproduces the real failure shape.
+func TestShutdownParksRunDespiteFrontierTimeout(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   timeoutFrontier{},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: shouldStop,
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	var cleanMu sync.Mutex
+	cleaned := map[uuid.UUID]bool{}
+	cleaner := func(ctx context.Context, runID uuid.UUID) error {
+		cleanMu.Lock()
+		defer cleanMu.Unlock()
+		cleaned[runID] = true
+		return nil
+	}
+
+	r := New(runs, defs, factory, WithFrontierCleaner(cleaner))
+
+	parked, err := r.Start(t.Context(), defID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Shutdown never writes a stopping desired-state, so the run can only exit
+	// via the frontier's i/o timeout — exactly the shape the fix must park.
+	// Shutdown blocks until the run has drained, so the row is written by the
+	// time it returns.
+	r.Shutdown(t.Context())
+
+	got, err := runs.Get(t.Context(), parked.ID)
+	if err != nil {
+		t.Fatalf("Get parked: %v", err)
+	}
+	if got.Status != crawler.RunStatusPaused {
+		t.Errorf("parked run status: got %q, want paused (resumable despite i/o timeout)", got.Status)
+	}
+	if got.FinishedAt != nil {
+		t.Errorf("parked run must not be finished; got FinishedAt=%v", got.FinishedAt)
+	}
+
+	cleanMu.Lock()
+	defer cleanMu.Unlock()
+	if cleaned[parked.ID] {
+		t.Error("parked run's frontier must be preserved for resume, not cleaned")
+	}
+}
+
+// TestStopClassifiesFrontierTimeoutAsStopped is the second-latent-bug regression
+// for #32: a user Stop that unblocks a frontier read mid-flight surfaces as a net
+// i/o timeout, and the run must still terminate stopped (not failed) with its
+// frontier cleaned.
+func TestStopClassifiesFrontierTimeoutAsStopped(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	entered := make(chan struct{})
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   timeoutFrontier{entered: entered},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: shouldStop,
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	var cleanMu sync.Mutex
+	cleaned := map[uuid.UUID]bool{}
+	cleaner := func(ctx context.Context, runID uuid.UUID) error {
+		cleanMu.Lock()
+		defer cleanMu.Unlock()
+		cleaned[runID] = true
+		return nil
+	}
+
+	r := New(runs, defs, factory, WithFrontierCleaner(cleaner))
+
+	run, err := r.Start(t.Context(), defID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait until the crawl loop is blocked inside Next before stopping, so the
+	// cancellation lands mid-read and Next returns the net i/o timeout — not
+	// ErrStopRequested from the in-loop poll (which would be classified stopped
+	// even without the fix). This forces the run through the ctxErr branch.
+	<-entered
+
+	if err := r.Stop(t.Context(), run.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	final := waitForFinish(t, runs, run.ID)
+	if final.Status != crawler.RunStatusStopped {
+		t.Errorf("stopped run: got %q, want stopped (i/o timeout under Stop must not be failed)", final.Status)
+	}
+
+	// A terminated run's frontier is cleaned (unlike a parked one). Cleanup fires
+	// just after the terminal status write, outside the lock, so poll for it.
+	waitFor(t, func() bool {
+		cleanMu.Lock()
+		defer cleanMu.Unlock()
+		return cleaned[run.ID]
+	}, "frontier cleaner to run for the stopped run")
 }
 
 func TestStartRejectedWhileDraining(t *testing.T) {
