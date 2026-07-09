@@ -6,9 +6,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
+	"github.com/nicholasbraun/job-crawler-poc/internal/llmobs"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -26,6 +28,9 @@ type Config struct {
 	// DefinitionID identifies the crawl definition whose run produced these
 	// listings; it is passed through to Save as the listing key's first half.
 	DefinitionID uuid.UUID
+	// Recorder instruments the LLM extractor (calls, content dedup) for the
+	// ADR-0007 measurement. Optional: a nil Recorder records nothing.
+	Recorder llmobs.Recorder
 }
 
 // JobListingProcessor extracts structured job data from raw crawled pages
@@ -34,6 +39,7 @@ type JobListingProcessor struct {
 	jobListingRepository        crawler.JobListingRepository
 	jobListingsProcessedCounter metric.Int64Counter
 	jobListingExtractor         JobListingExtractor
+	recorder                    llmobs.Recorder
 	definitionID                uuid.UUID
 }
 
@@ -45,10 +51,16 @@ func NewProcessor(cfg *Config) *JobListingProcessor {
 		slog.Error("job_listing_processor: error setting up metrics", "err", err, "name", name)
 	}
 
+	recorder := cfg.Recorder
+	if recorder == nil {
+		recorder = llmobs.Nop()
+	}
+
 	return &JobListingProcessor{
 		jobListingRepository:        cfg.JobListingRepository,
 		jobListingsProcessedCounter: jobListingsProcessedCounter,
 		jobListingExtractor:         cfg.JobListingExtractor,
+		recorder:                    recorder,
 		definitionID:                cfg.DefinitionID,
 	}
 }
@@ -58,7 +70,10 @@ func NewProcessor(cfg *Config) *JobListingProcessor {
 // the processed counter. Returns an error if extraction or persistence fails.
 func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.RawJobListing) error {
 	slog.Info("process job listing", "url", workload.URL.RawURL)
+	w.recorder.Content(ctx, llmobs.KindExtract, workload.Content.MainContent)
+	start := time.Now()
 	jobListing, err := w.jobListingExtractor.Extract(ctx, *workload)
+	w.recorder.Call(ctx, llmobs.KindExtract, llmobs.Classify(err), time.Since(start))
 	if err != nil {
 		return fmt.Errorf("job_listing_processor: error extracting job listing %v: %w", *workload, err)
 	}

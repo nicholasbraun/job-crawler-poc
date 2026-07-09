@@ -8,10 +8,12 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
+	"github.com/nicholasbraun/job-crawler-poc/internal/llmobs"
 	urlprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/url_processor"
 )
 
@@ -46,6 +48,17 @@ func (f *stubFrontier) Next(ctx context.Context) (crawler.URL, error) {
 	return crawler.URL{}, frontier.ErrDone
 }
 func (f *stubFrontier) MarkDone(ctx context.Context, url string) error { return nil }
+
+// spyRecorder captures the gate reasons the worker records.
+type spyRecorder struct {
+	gates []llmobs.Reason
+}
+
+func (s *spyRecorder) Call(context.Context, llmobs.Kind, llmobs.Outcome, time.Duration) {}
+func (s *spyRecorder) Gated(_ context.Context, _ llmobs.Kind, r llmobs.Reason) {
+	s.gates = append(s.gates, r)
+}
+func (s *spyRecorder) Content(context.Context, llmobs.Kind, string) {}
 
 // captureLogs installs a JSON slog handler writing into buf for the duration of
 // fn, then restores the previous default logger.
@@ -122,6 +135,57 @@ func TestProcessAddURLRejections(t *testing.T) {
 
 			if got := hasErrorLevel(t, &buf); got != tt.wantErrorLog {
 				t.Errorf("error-level log present = %v, want %v; logs:\n%s", got, tt.wantErrorLog, buf.String())
+			}
+		})
+	}
+}
+
+func TestProcessRecordsRelevanceGate(t *testing.T) {
+	tests := []struct {
+		name      string
+		relevant  bool
+		wantGates []llmobs.Reason
+	}{
+		{name: "irrelevant page is gated without the LLM", relevant: false, wantGates: []llmobs.Reason{llmobs.ReasonIrrelevant}},
+		{name: "relevant page is forwarded, not gated", relevant: true, wantGates: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			relevance := func(*crawler.Content) error { return errors.New("not a listing") }
+			if tt.relevant {
+				relevance = func(*crawler.Content) error { return nil }
+			}
+
+			rec := &spyRecorder{}
+			cfg := &urlprocessor.Config{
+				Frontier:         &stubFrontier{},
+				Downloader:       &stubDownloader{content: []byte("<html></html>")},
+				Parser:           &stubParser{content: &crawler.Content{Title: "role", MainContent: "body"}},
+				ContentFilter:    func(*crawler.Content) error { return nil },
+				URLFilter:        func(string) error { return nil },
+				RobotsTxtChecker: stubRobots{},
+				RelevanceFilter:  relevance,
+				OnJobListing:     func(context.Context, *crawler.RawJobListing) error { return nil },
+				Recorder:         rec,
+			}
+
+			worker := urlprocessor.NewProcessor(cfg)
+			seed, err := crawler.NewURL("http://example.com")
+			if err != nil {
+				t.Fatalf("NewURL: %v", err)
+			}
+			if err := worker.Process(t.Context(), &seed); err != nil {
+				t.Fatalf("Process returned error: %v", err)
+			}
+
+			if len(rec.gates) != len(tt.wantGates) {
+				t.Fatalf("recorded gates = %v, want %v", rec.gates, tt.wantGates)
+			}
+			for i, want := range tt.wantGates {
+				if rec.gates[i] != want {
+					t.Errorf("gate[%d] = %v, want %v", i, rec.gates[i], want)
+				}
 			}
 		})
 	}

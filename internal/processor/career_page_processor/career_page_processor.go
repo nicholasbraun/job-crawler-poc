@@ -8,9 +8,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/catalog"
+	"github.com/nicholasbraun/job-crawler-poc/internal/llmobs"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -26,6 +28,9 @@ type Config struct {
 	CompanyRepository    crawler.CompanyRepository
 	CareerPageRepository crawler.CareerPageRepository
 	Confirmer            Confirmer
+	// Recorder instruments the LLM stage (calls, gate skips, content dedup) for
+	// the ADR-0007 measurement. Optional: a nil Recorder records nothing.
+	Recorder llmobs.Recorder
 }
 
 // CareerPageProcessor confirms and catalogues career-page candidates. It
@@ -34,6 +39,7 @@ type CareerPageProcessor struct {
 	companyRepository       crawler.CompanyRepository
 	careerPageRepository    crawler.CareerPageRepository
 	confirmer               Confirmer
+	recorder                llmobs.Recorder
 	careerPagesFoundCounter metric.Int64Counter
 }
 
@@ -45,10 +51,16 @@ func NewProcessor(cfg *Config) *CareerPageProcessor {
 		slog.Error("career_page_processor: error setting up metrics", "err", err, "name", name)
 	}
 
+	recorder := cfg.Recorder
+	if recorder == nil {
+		recorder = llmobs.Nop()
+	}
+
 	return &CareerPageProcessor{
 		companyRepository:       cfg.CompanyRepository,
 		careerPageRepository:    cfg.CareerPageRepository,
 		confirmer:               cfg.Confirmer,
+		recorder:                recorder,
 		careerPagesFoundCounter: careerPagesFoundCounter,
 	}
 }
@@ -63,7 +75,10 @@ func (w *CareerPageProcessor) Process(ctx context.Context, raw *crawler.RawCaree
 	// match on an unrecognized host with no such structured data must clear the
 	// LLM first, bounding LLM cost at perpetual discovery scale.
 	if !raw.Certain && !hasJobPostingJSONLD(raw.Content.JSONLD) {
+		w.recorder.Content(ctx, llmobs.KindClassify, raw.Content.MainContent)
+		start := time.Now()
 		ok, err := w.confirmer.Confirm(ctx, raw.URL.RawURL, &raw.Content)
+		w.recorder.Call(ctx, llmobs.KindClassify, llmobs.Classify(err), time.Since(start))
 		if err != nil {
 			return fmt.Errorf("career_page_processor: error confirming career page %s: %w", raw.URL.RawURL, err)
 		}
@@ -71,6 +86,12 @@ func (w *CareerPageProcessor) Process(ctx context.Context, raw *crawler.RawCaree
 			slog.Info("career_page_processor: candidate rejected by confirmer", "url", raw.URL.RawURL)
 			return nil
 		}
+	} else if raw.Certain {
+		// Structurally-certain ATS board root -- gated without the LLM.
+		w.recorder.Gated(ctx, llmobs.KindClassify, llmobs.ReasonCertain)
+	} else {
+		// Not certain, so the guard fell through on a JobPosting JSON-LD block.
+		w.recorder.Gated(ctx, llmobs.KindClassify, llmobs.ReasonJSONLD)
 	}
 
 	identity := catalog.Identify(raw.URL)
