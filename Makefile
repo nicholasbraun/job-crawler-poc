@@ -1,4 +1,4 @@
-.PHONY: build web-build server-build dev test test-race docker-up clean
+.PHONY: build web-build server-build dev test test-race lint docker-up clean
 
 # build produces the single self-contained binary: the dashboard is built first
 # so `go build` can embed web/dist via web/web.go's //go:embed directive.
@@ -22,6 +22,11 @@ test:
 
 test-race:
 	go test -race ./...
+
+# lint runs golangci-lint over the whole module (config in .golangci.yml).
+# Install it with: brew install golangci-lint
+lint:
+	golangci-lint run ./...
 
 # docker-up builds the image and starts the full stack (Postgres, Redis,
 # crawler, and the observability services).

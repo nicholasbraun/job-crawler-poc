@@ -1,0 +1,15 @@
+# golangci-lint v2 configuration.
+# Minimal: run the standard linter set (errcheck, govet, ineffassign,
+# staticcheck, unused). Enable more under linters.enable as the project grows.
+version: "2"
+
+linters:
+  default: standard
+
+  exclusions:
+    # Loosen a few checks in test files, where unchecked errors and
+    # throwaway values are common and rarely worth failing the lint.
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
