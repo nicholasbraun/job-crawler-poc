@@ -13,6 +13,7 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
+	"github.com/nicholasbraun/job-crawler-poc/internal/llmobs"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -39,6 +40,10 @@ type Config struct {
 	// OnJobListing is called when a page passes the relevance filter.
 	// Typically this enqueues the raw listing into a job listing worker pool.
 	OnJobListing func(ctx context.Context, jobListing *crawler.RawJobListing) error
+	// Recorder instruments the keyword relevance gate (pages resolved without the
+	// LLM extractor) for the ADR-0007 measurement. Optional: a nil Recorder
+	// records nothing.
+	Recorder llmobs.Recorder
 }
 
 type urlWorker struct {
@@ -49,6 +54,7 @@ type urlWorker struct {
 	urlFilter            filter.CheckFn[string]
 	robotsTxtChecker     RobotsTxtChecker
 	relevanceFilter      filter.CheckFn[*crawler.Content]
+	recorder             llmobs.Recorder
 	urlsProcessedCounter metric.Int64Counter
 	onJobListing         func(ctx context.Context, jobListing *crawler.RawJobListing) error
 }
@@ -61,6 +67,11 @@ func NewProcessor(cfg *Config) *urlWorker {
 		slog.Error("url_worker: error setting up metrics", "err", err, "name", name)
 	}
 
+	recorder := cfg.Recorder
+	if recorder == nil {
+		recorder = llmobs.Nop()
+	}
+
 	return &urlWorker{
 		frontier:             cfg.Frontier,
 		downloader:           cfg.Downloader,
@@ -69,6 +80,7 @@ func NewProcessor(cfg *Config) *urlWorker {
 		urlFilter:            cfg.URLFilter,
 		robotsTxtChecker:     cfg.RobotsTxtChecker,
 		relevanceFilter:      cfg.RelevanceFilter,
+		recorder:             recorder,
 		urlsProcessedCounter: urlsProcessedCounter,
 		onJobListing:         cfg.OnJobListing,
 	}
@@ -107,6 +119,9 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 		if err != nil {
 			slog.Error("worker: onJobListing returned an error", "err", err)
 		}
+	} else {
+		// The keyword relevance gate resolved this page without the LLM extractor.
+		w.recorder.Gated(ctx, llmobs.KindExtract, llmobs.ReasonIrrelevant)
 	}
 
 	for _, contentURL := range content.URLs {

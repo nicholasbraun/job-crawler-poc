@@ -30,6 +30,7 @@ import (
 	urlfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/url"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 	redisfrontier "github.com/nicholasbraun/job-crawler-poc/internal/frontier/redis"
+	"github.com/nicholasbraun/job-crawler-poc/internal/llmobs"
 	"github.com/nicholasbraun/job-crawler-poc/internal/openrouter"
 	"github.com/nicholasbraun/job-crawler-poc/internal/orchestrator"
 	myotel "github.com/nicholasbraun/job-crawler-poc/internal/otel"
@@ -231,9 +232,17 @@ func newFactory(
 	jobListingExtractor := openrouter.NewJobListingExtractor(llmConfig)
 	careerPageConfirmer := openrouter.NewCareerPageClassifier(llmConfig)
 
+	// LLM-stage observability (ADR-0007 step 1): the Prometheus instruments and
+	// the Redis content-duplication probe are shared across runs; each run gets
+	// its own Stats + Recorder below for the end-of-run summary log.
+	llmMetrics := llmobs.NewMetrics()
+	llmDupProbe := llmobs.NewDupProbe(redisClient)
+
 	contentFilter := filter.Chain[*crawler.Content]() // empty chain = pass everything
 
 	return func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *runner.Counters, shouldStop func(context.Context) bool) (*runner.Engine, error) {
+		llmStats := &llmobs.Stats{}
+		llmRecorder := llmobs.NewRecorder(llmMetrics, llmDupProbe, llmStats)
 		uf := def.URLFilter
 		urlFilter := filter.Chain[string](
 			urlfilter.BlockInvalidURLs(),
@@ -262,6 +271,7 @@ func newFactory(
 						CompanyRepository:    companyRepository,
 						CareerPageRepository: careerPageRepository,
 						Confirmer:            careerPageConfirmer,
+						Recorder:             llmRecorder,
 					})
 				}, pool.WithMaxWorkers[crawler.RawCareerPage](llmMaxWorkers))
 
@@ -305,6 +315,9 @@ func newFactory(
 				Close: func() {
 					discoveryWorkerPool.Close()
 					careerPageWorkerPool.Close()
+					// All LLM calls for this run are done once the pools drain;
+					// emit the ADR-0007 measurement summary (ADR-0007 step 1).
+					slog.Info("runner: llm stage summary", append([]any{"run_id", runID}, llmStats.Summary()...)...)
 				},
 			}, nil
 		}
@@ -346,6 +359,7 @@ func newFactory(
 					JobListingRepository: jobListingRepository,
 					JobListingExtractor:  jobListingExtractor,
 					DefinitionID:         def.ID,
+					Recorder:             llmRecorder,
 				})
 			}, pool.WithMaxWorkers[crawler.RawJobListing](llmMaxWorkers))
 
@@ -366,6 +380,7 @@ func newFactory(
 					RobotsTxtChecker: robotsTxtChecker,
 					RelevanceFilter:  keywordFilter,
 					OnJobListing:     onJobListing,
+					Recorder:         llmRecorder,
 				})
 			}, pool.WithMaxWorkers[crawler.URL](maxWorkers))
 
@@ -389,6 +404,9 @@ func newFactory(
 			Close: func() {
 				urlWorkerPool.Close()
 				jobListingWorkerPool.Close()
+				// All LLM calls for this run are done once the pools drain;
+				// emit the ADR-0007 measurement summary (ADR-0007 step 1).
+				slog.Info("runner: llm stage summary", append([]any{"run_id", runID}, llmStats.Summary()...)...)
 			},
 		}, nil
 	}

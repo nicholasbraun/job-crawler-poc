@@ -3,9 +3,11 @@ package careerpageprocessor_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
+	"github.com/nicholasbraun/job-crawler-poc/internal/llmobs"
 	careerpageprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/career_page_processor"
 )
 
@@ -59,6 +61,31 @@ func (c *spyConfirmer) Confirm(ctx context.Context, url string, content *crawler
 	c.calls++
 	return c.result, nil
 }
+
+type recordedCall struct {
+	kind    llmobs.Kind
+	outcome llmobs.Outcome
+}
+
+type recordedGate struct {
+	kind   llmobs.Kind
+	reason llmobs.Reason
+}
+
+// spyRecorder captures which LLM-stage events a processor records.
+type spyRecorder struct {
+	calls   []recordedCall
+	gates   []recordedGate
+	content int
+}
+
+func (s *spyRecorder) Call(_ context.Context, k llmobs.Kind, o llmobs.Outcome, _ time.Duration) {
+	s.calls = append(s.calls, recordedCall{k, o})
+}
+func (s *spyRecorder) Gated(_ context.Context, k llmobs.Kind, r llmobs.Reason) {
+	s.gates = append(s.gates, recordedGate{k, r})
+}
+func (s *spyRecorder) Content(_ context.Context, _ llmobs.Kind, _ string) { s.content++ }
 
 func newURL(t *testing.T, raw string) crawler.URL {
 	t.Helper()
@@ -202,6 +229,85 @@ func TestCareerPageProcessorConfirmRejectDrops(t *testing.T) {
 	if len(companyRepo.upserted) != 0 || len(careerPageRepo.upserted) != 0 {
 		t.Errorf("rejected candidate must not be persisted: companies=%d careerPages=%d",
 			len(companyRepo.upserted), len(careerPageRepo.upserted))
+	}
+}
+
+func TestCareerPageProcessorRecordsGateAndCallDecisions(t *testing.T) {
+	tests := []struct {
+		name        string
+		raw         *crawler.RawCareerPage
+		confirm     bool
+		wantCalls   []recordedCall
+		wantGates   []recordedGate
+		wantContent int
+	}{
+		{
+			name: "certain gates without an LLM call",
+			raw: &crawler.RawCareerPage{
+				URL:     newURL(t, "https://boards.greenhouse.io/acme"),
+				Content: crawler.Content{Title: "Jobs at Acme", MainContent: "roles"},
+				Certain: true,
+			},
+			wantGates:   []recordedGate{{llmobs.KindClassify, llmobs.ReasonCertain}},
+			wantContent: 0,
+		},
+		{
+			name: "job-posting json-ld gates without an LLM call",
+			raw: &crawler.RawCareerPage{
+				URL:     newURL(t, "https://careers.acme.com/jobs"),
+				Content: crawler.Content{Title: "Careers at Acme", MainContent: "roles", JSONLD: []string{`{"@type":"JobPosting"}`}},
+				Certain: false,
+			},
+			wantGates:   []recordedGate{{llmobs.KindClassify, llmobs.ReasonJSONLD}},
+			wantContent: 0,
+		},
+		{
+			name: "uncertain page reaches the LLM and records the call + content",
+			raw: &crawler.RawCareerPage{
+				URL:     newURL(t, "https://careers.acme.com/jobs"),
+				Content: crawler.Content{Title: "Careers at Acme", MainContent: "roles"},
+				Certain: false,
+			},
+			confirm:     true,
+			wantCalls:   []recordedCall{{llmobs.KindClassify, llmobs.OutcomeOK}},
+			wantContent: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &spyRecorder{}
+			proc := careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
+				CompanyRepository:    &spyCompanyRepo{assignID: uuid.New()},
+				CareerPageRepository: &spyCareerPageRepo{},
+				Confirmer:            &spyConfirmer{result: tt.confirm},
+				Recorder:             rec,
+			})
+
+			if err := proc.Process(t.Context(), tt.raw); err != nil {
+				t.Fatalf("Process returned error: %v", err)
+			}
+
+			if len(rec.calls) != len(tt.wantCalls) {
+				t.Fatalf("recorded calls = %v, want %v", rec.calls, tt.wantCalls)
+			}
+			for i, want := range tt.wantCalls {
+				if rec.calls[i] != want {
+					t.Errorf("call[%d] = %v, want %v", i, rec.calls[i], want)
+				}
+			}
+			if len(rec.gates) != len(tt.wantGates) {
+				t.Fatalf("recorded gates = %v, want %v", rec.gates, tt.wantGates)
+			}
+			for i, want := range tt.wantGates {
+				if rec.gates[i] != want {
+					t.Errorf("gate[%d] = %v, want %v", i, rec.gates[i], want)
+				}
+			}
+			if rec.content != tt.wantContent {
+				t.Errorf("content probes = %d, want %d", rec.content, tt.wantContent)
+			}
+		})
 	}
 }
 
