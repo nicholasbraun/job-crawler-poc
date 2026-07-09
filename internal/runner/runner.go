@@ -388,7 +388,7 @@ func (r *Runner) supervise(runCtx context.Context, cancel context.CancelFunc, ru
 	// a resumable interruption, not a completion: mark it paused (non-terminal,
 	// finishedAt stays nil) and keep its Redis frontier intact so the next
 	// process re-adopts it (Reconcile). A user Stop, a natural completion (nil),
-	// or a real error all fall through to a terminal status.
+	// or any exit while not draining falls through to a terminal status below.
 	//
 	// The fate is keyed off the run context, not the error shape. During a drain
 	// runCtx is always cancelled, but a cancellation that lands mid-read surfaces
@@ -396,9 +396,13 @@ func (r *Runner) supervise(runCtx context.Context, cancel context.CancelFunc, ru
 	// deadline → os.ErrDeadlineExceeded), not a wrapped context.Canceled — so
 	// errors.Is(runErr, context.Canceled) would miss any busy crawl (see #32).
 	// runCtx.Err() is reliable regardless of how the frontier's underlying read
-	// failed. The runErr != nil guard preserves a run that hit ErrDone (→ nil)
-	// just as shutdown fired: it completed, and must be recorded completed rather
-	// than resurrected as paused.
+	// failed. Because the cancelled context is the dominant signal, ANY non-nil
+	// error during a drain parks the run: at that moment nearly every error is
+	// cancellation-induced, and favouring resume over a terminal failure is the
+	// whole point of a graceful shutdown (a genuinely broken run just re-fails
+	// after Reconcile). The runErr != nil guard still lets a run that hit ErrDone
+	// (→ nil) just as shutdown fired be recorded completed rather than
+	// resurrected as paused.
 	if r.draining && !ar.stopRequested && runErr != nil && errors.Is(runCtx.Err(), context.Canceled) {
 		if err := r.runs.UpdateStatus(context.Background(), runID, crawler.RunStatusPaused, nil, ""); err != nil {
 			slog.Error("runner: error pausing run on shutdown", "err", err, "run_id", runID)

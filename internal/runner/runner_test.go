@@ -161,6 +161,22 @@ func (f timeoutFrontier) Next(ctx context.Context) (crawler.URL, error) {
 }
 func (timeoutFrontier) MarkDone(ctx context.Context, url string) error { return nil }
 
+// realErrorFrontier models a genuine, non-cancellation crawl error surfacing
+// just as the run context is cancelled: Next blocks until cancellation, then
+// returns a plain error that is neither context.Canceled nor an i/o timeout.
+// During a shutdown drain the cancelled run context is the dominant signal, so
+// supervise parks such a run (paused, resumable) rather than failing it — even
+// though the error itself carries no cancellation shape. Contrast the deferred
+// case (the same error under a LIVE context), which terminalStatus keeps failed.
+type realErrorFrontier struct{}
+
+func (realErrorFrontier) AddURL(ctx context.Context, url crawler.URL) error { return nil }
+func (realErrorFrontier) Next(ctx context.Context) (crawler.URL, error) {
+	<-ctx.Done()
+	return crawler.URL{}, errors.New("boom")
+}
+func (realErrorFrontier) MarkDone(ctx context.Context, url string) error { return nil }
+
 // --- tests ---
 
 func TestTerminalStatus(t *testing.T) {
@@ -601,6 +617,68 @@ func TestStopClassifiesFrontierTimeoutAsStopped(t *testing.T) {
 		defer cleanMu.Unlock()
 		return cleaned[run.ID]
 	}, "frontier cleaner to run for the stopped run")
+}
+
+// TestShutdownParksRunWithRealErrorDuringDrain locks in the broadened park
+// condition: during a graceful Shutdown the cancelled run context is the
+// dominant signal, so even a genuine, non-cancellation error surfacing as the
+// run drains parks the run (paused, frontier preserved) rather than failing it.
+// This favours resume over a terminal failure during shutdown; a genuinely
+// broken run just re-fails after Reconcile. It is the counterpart to the
+// terminalStatus "io timeout under live ctx still fails" case: the same class of
+// error under a LIVE (non-cancelled) context stays failed.
+func TestShutdownParksRunWithRealErrorDuringDrain(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   realErrorFrontier{},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: shouldStop,
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	var cleanMu sync.Mutex
+	cleaned := map[uuid.UUID]bool{}
+	cleaner := func(ctx context.Context, runID uuid.UUID) error {
+		cleanMu.Lock()
+		defer cleanMu.Unlock()
+		cleaned[runID] = true
+		return nil
+	}
+
+	r := New(runs, defs, factory, WithFrontierCleaner(cleaner))
+
+	parked, err := r.Start(t.Context(), defID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Shutdown never writes a stopping desired-state, so the run exits only via
+	// the frontier's plain "boom" error once its context is cancelled — a real
+	// error, not a cancellation shape. Shutdown blocks until the run has drained,
+	// so the row is written by the time it returns.
+	r.Shutdown(t.Context())
+
+	got, err := runs.Get(t.Context(), parked.ID)
+	if err != nil {
+		t.Fatalf("Get parked: %v", err)
+	}
+	if got.Status != crawler.RunStatusPaused {
+		t.Errorf("parked run status: got %q, want paused (drain parks even a real error)", got.Status)
+	}
+	if got.FinishedAt != nil {
+		t.Errorf("parked run must not be finished; got FinishedAt=%v", got.FinishedAt)
+	}
+
+	cleanMu.Lock()
+	defer cleanMu.Unlock()
+	if cleaned[parked.ID] {
+		t.Error("parked run's frontier must be preserved for resume, not cleaned")
+	}
 }
 
 func TestStartRejectedWhileDraining(t *testing.T) {
