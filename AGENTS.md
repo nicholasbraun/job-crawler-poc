@@ -72,6 +72,37 @@ compatible server, e.g. a local Ollama.
 The repo has a `Makefile`, `Dockerfile`, and `docker-compose.yml`. There is no
 CI/CD pipeline or linter configuration.
 
+## Development Workflow
+
+Two lanes, chosen by the size of the change. Each lane is a fixed sequence of
+skills; the session breaks in the feature/fix lane are deliberate human gates.
+
+### Feature / fix lane (non-trivial work — spans several sessions)
+
+Session 1 — align & specify:
+1. `/grilling` — reach a shared understanding of what to build before any code.
+2. `/domain-modeling` — record any new decisions and terms the grilling surfaced:
+   ADRs to `docs/adr/NNNN-slug.md`, domain language to `CONTEXT.md`.
+3. `/to-spec` — publish the spec / tracking GitHub issue.
+4. `/to-tickets` — break it into vertical sub-issues with their blocking edges.
+
+Session 2 — deliver (fresh session; hand it the spec issue number):
+
+5. `/deliver <spec#>` — create the `feat/…` or `fix/…` branch, orchestrate the
+   sub-issues (parallel by dependency: a sub-issue runs once its blockers are
+   done), and open the PR that closes the spec and its sub-issues. Stops at the
+   PR; it does not self-review or merge.
+
+Session 3 — review (fresh session):
+
+6. `/code-review` the PR — fix small, contained issues in place; open follow-up
+   issues for anything larger; then merge.
+
+### One-off lane (small, contained changes — no ceremony)
+
+Plan → `/handoff` → implement, committing directly to `main`. No spec, no branch,
+no PR.
+
 ## Project Structure
 
 ```
