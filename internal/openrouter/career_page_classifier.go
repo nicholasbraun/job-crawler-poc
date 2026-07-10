@@ -44,19 +44,21 @@ type careerPageConfirmation struct {
 // for candidates that lack a JobPosting JSON-LD, bounding LLM cost at perpetual
 // discovery scale.
 type CareerPageClassifier struct {
-	apiKey     string
-	baseURL    string
-	model      string
-	httpClient *http.Client
+	apiKey           string
+	baseURL          string
+	model            string
+	classifyMaxChars int
+	httpClient       *http.Client
 }
 
 func NewCareerPageClassifier(cfg Config) *CareerPageClassifier {
 	cfg = cfg.withDefaults()
 	return &CareerPageClassifier{
-		apiKey:     cfg.APIKey,
-		baseURL:    cfg.BaseURL,
-		model:      cfg.Model,
-		httpClient: &http.Client{Timeout: cfg.Timeout},
+		apiKey:           cfg.APIKey,
+		baseURL:          cfg.BaseURL,
+		model:            cfg.Model,
+		classifyMaxChars: cfg.ClassifyMaxChars,
+		httpClient:       &http.Client{Timeout: cfg.Timeout},
 	}
 }
 
@@ -68,7 +70,7 @@ func (c *CareerPageClassifier) Confirm(ctx context.Context, url string, content 
 		untrustedOpen,
 		sealUntrusted(url),
 		sealUntrusted(content.Title),
-		sealUntrusted(content.MainContent),
+		sealUntrusted(capChars(content.MainContent, c.classifyMaxChars)),
 		untrustedClose,
 	)
 	reqBody := chatRequest{
@@ -78,6 +80,8 @@ func (c *CareerPageClassifier) Confirm(ctx context.Context, url string, content 
 			{"user", userContent},
 		},
 		ResponseFormat: jsonObjectFormat,
+		Temperature:    0,
+		Seed:           llmSeed,
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {

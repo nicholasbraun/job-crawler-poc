@@ -83,6 +83,29 @@ func sealUntrusted(s string) string {
 	return s
 }
 
+const (
+	// llmSeed, paired with temperature 0, makes the model's output deterministic
+	// across runs.
+	llmSeed = 42
+
+	// defaultClassifyMaxChars / defaultExtractMaxChars cap the page text (in runes)
+	// sent to the model when Config leaves the cap unset. The classify/extract signal
+	// sits near the top of the page, so truncating keeps the context small: huge pages
+	// otherwise dominate prompt-processing latency and time out on local models.
+	// Override per deployment via Config (LLM_CLASSIFY_MAX_CHARS / LLM_EXTRACT_MAX_CHARS).
+	defaultClassifyMaxChars = 1500
+	defaultExtractMaxChars  = 8000
+)
+
+// capChars truncates s to at most max runes.
+func capChars(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max])
+}
+
 // Config configures an OpenAI-compatible chat completions client. BaseURL and
 // Model default to OpenRouter's endpoint and a small hosted model when empty;
 // set them to run against any OpenAI-compatible server (e.g. a local Ollama).
@@ -93,6 +116,11 @@ type Config struct {
 	BaseURL string
 	Model   string
 	Timeout time.Duration
+	// ClassifyMaxChars and ExtractMaxChars cap the page text (in runes) sent to the
+	// classifier and extractor respectively. Zero or negative falls back to the
+	// default caps.
+	ClassifyMaxChars int
+	ExtractMaxChars  int
 }
 
 func (c Config) withDefaults() Config {
@@ -105,6 +133,12 @@ func (c Config) withDefaults() Config {
 	if c.Timeout <= 0 {
 		c.Timeout = defaultTimeout
 	}
+	if c.ClassifyMaxChars <= 0 {
+		c.ClassifyMaxChars = defaultClassifyMaxChars
+	}
+	if c.ExtractMaxChars <= 0 {
+		c.ExtractMaxChars = defaultExtractMaxChars
+	}
 	return c
 }
 
@@ -112,6 +146,10 @@ type chatRequest struct {
 	Model          string          `json:"model"`
 	Messages       []message       `json:"messages"`
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+	// Temperature 0 + a fixed Seed make output deterministic; without them an
+	// OpenAI-compatible server (e.g. Ollama) samples at its default temperature.
+	Temperature float64 `json:"temperature"`
+	Seed        int     `json:"seed"`
 }
 
 // jsonObjectFormat asks an OpenAI-compatible server to constrain output to a
@@ -139,19 +177,21 @@ type chatResponse struct {
 // JobListingExtractor sends raw page content to the OpenRouter chat API
 // and parses the LLM's JSON response into a JobListing.
 type JobListingExtractor struct {
-	apiKey     string
-	baseURL    string
-	model      string
-	httpClient *http.Client
+	apiKey          string
+	baseURL         string
+	model           string
+	extractMaxChars int
+	httpClient      *http.Client
 }
 
 func NewJobListingExtractor(cfg Config) *JobListingExtractor {
 	cfg = cfg.withDefaults()
 	return &JobListingExtractor{
-		apiKey:     cfg.APIKey,
-		baseURL:    cfg.BaseURL,
-		model:      cfg.Model,
-		httpClient: &http.Client{Timeout: cfg.Timeout},
+		apiKey:          cfg.APIKey,
+		baseURL:         cfg.BaseURL,
+		model:           cfg.Model,
+		extractMaxChars: cfg.ExtractMaxChars,
+		httpClient:      &http.Client{Timeout: cfg.Timeout},
 	}
 }
 
@@ -163,9 +203,11 @@ func (jle *JobListingExtractor) Extract(ctx context.Context, raw crawler.RawJobL
 		Model: jle.model,
 		Messages: []message{
 			{"system", openrouterPrompt},
-			{"user", fmt.Sprintf("%s\n%s\n%s", untrustedOpen, sealUntrusted(raw.Content.MainContent), untrustedClose)},
+			{"user", fmt.Sprintf("%s\n%s\n%s", untrustedOpen, sealUntrusted(capChars(raw.Content.MainContent, jle.extractMaxChars)), untrustedClose)},
 		},
 		ResponseFormat: jsonObjectFormat,
+		Temperature:    0,
+		Seed:           llmSeed,
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {

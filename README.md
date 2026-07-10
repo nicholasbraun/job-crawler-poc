@@ -90,8 +90,14 @@ LLM_API_KEY=your-key-here ./bin/crawler
 # all you need:
 LLM_API_KEY=ollama \
   LLM_BASE_URL=http://localhost:11434/v1/chat/completions \
-  LLM_MODEL=qwen3.5:9b ./bin/crawler
+  LLM_MODEL=qwen2.5:3b ./bin/crawler
 ```
+
+Use a **non-reasoning instruct** model locally. `qwen2.5:3b` is the runnable
+default (~3.2 GB, fits a 16 GB laptop alongside the rest of the stack); step up to
+`qwen2.5:7b` for a more precise career-page gate if you have the RAM. Avoid
+reasoning models (e.g. `qwen3.5`): they run a hidden think phase the crawler
+discards, a large latency tax for a one-line classification verdict.
 
 For frontend development, `make dev` runs the Vite dev server (proxying `/api` to
 a locally running `go run ./cmd/server`) with hot reload.
@@ -121,9 +127,11 @@ via [godotenv](https://github.com/joho/godotenv)):
 | -------------------- | ------------------------------------------- | ------------------------------------ |
 | `LLM_API_KEY`        | —                                           | Bearer token for the LLM API (any value for Ollama) |
 | `LLM_BASE_URL`       | `https://openrouter.ai/api/v1/chat/completions` | OpenAI-compatible chat completions endpoint     |
-| `LLM_MODEL`          | `openai/gpt-5.4-nano`                       | Model name to request               |
+| `LLM_MODEL`          | `openai/gpt-5.4-nano`                       | Model name to request (locally, a non-reasoning instruct model, e.g. `qwen2.5:3b`) |
 | `LLM_TIMEOUT`        | `5m`                                        | Per-request timeout (Go duration); covers time queued on the server |
 | `LLM_MAX_WORKERS`    | `2`                                         | Concurrent LLM calls; keep low for a serial local model, raise for a parallel cloud API |
+| `LLM_CLASSIFY_MAX_CHARS` | `1500`                                  | Cap (runes) on page text sent to the career-page classifier; the signal is near the top of the page |
+| `LLM_EXTRACT_MAX_CHARS`  | `8000`                                  | Cap (runes) on page text sent to the job-listing extractor |
 | `DATABASE_URL`       | `postgres://crawler:crawler@localhost:5432/crawler?sslmode=disable` | Postgres DSN |
 | `REDIS_ADDR`         | `localhost:6379`                            | Redis `host:port`                    |
 | `LOG_LEVEL`          | `INFO`                                      | slog level (DEBUG/INFO/WARN/ERROR)   |

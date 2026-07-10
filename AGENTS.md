@@ -67,7 +67,10 @@ The server reads configuration from the environment (a `.env` file is loaded via
 `localhost:6379`), and `LLM_API_KEY` for the LLM classifier/extractor. The
 classifier/extractor speak the OpenAI-compatible chat-completions API; override
 `LLM_BASE_URL` and `LLM_MODEL` (defaulting to OpenRouter) to target any
-compatible server, e.g. a local Ollama.
+compatible server, e.g. a local Ollama. Locally, prefer a non-reasoning instruct
+model (e.g. `qwen2.5:3b`); reasoning models spend a hidden think phase the crawler
+discards. `LLM_CLASSIFY_MAX_CHARS` / `LLM_EXTRACT_MAX_CHARS` (default 1500 / 8000)
+cap the page text sent to each LLM call, keeping a local model fast.
 
 The repo has a `Makefile`, `Dockerfile`, and `docker-compose.yml`. There is no
 CI/CD pipeline or linter configuration.

@@ -84,7 +84,14 @@ func main() {
 	// The classifier/extractor talk to any OpenAI-compatible chat API. Leave
 	// LLM_BASE_URL/LLM_MODEL unset for OpenRouter's defaults, or point them at a
 	// local server, e.g. LLM_BASE_URL=http://localhost:11434/v1/chat/completions
-	// with LLM_MODEL=qwen3.5:9b for a local Ollama.
+	// with LLM_MODEL=qwen2.5:3b for a local Ollama. Use a non-reasoning instruct
+	// model: a reasoning model (e.g. qwen3.5) runs a hidden think phase the crawler
+	// discards, a large latency tax for a one-line verdict.
+	//
+	// LLM_CLASSIFY_MAX_CHARS / LLM_EXTRACT_MAX_CHARS cap the page text (in runes)
+	// sent to the classifier and extractor. The classify/extract signal sits near
+	// the top of the page, so capping keeps a local model fast and avoids timeouts
+	// on huge pages.
 	//
 	// LLM_TIMEOUT and LLM_MAX_WORKERS default to values tuned for a local model:
 	// a long per-request timeout (a laptop model generates serially, so queued
@@ -101,11 +108,21 @@ func main() {
 	if err != nil || llmMaxWorkers < 1 {
 		log.Fatalf("error parsing LLM_MAX_WORKERS: must be a positive integer, got %q", os.Getenv("LLM_MAX_WORKERS"))
 	}
+	llmClassifyMaxChars, err := strconv.Atoi(envOr("LLM_CLASSIFY_MAX_CHARS", "1500"))
+	if err != nil || llmClassifyMaxChars < 1 {
+		log.Fatalf("error parsing LLM_CLASSIFY_MAX_CHARS: must be a positive integer, got %q", os.Getenv("LLM_CLASSIFY_MAX_CHARS"))
+	}
+	llmExtractMaxChars, err := strconv.Atoi(envOr("LLM_EXTRACT_MAX_CHARS", "8000"))
+	if err != nil || llmExtractMaxChars < 1 {
+		log.Fatalf("error parsing LLM_EXTRACT_MAX_CHARS: must be a positive integer, got %q", os.Getenv("LLM_EXTRACT_MAX_CHARS"))
+	}
 	llmConfig := openrouter.Config{
-		APIKey:  os.Getenv("LLM_API_KEY"),
-		BaseURL: os.Getenv("LLM_BASE_URL"),
-		Model:   os.Getenv("LLM_MODEL"),
-		Timeout: llmTimeout,
+		APIKey:           os.Getenv("LLM_API_KEY"),
+		BaseURL:          os.Getenv("LLM_BASE_URL"),
+		Model:            os.Getenv("LLM_MODEL"),
+		Timeout:          llmTimeout,
+		ClassifyMaxChars: llmClassifyMaxChars,
+		ExtractMaxChars:  llmExtractMaxChars,
 	}
 
 	var logLevel slog.LevelVar

@@ -5,6 +5,7 @@ package parser
 import (
 	"bytes"
 	"fmt"
+	"strings"
 
 	"github.com/PuerkitoBio/goquery"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
@@ -50,12 +51,22 @@ func getMainContent(doc *goquery.Document) string {
 	for _, m := range matchers {
 		selection := doc.FindMatcher(m)
 		if selection.Length() == 1 {
-			text := selection.Text()
-			return text
+			// Clone before stripping: Remove detaches nodes from the shared doc,
+			// which would delete the ld+json <script> blocks getJSONLD reads next.
+			clone := selection.Clone()
+			clone.Find("script, style, noscript, svg, template").Remove()
+			return normalizeWS(clone.Text())
 		}
 	}
 
 	return ""
+}
+
+// normalizeWS collapses every run of whitespace (including the newlines and tabs
+// that block elements emit) to a single space and trims the ends. Page layout is
+// irrelevant to the downstream LLM, so this trades it for a denser, smaller input.
+func normalizeWS(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func getUrls(doc *goquery.Document) []string {

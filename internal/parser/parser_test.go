@@ -72,6 +72,76 @@ func TestParser(t *testing.T) {
 		}
 	})
 
+	t.Run("strips non-content tags and collapses whitespace", func(t *testing.T) {
+		html := `
+<html>
+	<body>
+		<main>
+			<style>.headline { color: red; }</style>
+			<h1>Senior   Go
+Engineer</h1>
+			<script>var tracking = 1;</script>
+			<p>Build   crawlers.</p>
+			<noscript>Enable JavaScript</noscript>
+		</main>
+	</body>
+</html>
+`
+		content, err := parser.NewHTMLParser().Parse([]byte(html))
+		if err != nil {
+			t.Fatalf("error parsing content: %v", err)
+		}
+
+		if strings.Contains(content.MainContent, "color: red") {
+			t.Errorf("css leaked into main content: %q", content.MainContent)
+		}
+		if strings.Contains(content.MainContent, "var tracking") {
+			t.Errorf("js leaked into main content: %q", content.MainContent)
+		}
+		if strings.Contains(content.MainContent, "Enable JavaScript") {
+			t.Errorf("noscript leaked into main content: %q", content.MainContent)
+		}
+
+		want := "Senior Go Engineer Build crawlers."
+		if content.MainContent != want {
+			t.Errorf("expected collapsed content %q, got: %q", want, content.MainContent)
+		}
+	})
+
+	t.Run("ld+json survives a script inside the main region", func(t *testing.T) {
+		html := `
+<html>
+	<body>
+		<main>
+			<h1>Careers</h1>
+			<script type="application/ld+json">{"@type":"JobPosting","title":"Go Dev"}</script>
+			<p>Open roles</p>
+		</main>
+	</body>
+</html>
+`
+		content, err := parser.NewHTMLParser().Parse([]byte(html))
+		if err != nil {
+			t.Fatalf("error parsing content: %v", err)
+		}
+
+		// The script is stripped from the LLM-facing text...
+		if strings.Contains(content.MainContent, "JobPosting") {
+			t.Errorf("ld+json script leaked into main content: %q", content.MainContent)
+		}
+		if content.MainContent != "Careers Open roles" {
+			t.Errorf("unexpected main content: %q", content.MainContent)
+		}
+
+		// ...but is still extracted into JSONLD (clone did not clobber the doc).
+		if len(content.JSONLD) != 1 {
+			t.Fatalf("want 1 ld+json block, got %d: %v", len(content.JSONLD), content.JSONLD)
+		}
+		if !strings.Contains(content.JSONLD[0], "JobPosting") {
+			t.Errorf("expected JobPosting ld+json, got: %s", content.JSONLD[0])
+		}
+	})
+
 	t.Run("extracts ld+json blocks into JSONLD", func(t *testing.T) {
 		html := `
 <html>
