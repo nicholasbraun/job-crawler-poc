@@ -1,7 +1,7 @@
 // Package careerpageprocessor is the discovery crawl's Catalog writer: for each
-// RawCareerPage candidate it confirms (via LLM only when no JobPosting JSON-LD
-// is present), derives ATS-aware Company identity, and upserts the Company and
-// its Career Page into the Catalog.
+// RawCareerPage candidate it confirms (via LLM unless the candidate is a
+// structurally-certain ATS board root), derives ATS-aware Company identity, and
+// upserts the Company and its Career Page into the Catalog.
 package careerpageprocessor
 
 import (
@@ -19,7 +19,8 @@ import (
 
 // Confirmer decides whether a gate-passing candidate is really a Career Page.
 // Implementations may call an external service (e.g. an LLM API); it is
-// consulted only for candidates lacking a JobPosting JSON-LD.
+// consulted for every candidate that is not a structurally-certain ATS board
+// root.
 type Confirmer interface {
 	Confirm(ctx context.Context, url string, content *crawler.Content) (bool, error)
 }
@@ -65,16 +66,19 @@ func NewProcessor(cfg *Config) *CareerPageProcessor {
 	}
 }
 
-// Process confirms the candidate is a career page (skipping the LLM when the
-// page already carries a JobPosting JSON-LD), then upserts the owning Company
-// and the Career Page. A candidate the Confirmer rejects is dropped.
+// Process confirms the candidate is a career page (skipping the LLM only for a
+// structurally-certain ATS board root), then upserts the owning Company and the
+// Career Page. A candidate the Confirmer rejects is dropped.
 func (w *CareerPageProcessor) Process(ctx context.Context, raw *crawler.RawCareerPage) error {
-	// Two arms bypass the LLM Confirmer: a structurally-confirmed ATS board root
-	// (raw.Certain), and any page already carrying a schema.org JobPosting
-	// JSON-LD block (the strongest possible signal). Only a content-heuristic
-	// match on an unrecognized host with no such structured data must clear the
-	// LLM first, bounding LLM cost at perpetual discovery scale.
-	if !raw.Certain && !hasJobPostingJSONLD(raw.Content.JSONLD) {
+	// Only a structurally-confirmed ATS board root (raw.Certain) bypasses the LLM
+	// Confirmer. Everything else -- including a page carrying a schema.org
+	// JobPosting JSON-LD, which marks a single posting, not a hub -- must clear
+	// the Confirmer first, keeping single postings and non-openings sub-pages out
+	// of the Catalog. The pre-LLM gate already sheds aggregator hosts and reject
+	// paths, bounding LLM cost at perpetual discovery scale.
+	if raw.Certain {
+		w.recorder.Gated(ctx, llmobs.KindClassify, llmobs.ReasonCertain)
+	} else {
 		w.recorder.Content(ctx, llmobs.KindClassify, raw.Content.MainContent)
 		start := time.Now()
 		ok, err := w.confirmer.Confirm(ctx, raw.URL.RawURL, &raw.Content)
@@ -86,12 +90,6 @@ func (w *CareerPageProcessor) Process(ctx context.Context, raw *crawler.RawCaree
 			slog.Info("career_page_processor: candidate rejected by confirmer", "url", raw.URL.RawURL)
 			return nil
 		}
-	} else if raw.Certain {
-		// Structurally-certain ATS board root -- gated without the LLM.
-		w.recorder.Gated(ctx, llmobs.KindClassify, llmobs.ReasonCertain)
-	} else {
-		// Not certain, so the guard fell through on a JobPosting JSON-LD block.
-		w.recorder.Gated(ctx, llmobs.KindClassify, llmobs.ReasonJSONLD)
 	}
 
 	identity := catalog.Identify(raw.URL)

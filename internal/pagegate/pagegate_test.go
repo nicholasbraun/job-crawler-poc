@@ -34,6 +34,27 @@ func TestCareerPage(t *testing.T) {
 			wantCertain: true,
 		},
 		{
+			// A multi-company board is rejected outright, even though its host and
+			// on-page job links would otherwise read as a career hub.
+			name: "aggregator/board host is rejected outright",
+			url:  "https://builtin.com/jobs",
+			content: &crawler.Content{
+				Title: "Jobs on Built In",
+				URLs:  []string{"https://builtin.com/jobs/1", "https://builtin.com/jobs/2"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
+			name:        "VC-portfolio board on a subdomain is rejected outright",
+			url:         "https://jobsinvc.getro.com/companies/acme",
+			content:     &crawler.Content{Title: "Portfolio jobs"},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
 			name:        "ATS job posting is rejected",
 			url:         "https://job-boards.greenhouse.io/acme/jobs/123",
 			content:     &crawler.Content{Title: "Job Application for Engineer at Acme"},

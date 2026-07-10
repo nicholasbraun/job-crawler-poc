@@ -108,32 +108,6 @@ func TestCompanyNameFrom(t *testing.T) {
 	})
 }
 
-func TestHasJobPostingJSONLD(t *testing.T) {
-	tests := []struct {
-		name   string
-		blocks []string
-		want   bool
-	}{
-		{"nil blocks", nil, false},
-		{"no json-ld", []string{}, false},
-		{"bare JobPosting node", []string{`{"@type":"JobPosting","title":"Engineer"}`}, true},
-		{"schema.org URL @type", []string{`{"@type":"https://schema.org/JobPosting"}`}, true},
-		{"@type array containing JobPosting", []string{`{"@type":["Thing","JobPosting"]}`}, true},
-		{"JobPosting inside @graph", []string{`{"@graph":[{"@type":"WebPage"},{"@type":"JobPosting"}]}`}, true},
-		{"top-level array of nodes", []string{`[{"@type":"WebSite"},{"@type":"JobPosting"}]`}, true},
-		{"unrelated types only", []string{`{"@type":"Organization"}`, `{"@type":"WebPage"}`}, false},
-		{"malformed json is skipped", []string{`{not json`, `{"@type":"JobPosting"}`}, true},
-		{"only malformed json", []string{`{not json`}, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := hasJobPostingJSONLD(tt.blocks); got != tt.want {
-				t.Errorf("hasJobPostingJSONLD(%v) = %v, want %v", tt.blocks, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestCompanyDomain(t *testing.T) {
 	t.Run("self-hosted uses the eTLD+1 CompanyKey", func(t *testing.T) {
 		id := catalog.Identity{ATSProvider: "", CompanyKey: "acme.com"}

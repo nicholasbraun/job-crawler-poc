@@ -282,7 +282,7 @@
       "type": "timeseries",
       "id": 7,
       "title": "Calls avoided, by gate reason",
-      "description": "Rate of pages short-circuited before the LLM, split by the heuristic that resolved them (certain, jsonld, irrelevant, url_structure).",
+      "description": "Rate of pages short-circuited before the LLM, split by the heuristic that resolved them (certain, irrelevant, url_structure).",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
       "fieldConfig": {

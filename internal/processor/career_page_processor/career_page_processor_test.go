@@ -151,10 +151,12 @@ func TestCareerPageProcessorCertainSkipsLLM(t *testing.T) {
 	}
 }
 
-func TestCareerPageProcessorJobPostingJSONLDSkipsLLM(t *testing.T) {
+func TestCareerPageProcessorJobPostingJSONLDStillConsultsLLM(t *testing.T) {
 	companyRepo := &spyCompanyRepo{assignID: uuid.New()}
 	careerPageRepo := &spyCareerPageRepo{}
-	confirmer := &spyConfirmer{result: false} // would reject if consulted
+	// A JobPosting JSON-LD marks a single posting, not a hub, so the confirmer
+	// rejects it -- and the candidate must be dropped, not catalogued.
+	confirmer := &spyConfirmer{result: false}
 
 	proc := careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
 		CompanyRepository:    companyRepo,
@@ -162,23 +164,24 @@ func TestCareerPageProcessorJobPostingJSONLDSkipsLLM(t *testing.T) {
 		Confirmer:            confirmer,
 	})
 
-	// Not structurally certain (self-hosted host), but the page carries a
-	// schema.org JobPosting JSON-LD block -- the strongest signal, which must
-	// bypass the LLM Confirmer and catalogue directly.
+	// Not structurally certain (self-hosted host) but carrying a schema.org
+	// JobPosting JSON-LD. This used to bypass the LLM and catalogue directly --
+	// the #45 root cause -- so the JSON-LD must no longer short-circuit the
+	// confirmer.
 	raw := &crawler.RawCareerPage{
-		URL:     newURL(t, "https://careers.acme.com/jobs"),
-		Content: crawler.Content{Title: "Careers at Acme", JSONLD: []string{`{"@type":"JobPosting"}`}},
+		URL:     newURL(t, "https://careers.acme.com/o/senior-go"),
+		Content: crawler.Content{Title: "Senior Go Engineer", JSONLD: []string{`{"@type":"JobPosting"}`}},
 		Certain: false,
 	}
 	if err := proc.Process(t.Context(), raw); err != nil {
 		t.Fatalf("Process returned error: %v", err)
 	}
 
-	if confirmer.calls != 0 {
-		t.Errorf("a page carrying JobPosting JSON-LD should skip the LLM, but Confirm was called %d times", confirmer.calls)
+	if confirmer.calls != 1 {
+		t.Errorf("a page carrying JobPosting JSON-LD must still reach the LLM, but Confirm was called %d times", confirmer.calls)
 	}
-	if len(companyRepo.upserted) != 1 || len(careerPageRepo.upserted) != 1 {
-		t.Fatalf("want the candidate catalogued: companies=%d careerPages=%d",
+	if len(companyRepo.upserted) != 0 || len(careerPageRepo.upserted) != 0 {
+		t.Fatalf("a confirmer-rejected JSON-LD posting must not be catalogued: companies=%d careerPages=%d",
 			len(companyRepo.upserted), len(careerPageRepo.upserted))
 	}
 }
@@ -256,14 +259,15 @@ func TestCareerPageProcessorRecordsGateAndCallDecisions(t *testing.T) {
 			wantContent: 0,
 		},
 		{
-			name: "job-posting json-ld gates without an LLM call",
+			name: "job-posting json-ld no longer gates: it reaches the LLM",
 			raw: &crawler.RawCareerPage{
-				URL:     newURL(t, "https://careers.acme.com/jobs"),
-				Content: crawler.Content{Title: "Careers at Acme", MainContent: "roles", JSONLD: []string{`{"@type":"JobPosting"}`}},
+				URL:     newURL(t, "https://careers.acme.com/o/senior-go"),
+				Content: crawler.Content{Title: "Senior Go Engineer", MainContent: "roles", JSONLD: []string{`{"@type":"JobPosting"}`}},
 				Certain: false,
 			},
-			wantGates:   []recordedGate{{llmobs.KindClassify, llmobs.ReasonJSONLD}},
-			wantContent: 0,
+			confirm:     true,
+			wantCalls:   []recordedCall{{llmobs.KindClassify, llmobs.OutcomeOK}},
+			wantContent: 1,
 		},
 		{
 			name: "uncertain page reaches the LLM and records the call + content",

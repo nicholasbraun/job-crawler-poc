@@ -243,6 +243,36 @@ func subdomainLabel(host, suffix string) (string, bool) {
 	return labels[len(labels)-1], true
 }
 
+// aggregatorHosts are registrable domains (eTLD+1) that are never a single
+// company's Career Page hub: multi-company job boards, VC-portfolio boards, and
+// professional networks. Cataloguing them pollutes the Catalog with non-hub
+// pages (#45) and, downstream, mints a fake Company that swallows many real
+// employers (#46). A recognized single-tenant ATS host (e.g. smartrecruiters,
+// join.com/companies) is deliberately absent -- those are legitimate hubs whose
+// only defect is identity attribution, handled separately in #46. This is a
+// curated denylist, extended as the gold-set harness (#44) surfaces more.
+var aggregatorHosts = map[string]struct{}{
+	"builtin.com":          {}, // multi-company tech job board (+ builtin<city> siblings)
+	"builtinnyc.com":       {},
+	"getro.com":            {}, // VC-portfolio board platform; tenants on *.getro.com fold in via eTLD+1
+	"speedinvest.com":      {}, // VC portfolio careers board
+	"hvcapital.com":        {}, // VC portfolio careers board
+	"xing.com":             {}, // professional network
+	"crunchboard.com":      {}, // job board
+	"beck-stellenmarkt.de": {}, // legal job board
+	"lto.de":               {}, // legal news site job board
+}
+
+// IsAggregatorHost reports whether u sits on a known multi-company aggregator,
+// VC-portfolio board, or professional network -- a host that never represents a
+// single company's Career Page. Discovery rejects such pages at the gate so they
+// never reach the Catalog or Company identity. Matched on the registrable domain,
+// so every subdomain of a listed host (e.g. jobsinvc.getro.com) is covered.
+func IsAggregatorHost(u crawler.URL) bool {
+	_, ok := aggregatorHosts[eTLDPlusOne(strings.ToLower(u.Hostname))]
+	return ok
+}
+
 // RegistrableDomain returns the eTLD+1 of host — e.g. "remote.com" for
 // "jobs.remote.com" — or "" when host is empty. Used to reduce a company's own
 // website host to its registrable domain for DisplayDomain.
