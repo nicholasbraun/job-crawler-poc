@@ -100,8 +100,17 @@ func (m *Metrics) recordDeadLetter(ctx context.Context, kind Kind) {
 	m.deadletter.Add(ctx, 1, metric.WithAttributes(attribute.String("kind", string(kind))))
 }
 
-func (m *Metrics) recordQueueDepth(ctx context.Context, kind Kind, backlog, pending int64) {
-	attrs := metric.WithAttributes(attribute.String("kind", string(kind)))
+// recordQueueDepth records the backlog/pending gauges keyed by kind AND run_id.
+// Unlike the counters, these are gauges (last-writer-wins per series), so without
+// a run_id two concurrent runs would write the same {kind} series and clobber each
+// other — a Grafana sum by (kind) would then track one run, not their total. The
+// run_id splits them so the sum is accurate; a finished run records a terminal 0
+// (see Stage.Close) so its series does not pin the sum above the live total.
+func (m *Metrics) recordQueueDepth(ctx context.Context, kind Kind, runID string, backlog, pending int64) {
+	attrs := metric.WithAttributes(
+		attribute.String("kind", string(kind)),
+		attribute.String("run_id", runID),
+	)
 	m.queueDepth.Record(ctx, backlog, attrs)
 	m.queuePending.Record(ctx, pending, attrs)
 }

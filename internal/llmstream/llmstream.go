@@ -47,8 +47,18 @@ const payloadField = "payload"
 // a task is judged poison, a reclaim idle window long enough that a slow model
 // call is not mistaken for a crashed worker, a shorter reclaim/retry cadence so a
 // known-failed task is redelivered promptly regardless of that window, a short
-// blocking read so a stop is noticed promptly, and a small batch so one worker
-// does not hoard the backlog.
+// blocking read so a stop is noticed promptly, and a one-at-a-time worker read so
+// a worker never holds an entry it is not actively processing.
+//
+// defaultReadCount is deliberately 1: a worker XREADGROUPs a single entry, so the
+// only entry it owns is the one in flight. This keeps a pending entry's idle time
+// a sound liveness signal — the reclaimer's minIdle rule can safely treat an
+// over-idle first delivery as a dead worker. A larger read count would let one
+// worker prefetch a batch into its pending list; entries queued behind a slow
+// model call would accrue idle time untouched and be reclaimed and re-processed
+// while their owner is alive (a wasted duplicate LLM call). The reclaimer's own
+// pending-list scan is separately sized by defaultBatchCount, since listing more
+// idle entries per round only speeds redelivery/dead-lettering.
 const (
 	defaultMaxAttempts      = 5
 	defaultMinIdle          = 30 * time.Second
@@ -56,8 +66,17 @@ const (
 	defaultBlockDur         = 5 * time.Second
 	defaultDepthInterval    = 10 * time.Second
 	defaultDrainPoll        = 100 * time.Millisecond
+	defaultReadCount        = 1
 	defaultBatchCount       = 16
 	defaultBackpressurePoll = 250 * time.Millisecond
+
+	// deadLetterMaxLen caps the per-run dead-letter stream. The main stream
+	// self-trims (XACK+XDEL removes a completed entry), but dead-lettered entries
+	// only clear when DeleteRun sweeps the run on a terminal status, so a
+	// long-lived perpetual run that keeps dead-lettering would grow it without
+	// bound. MAXLEN ~N (approximate trim) bounds it; the durable signal is the
+	// DeadLetter counter, so trimming the oldest retained payloads is harmless.
+	deadLetterMaxLen = 10000
 )
 
 // Option configures a Stage.
@@ -115,8 +134,19 @@ func WithBlockDuration[T any](d time.Duration) Option[T] {
 	return func(s *Stage[T]) { s.blockDur = d }
 }
 
-// WithBatchCount sets how many entries a worker or the reclaimer reads per round
-// trip (default 16).
+// WithReadCount sets how many new entries a worker claims per XREADGROUP (default
+// 1). Keep it at 1 unless per-entry processing is cheap: a worker owns every entry
+// it reads until it acks, so a prefetched entry queued behind a slow model call
+// sits idle and can be reclaimed and double-processed by the reclaimer while its
+// worker is still alive. Clamped to at least 1.
+func WithReadCount[T any](n int64) Option[T] {
+	return func(s *Stage[T]) { s.readCount = n }
+}
+
+// WithBatchCount sets how many pending entries the reclaimer lists and acts on per
+// scan (default 16). Unlike the worker read count it does not affect double-process
+// safety — the reclaimer only ever touches entries already idle past their reclaim
+// window — so a larger value just redelivers/dead-letters a backlog faster.
 func WithBatchCount[T any](n int64) Option[T] {
 	return func(s *Stage[T]) { s.batchCount = n }
 }
@@ -163,6 +193,7 @@ type Stage[T any] struct {
 	blockDur        time.Duration
 	depthInterval   time.Duration
 	drainPoll       time.Duration
+	readCount       int64
 	batchCount      int64
 	maxBacklog      int64
 
@@ -197,6 +228,7 @@ func NewStage[T any](client *redis.Client, runID uuid.UUID, kind llmobs.Kind, ne
 		blockDur:        defaultBlockDur,
 		depthInterval:   defaultDepthInterval,
 		drainPoll:       defaultDrainPoll,
+		readCount:       defaultReadCount,
 		batchCount:      defaultBatchCount,
 	}
 	for _, opt := range opts {
@@ -204,6 +236,9 @@ func NewStage[T any](client *redis.Client, runID uuid.UUID, kind llmobs.Kind, ne
 	}
 	if s.workers < 1 {
 		s.workers = 1
+	}
+	if s.readCount < 1 {
+		s.readCount = 1
 	}
 	if s.reclaimInterval <= 0 {
 		s.reclaimInterval = defaultReclaimInterval
@@ -302,6 +337,12 @@ func (s *Stage[T]) Close() {
 		}
 		s.readCancel()
 		s.wg.Wait()
+		// The depth gauges are last-writer-wins per run; record a terminal zero so
+		// this ended run stops contributing to sum by (kind). Background context:
+		// readCtx is now cancelled. A clean finish drained to zero anyway; a
+		// stop/shutdown is process-exit or headed to a terminal DeleteRun, so
+		// reporting zero for this run's live backlog is correct in every real case.
+		s.recorder.QueueDepth(context.Background(), s.kind, 0, 0)
 	})
 }
 

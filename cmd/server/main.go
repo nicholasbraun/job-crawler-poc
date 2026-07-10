@@ -264,7 +264,7 @@ func newFactory(
 
 	return func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *runner.Counters, shouldStop func(context.Context) bool) (*runner.Engine, error) {
 		llmStats := &llmobs.Stats{}
-		llmRecorder := llmobs.NewRecorder(llmMetrics, llmDupProbe, llmStats)
+		llmRecorder := llmobs.NewRecorder(llmMetrics, llmDupProbe, llmStats, runID.String())
 		uf := def.URLFilter
 		urlFilter := filter.Chain[string](
 			urlfilter.BlockInvalidURLs(),

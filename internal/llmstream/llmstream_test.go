@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -362,6 +363,83 @@ func TestStage(t *testing.T) {
 			func() bool { return spy.seenCount("slow") == 1 && depthIsZero(t, client, runID, kind)() })
 		if got := spy.callCount(); got != 1 {
 			t.Errorf("Process called %d times total, want 1 (no reclaim of a live entry)", got)
+		}
+	})
+
+	t.Run("worker holds at most one in-flight entry, not a prefetched batch", func(t *testing.T) {
+		runID := uuid.New()
+		kind := llmobs.KindExtract
+		spy := newSpy()
+		spy.gate = make(chan struct{}) // hold every Process open
+
+		// One worker, a minIdle far larger than the test so a live worker's in-flight
+		// entry is never reclaimed, and a prompt reclaim scan. The invariant under
+		// test: the worker claims ONE entry at a time, so while it blocks in Process
+		// the other n-1 stay in the backlog (undelivered) rather than being prefetched
+		// into its pending list, where they would idle and be double-processed. A
+		// worker that read a batch (read count > 1) would show pending == n here.
+		opts := []llmstream.Option[task]{
+			llmstream.WithWorkers[task](1),
+			llmstream.WithMinIdle[task](time.Hour),
+			llmstream.WithReclaimInterval[task](50 * time.Millisecond),
+			llmstream.WithBlockDuration[task](50 * time.Millisecond),
+			llmstream.WithDrainPoll[task](20 * time.Millisecond),
+			llmstream.WithDepthInterval[task](time.Hour),
+		}
+		stage := llmstream.NewStage(client, runID, kind, procOf(spy), opts...)
+
+		// release opens the gate exactly once. Deferred BEFORE Close (so it runs
+		// first on any early t.Fatal) so a failing assertion can never deadlock the
+		// clean-finish drain waiting on a still-gated worker.
+		var once sync.Once
+		release := func() { once.Do(func() { close(spy.gate) }) }
+		defer stage.Close()
+		defer release()
+
+		// Stage the whole backlog BEFORE Start, so the worker's very first read sees
+		// all n waiting — the condition under which a batch-reading worker would pull
+		// them all into its pending list at once. (Enqueue is safe before Start: XADD
+		// creates the stream; Start's group is created at "0", so all are new.)
+		const n = 8
+		for i := range n {
+			if err := stage.Enqueue(t.Context(), &task{Key: fmt.Sprintf("k%d", i)}); err != nil {
+				t.Fatalf("Enqueue %d: %v", i, err)
+			}
+		}
+
+		if err := stage.Start(context.Background()); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+
+		// Wait for the single worker to pick up its first entry and block in Process.
+		waitFor(t, eventually, "worker entered Process on its first entry",
+			func() bool { return spy.callCount() >= 1 })
+
+		// Exactly one delivered-but-unacked entry; the rest remain in the backlog.
+		backlog, pending, err := llmstream.Depth(t.Context(), client, runID, kind)
+		if err != nil {
+			t.Fatalf("Depth: %v", err)
+		}
+		if pending != 1 {
+			t.Fatalf("pending = %d, want 1 (a worker must not prefetch a batch into its PEL)", pending)
+		}
+		if backlog != n {
+			t.Errorf("backlog = %d, want %d (nothing acked while the worker is blocked)", backlog, n)
+		}
+
+		// Many reclaim intervals pass: with minIdle huge the live worker's single
+		// in-flight entry must never be reclaimed and re-processed.
+		time.Sleep(400 * time.Millisecond)
+		if got := spy.callCount(); got != 1 {
+			t.Fatalf("Process called %d times; a live worker's in-flight entry was reclaimed", got)
+		}
+
+		// Release the gate: all n drain, each processed exactly once.
+		release()
+		waitFor(t, eventually, "all entries drain after the gate opens",
+			func() bool { return spy.distinctSeen() == n && depthIsZero(t, client, runID, kind)() })
+		if got := spy.callCount(); got != n {
+			t.Errorf("Process called %d times total, want %d (one delivery per entry, no double-processing)", got, n)
 		}
 	})
 

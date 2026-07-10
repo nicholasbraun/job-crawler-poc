@@ -17,6 +17,11 @@ import (
 // each, and XACKs on success. A failed entry is left in the pending list for the
 // reclaimer to redeliver. It runs until readCtx is cancelled (a stop/shutdown, or
 // the readCancel a clean-finish drain fires once the backlog is empty).
+//
+// It reads s.readCount entries per round (1 by default): a worker owns every entry
+// it claims until it acks, so reading one at a time means the only pending entry
+// it holds is the one in flight — never a prefetched entry queued behind a slow
+// model call that would idle long enough for the reclaimer to double-process it.
 func (s *Stage[T]) worker(consumer string) {
 	defer s.wg.Done()
 	proc := s.newProc()
@@ -29,7 +34,7 @@ func (s *Stage[T]) worker(consumer string) {
 			Group:    s.group,
 			Consumer: consumer,
 			Streams:  []string{s.stream, ">"},
-			Count:    s.batchCount,
+			Count:    s.readCount,
 			Block:    s.blockDur,
 		}).Result()
 		if err != nil {
@@ -231,6 +236,11 @@ func (s *Stage[T]) moveToDeadLetter(msg redis.XMessage, reason string) {
 	payload, _ := msg.Values[payloadField].(string)
 	if err := s.client.XAdd(context.Background(), &redis.XAddArgs{
 		Stream: s.dead,
+		// MAXLEN ~N (approximate) bounds the dead-letter stream for a long-lived
+		// perpetual run that never hits DeleteRun; the DeadLetter counter, not the
+		// retained entry, is the durable signal, so trimming the oldest is safe.
+		MaxLen: deadLetterMaxLen,
+		Approx: true,
 		Values: map[string]interface{}{
 			payloadField: payload,
 			"reason":     reason,

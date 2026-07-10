@@ -25,7 +25,7 @@ func TestStatsSummary(t *testing.T) {
 	// Drive stats through the exported Recorder (nil metrics/probe): three
 	// classify calls (ok, error, timeout), one gate skip, two contents (unique,
 	// since a nil probe never reports duplicates).
-	rec := llmobs.NewRecorder(nil, nil, stats)
+	rec := llmobs.NewRecorder(nil, nil, stats, "")
 	ctx := t.Context()
 	rec.Call(ctx, llmobs.KindClassify, llmobs.OutcomeOK, 0)
 	rec.Call(ctx, llmobs.KindClassify, llmobs.OutcomeError, 0)
