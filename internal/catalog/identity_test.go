@@ -195,10 +195,14 @@ func TestIsAggregatorHost(t *testing.T) {
 		{"getro portfolio board on a subdomain", "https://jobsinvc.getro.com/companies/acme", true},
 		{"speedinvest portfolio board", "https://careers.speedinvest.com/companies/bitpanda", true},
 		{"xing professional network", "https://www.xing.com/pages/acme", true},
+		{"linkedin professional network", "https://www.linkedin.com/company/acme/jobs", true},
+		{"linkedin country subdomain folds in via eTLD+1", "https://de.linkedin.com/jobs/view/123", true},
+		{"indeed aggregator", "https://de.indeed.com/jobs?q=go", true},
+		{"stepstone job board", "https://www.stepstone.de/jobs/acme", true},
 		{"crunchboard job board", "https://www.crunchboard.com/jobs/123", true},
 		{"match is case-insensitive", "https://BuiltIn.com/jobs", true},
-		// A recognized single-tenant ATS board root is a legitimate hub, not an
-		// aggregator -- its only defect is identity attribution (#46).
+		// A per-tenant ATS or recruiting-platform board root is a legitimate hub,
+		// not an aggregator -- its only defect is identity attribution (#46).
 		{"smartrecruiters tenant is not an aggregator", "https://jobs.smartrecruiters.com/ScalableGmbH", false},
 		{"join.com company board is not an aggregator", "https://join.com/companies/fugro", false},
 		{"a company's own site is not an aggregator", "https://careers.acme.com/jobs", false},

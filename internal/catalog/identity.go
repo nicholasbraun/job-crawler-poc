@@ -244,23 +244,40 @@ func subdomainLabel(host, suffix string) (string, bool) {
 }
 
 // aggregatorHosts are registrable domains (eTLD+1) that are never a single
-// company's Career Page hub: multi-company job boards, VC-portfolio boards, and
-// professional networks. Cataloguing them pollutes the Catalog with non-hub
-// pages (#45) and, downstream, mints a fake Company that swallows many real
-// employers (#46). A recognized single-tenant ATS host (e.g. smartrecruiters,
-// join.com/companies) is deliberately absent -- those are legitimate hubs whose
-// only defect is identity attribution, handled separately in #46. This is a
-// curated denylist, extended as the gold-set harness (#44) surfaces more.
+// company's Career Page hub: multi-company job boards, job aggregators,
+// professional networks, and VC-portfolio board platforms. Cataloguing them
+// pollutes the Catalog with non-hub pages (#45) and, downstream, mints a fake
+// Company that swallows many real employers (#46). A per-tenant ATS or
+// recruiting-platform host (e.g. smartrecruiters, join.com/companies) is
+// deliberately absent -- those are legitimate single-company hubs whose only
+// defect is identity attribution, canonicalized separately in #46. Matched on
+// eTLD+1, so every subdomain (de.linkedin.com, jobsinvc.getro.com) folds in.
+// This is a curated denylist, extended as the gold-set harness (#44) surfaces
+// more.
 var aggregatorHosts = map[string]struct{}{
-	"builtin.com":          {}, // multi-company tech job board (+ builtin<city> siblings)
+	// Job boards and aggregators (multi-company listings).
+	"builtin.com":          {}, // + builtin<city> siblings
 	"builtinnyc.com":       {},
-	"getro.com":            {}, // VC-portfolio board platform; tenants on *.getro.com fold in via eTLD+1
-	"speedinvest.com":      {}, // VC portfolio careers board
-	"hvcapital.com":        {}, // VC portfolio careers board
-	"xing.com":             {}, // professional network
-	"crunchboard.com":      {}, // job board
+	"indeed.com":           {},
+	"indeed.de":            {},
+	"glassdoor.com":        {},
+	"glassdoor.de":         {},
+	"stepstone.de":         {},
+	"stepstone.com":        {},
+	"monster.com":          {},
+	"monster.de":           {},
+	"crunchboard.com":      {},
 	"beck-stellenmarkt.de": {}, // legal job board
 	"lto.de":               {}, // legal news site job board
+	// Professional networks and employer-review sites.
+	"linkedin.com": {},
+	"linkedin.de":  {},
+	"xing.com":     {},
+	"kununu.com":   {}, // employer reviews (XING-owned)
+	// VC-portfolio board platforms.
+	"getro.com":       {}, // powers many portfolio boards; tenants on *.getro.com fold in via eTLD+1
+	"speedinvest.com": {},
+	"hvcapital.com":   {},
 }
 
 // IsAggregatorHost reports whether u sits on a known multi-company aggregator,
