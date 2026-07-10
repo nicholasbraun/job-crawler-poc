@@ -21,19 +21,34 @@ type Recorder interface {
 	// Content records the page content about to be fed to the LLM, measuring how
 	// often identical content recurs (the duplicate-content probe).
 	Content(ctx context.Context, kind Kind, content string)
+	// Retry records a durable-stage task that was redelivered for another attempt
+	// after a failed processing (a reclaimed pending entry).
+	Retry(ctx context.Context, kind Kind)
+	// DeadLetter records a durable-stage task that exhausted its attempts and was
+	// moved to the dead-letter stream.
+	DeadLetter(ctx context.Context, kind Kind)
+	// QueueDepth records the current durable-stage backlog (total outstanding
+	// stream entries) and pending (delivered-but-unacked) counts for a kind. The
+	// gauges are additionally scoped by the recorder's run so concurrent runs do
+	// not clobber one another's series.
+	QueueDepth(ctx context.Context, kind Kind, backlog, pending int64)
 }
 
 type recorder struct {
 	metrics *Metrics
 	dup     *DupProbe
 	stats   *Stats
+	// runID scopes this run's queue-depth gauges so concurrent runs get distinct
+	// series instead of overwriting a shared {kind} one.
+	runID string
 }
 
 // NewRecorder builds a per-run Recorder over the shared metrics and dup probe
-// and this run's stats. Any of them may be nil (each fan-out is guarded), which
-// is how partially-configured setups degrade gracefully.
-func NewRecorder(metrics *Metrics, dup *DupProbe, stats *Stats) Recorder {
-	return &recorder{metrics: metrics, dup: dup, stats: stats}
+// and this run's stats. runID scopes the queue-depth gauges to this run. Any of
+// metrics/dup/stats may be nil (each fan-out is guarded), which is how
+// partially-configured setups degrade gracefully.
+func NewRecorder(metrics *Metrics, dup *DupProbe, stats *Stats, runID string) Recorder {
+	return &recorder{metrics: metrics, dup: dup, stats: stats, runID: runID}
 }
 
 func (r *recorder) Call(ctx context.Context, kind Kind, outcome Outcome, dur time.Duration) {
@@ -68,6 +83,30 @@ func (r *recorder) Content(ctx context.Context, kind Kind, content string) {
 	}
 }
 
+func (r *recorder) Retry(ctx context.Context, kind Kind) {
+	if r.metrics != nil {
+		r.metrics.recordRetry(ctx, kind)
+	}
+	if r.stats != nil {
+		r.stats.recordRetry(kind)
+	}
+}
+
+func (r *recorder) DeadLetter(ctx context.Context, kind Kind) {
+	if r.metrics != nil {
+		r.metrics.recordDeadLetter(ctx, kind)
+	}
+	if r.stats != nil {
+		r.stats.recordDeadLetter(kind)
+	}
+}
+
+func (r *recorder) QueueDepth(ctx context.Context, kind Kind, backlog, pending int64) {
+	if r.metrics != nil {
+		r.metrics.recordQueueDepth(ctx, kind, r.runID, backlog, pending)
+	}
+}
+
 // Nop returns a Recorder that ignores everything, so call sites in tests (or a
 // processor built without a recorder) need no nil checks.
 func Nop() Recorder { return nopRecorder{} }
@@ -77,3 +116,6 @@ type nopRecorder struct{}
 func (nopRecorder) Call(context.Context, Kind, Outcome, time.Duration) {}
 func (nopRecorder) Gated(context.Context, Kind, Reason)                {}
 func (nopRecorder) Content(context.Context, Kind, string)              {}
+func (nopRecorder) Retry(context.Context, Kind)                        {}
+func (nopRecorder) DeadLetter(context.Context, Kind)                   {}
+func (nopRecorder) QueueDepth(context.Context, Kind, int64, int64)     {}

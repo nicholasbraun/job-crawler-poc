@@ -23,6 +23,11 @@ type kindStats struct {
 	// of those hashes had been seen before (this run or a prior one).
 	seen atomic.Int64
 	dup  atomic.Int64
+	// retries counts durable-stage redeliveries (a pending task reclaimed for
+	// another attempt); deadletter counts tasks that exhausted their attempts and
+	// were moved to the dead-letter stream.
+	retries    atomic.Int64
+	deadletter atomic.Int64
 }
 
 func (s *Stats) forKind(kind Kind) *kindStats {
@@ -44,6 +49,9 @@ func (s *Stats) recordCall(kind Kind, outcome Outcome) {
 }
 
 func (s *Stats) recordGated(kind Kind) { s.forKind(kind).gated.Add(1) }
+
+func (s *Stats) recordRetry(kind Kind)      { s.forKind(kind).retries.Add(1) }
+func (s *Stats) recordDeadLetter(kind Kind) { s.forKind(kind).deadletter.Add(1) }
 
 func (s *Stats) recordContent(kind Kind, duplicate bool) {
 	ks := s.forKind(kind)
@@ -69,11 +77,15 @@ func (ks *kindStats) summary(prefix string) []any {
 	gated := ks.gated.Load()
 	seen := ks.seen.Load()
 	dup := ks.dup.Load()
+	retries := ks.retries.Load()
+	deadletter := ks.deadletter.Load()
 	return []any{
 		prefix + "_calls", calls,
 		prefix + "_errors", errs,
 		prefix + "_timeouts", timeouts,
 		prefix + "_gated", gated,
+		prefix + "_retries", retries,
+		prefix + "_deadletter", deadletter,
 		prefix + "_gate_hit_rate", ratio(gated, gated+calls),
 		prefix + "_error_rate", ratio(errs, calls),
 		prefix + "_timeout_rate", ratio(timeouts, calls),

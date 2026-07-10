@@ -34,6 +34,42 @@ type URLFilterConfig struct {
 	PassPathSegments    []string `json:"passPathSegments"`
 }
 
+// LLMGateConfig holds pre-LLM gate signals (ADR-0007 step 2): cheap URL-path
+// checks that resolve a page's classifier/extractor verdict without a model
+// call. A CareerPath segment marks a page a Career Page hub confidently enough
+// to catalog it without the LLM classifier (and, on the keyword path, marks it
+// an index to crawl rather than extract); a RejectPath segment marks it
+// structurally not a job page, dropping it before any LLM call. A page with
+// neither signal is ambiguous and still goes to the model.
+//
+// Unlike URLFilterConfig, this is not (yet) a per-definition, persisted field: the
+// factory applies the process-wide DefaultLLMGateConfig to every run, so the type
+// carries no json tags. Add them when it becomes a persisted definition field.
+type LLMGateConfig struct {
+	CareerPathSignals []string
+	RejectPathSignals []string
+}
+
+// DefaultLLMGateConfig returns the built-in pre-LLM gate signals. CareerPathSignals
+// is intentionally a high-precision set: a bare page on one of these paths is
+// cataloged as a Career Page (or, on the keyword path, treated as an index) with no
+// LLM confirmation, so only path tokens that are almost always a jobs hub belong
+// here. Weaker, ambiguous tokens (e.g. "join", which is as often a newsletter or
+// community signup) are deliberately left out; the pagegate content heuristic still
+// accepts them, but as uncertain — the LLM confirms before cataloging.
+func DefaultLLMGateConfig() LLMGateConfig {
+	return LLMGateConfig{
+		CareerPathSignals: []string{
+			"careers", "career", "jobs", "karriere",
+			"stellenangebote", "vacancies",
+		},
+		RejectPathSignals: []string{
+			"blog", "news", "press", "media", "legal", "privacy",
+			"terms", "imprint", "impressum", "cookie", "gdpr", "pricing",
+		},
+	}
+}
+
 // CrawlDefinition is the persisted specification of a crawl: what to crawl and
 // how. A definition is immutable once created; each execution of it is a
 // CrawlRun.

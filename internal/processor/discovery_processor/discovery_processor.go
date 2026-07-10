@@ -15,6 +15,7 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
+	"github.com/nicholasbraun/job-crawler-poc/internal/pagegate"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -35,7 +36,11 @@ type Config struct {
 	ContentFilter    filter.CheckFn[*crawler.Content]
 	URLFilter        filter.CheckFn[string]
 	RobotsTxtChecker RobotsTxtChecker
-	// OnCareerPage is called for each page that passes the career-page Gate,
+	// GateConfig supplies the pre-LLM URL-path signals (ADR-0007 step 2) the
+	// career-page gate uses to accept a career-hub page without the LLM
+	// classifier. A zero value falls back to the legacy content heuristic.
+	GateConfig crawler.LLMGateConfig
+	// OnCareerPage is called for each page that passes the career-page gate,
 	// typically enqueuing the candidate into the career-page worker pool.
 	OnCareerPage func(ctx context.Context, page *crawler.RawCareerPage) error
 }
@@ -47,6 +52,7 @@ type discoveryWorker struct {
 	contentFilter        filter.CheckFn[*crawler.Content]
 	urlFilter            filter.CheckFn[string]
 	robotsTxtChecker     RobotsTxtChecker
+	gateConfig           crawler.LLMGateConfig
 	urlsProcessedCounter metric.Int64Counter
 	onCareerPage         func(ctx context.Context, page *crawler.RawCareerPage) error
 }
@@ -66,6 +72,7 @@ func NewProcessor(cfg *Config) *discoveryWorker {
 		contentFilter:        cfg.ContentFilter,
 		urlFilter:            cfg.URLFilter,
 		robotsTxtChecker:     cfg.RobotsTxtChecker,
+		gateConfig:           cfg.GateConfig,
 		urlsProcessedCounter: urlsProcessedCounter,
 		onCareerPage:         cfg.OnCareerPage,
 	}
@@ -94,7 +101,7 @@ func (w *discoveryWorker) Process(ctx context.Context, nextURL *crawler.URL) err
 		return fmt.Errorf("discovery_worker: content filtered out %w", err)
 	}
 
-	if accept, certain := Gate(*nextURL, content); accept {
+	if accept, certain := pagegate.CareerPage(*nextURL, content, w.gateConfig); accept {
 		slog.Info("discovery_worker: content passed career-page gate", "title", content.Title, "url", nextURL.RawURL, "certain", certain)
 
 		err := w.onCareerPage(ctx, &crawler.RawCareerPage{
