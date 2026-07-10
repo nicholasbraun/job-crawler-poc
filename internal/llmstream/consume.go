@@ -54,9 +54,14 @@ func (s *Stage[T]) worker(consumer string) {
 }
 
 // reclaimer is the durable analog of the frontier's expired-lease reclaim: it
-// periodically scans the pending list for entries idle past minIdle, redelivers
-// them for another attempt, and dead-letters any that have exhausted their
-// attempts. One goroutine per stage; retries are processed inline and serially.
+// scans the pending list every reclaimInterval, redelivers entries that have sat
+// idle long enough, and dead-letters any that have exhausted their attempts. Two
+// idle thresholds keep it both crash-safe and prompt: a first, never-reclaimed
+// delivery is redelivered only once idle past the full minIdle window (it may be a
+// slow-but-alive worker still in its model call), while an entry already reclaimed
+// at least once is known-failed and retried on the shorter reclaimInterval cadence
+// — so a poison task dead-letters in minIdle + (attempts × reclaimInterval), not
+// attempts × minIdle. One goroutine per stage; retries run inline and serially.
 func (s *Stage[T]) reclaimer() {
 	defer s.wg.Done()
 	proc := s.newProc()
@@ -67,18 +72,21 @@ func (s *Stage[T]) reclaimer() {
 			return
 		}
 		s.reclaimOnce(proc, consumer)
-		if !sleepCtx(s.readCtx, s.minIdle) {
+		if !sleepCtx(s.readCtx, s.reclaimInterval) {
 			return
 		}
 	}
 }
 
-// reclaimOnce redelivers or dead-letters every pending entry idle past minIdle.
+// reclaimOnce redelivers or dead-letters pending entries. It lists everything idle
+// past the short reclaimInterval, then applies the per-entry crash-safety rule: a
+// first delivery is held until it is idle past the full minIdle window, while an
+// entry already reclaimed at least once is retried right away.
 func (s *Stage[T]) reclaimOnce(proc processor.Processor[T], consumer string) {
 	pending, err := s.client.XPendingExt(s.readCtx, &redis.XPendingExtArgs{
 		Stream: s.stream,
 		Group:  s.group,
-		Idle:   s.minIdle,
+		Idle:   s.reclaimInterval,
 		Start:  "-",
 		End:    "+",
 		Count:  s.batchCount,
@@ -101,19 +109,30 @@ func (s *Stage[T]) reclaimOnce(proc processor.Processor[T], consumer string) {
 			s.deadLetterPending(p)
 			continue
 		}
+		// A never-reclaimed first delivery (RetryCount 1) might be a slow-but-alive
+		// worker still inside its model call; leave it until it is idle past the full
+		// minIdle crash window. A redelivered entry (RetryCount > 1) is known-failed
+		// — a live worker would have acked — so retry it on the reclaimInterval
+		// cadence the XPendingExt filter already applied.
+		if p.RetryCount <= 1 && p.Idle < s.minIdle {
+			continue
+		}
 		s.reclaim(proc, consumer, p.ID)
 	}
 }
 
-// reclaim XCLAIMs one idle pending entry (which increments its delivery count and
-// hands ownership to this consumer) and reprocesses it. XCLAIM returns nothing if
-// the entry was acked or is no longer idle, in which case there is nothing to do.
+// reclaim XCLAIMs one pending entry idle past reclaimInterval (which increments its
+// delivery count and hands ownership to this consumer) and reprocesses it. The
+// caller has already applied the per-entry idle rule, and reclaimInterval is the
+// smallest window it ever acts on, so XCLAIM's own MinIdle guard matches it. XCLAIM
+// returns nothing if the entry was acked or is no longer idle, in which case there
+// is nothing to do.
 func (s *Stage[T]) reclaim(proc processor.Processor[T], consumer, id string) {
 	msgs, err := s.client.XClaim(s.readCtx, &redis.XClaimArgs{
 		Stream:   s.stream,
 		Group:    s.group,
 		Consumer: consumer,
-		MinIdle:  s.minIdle,
+		MinIdle:  s.reclaimInterval,
 		Messages: []string{id},
 	}).Result()
 	if err != nil {
@@ -204,7 +223,10 @@ func (s *Stage[T]) deadLetterPending(p redis.XPendingExt) {
 }
 
 // moveToDeadLetter copies an entry to the dead-letter stream, acks+deletes it off
-// the main stream, and records the dead-letter.
+// the main stream, and records the dead-letter. The dead-letter stream is a
+// diagnostic sink only: it lives under the run's llmstream:{runID}:* namespace and
+// is swept by DeleteRun when the run ends, so the retained payload is for in-run
+// inspection while the durable signal is the DeadLetter counter, not the entry.
 func (s *Stage[T]) moveToDeadLetter(msg redis.XMessage, reason string) {
 	payload, _ := msg.Values[payloadField].(string)
 	if err := s.client.XAdd(context.Background(), &redis.XAddArgs{

@@ -25,10 +25,13 @@ var jobPathSegments = []string{
 	"stellen", "stelle",
 }
 
-// careerKeywords mark a URL or title as career-related (a careers/jobs hub).
+// careerKeywords mark a URL or title as career-related (a careers/jobs hub). This
+// is the high-recall content heuristic: a match accepts a page but leaves the
+// verdict to the LLM (uncertain), so it can hold weaker, ambiguous tokens ("join")
+// that DefaultLLMGateConfig deliberately keeps out of its certain-accept signals.
 var careerKeywords = []string{
 	"career", "careers", "jobs", "vacanc", "positions", "openings",
-	"hiring", "join-us", "karriere", "stellen", "stellenangebote",
+	"hiring", "join", "karriere", "stellen", "stellenangebote",
 }
 
 // CareerPage decides whether a discovery candidate is a Career Page (accept)

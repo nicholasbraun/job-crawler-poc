@@ -23,23 +23,41 @@ type task struct {
 // assert consumption behavior. Every worker/reclaimer of a stage is given the
 // same instance (the newProc closure returns it), so counts accumulate across
 // goroutines. failFor forces the first N attempts of a key to error (modelling a
-// crash-before-ack); alwaysFail makes every attempt error (modelling poison).
+// crash-before-ack); alwaysFail makes every attempt error (modelling poison); gate,
+// when non-nil, holds every Process call open until it is closed or the context is
+// cancelled (modelling a slow-but-alive worker still inside its call). All are set
+// before Start, so writing them without the mutex is safe.
 type spyProcessor struct {
 	mu         sync.Mutex
 	calls      int
 	seen       map[string]int // successful processings per key
 	failFor    map[string]int // remaining forced failures per key
 	alwaysFail bool
+	gate       chan struct{}
 }
 
 func newSpy() *spyProcessor {
 	return &spyProcessor{seen: map[string]int{}, failFor: map[string]int{}}
 }
 
-func (p *spyProcessor) Process(_ context.Context, t *task) error {
+func (p *spyProcessor) Process(ctx context.Context, t *task) error {
+	// Count the invocation, then (if gated) block outside the lock so a held call
+	// does not stall the counters other goroutines read.
+	p.mu.Lock()
+	p.calls++
+	gate := p.gate
+	p.mu.Unlock()
+
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.calls++
 	if p.alwaysFail {
 		return fmt.Errorf("spy: always fail %q", t.Key)
 	}

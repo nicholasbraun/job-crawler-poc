@@ -63,6 +63,14 @@ const (
 	defaultMaxDepth   = 4
 	defaultMaxWorkers = 50
 	defaultMaxDomains = 10000
+
+	// llmMaxBacklog is the high-water cap on a per-run LLM stream's outstanding
+	// entries. Past it, the crawl's Enqueue blocks until the classify/extract
+	// consumer group catches up, so a crawl that outruns the model applies
+	// backpressure instead of growing Redis without bound (each entry carries the
+	// full page content). It is a safety valve sized well above steady-state
+	// backlog, so normal operation never reaches it.
+	llmMaxBacklog = 5000
 )
 
 func main() {
@@ -294,10 +302,13 @@ func newFactory(
 				},
 				llmstream.WithWorkers[crawler.RawCareerPage](llmMaxWorkers),
 				llmstream.WithRecorder[crawler.RawCareerPage](llmRecorder),
-				// The reclaim window must exceed one LLM call's timeout: a single
-				// Confirm is bounded by the http client's LLM_TIMEOUT, so a slow but
-				// alive worker still in that call must not have its entry reclaimed
-				// and double-called. Only a truly dead worker sits idle longer.
+				llmstream.WithMaxBacklog[crawler.RawCareerPage](llmMaxBacklog),
+				// The first-reclaim window must exceed the whole Process: a single
+				// Confirm is bounded by the http client's LLM_TIMEOUT, and the extra
+				// minute absorbs the follow-on catalog upsert, so a slow but alive
+				// worker still in flight is never reclaimed and double-called. Only a
+				// truly dead worker sits idle longer. Retries of an already-failed
+				// entry are paced by the shorter default reclaim interval.
 				llmstream.WithMinIdle[crawler.RawCareerPage](llmConfig.Timeout+time.Minute),
 			)
 			if err := classifyStage.Start(ctx); err != nil {
@@ -401,10 +412,13 @@ func newFactory(
 			},
 			llmstream.WithWorkers[crawler.RawJobListing](llmMaxWorkers),
 			llmstream.WithRecorder[crawler.RawJobListing](llmRecorder),
-			// The reclaim window must exceed one LLM call's timeout: a single
-			// Extract is bounded by the http client's LLM_TIMEOUT, so a slow but
-			// alive worker still in that call must not have its entry reclaimed and
-			// double-called. Only a truly dead worker sits idle longer.
+			llmstream.WithMaxBacklog[crawler.RawJobListing](llmMaxBacklog),
+			// The first-reclaim window must exceed the whole Process: a single
+			// Extract is bounded by the http client's LLM_TIMEOUT, and the extra
+			// minute absorbs the follow-on listing upsert, so a slow but alive worker
+			// still in flight is never reclaimed and double-called. Only a truly dead
+			// worker sits idle longer. Retries of an already-failed entry are paced by
+			// the shorter default reclaim interval.
 			llmstream.WithMinIdle[crawler.RawJobListing](llmConfig.Timeout+time.Minute),
 		)
 		if err := extractStage.Start(ctx); err != nil {

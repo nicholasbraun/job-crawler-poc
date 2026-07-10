@@ -1,9 +1,10 @@
 // Package llmstream is a durable, per-run LLM work stage backed by a Redis
 // Stream and a consumer group. It replaces the two in-process LLM worker pools
 // (career-page classify, job-listing extract) with a crash-safe queue: the crawl
-// XADDs a task and never blocks on the model, while a consumer group drains the
-// backlog into the same processor.Processor, XACKs on success, and redelivers
-// (then dead-letters) on failure.
+// XADDs a task and, unless an optional backlog cap is reached, does not block on
+// the model, while a consumer group drains the backlog into the same
+// processor.Processor, XACKs on success, and redelivers (then dead-letters) on
+// failure.
 //
 // It mirrors the Redis frontier's durability model (ADR-0003, per-run transient
 // state under a run-scoped key prefix, a lease/reclaim loop) but over Redis
@@ -44,15 +45,19 @@ const payloadField = "payload"
 
 // Stage tunable defaults, sized for the LLM stage: a handful of attempts before
 // a task is judged poison, a reclaim idle window long enough that a slow model
-// call is not mistaken for a crashed worker, a short blocking read so a stop is
-// noticed promptly, and a small batch so one worker does not hoard the backlog.
+// call is not mistaken for a crashed worker, a shorter reclaim/retry cadence so a
+// known-failed task is redelivered promptly regardless of that window, a short
+// blocking read so a stop is noticed promptly, and a small batch so one worker
+// does not hoard the backlog.
 const (
-	defaultMaxAttempts   = 5
-	defaultMinIdle       = 30 * time.Second
-	defaultBlockDur      = 5 * time.Second
-	defaultDepthInterval = 10 * time.Second
-	defaultDrainPoll     = 100 * time.Millisecond
-	defaultBatchCount    = 16
+	defaultMaxAttempts      = 5
+	defaultMinIdle          = 30 * time.Second
+	defaultReclaimInterval  = 30 * time.Second
+	defaultBlockDur         = 5 * time.Second
+	defaultDepthInterval    = 10 * time.Second
+	defaultDrainPoll        = 100 * time.Millisecond
+	defaultBatchCount       = 16
+	defaultBackpressurePoll = 250 * time.Millisecond
 )
 
 // Option configures a Stage.
@@ -69,15 +74,39 @@ func WithMaxAttempts[T any](n int) Option[T] {
 	return func(s *Stage[T]) { s.maxAttempts = n }
 }
 
-// WithMinIdle sets how long a pending (delivered-but-unacked) entry must sit idle
-// before the reclaimer redelivers it, and thus the reclaim poll cadence (default
-// 30s). It must exceed the maximum time a live worker spends on one entry — for
-// the LLM stage, one model call's timeout — or a slow-but-alive worker's in-flight
-// entry is reclaimed and processed a second time (a wasted, duplicate LLM call);
-// only a truly dead worker should ever sit idle this long. Small values make
-// redelivery fast for tests.
+// WithMinIdle sets how long a pending (delivered-but-unacked) entry on its FIRST,
+// never-reclaimed delivery must sit idle before the reclaimer treats its worker as
+// dead and redelivers it (default 30s). It must exceed the maximum time a live
+// worker spends on one entry — for the LLM stage, the whole Process: one model
+// call (bounded by the http client's timeout) plus the follow-on Postgres upsert —
+// or a slow-but-alive worker's in-flight entry is reclaimed and processed a second
+// time (a wasted, duplicate LLM call); only a truly dead worker should ever sit
+// idle this long. Retries of an already-failed entry are paced by the shorter
+// WithReclaimInterval, not this window. Small values make redelivery fast for tests.
 func WithMinIdle[T any](d time.Duration) Option[T] {
 	return func(s *Stage[T]) { s.minIdle = d }
+}
+
+// WithReclaimInterval sets how often the reclaimer scans the pending list, and the
+// idle window an already-failed entry (one reclaimed at least once) must sit before
+// it is retried (default 30s). It is deliberately decoupled from WithMinIdle so
+// redelivery and dead-lettering stay prompt even when minIdle must be large
+// (longer than a model call): minIdle gates only the first reclaim of a
+// possibly-still-live worker's entry, while every subsequent retry of a
+// known-failed entry proceeds on this shorter cadence. Clamped to minIdle when
+// larger. Small values make retries fast for tests.
+func WithReclaimInterval[T any](d time.Duration) Option[T] {
+	return func(s *Stage[T]) { s.reclaimInterval = d }
+}
+
+// WithMaxBacklog caps the stream's outstanding entries: once the backlog reaches n,
+// Enqueue blocks (honouring its context) until a consumer drains it below n,
+// applying backpressure so a crawl that outruns the LLM stage slows instead of
+// growing Redis without bound (each entry carries the full page content). Zero (the
+// default) disables the cap for pure producer/consumer decoupling. Sized as a
+// high-water safety valve, so normal operation never touches it.
+func WithMaxBacklog[T any](n int64) Option[T] {
+	return func(s *Stage[T]) { s.maxBacklog = n }
 }
 
 // WithBlockDuration sets how long a worker blocks on XREADGROUP waiting for new
@@ -115,9 +144,9 @@ func WithRecorder[T any](r llmobs.Recorder) Option[T] {
 }
 
 // Stage is a durable per-run LLM work queue over a Redis Stream and a consumer
-// group. Enqueue is a non-blocking producer (XADD); Start launches the consumers;
-// Close either drains to empty (clean finish) or stops promptly leaving the PEL
-// for redelivery (stop/shutdown).
+// group. Enqueue is a producer (XADD) that only blocks when a backlog cap is
+// reached; Start launches the consumers; Close either drains to empty (clean
+// finish) or stops promptly leaving the PEL for redelivery (stop/shutdown).
 type Stage[T any] struct {
 	client   *redis.Client
 	stream   string
@@ -127,13 +156,15 @@ type Stage[T any] struct {
 	newProc  func() processor.Processor[T]
 	recorder llmobs.Recorder
 
-	workers       int
-	maxAttempts   int
-	minIdle       time.Duration
-	blockDur      time.Duration
-	depthInterval time.Duration
-	drainPoll     time.Duration
-	batchCount    int64
+	workers         int
+	maxAttempts     int
+	minIdle         time.Duration
+	reclaimInterval time.Duration
+	blockDur        time.Duration
+	depthInterval   time.Duration
+	drainPoll       time.Duration
+	batchCount      int64
+	maxBacklog      int64
 
 	// runCtx is the run context handed to Start; its liveness at Close time tells
 	// a clean finish (drain) apart from a stop/shutdown (leave the PEL). readCtx
@@ -152,20 +183,21 @@ type Stage[T any] struct {
 func NewStage[T any](client *redis.Client, runID uuid.UUID, kind llmobs.Kind, newProc func() processor.Processor[T], opts ...Option[T]) *Stage[T] {
 	stream := streamKey(runID, kind)
 	s := &Stage[T]{
-		client:        client,
-		stream:        stream,
-		dead:          stream + ":dead",
-		group:         group,
-		kind:          kind,
-		newProc:       newProc,
-		recorder:      llmobs.Nop(),
-		workers:       1,
-		maxAttempts:   defaultMaxAttempts,
-		minIdle:       defaultMinIdle,
-		blockDur:      defaultBlockDur,
-		depthInterval: defaultDepthInterval,
-		drainPoll:     defaultDrainPoll,
-		batchCount:    defaultBatchCount,
+		client:          client,
+		stream:          stream,
+		dead:            stream + ":dead",
+		group:           group,
+		kind:            kind,
+		newProc:         newProc,
+		recorder:        llmobs.Nop(),
+		workers:         1,
+		maxAttempts:     defaultMaxAttempts,
+		minIdle:         defaultMinIdle,
+		reclaimInterval: defaultReclaimInterval,
+		blockDur:        defaultBlockDur,
+		depthInterval:   defaultDepthInterval,
+		drainPoll:       defaultDrainPoll,
+		batchCount:      defaultBatchCount,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -173,12 +205,26 @@ func NewStage[T any](client *redis.Client, runID uuid.UUID, kind llmobs.Kind, ne
 	if s.workers < 1 {
 		s.workers = 1
 	}
+	if s.reclaimInterval <= 0 {
+		s.reclaimInterval = defaultReclaimInterval
+	}
+	if s.reclaimInterval > s.minIdle {
+		// The retry cadence can never outrun the first-reclaim crash window: an
+		// entry can't be retried faster than a live worker's entry is protected.
+		s.reclaimInterval = s.minIdle
+	}
 	return s
 }
 
-// Enqueue XADDs a task onto the stream. It is a non-blocking producer: the crawl
-// never waits on the model. Safe to call before Start; XADD creates the stream.
+// Enqueue XADDs a task onto the stream. It normally does not wait on the model —
+// the crawl and the LLM stage are decoupled — but when a backlog cap is set
+// (WithMaxBacklog) it first blocks until the stream has capacity, so a fast crawl
+// cannot grow Redis without bound. Safe to call before Start; XADD creates the
+// stream.
 func (s *Stage[T]) Enqueue(ctx context.Context, task *T) error {
+	if err := s.awaitCapacity(ctx); err != nil {
+		return err
+	}
 	b, err := json.Marshal(task)
 	if err != nil {
 		return fmt.Errorf("llmstream: marshaling task: %w", err)
@@ -190,6 +236,29 @@ func (s *Stage[T]) Enqueue(ctx context.Context, task *T) error {
 		return fmt.Errorf("llmstream: enqueueing task: %w", err)
 	}
 	return nil
+}
+
+// awaitCapacity applies the backlog safety valve (WithMaxBacklog): when a cap is
+// set it blocks until the stream's outstanding entries fall below it, so a fast
+// crawl feeding a slow LLM stage slows rather than growing Redis unbounded. A zero
+// cap is a no-op (pure decoupling). It honours ctx, so a stop/shutdown unblocks a
+// producer parked on capacity, and reports that cancellation to the caller.
+func (s *Stage[T]) awaitCapacity(ctx context.Context) error {
+	if s.maxBacklog <= 0 {
+		return nil
+	}
+	for {
+		n, err := s.client.XLen(ctx, s.stream).Result()
+		if err != nil {
+			return fmt.Errorf("llmstream: measuring backlog for backpressure: %w", err)
+		}
+		if n < s.maxBacklog {
+			return nil
+		}
+		if !sleepCtx(ctx, defaultBackpressurePoll) {
+			return ctx.Err()
+		}
+	}
 }
 
 // Start creates the consumer group (idempotently — a group left by a previous

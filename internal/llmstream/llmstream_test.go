@@ -2,6 +2,7 @@ package llmstream_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -239,6 +240,173 @@ func TestStage(t *testing.T) {
 		}
 		if backlog != 3 || pending != 1 {
 			t.Errorf("Depth with one in-flight: got (backlog=%d, pending=%d), want (3, 1)", backlog, pending)
+		}
+	})
+
+	t.Run("resume redelivers a pending entry orphaned by a crashed process", func(t *testing.T) {
+		runID := uuid.New()
+		kind := llmobs.KindExtract
+		stream := fmt.Sprintf("llmstream:%s:extract", runID)
+
+		// Model a previous process that created the group, delivered an entry to a
+		// worker, then died before acking: the entry is stuck in the PEL, owned by a
+		// consumer that no longer exists.
+		prior := llmstream.NewStage(client, runID, kind, procOf(newSpy()))
+		if err := prior.Enqueue(t.Context(), &task{Key: "orphan"}); err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+		if err := client.XGroupCreateMkStream(t.Context(), stream, "llm", "0").Err(); err != nil {
+			t.Fatalf("XGroupCreateMkStream: %v", err)
+		}
+		if _, err := client.XReadGroup(t.Context(), &redis.XReadGroupArgs{
+			Group: "llm", Consumer: "extract-0-deadproc", Streams: []string{stream, ">"}, Count: 1,
+		}).Result(); err != nil {
+			t.Fatalf("XReadGroup: %v", err)
+		}
+
+		// The new process adopts the run: a fresh Stage on the same runID/kind
+		// re-attaches to the group (BUSYGROUP) and its reclaimer must redeliver the
+		// orphaned entry. Workers only read never-delivered entries, so only the
+		// reclaim path can recover it — this is the #32 restart guarantee.
+		spy := newSpy()
+		stage := llmstream.NewStage(client, runID, kind, procOf(spy), fastOpts()...)
+		if err := stage.Start(context.Background()); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		defer stage.Close()
+
+		waitFor(t, eventually, "orphaned pending entry redelivered and processed",
+			func() bool { return spy.seenCount("orphan") == 1 })
+		waitFor(t, eventually, "pending list clears after reclaim",
+			depthIsZero(t, client, runID, kind))
+	})
+
+	t.Run("clean finish drains a queued backlog before Close returns", func(t *testing.T) {
+		runID := uuid.New()
+		kind := llmobs.KindClassify
+		spy := newSpy()
+		// A single worker so the backlog cannot drain instantly on Enqueue; Close's
+		// clean-finish drain must process the remainder before it returns.
+		opts := []llmstream.Option[task]{
+			llmstream.WithWorkers[task](1),
+			llmstream.WithMinIdle[task](100 * time.Millisecond),
+			llmstream.WithBlockDuration[task](50 * time.Millisecond),
+			llmstream.WithDrainPoll[task](20 * time.Millisecond),
+			llmstream.WithDepthInterval[task](time.Hour),
+		}
+		stage := llmstream.NewStage(client, runID, kind, procOf(spy), opts...)
+		if err := stage.Start(context.Background()); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+
+		const n = 25
+		for i := range n {
+			if err := stage.Enqueue(t.Context(), &task{Key: fmt.Sprintf("k%d", i)}); err != nil {
+				t.Fatalf("Enqueue %d: %v", i, err)
+			}
+		}
+
+		// Clean finish: the run context is still alive, so Close drains to empty
+		// before returning rather than leaving the backlog for a resume.
+		stage.Close()
+
+		if got := spy.distinctSeen(); got != n {
+			t.Errorf("processed %d distinct tasks after drain, want %d", got, n)
+		}
+		if !depthIsZero(t, client, runID, kind)() {
+			t.Error("stream not fully drained after clean-finish Close")
+		}
+	})
+
+	t.Run("first delivery is not reclaimed before minIdle", func(t *testing.T) {
+		runID := uuid.New()
+		kind := llmobs.KindExtract
+		spy := newSpy()
+		spy.gate = make(chan struct{}) // hold the first (and only) Process call open
+
+		// A large minIdle with a much shorter reclaim interval: the reclaimer scans
+		// often, but a first delivery still in flight (a slow-but-alive worker) must
+		// not be reclaimed and double-processed until minIdle elapses.
+		opts := []llmstream.Option[task]{
+			llmstream.WithWorkers[task](2),
+			llmstream.WithMinIdle[task](2 * time.Second),
+			llmstream.WithReclaimInterval[task](50 * time.Millisecond),
+			llmstream.WithBlockDuration[task](50 * time.Millisecond),
+			llmstream.WithDrainPoll[task](20 * time.Millisecond),
+			llmstream.WithDepthInterval[task](time.Hour),
+		}
+		stage := llmstream.NewStage(client, runID, kind, procOf(spy), opts...)
+		if err := stage.Start(context.Background()); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		defer stage.Close()
+
+		if err := stage.Enqueue(t.Context(), &task{Key: "slow"}); err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+
+		// Wait for a worker to pick it up and enter Process (now blocked on the gate).
+		waitFor(t, eventually, "task delivered to a worker",
+			func() bool { return spy.callCount() >= 1 })
+
+		// Well within minIdle but many reclaim intervals later, the in-flight entry
+		// must not have been reclaimed and re-processed.
+		time.Sleep(700 * time.Millisecond)
+		if got := spy.callCount(); got != 1 {
+			t.Fatalf("Process called %d times; a live first delivery was reclaimed before minIdle", got)
+		}
+
+		// Let the worker finish: the single delivery succeeds and acks, no redelivery.
+		close(spy.gate)
+		waitFor(t, eventually, "in-flight task completes on its single delivery",
+			func() bool { return spy.seenCount("slow") == 1 && depthIsZero(t, client, runID, kind)() })
+		if got := spy.callCount(); got != 1 {
+			t.Errorf("Process called %d times total, want 1 (no reclaim of a live entry)", got)
+		}
+	})
+
+	t.Run("backpressure blocks enqueue at the cap and is ctx-cancellable", func(t *testing.T) {
+		runID := uuid.New()
+		kind := llmobs.KindExtract
+		const capacity = 3
+		stage := llmstream.NewStage(client, runID, kind, procOf(newSpy()),
+			llmstream.WithMaxBacklog[task](capacity))
+		// Deliberately not Started: nothing drains, so the backlog only grows.
+
+		for i := range capacity {
+			if err := stage.Enqueue(t.Context(), &task{Key: fmt.Sprintf("k%d", i)}); err != nil {
+				t.Fatalf("Enqueue %d: %v", i, err)
+			}
+		}
+
+		// At the cap, the next Enqueue must block until capacity frees; since nothing
+		// drains, it returns only when its context is cancelled.
+		ctx, cancel := context.WithCancel(context.Background())
+		errCh := make(chan error, 1)
+		go func() { errCh <- stage.Enqueue(ctx, &task{Key: "blocked"}) }()
+
+		select {
+		case err := <-errCh:
+			t.Fatalf("Enqueue returned %v at capacity; expected it to block", err)
+		case <-time.After(400 * time.Millisecond):
+		}
+
+		cancel()
+		select {
+		case err := <-errCh:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("blocked Enqueue returned %v, want context.Canceled", err)
+			}
+		case <-time.After(eventually):
+			t.Fatal("cancelled Enqueue never returned")
+		}
+
+		n, err := client.XLen(t.Context(), fmt.Sprintf("llmstream:%s:extract", runID)).Result()
+		if err != nil {
+			t.Fatalf("XLen: %v", err)
+		}
+		if n != capacity {
+			t.Errorf("backlog = %d, want %d (a blocked enqueue must not add past the cap)", n, capacity)
 		}
 	})
 }
