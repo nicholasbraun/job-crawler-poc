@@ -100,9 +100,16 @@ type CrawlDefinitionRepository interface {
 // crawl definition when a create request omits its own. These tuned lists steer
 // a crawl toward company career pages: they restrict TLDs, short-circuit-pass
 // hiring-related subdomains and path segments, and block the subdomains, path
-// segments, and hostnames that reliably lead away from job listings (blogs,
-// docs, shops, auth, social media, and so on). Previously sourced from
+// segments, and hostnames that reliably lead away from job listings (docs,
+// shops, auth, social media, and so on). Previously sourced from
 // config.json; now the process-wide default lives here in the domain.
+//
+// Editorial paths (blog, news, press, media, articles, stories, posts, magazine)
+// are intentionally NOT blocked here: they often link out to companies, so they
+// are worth crawling for their outbound links. The ones that are also structural
+// non-job pages (blog, news, press, media) are still shed at the pre-LLM gate
+// (DefaultLLMGateConfig.RejectPathSignals), so we harvest their links without
+// spending an LLM call on the page itself.
 func DefaultURLFilterConfig() URLFilterConfig {
 	return URLFilterConfig{
 		AllowedTLDs: []string{
@@ -119,17 +126,17 @@ func DefaultURLFilterConfig() URLFilterConfig {
 			"recruitment", "stellenangebote", "stellen", "team",
 		},
 		BlockedSubdomains: []string{
-			"apps", "wiki", "foundation", "docs", "donate", "blog", "news",
-			"press", "media", "stories", "shop", "store", "marketplace", "help",
+			"apps", "wiki", "foundation", "docs", "donate",
+			"shop", "store", "marketplace", "help",
 			"support", "forum", "community", "research", "discuss", "gist",
 			"templates", "api", "books", "cdn", "static", "assets", "status",
 			"staging", "dev", "test", "login", "auth", "sso", "accounts", "id",
 			"ads", "mail", "email", "analytics", "tracking", "events",
 		},
 		BlockedPathSegments: []string{
-			"add_to", "blog", "wiki", "signin", "news", "press", "users",
-			"media", "podcast", "magazine", "articles", "stories", "learning",
-			"posts", "products", "imprint", "impressum", "contact", "privacy",
+			"add_to", "wiki", "signin", "users",
+			"podcast", "learning",
+			"products", "imprint", "impressum", "contact", "privacy",
 			"legal", "terms", "disclaimer", "cookie", "gdpr", "tos", "agb",
 			"datenschutz", "login", "signup", "register", "auth", "oauth", "sso",
 			"account", "profile", "settings", "password", "logout", "shop",
