@@ -70,7 +70,11 @@ type subdomainRule struct {
 // also shares a subdomain suffix (apply.workable.com vs {slug}.workable.com)
 // is not mis-slugged as a tenant subdomain.
 var pathRules = []pathRule{
-	{provider: "greenhouse", hosts: []string{"boards.greenhouse.io", "job-boards.greenhouse.io"}},
+	{provider: "greenhouse", hosts: []string{
+		"boards.greenhouse.io", "job-boards.greenhouse.io",
+		// EU-region board hosts: same tenant-under-path layout, different subdomain.
+		"boards.eu.greenhouse.io", "job-boards.eu.greenhouse.io",
+	}},
 	{provider: "lever", hosts: []string{"jobs.lever.co"}},
 	{provider: "ashby", hosts: []string{"jobs.ashbyhq.com"}},
 	{provider: "workable", hosts: []string{"apply.workable.com"}},
@@ -267,6 +271,7 @@ var aggregatorHosts = map[string]struct{}{
 	"monster.com":          {},
 	"monster.de":           {},
 	"crunchboard.com":      {},
+	"remoteok.com":         {}, // remote-work job aggregator (multi-company)
 	"beck-stellenmarkt.de": {}, // legal job board
 	"lto.de":               {}, // legal news site job board
 	// Professional networks and employer-review sites.
