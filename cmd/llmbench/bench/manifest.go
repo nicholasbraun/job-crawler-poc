@@ -22,12 +22,6 @@ type Entry struct {
 	Verified  bool     `json:"verified"`
 	FetchedAt string   `json:"fetched_at"`
 	Note      string   `json:"note"`
-	// ProposedLabel/ProposedCategory hold the labeler model's raw proposal (see
-	// `llmbench label`), kept separate from the committed, human-owned Label/Category
-	// so the review queue can detect a hand-edit that disagrees with the labeler.
-	// omitempty so old manifests and pre-label capture stubs round-trip unchanged.
-	ProposedLabel    Label    `json:"proposed_label,omitempty"`
-	ProposedCategory Category `json:"proposed_category,omitempty"`
 }
 
 // Manifest is the Gold-Set index: the ordered list of fixtures to score.
@@ -66,15 +60,6 @@ func LoadManifest(fsys fs.FS) (Manifest, error) {
 		}
 		if e.Label.Positive() != e.Category.Positive() {
 			return Manifest{}, fmt.Errorf("%w: entry %d (%s): label %q and category %q disagree on polarity", ErrInvalidManifest, i, e.File, e.Label, e.Category)
-		}
-		if e.ProposedCategory != "" && !e.ProposedCategory.Valid() {
-			return Manifest{}, fmt.Errorf("%w: entry %d (%s): unknown proposed_category %q", ErrInvalidManifest, i, e.File, e.ProposedCategory)
-		}
-		if e.ProposedLabel != "" && !e.ProposedLabel.Valid() {
-			return Manifest{}, fmt.Errorf("%w: entry %d (%s): unknown proposed_label %q", ErrInvalidManifest, i, e.File, e.ProposedLabel)
-		}
-		if e.ProposedLabel != "" && e.ProposedCategory != "" && e.ProposedLabel.Positive() != e.ProposedCategory.Positive() {
-			return Manifest{}, fmt.Errorf("%w: entry %d (%s): proposed_label %q and proposed_category %q disagree on polarity", ErrInvalidManifest, i, e.File, e.ProposedLabel, e.ProposedCategory)
 		}
 		if _, dup := seen[e.File]; dup {
 			return Manifest{}, fmt.Errorf("%w: duplicate file %q", ErrInvalidManifest, e.File)

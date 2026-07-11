@@ -21,6 +21,15 @@ fixtures whose proposed label disagrees with the Gate or the pipeline — the ~2
 that actually move the numbers. This keeps the manual load at ~20 not ~100 while
 keeping the labels that decide precision/recall ones a human signed off on.
 
+> **Amendment (label verb removed).** The committed `llmbench label` verb, its
+> `LABELER_*` proposer, and the `proposed_label`/`proposed_category` manifest fields
+> were dropped: the automated proposer did not work as intended, and the initial
+> classification was instead done by a stronger model driven interactively via
+> Claude Code. The bootstrap-then-human-confirm approach still holds — only the
+> committed tooling for it does not. The review queue accordingly loses its labeler
+> axis and now surfaces only fixtures whose committed label disagrees with the Gate
+> or the pipeline.
+
 A fixture is stored as **raw HTML + its real URL** (in `manifest.json`) and run
 through the live parser every time — so a `getMainContent`/parser change flows
 straight into the verdicts, which is exactly the measurement #44 exists to unblock.

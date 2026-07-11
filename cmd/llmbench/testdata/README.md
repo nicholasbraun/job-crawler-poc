@@ -22,8 +22,8 @@ Labels were produced in three passes and are now **human-owned ground truth**
 (`verified: true`):
 
 1. **Provisional** — each fixture seeded from its sourcing bucket.
-2. **`llmbench label`** — a stronger model (via `LABELER_*`) proposed a
-   `label`/`category` per fixture (kept in `proposed_*`).
+2. **Model proposal** — a stronger model, driven interactively via Claude Code,
+   proposed a `label`/`category` per fixture.
 3. **Full-content review** — every fixture whose proposal disagreed with the
    provisional label was adjudicated against the **full** page (not the pipeline's
    1500-char cap), and 17 categories were corrected. The distinction applied: a
@@ -70,6 +70,6 @@ errors. `bench` therefore exits non-zero until these are addressed in the gate
 
 ## Growing the set
 
-`llmbench capture <url>` appends a fixture + stub; run `llmbench label` and confirm
-disagreements to fold new pages in. Keep every stratum populated
+`llmbench capture <url>` appends a fixture + stub; label it and set `verified: true`
+to fold new pages in. Keep every stratum populated
 (`TestLoadManifest_CommittedSet` guards this).

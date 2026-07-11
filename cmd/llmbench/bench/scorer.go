@@ -85,17 +85,6 @@ func (c Category) Positive() bool {
 	return c == CategoryHubATSRoot || c == CategoryHubSelfHosted
 }
 
-// LabelForCategory returns the binary label implied by a category's polarity:
-// LabelCareerPage for a positive category, LabelNotCareerPage otherwise. The
-// labeler proposes a category; its label is this derivation, which keeps
-// proposed_label/proposed_category polarity-consistent by construction.
-func LabelForCategory(c Category) Label {
-	if c.Positive() {
-		return LabelCareerPage
-	}
-	return LabelNotCareerPage
-}
-
 // VerdictRow is one fixture's full pipeline outcome and the SOLE input to Score.
 // Later tickets ADD fields (LLM verdict, repeat votes) -- never reshape these.
 type VerdictRow struct {
@@ -114,11 +103,6 @@ type VerdictRow struct {
 	// Verified mirrors the manifest entry's verified flag. A verified row is
 	// human-signed-off and never enters the review queue. Added in #54.
 	Verified bool
-	// ProposedLabel is the polarity of the labeler model's category proposal,
-	// recorded by `llmbench label` (manifest proposed_label). Empty ("") when the
-	// fixture has never been labeler-proposed; the labeler review axis is then
-	// skipped for the row. Added in #54.
-	ProposedLabel Label
 }
 
 // GateScorecard is the deterministic Gate regression report.
@@ -211,7 +195,6 @@ var AllCategories = []Category{
 type ReviewReason string
 
 const (
-	ReviewLabelerDisagrees  ReviewReason = "labeler"  // labeler proposal polarity != provisional label
 	ReviewGateDisagrees     ReviewReason = "gate"     // Gate's certain verdict != provisional label
 	ReviewPipelineDisagrees ReviewReason = "pipeline" // end-to-end production verdict != provisional label
 )
@@ -224,7 +207,7 @@ type ReviewItem struct {
 	URL      string         `json:"url"`
 	Category Category       `json:"category"`
 	Label    Label          `json:"label"`   // the provisional (committed) label under review
-	Reasons  []ReviewReason `json:"reasons"` // >=1, fixed order: labeler, gate, pipeline
+	Reasons  []ReviewReason `json:"reasons"` // >=1, fixed order: gate, pipeline
 }
 
 // endToEndPositive is the production accept decision for one row: reject is
@@ -398,8 +381,8 @@ func pipelineHasVerdict(row VerdictRow) bool {
 }
 
 // reviewQueue selects the unverified fixtures whose provisional label is
-// contradicted by the labeler proposal, the Gate's certain verdict, or the
-// end-to-end pipeline verdict. Verified rows are skipped. Descriptive only.
+// contradicted by the Gate's certain verdict or the end-to-end pipeline verdict.
+// Verified rows are skipped. Descriptive only.
 func reviewQueue(rows []VerdictRow) []ReviewItem {
 	items := []ReviewItem{}
 	for _, row := range rows {
@@ -408,9 +391,6 @@ func reviewQueue(rows []VerdictRow) []ReviewItem {
 		}
 		labelPos := row.Label.Positive()
 		reasons := []ReviewReason{}
-		if row.ProposedLabel != "" && row.ProposedLabel.Positive() != labelPos {
-			reasons = append(reasons, ReviewLabelerDisagrees)
-		}
 		if gPos, ok := gateCertainBinary(row.Gate); ok && gPos != labelPos {
 			reasons = append(reasons, ReviewGateDisagrees)
 		}

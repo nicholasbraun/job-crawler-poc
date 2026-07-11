@@ -4,9 +4,8 @@
 // Gate scorecard (or, with -json, the full machine-readable Report), exiting
 // non-zero on any Leak, False-Certain, or structural violation. The capture verb
 // (#49) fetches a page through the crawler downloader and freezes it as a Gold-Set
-// fixture; the label verb (#54) has a stronger LABELER_* model propose labels for
-// unverified fixtures; the diff verb (#53) reads two -json reports and prints the
-// per-metric delta between them.
+// fixture; the diff verb (#53) reads two -json reports and prints the per-metric
+// delta between them.
 package main
 
 import (
@@ -33,8 +32,6 @@ func main() {
 		os.Exit(runBench(rest))
 	case "capture":
 		os.Exit(runCapture(rest))
-	case "label":
-		os.Exit(runLabel(rest))
 	case "diff":
 		os.Exit(runDiff(rest))
 	default:
@@ -129,7 +126,7 @@ func runBench(args []string) int {
 		}
 		accept, certain := pagegate.CareerPage(u, content, cfg)
 		gate := bench.GateOutcomeFrom(accept, certain)
-		row := bench.VerdictRow{URL: e.URL, Category: e.Category, Label: e.Label, Gate: gate, Verified: e.Verified, ProposedLabel: e.ProposedLabel}
+		row := bench.VerdictRow{URL: e.URL, Category: e.Category, Label: e.Label, Gate: gate, Verified: e.Verified}
 		if *llm && (isolated || gate == bench.GateUncertain) {
 			votes := make([]bool, 0, *repeats)
 			for range *repeats {

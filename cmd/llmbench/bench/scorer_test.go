@@ -28,33 +28,10 @@ func TestGateOutcomeFrom(t *testing.T) {
 	}
 }
 
-func TestLabelForCategory(t *testing.T) {
-	tests := []struct {
-		cat  bench.Category
-		want bench.Label
-	}{
-		{bench.CategoryHubATSRoot, bench.LabelCareerPage},
-		{bench.CategoryHubSelfHosted, bench.LabelCareerPage},
-		{bench.CategoryJobPostingSingle, bench.LabelNotCareerPage},
-		{bench.CategoryCultureAbout, bench.LabelNotCareerPage},
-		{bench.CategoryAggregator, bench.LabelNotCareerPage},
-		{bench.CategoryUnrelated, bench.LabelNotCareerPage},
-		{bench.Category(""), bench.LabelNotCareerPage},
-	}
-	for _, tt := range tests {
-		t.Run(string(tt.cat), func(t *testing.T) {
-			if got := bench.LabelForCategory(tt.cat); got != tt.want {
-				t.Errorf("LabelForCategory(%q) = %q, want %q", tt.cat, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestReviewQueue checks the three disagreement axes (labeler, gate, pipeline),
-// their fixed reason order, that verified rows are excluded, that a missing
-// labeler proposal skips only the labeler axis, and that an uncertain row with
-// no votes skips the pipeline axis. Descriptive selection only -- it never
-// touches Failed()/the exit code.
+// TestReviewQueue checks the two disagreement axes (gate, pipeline), their fixed
+// reason order, that verified rows are excluded, and that an uncertain row with no
+// votes skips the pipeline axis. Descriptive selection only -- it never touches
+// Failed()/the exit code.
 func TestReviewQueue(t *testing.T) {
 	tests := []struct {
 		name string
@@ -69,30 +46,21 @@ func TestReviewQueue(t *testing.T) {
 		{
 			name: "verified-excluded",
 			rows: []bench.VerdictRow{
-				{URL: "v", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Gate: bench.GateReject, Verified: true, ProposedLabel: bench.LabelNotCareerPage},
+				{URL: "v", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Gate: bench.GateReject, Verified: true},
 			},
 			want: []bench.ReviewItem{},
 		},
 		{
 			name: "clean-agree",
 			rows: []bench.VerdictRow{
-				{URL: "ok", Category: bench.CategoryHubATSRoot, Label: bench.LabelCareerPage, Gate: bench.GateCertainAccept, ProposedLabel: bench.LabelCareerPage},
+				{URL: "ok", Category: bench.CategoryHubATSRoot, Label: bench.LabelCareerPage, Gate: bench.GateCertainAccept},
 			},
 			want: []bench.ReviewItem{},
 		},
 		{
-			name: "labeler-only",
-			rows: []bench.VerdictRow{
-				{URL: "lab", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Gate: bench.GateUncertain, ProposedLabel: bench.LabelNotCareerPage},
-			},
-			want: []bench.ReviewItem{
-				{URL: "lab", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Reasons: []bench.ReviewReason{bench.ReviewLabelerDisagrees}},
-			},
-		},
-		{
 			name: "pipeline-only",
 			rows: []bench.VerdictRow{
-				{URL: "pipe", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Gate: bench.GateUncertain, LLMVotes: []bool{false}, ProposedLabel: bench.LabelCareerPage},
+				{URL: "pipe", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Gate: bench.GateUncertain, LLMVotes: []bool{false}},
 			},
 			want: []bench.ReviewItem{
 				{URL: "pipe", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Reasons: []bench.ReviewReason{bench.ReviewPipelineDisagrees}},
@@ -101,7 +69,7 @@ func TestReviewQueue(t *testing.T) {
 		{
 			name: "gate-and-pipeline-leak",
 			rows: []bench.VerdictRow{
-				{URL: "leak", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Gate: bench.GateReject, ProposedLabel: bench.LabelCareerPage},
+				{URL: "leak", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Gate: bench.GateReject},
 			},
 			want: []bench.ReviewItem{
 				{URL: "leak", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Reasons: []bench.ReviewReason{bench.ReviewGateDisagrees, bench.ReviewPipelineDisagrees}},
@@ -110,44 +78,28 @@ func TestReviewQueue(t *testing.T) {
 		{
 			name: "false-certain-neg",
 			rows: []bench.VerdictRow{
-				{URL: "fc", Category: bench.CategoryJobPostingSingle, Label: bench.LabelNotCareerPage, Gate: bench.GateCertainAccept, ProposedLabel: bench.LabelNotCareerPage},
+				{URL: "fc", Category: bench.CategoryJobPostingSingle, Label: bench.LabelNotCareerPage, Gate: bench.GateCertainAccept},
 			},
 			want: []bench.ReviewItem{
 				{URL: "fc", Category: bench.CategoryJobPostingSingle, Label: bench.LabelNotCareerPage, Reasons: []bench.ReviewReason{bench.ReviewGateDisagrees, bench.ReviewPipelineDisagrees}},
 			},
 		},
 		{
-			name: "all-three",
-			rows: []bench.VerdictRow{
-				{URL: "all", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Gate: bench.GateReject, ProposedLabel: bench.LabelNotCareerPage},
-			},
-			want: []bench.ReviewItem{
-				{URL: "all", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Reasons: []bench.ReviewReason{bench.ReviewLabelerDisagrees, bench.ReviewGateDisagrees, bench.ReviewPipelineDisagrees}},
-			},
-		},
-		{
-			name: "no-proposal-skips-labeler",
-			rows: []bench.VerdictRow{
-				{URL: "np", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Gate: bench.GateUncertain, ProposedLabel: ""},
-			},
-			want: []bench.ReviewItem{},
-		},
-		{
 			name: "uncertain-no-votes-pipeline-skipped",
 			rows: []bench.VerdictRow{
-				{URL: "u", Category: bench.CategoryCultureAbout, Label: bench.LabelNotCareerPage, Gate: bench.GateUncertain, ProposedLabel: bench.LabelNotCareerPage},
+				{URL: "u", Category: bench.CategoryCultureAbout, Label: bench.LabelNotCareerPage, Gate: bench.GateUncertain},
 			},
 			want: []bench.ReviewItem{},
 		},
 		{
 			name: "order-preserved",
 			rows: []bench.VerdictRow{
-				{URL: "ok", Category: bench.CategoryHubATSRoot, Label: bench.LabelCareerPage, Gate: bench.GateCertainAccept, ProposedLabel: bench.LabelCareerPage},
-				{URL: "all", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Gate: bench.GateReject, ProposedLabel: bench.LabelNotCareerPage},
-				{URL: "v", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Gate: bench.GateReject, Verified: true, ProposedLabel: bench.LabelNotCareerPage},
+				{URL: "ok", Category: bench.CategoryHubATSRoot, Label: bench.LabelCareerPage, Gate: bench.GateCertainAccept},
+				{URL: "all", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Gate: bench.GateReject},
+				{URL: "v", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Gate: bench.GateReject, Verified: true},
 			},
 			want: []bench.ReviewItem{
-				{URL: "all", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Reasons: []bench.ReviewReason{bench.ReviewLabelerDisagrees, bench.ReviewGateDisagrees, bench.ReviewPipelineDisagrees}},
+				{URL: "all", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Reasons: []bench.ReviewReason{bench.ReviewGateDisagrees, bench.ReviewPipelineDisagrees}},
 			},
 		},
 	}
