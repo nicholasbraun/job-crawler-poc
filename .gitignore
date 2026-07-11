@@ -5,6 +5,9 @@
 # Go build output (see Makefile server-build)
 /bin/
 
+# llmbench local A/B run artifacts (bench -json output, diffed across runs)
+/cmd/llmbench/results/
+
 # Node / Vite
 web/node_modules/
 
