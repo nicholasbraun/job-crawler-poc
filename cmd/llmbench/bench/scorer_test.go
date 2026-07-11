@@ -200,9 +200,9 @@ func TestScore(t *testing.T) {
 	}
 }
 
-// TestScoreLLM checks the LLM scorecard folds ONLY the forwarded (GateUncertain)
-// subset: certain-accept and reject rows are excluded even though they carry a
-// (default-false) LLMConfirm.
+// TestScoreLLM checks the LLM scorecard folds ONLY the rows the classifier saw
+// (rows with LLMVotes): certain-accept and reject rows without votes are excluded.
+// Every case here is N=1, so FlipRate is 0 and Flips is empty.
 func TestScoreLLM(t *testing.T) {
 	tests := []struct {
 		name string
@@ -220,10 +220,10 @@ func TestScoreLLM(t *testing.T) {
 		{
 			name: "mixed-1each",
 			rows: []bench.VerdictRow{
-				{Gate: bench.GateUncertain, Label: bench.LabelCareerPage, Category: bench.CategoryHubSelfHosted, LLMConfirm: true},   // tp
-				{Gate: bench.GateUncertain, Label: bench.LabelCareerPage, Category: bench.CategoryHubSelfHosted, LLMConfirm: false},  // fn
-				{Gate: bench.GateUncertain, Label: bench.LabelNotCareerPage, Category: bench.CategoryCultureAbout, LLMConfirm: true}, // fp
-				{Gate: bench.GateUncertain, Label: bench.LabelNotCareerPage, Category: bench.CategoryCultureAbout, LLMConfirm: false},
+				{Gate: bench.GateUncertain, Label: bench.LabelCareerPage, Category: bench.CategoryHubSelfHosted, LLMVotes: []bool{true}},   // tp
+				{Gate: bench.GateUncertain, Label: bench.LabelCareerPage, Category: bench.CategoryHubSelfHosted, LLMVotes: []bool{false}},  // fn
+				{Gate: bench.GateUncertain, Label: bench.LabelNotCareerPage, Category: bench.CategoryCultureAbout, LLMVotes: []bool{true}}, // fp
+				{Gate: bench.GateUncertain, Label: bench.LabelNotCareerPage, Category: bench.CategoryCultureAbout, LLMVotes: []bool{false}},
 				{Gate: bench.GateCertainAccept, Label: bench.LabelCareerPage, Category: bench.CategoryHubATSRoot},
 				{Gate: bench.GateReject, Label: bench.LabelNotCareerPage, Category: bench.CategoryAggregator},
 			},
@@ -232,16 +232,16 @@ func TestScoreLLM(t *testing.T) {
 		{
 			name: "perfect",
 			rows: []bench.VerdictRow{
-				{Gate: bench.GateUncertain, Label: bench.LabelCareerPage, Category: bench.CategoryHubSelfHosted, LLMConfirm: true},    // tp
-				{Gate: bench.GateUncertain, Label: bench.LabelNotCareerPage, Category: bench.CategoryCultureAbout, LLMConfirm: false}, // tn
+				{Gate: bench.GateUncertain, Label: bench.LabelCareerPage, Category: bench.CategoryHubSelfHosted, LLMVotes: []bool{true}},    // tp
+				{Gate: bench.GateUncertain, Label: bench.LabelNotCareerPage, Category: bench.CategoryCultureAbout, LLMVotes: []bool{false}}, // tn
 			},
 			want: bench.ClassScore{TP: 1, FP: 0, FN: 0, TN: 1, Total: 2, Precision: 1, Recall: 1, Accuracy: 1, F1: 1},
 		},
 		{
 			name: "no-predicted-positive",
 			rows: []bench.VerdictRow{
-				{Gate: bench.GateUncertain, Label: bench.LabelCareerPage, Category: bench.CategoryHubSelfHosted, LLMConfirm: false},   // fn
-				{Gate: bench.GateUncertain, Label: bench.LabelNotCareerPage, Category: bench.CategoryCultureAbout, LLMConfirm: false}, // tn
+				{Gate: bench.GateUncertain, Label: bench.LabelCareerPage, Category: bench.CategoryHubSelfHosted, LLMVotes: []bool{false}},   // fn
+				{Gate: bench.GateUncertain, Label: bench.LabelNotCareerPage, Category: bench.CategoryCultureAbout, LLMVotes: []bool{false}}, // tn
 			},
 			want: bench.ClassScore{TP: 0, FP: 0, FN: 1, TN: 1, Total: 2, Precision: 0, Recall: 0, Accuracy: 0.5, F1: 0},
 		},
@@ -250,11 +250,129 @@ func TestScoreLLM(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := bench.Score(tt.rows).LLM
-			want := bench.LLMScorecard{ClassScore: tt.want}
+			want := bench.LLMScorecard{ClassScore: tt.want, FlipRate: 0, Flips: []string{}}
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("LLM = %+v, want %+v", got, want)
 			}
 		})
+	}
+}
+
+// TestScoreLLMRepeats checks the N-repeat vote fold: the scored verdict is the
+// ceil-majority of a row's LLMVotes (even split breaks toward accept), and the
+// scorecard's FlipRate/Flips report the non-unanimous rows in input order.
+func TestScoreLLMRepeats(t *testing.T) {
+	tests := []struct {
+		name string
+		rows []bench.VerdictRow
+		want bench.ClassScore
+		flip float64
+		urls []string
+	}{
+		{
+			name: "unanimous-true-n3",
+			rows: []bench.VerdictRow{
+				{URL: "u", Gate: bench.GateUncertain, Label: bench.LabelCareerPage, Category: bench.CategoryHubSelfHosted, LLMVotes: []bool{true, true, true}},
+			},
+			want: bench.ClassScore{TP: 1, FP: 0, FN: 0, TN: 0, Total: 1, Precision: 1, Recall: 1, Accuracy: 1, F1: 1},
+			flip: 0,
+			urls: []string{},
+		},
+		{
+			name: "majority-true-2of3",
+			rows: []bench.VerdictRow{
+				{URL: "u", Gate: bench.GateUncertain, Label: bench.LabelCareerPage, Category: bench.CategoryHubSelfHosted, LLMVotes: []bool{true, true, false}},
+			},
+			want: bench.ClassScore{TP: 1, FP: 0, FN: 0, TN: 0, Total: 1, Precision: 1, Recall: 1, Accuracy: 1, F1: 1},
+			flip: 1,
+			urls: []string{"u"},
+		},
+		{
+			name: "majority-false-1of3",
+			rows: []bench.VerdictRow{
+				{URL: "u", Gate: bench.GateUncertain, Label: bench.LabelCareerPage, Category: bench.CategoryHubSelfHosted, LLMVotes: []bool{true, false, false}},
+			},
+			want: bench.ClassScore{TP: 0, FP: 0, FN: 1, TN: 0, Total: 1, Precision: 0, Recall: 0, Accuracy: 0, F1: 0},
+			flip: 1,
+			urls: []string{"u"},
+		},
+		{
+			name: "tie-2of4-positive",
+			rows: []bench.VerdictRow{
+				{URL: "u", Gate: bench.GateUncertain, Label: bench.LabelNotCareerPage, Category: bench.CategoryCultureAbout, LLMVotes: []bool{true, true, false, false}},
+			},
+			want: bench.ClassScore{TP: 0, FP: 1, FN: 0, TN: 0, Total: 1, Precision: 0, Recall: 0, Accuracy: 0, F1: 0},
+			flip: 1,
+			urls: []string{"u"},
+		},
+		{
+			name: "tie-1of2-positive",
+			rows: []bench.VerdictRow{
+				{URL: "u", Gate: bench.GateUncertain, Label: bench.LabelCareerPage, Category: bench.CategoryHubSelfHosted, LLMVotes: []bool{true, false}},
+			},
+			want: bench.ClassScore{TP: 1, FP: 0, FN: 0, TN: 0, Total: 1, Precision: 1, Recall: 1, Accuracy: 1, F1: 1},
+			flip: 1,
+			urls: []string{"u"},
+		},
+		{
+			name: "flip-rate-fraction",
+			rows: []bench.VerdictRow{
+				{URL: "a", Gate: bench.GateUncertain, Label: bench.LabelCareerPage, Category: bench.CategoryHubSelfHosted, LLMVotes: []bool{true, true}},           // unanimous, TP
+				{URL: "b", Gate: bench.GateUncertain, Label: bench.LabelCareerPage, Category: bench.CategoryHubSelfHosted, LLMVotes: []bool{true, false}},          // flip, majority true, TP
+				{URL: "c", Gate: bench.GateUncertain, Label: bench.LabelNotCareerPage, Category: bench.CategoryCultureAbout, LLMVotes: []bool{true, false, false}}, // flip, majority false, TN
+			},
+			want: bench.ClassScore{TP: 2, FP: 0, FN: 0, TN: 1, Total: 3, Precision: 1, Recall: 1, Accuracy: 1, F1: 1},
+			flip: 0.6667,
+			urls: []string{"b", "c"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := bench.Score(tt.rows).LLM
+			want := bench.LLMScorecard{ClassScore: tt.want, FlipRate: tt.flip, Flips: tt.urls}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("LLM = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+// TestScoreLLMIsolated proves isolated-style rows -- votes attached to non-uncertain
+// rows -- enter the LLM scorecard while leaving the Gate scorecard, its exit code,
+// and the end-to-end (production) decision untouched. This is exactly why isolated
+// mode exists: measure the LLM on hard cases the gate hides (here, a Leak).
+func TestScoreLLMIsolated(t *testing.T) {
+	rows := []bench.VerdictRow{
+		{URL: "cert", Gate: bench.GateCertainAccept, Label: bench.LabelCareerPage, Category: bench.CategoryHubATSRoot, LLMVotes: []bool{true}},
+		{URL: "rej", Gate: bench.GateReject, Label: bench.LabelNotCareerPage, Category: bench.CategoryAggregator, LLMVotes: []bool{false}},
+		{URL: "leak", Gate: bench.GateReject, Label: bench.LabelCareerPage, Category: bench.CategoryHubSelfHosted, LLMVotes: []bool{true}},
+	}
+	got := bench.Score(rows)
+
+	// LLM scorecard measures all three voted rows: cert(tp), rej(tn), leak(tp).
+	wantLLM := bench.LLMScorecard{
+		ClassScore: bench.ClassScore{TP: 2, FP: 0, FN: 0, TN: 1, Total: 3, Precision: 1, Recall: 1, Accuracy: 1, F1: 1},
+		FlipRate:   0,
+		Flips:      []string{},
+	}
+	if !reflect.DeepEqual(got.LLM, wantLLM) {
+		t.Errorf("LLM = %+v, want %+v", got.LLM, wantLLM)
+	}
+
+	// Gate is orthogonal: the isolated votes do not save the leak from the exit code.
+	if !reflect.DeepEqual(got.Gate.Leaks, []string{"leak"}) {
+		t.Errorf("Gate.Leaks = %v, want [leak]", got.Gate.Leaks)
+	}
+	if !got.Failed() {
+		t.Errorf("Failed() = false, want true (the leak must fail the run)")
+	}
+
+	// End-to-end ignores the isolated votes on cert/rej: cert=>positive, both
+	// rejects=>negative regardless of votes. leak is a rejected real page => FN.
+	wantE2E := bench.ClassScore{TP: 1, FP: 0, FN: 1, TN: 1, Total: 3, Precision: 1, Recall: 0.5, Accuracy: 0.6667, F1: 0.6667}
+	if !reflect.DeepEqual(got.EndToEnd.Overall, wantE2E) {
+		t.Errorf("EndToEnd.Overall = %+v, want %+v", got.EndToEnd.Overall, wantE2E)
 	}
 }
 
@@ -271,10 +389,10 @@ func TestScoreEndToEnd(t *testing.T) {
 		{
 			name: "composite",
 			rows: []bench.VerdictRow{
-				{URL: "ats", Category: bench.CategoryHubATSRoot, Label: bench.LabelCareerPage, Gate: bench.GateCertainAccept},                        // tp
-				{URL: "hub", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Gate: bench.GateUncertain, LLMConfirm: true},       // tp
-				{URL: "trap-fp", Category: bench.CategoryCultureAbout, Label: bench.LabelNotCareerPage, Gate: bench.GateUncertain, LLMConfirm: true}, // fp
-				{URL: "trap-tn", Category: bench.CategoryCultureAbout, Label: bench.LabelNotCareerPage, Gate: bench.GateUncertain, LLMConfirm: false},
+				{URL: "ats", Category: bench.CategoryHubATSRoot, Label: bench.LabelCareerPage, Gate: bench.GateCertainAccept},                              // tp
+				{URL: "hub", Category: bench.CategoryHubSelfHosted, Label: bench.LabelCareerPage, Gate: bench.GateUncertain, LLMVotes: []bool{true}},       // tp
+				{URL: "trap-fp", Category: bench.CategoryCultureAbout, Label: bench.LabelNotCareerPage, Gate: bench.GateUncertain, LLMVotes: []bool{true}}, // fp
+				{URL: "trap-tn", Category: bench.CategoryCultureAbout, Label: bench.LabelNotCareerPage, Gate: bench.GateUncertain, LLMVotes: []bool{false}},
 				{URL: "agg", Category: bench.CategoryAggregator, Label: bench.LabelNotCareerPage, Gate: bench.GateReject},        // tn
 				{URL: "post", Category: bench.CategoryJobPostingSingle, Label: bench.LabelNotCareerPage, Gate: bench.GateReject}, // tn
 			},

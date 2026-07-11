@@ -53,12 +53,32 @@ func parseVerb(args []string) (verb string, rest []string) {
 // runBench loads the Gold Set, runs every fixture through the real parser and
 // pre-LLM gate to produce verdict rows, scores them, prints the report, and
 // returns the process exit code (1 on any gate regression, 2 on a wiring error).
+// -mode selects which fixtures reach the LLM (as-wired: only gate-uncertain, the
+// production wiring; isolated: every fixture, for LLM scoring only), and -n
+// repeats each classification N times so the LLM scorecard can report a by-URL
+// flip-rate; both are descriptive and never move the Gate-driven exit code.
 func runBench(args []string) int {
 	fs := flag.NewFlagSet("bench", flag.ExitOnError)
 	gold := fs.String("gold", "cmd/llmbench/testdata", "Gold-Set directory holding manifest.json and pages/*.html")
 	gateConfig := fs.String("gate-config", "", "path to a JSON LLMGateConfig override; keys are the Go field names CareerPathSignals/RejectPathSignals (the struct has no json tags); empty uses DefaultLLMGateConfig")
 	llm := fs.Bool("llm", true, "confirm gate-uncertain fixtures with the real openrouter classifier (LLM_* env); -llm=false runs gate-only")
+	mode := fs.String("mode", "as-wired", "as-wired: classify only gate-uncertain fixtures (production wiring); isolated: classify every fixture, bypassing the gate for LLM scoring only")
+	repeats := fs.Int("n", 1, "repeat each LLM classification N times (same seed); the scored verdict is the majority vote and the LLM scorecard reports a by-URL flip-rate")
 	_ = fs.Parse(args)
+
+	isolated := *mode == "isolated"
+	if *mode != "as-wired" && !isolated {
+		fmt.Fprintf(os.Stderr, "llmbench bench: -mode must be as-wired or isolated, got %q\n", *mode)
+		return 2
+	}
+	if *repeats < 1 {
+		fmt.Fprintf(os.Stderr, "llmbench bench: -n must be >= 1, got %d\n", *repeats)
+		return 2
+	}
+	if isolated && !*llm {
+		fmt.Fprintf(os.Stderr, "llmbench bench: -mode isolated requires -llm (nothing to classify with -llm=false)\n")
+		return 2
+	}
 
 	cfg, err := loadGateConfig(*gateConfig)
 	if err != nil {
@@ -105,19 +125,23 @@ func runBench(args []string) int {
 		accept, certain := pagegate.CareerPage(u, content, cfg)
 		gate := bench.GateOutcomeFrom(accept, certain)
 		row := bench.VerdictRow{URL: e.URL, Category: e.Category, Label: e.Label, Gate: gate}
-		if *llm && gate == bench.GateUncertain {
-			confirmed, err := confirmer.Confirm(ctx, e.URL, content)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "llmbench bench: confirm %q: %v\n", e.URL, err)
-				return 2
+		if *llm && (isolated || gate == bench.GateUncertain) {
+			votes := make([]bool, 0, *repeats)
+			for range *repeats {
+				confirmed, err := confirmer.Confirm(ctx, e.URL, content)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "llmbench bench: confirm %q: %v\n", e.URL, err)
+					return 2
+				}
+				votes = append(votes, confirmed)
 			}
-			row.LLMConfirm = confirmed
+			row.LLMVotes = votes
 		}
 		rows = append(rows, row)
 	}
 
 	report := bench.Score(rows)
-	printReport(os.Stdout, report, *llm)
+	printReport(os.Stdout, report, *llm, *mode)
 	if report.Failed() {
 		return 1
 	}
@@ -146,8 +170,9 @@ func loadGateConfig(path string) (crawler.LLMGateConfig, error) {
 // calls, call rate) to w, and each hard failure (Leak, False-Certain, structural
 // Violation) to stderr in ANSI red so a regression stands out on the terminal.
 // When llm is set it also appends the descriptive LLM and end-to-end scorecards
-// to w; those numbers never move the exit code.
-func printReport(w io.Writer, r Report, llm bool) {
+// to w; those numbers never move the exit code. mode ("as-wired"/"isolated")
+// only labels the LLM scorecard header with the population it measured.
+func printReport(w io.Writer, r Report, llm bool, mode string) {
 	g := r.Gate
 	fmt.Fprintln(w, "gate scorecard")
 	fmt.Fprintf(w, "  total          %d\n", g.Total)
@@ -169,11 +194,19 @@ func printReport(w io.Writer, r Report, llm bool) {
 	}
 
 	l := r.LLM
-	fmt.Fprintln(w, "llm scorecard (gate-uncertain subset, descriptive)")
-	fmt.Fprintf(w, "  forwarded      %d\n", l.Total)
+	if mode == "isolated" {
+		fmt.Fprintln(w, "llm scorecard (all fixtures, isolated, descriptive)")
+	} else {
+		fmt.Fprintln(w, "llm scorecard (gate-uncertain subset, descriptive)")
+	}
+	fmt.Fprintf(w, "  classified     %d\n", l.Total)
 	fmt.Fprintf(w, "  precision      %.4f\n", l.Precision)
 	fmt.Fprintf(w, "  recall         %.4f\n", l.Recall)
 	fmt.Fprintf(w, "  accuracy       %.4f\n", l.Accuracy)
+	fmt.Fprintf(w, "  flip-rate      %.4f\n", l.FlipRate)
+	for _, url := range l.Flips {
+		fmt.Fprintf(w, "  flip           %s\n", url)
+	}
 
 	e := r.EndToEnd.Overall
 	fmt.Fprintln(w, "end-to-end scorecard (production decision, descriptive)")

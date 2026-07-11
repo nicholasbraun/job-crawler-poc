@@ -92,10 +92,14 @@ type VerdictRow struct {
 	Category Category
 	Label    Label
 	Gate     GateOutcome
-	// LLMConfirm is the classifier's Confirm verdict for this fixture. It is
-	// meaningful ONLY when Gate == GateUncertain (the forwarded subset); for
-	// reject / certain-accept rows it is unused and left false.
-	LLMConfirm bool
+	// LLMVotes holds the classifier's N repeat Confirm verdicts for this fixture.
+	// It is non-empty exactly when the fixture reached the LLM: in as-wired mode
+	// that is the gate-uncertain subset; in isolated mode it is every fixture. It
+	// is nil for fixtures the LLM never saw (reject/certain-accept in as-wired, or
+	// any fixture under -llm=false). The scored LLM verdict is the majority vote
+	// over these N booleans. URL/Category/Label/Gate remain the stable identity
+	// fields; this is the added field.
+	LLMVotes []bool
 }
 
 // GateScorecard is the deterministic Gate regression report.
@@ -153,10 +157,18 @@ func f1(precision, recall float64) float64 {
 	return math.Round(2*precision*recall/(precision+recall)*10000) / 10000
 }
 
-// LLMScorecard measures the classifier over the subset the gate forwarded
-// (GateUncertain rows). Descriptive only -- it never affects Report.Failed().
+// LLMScorecard measures the classifier over the population it was asked to
+// classify (every row with LLMVotes): the gate-uncertain subset in as-wired
+// mode, every fixture in isolated mode. Descriptive only -- it never affects
+// Report.Failed().
 type LLMScorecard struct {
 	ClassScore
+	// FlipRate is the share of the LLM population whose N repeat verdicts are
+	// not unanimous: ratio(len(Flips), population), 4dp, 0 when population==0.
+	// Purely descriptive; N=1 runs are always 0.
+	FlipRate float64
+	// Flips lists, in input order, the URLs whose N verdicts disagree.
+	Flips []string
 }
 
 // EndToEndScorecard measures the production decision (reject=>negative,
@@ -174,16 +186,49 @@ var AllCategories = []Category{
 }
 
 // endToEndPositive is the production accept decision for one row: reject is
-// negative, certain-accept is positive, uncertain defers to the LLM verdict.
+// negative, certain-accept is positive, uncertain defers to the majority vote of
+// the LLM verdicts. Because certain-accept and reject return unconditionally, the
+// isolated-mode votes on those rows are correctly ignored here -- they only feed
+// the LLM scorecard, never the production decision.
 func endToEndPositive(row VerdictRow) bool {
 	switch row.Gate {
 	case GateCertainAccept:
 		return true
 	case GateUncertain:
-		return row.LLMConfirm
+		return majorityVote(row.LLMVotes)
 	default: // GateReject
 		return false
 	}
+}
+
+// majorityVote reduces N repeat verdicts to one scored verdict by ceil-majority:
+// true iff at least ceil(N/2) votes are true (2*trueCount >= len(votes)), so an
+// even split breaks toward accept (positive). Empty votes => false.
+func majorityVote(votes []bool) bool {
+	if len(votes) == 0 {
+		return false
+	}
+	t := 0
+	for _, v := range votes {
+		if v {
+			t++
+		}
+	}
+	return 2*t >= len(votes)
+}
+
+// unanimous reports whether every vote agrees. A single vote and the empty slice
+// are unanimous, so they never count as a flip.
+func unanimous(votes []bool) bool {
+	if len(votes) < 2 {
+		return true
+	}
+	for _, v := range votes[1:] {
+		if v != votes[0] {
+			return false
+		}
+	}
+	return true
 }
 
 // Report is the full bench output. #48 fills only Gate; later tickets add
@@ -234,14 +279,22 @@ func Score(rows []VerdictRow) Report {
 	}
 	sc.LLMCallRate = ratio(sc.LLMCalls, sc.Total)
 
-	// LLM fold: score Confirm over ONLY the forwarded (GateUncertain) subset;
-	// reject / certain-accept rows never reach the classifier.
+	// LLM fold: score the majority vote over every row the classifier saw (any
+	// row with votes). Keying on len(LLMVotes)>0 rather than GateUncertain makes
+	// the mode data-driven: as-wired wiring votes only uncertain rows (⇒ the
+	// forwarded subset, identical to before), isolated wiring votes every row.
 	llm := [4]int{}
+	flips := []string{}
+	llmPop := 0
 	for _, row := range rows {
-		if row.Gate != GateUncertain {
+		if len(row.LLMVotes) == 0 {
 			continue
 		}
-		confusion(&llm, row.LLMConfirm, row.Label.Positive())
+		llmPop++
+		confusion(&llm, majorityVote(row.LLMVotes), row.Label.Positive())
+		if !unanimous(row.LLMVotes) {
+			flips = append(flips, row.URL)
+		}
 	}
 
 	// End-to-end fold: score the production decision over ALL rows, overall plus
@@ -263,7 +316,11 @@ func Score(rows []VerdictRow) Report {
 
 	return Report{
 		Gate: sc,
-		LLM:  LLMScorecard{ClassScore: scoreClass(llm[0], llm[1], llm[2], llm[3])},
+		LLM: LLMScorecard{
+			ClassScore: scoreClass(llm[0], llm[1], llm[2], llm[3]),
+			FlipRate:   ratio(len(flips), llmPop),
+			Flips:      flips,
+		},
 		EndToEnd: EndToEndScorecard{
 			Overall:    scoreClass(overall[0], overall[1], overall[2], overall[3]),
 			ByCategory: byCategory,
