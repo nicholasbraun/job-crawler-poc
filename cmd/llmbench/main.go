@@ -2,7 +2,9 @@
 // Set (ADR-0008). Its default verb, bench, runs each labeled HTML fixture
 // through the real pipeline (parser.Parse -> pagegate.CareerPage) and prints a
 // Gate scorecard, exiting non-zero on any Leak, False-Certain, or structural
-// violation. The label/diff/capture verbs are stubs later tickets fill in.
+// violation. The capture verb (#49) fetches a page through the crawler
+// downloader and freezes it as a Gold-Set fixture; the label/diff verbs are
+// stubs later tickets fill in.
 package main
 
 import (
@@ -24,7 +26,9 @@ func main() {
 	switch verb {
 	case "bench":
 		os.Exit(runBench(rest))
-	case "label", "diff", "capture":
+	case "capture":
+		os.Exit(runCapture(rest))
+	case "label", "diff":
 		os.Exit(runStub(verb, rest))
 	default:
 		fmt.Fprintf(os.Stderr, "llmbench: unknown verb %q\n", verb)
@@ -146,9 +150,9 @@ type Report = bench.Report
 // terminal. Redirected output keeps the codes; that is acceptable for a dev tool.
 func red(s string) string { return "\033[31m" + s + "\033[0m" }
 
-// runStub handles the not-yet-implemented verbs (label -> #49/#51, diff -> #53,
-// capture -> #50). It still builds the verb's FlagSet so the dispatch scaffold is
-// real, then reports the verb is unimplemented.
+// runStub handles the not-yet-implemented verbs (label -> #51, diff -> #53). It
+// still builds the verb's FlagSet so the dispatch scaffold is real, then reports
+// the verb is unimplemented.
 func runStub(verb string, args []string) int {
 	fs := flag.NewFlagSet(verb, flag.ExitOnError)
 	_ = fs.Parse(args)
