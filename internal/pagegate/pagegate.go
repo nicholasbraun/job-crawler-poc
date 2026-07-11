@@ -36,12 +36,20 @@ var careerKeywords = []string{
 
 // CareerPage decides whether a discovery candidate is a Career Page (accept)
 // and whether that decision is structurally definitive (certain), letting the
-// career-page pool skip the LLM classifier. On a recognized ATS host the
+// career-page pool skip the LLM classifier. A known aggregator/board host is
+// rejected outright (never a single-company hub). On a recognized ATS host the
 // decision is purely structural. On any other host a strong-negative reject
 // path rejects without the LLM; a bare career-hub path accepts as certain; an
 // otherwise career-signalled non-posting (or a page that links to postings) is
 // accepted but left to the LLM to confirm.
 func CareerPage(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConfig) (accept, certain bool) {
+	// Multi-company aggregators, VC-portfolio boards, and professional networks
+	// are never a single company's hub. Reject them before any accept path so
+	// they never become a candidate -- keeping them out of the Catalog and, in
+	// turn, out of Company identity (#46).
+	if catalog.IsAggregatorHost(u) {
+		return false, false
+	}
 	switch catalog.Classify(u) {
 	case catalog.RoleCareerPage:
 		return true, true

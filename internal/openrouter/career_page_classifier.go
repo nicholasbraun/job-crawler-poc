@@ -22,7 +22,10 @@ that lists a single opening is still a Career Page.
 A single job-posting or job-description page (the full details of ONE role) is
 NOT a career page — it is one listing under a career page. A generic homepage, a
 blog post, a news article, or a third-party job-board aggregator is also NOT a
-career page.
+career page. A page that only describes the company, its culture, benefits,
+hiring process, teams, or values — but does not itself list current open
+positions — is NOT a career page either, even when its URL or title mentions
+careers, jobs, or joining.
 
 Return ONLY a valid JSON object with a single boolean field, no prose:
 {"is_career_page": true} or {"is_career_page": false}
@@ -40,8 +43,9 @@ type careerPageConfirmation struct {
 }
 
 // CareerPageClassifier asks the OpenRouter chat API to confirm whether a
-// gate-passing candidate is really a company Career Page. It is consulted only
-// for candidates that lack a JobPosting JSON-LD, bounding LLM cost at perpetual
+// gate-passing candidate is really a company Career Page. It is consulted for
+// every candidate that is not a structurally-certain ATS board root; the pre-LLM
+// gate sheds aggregator hosts and reject paths, bounding LLM cost at perpetual
 // discovery scale.
 type CareerPageClassifier struct {
 	apiKey           string

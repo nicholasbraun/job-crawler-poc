@@ -243,6 +243,53 @@ func subdomainLabel(host, suffix string) (string, bool) {
 	return labels[len(labels)-1], true
 }
 
+// aggregatorHosts are registrable domains (eTLD+1) that are never a single
+// company's Career Page hub: multi-company job boards, job aggregators,
+// professional networks, and VC-portfolio board platforms. Cataloguing them
+// pollutes the Catalog with non-hub pages (#45) and, downstream, mints a fake
+// Company that swallows many real employers (#46). A per-tenant ATS or
+// recruiting-platform host (e.g. smartrecruiters, join.com/companies) is
+// deliberately absent -- those are legitimate single-company hubs whose only
+// defect is identity attribution, canonicalized separately in #46. Matched on
+// eTLD+1, so every subdomain (de.linkedin.com, jobsinvc.getro.com) folds in.
+// This is a curated denylist, extended as the gold-set harness (#44) surfaces
+// more.
+var aggregatorHosts = map[string]struct{}{
+	// Job boards and aggregators (multi-company listings).
+	"builtin.com":          {}, // + builtin<city> siblings
+	"builtinnyc.com":       {},
+	"indeed.com":           {},
+	"indeed.de":            {},
+	"glassdoor.com":        {},
+	"glassdoor.de":         {},
+	"stepstone.de":         {},
+	"stepstone.com":        {},
+	"monster.com":          {},
+	"monster.de":           {},
+	"crunchboard.com":      {},
+	"beck-stellenmarkt.de": {}, // legal job board
+	"lto.de":               {}, // legal news site job board
+	// Professional networks and employer-review sites.
+	"linkedin.com": {},
+	"linkedin.de":  {},
+	"xing.com":     {},
+	"kununu.com":   {}, // employer reviews (XING-owned)
+	// VC-portfolio board platforms.
+	"getro.com":       {}, // powers many portfolio boards; tenants on *.getro.com fold in via eTLD+1
+	"speedinvest.com": {},
+	"hv.capital":      {}, // HV Capital; ".capital" is the live gTLD domain (not hvcapital.com)
+}
+
+// IsAggregatorHost reports whether u sits on a known multi-company aggregator,
+// VC-portfolio board, or professional network -- a host that never represents a
+// single company's Career Page. Discovery rejects such pages at the gate so they
+// never reach the Catalog or Company identity. Matched on the registrable domain,
+// so every subdomain of a listed host (e.g. jobsinvc.getro.com) is covered.
+func IsAggregatorHost(u crawler.URL) bool {
+	_, ok := aggregatorHosts[eTLDPlusOne(strings.ToLower(u.Hostname))]
+	return ok
+}
+
 // RegistrableDomain returns the eTLD+1 of host — e.g. "remote.com" for
 // "jobs.remote.com" — or "" when host is empty. Used to reduce a company's own
 // website host to its registrable domain for DisplayDomain.

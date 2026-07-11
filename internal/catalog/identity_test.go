@@ -183,3 +183,36 @@ func TestIdentifyDistinctTenantsSameHost(t *testing.T) {
 			acme.PolitenessDomain, globex.PolitenessDomain)
 	}
 }
+
+func TestIsAggregatorHost(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{"builtin job board", "https://builtin.com/jobs", true},
+		{"builtin city sibling", "https://builtinnyc.com/company/acme", true},
+		{"getro portfolio board on a subdomain", "https://jobsinvc.getro.com/companies/acme", true},
+		{"speedinvest portfolio board", "https://careers.speedinvest.com/companies/bitpanda", true},
+		{"hv capital portfolio board on its .capital gTLD", "https://www.hv.capital/portfolio", true},
+		{"xing professional network", "https://www.xing.com/pages/acme", true},
+		{"linkedin professional network", "https://www.linkedin.com/company/acme/jobs", true},
+		{"linkedin country subdomain folds in via eTLD+1", "https://de.linkedin.com/jobs/view/123", true},
+		{"indeed aggregator", "https://de.indeed.com/jobs?q=go", true},
+		{"stepstone job board", "https://www.stepstone.de/jobs/acme", true},
+		{"crunchboard job board", "https://www.crunchboard.com/jobs/123", true},
+		{"match is case-insensitive", "https://BuiltIn.com/jobs", true},
+		// A per-tenant ATS or recruiting-platform board root is a legitimate hub,
+		// not an aggregator -- its only defect is identity attribution (#46).
+		{"smartrecruiters tenant is not an aggregator", "https://jobs.smartrecruiters.com/ScalableGmbH", false},
+		{"join.com company board is not an aggregator", "https://join.com/companies/fugro", false},
+		{"a company's own site is not an aggregator", "https://careers.acme.com/jobs", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := catalog.IsAggregatorHost(mustURL(t, tt.url)); got != tt.want {
+				t.Errorf("IsAggregatorHost(%q) = %v, want %v", tt.url, got, tt.want)
+			}
+		})
+	}
+}

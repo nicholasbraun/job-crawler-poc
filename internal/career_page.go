@@ -46,9 +46,9 @@ type CareerPageRepository interface {
 // candidate is a structurally-confirmed Career Page (an ATS board root); when
 // true the career-page pool skips the LLM confirmation, bounding cost at
 // perpetual scale. A false Certain (a content-heuristic match on an unrecognized
-// host) is confirmed by the LLM before it is catalogued -- unless the page
-// carries a schema.org JobPosting JSON-LD block, which is itself a definitive
-// accept that also bypasses the LLM.
+// host) is confirmed by the LLM before it is catalogued -- including a page
+// carrying a schema.org JobPosting JSON-LD, which marks a single posting rather
+// than a hub and so must clear the confirmer like any other candidate.
 type RawCareerPage struct {
 	URL     URL
 	Content Content

@@ -37,14 +37,12 @@ const (
 	OutcomeTimeout Outcome = "timeout"
 )
 
-// Reason is why a page skipped the LLM: a structurally-certain ATS board root, a
-// schema.org JobPosting JSON-LD block, or a keyword-relevance miss. It labels the
-// gated counter.
+// Reason is why a page skipped the LLM: a structurally-certain ATS board root or
+// a keyword-relevance miss. It labels the gated counter.
 type Reason string
 
 const (
 	ReasonCertain    Reason = "certain"
-	ReasonJSONLD     Reason = "jsonld"
 	ReasonIrrelevant Reason = "irrelevant"
 	// ReasonURLStructure marks a page a URL-structure signal resolved (a Career
 	// Page index or a reject path) rather than keyword relevance.
