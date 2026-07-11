@@ -31,6 +31,25 @@ func TestLoadManifest(t *testing.T) {
 			]`,
 		},
 		{
+			name: "valid-with-proposed",
+			json: `[
+				{"file":"a.html","url":"https://boards.greenhouse.io/acme","label":"career_page","category":"hub_ats_root","verified":true,"proposed_label":"career_page","proposed_category":"hub_ats_root"},
+				{"file":"b.html","url":"https://www.linkedin.com/jobs/acme","label":"not_career_page","category":"aggregator","verified":false}
+			]`,
+		},
+		{
+			name:    "unknown-proposed-category",
+			json:    `[{"file":"a.html","url":"https://x.example","label":"not_career_page","category":"unrelated","proposed_category":"foo"}]`,
+			wantErr: true,
+			invalid: true,
+		},
+		{
+			name:    "proposed-polarity-mismatch",
+			json:    `[{"file":"a.html","url":"https://x.example","label":"not_career_page","category":"unrelated","proposed_label":"career_page","proposed_category":"aggregator"}]`,
+			wantErr: true,
+			invalid: true,
+		},
+		{
 			name:    "empty-file",
 			json:    `[{"file":"","url":"https://x.example","label":"not_career_page","category":"unrelated"}]`,
 			wantErr: true,

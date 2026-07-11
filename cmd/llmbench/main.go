@@ -3,8 +3,9 @@
 // through the real pipeline (parser.Parse -> pagegate.CareerPage) and prints a
 // Gate scorecard, exiting non-zero on any Leak, False-Certain, or structural
 // violation. The capture verb (#49) fetches a page through the crawler
-// downloader and freezes it as a Gold-Set fixture; the label/diff verbs are
-// stubs later tickets fill in.
+// downloader and freezes it as a Gold-Set fixture; the label verb (#54) has a
+// stronger LABELER_* model propose labels for unverified fixtures; the diff verb
+// remains a stub a later ticket (#53) fills in.
 package main
 
 import (
@@ -31,7 +32,9 @@ func main() {
 		os.Exit(runBench(rest))
 	case "capture":
 		os.Exit(runCapture(rest))
-	case "label", "diff":
+	case "label":
+		os.Exit(runLabel(rest))
+	case "diff":
 		os.Exit(runStub(verb, rest))
 	default:
 		fmt.Fprintf(os.Stderr, "llmbench: unknown verb %q\n", verb)
@@ -124,7 +127,7 @@ func runBench(args []string) int {
 		}
 		accept, certain := pagegate.CareerPage(u, content, cfg)
 		gate := bench.GateOutcomeFrom(accept, certain)
-		row := bench.VerdictRow{URL: e.URL, Category: e.Category, Label: e.Label, Gate: gate}
+		row := bench.VerdictRow{URL: e.URL, Category: e.Category, Label: e.Label, Gate: gate, Verified: e.Verified, ProposedLabel: e.ProposedLabel}
 		if *llm && (isolated || gate == bench.GateUncertain) {
 			votes := make([]bool, 0, *repeats)
 			for range *repeats {
@@ -187,6 +190,19 @@ func printReport(w io.Writer, r Report, llm bool, mode string) {
 	}
 	for _, v := range g.Violations {
 		fmt.Fprintln(os.Stderr, red(fmt.Sprintf("VIOLATION     %s [%s] want %s got %s", v.URL, v.Category, v.Want, v.Got)))
+	}
+
+	// The review queue is descriptive: it never moves the exit code, so it prints
+	// plain to w (never red). The labeler and gate axes work without the LLM, so
+	// it prints regardless of the -llm flag, before the LLM-only scorecards below.
+	fmt.Fprintln(w, "review queue (unverified, needs human confirm, descriptive)")
+	fmt.Fprintf(w, "  items          %d\n", len(r.ReviewQueue))
+	for _, item := range r.ReviewQueue {
+		reasons := make([]string, len(item.Reasons))
+		for i, reason := range item.Reasons {
+			reasons[i] = string(reason)
+		}
+		fmt.Fprintf(w, "  %s [%s] label=%s reasons: %s\n", item.URL, item.Category, item.Label, strings.Join(reasons, ","))
 	}
 
 	if !llm {

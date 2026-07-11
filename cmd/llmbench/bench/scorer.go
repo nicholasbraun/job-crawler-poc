@@ -85,6 +85,17 @@ func (c Category) Positive() bool {
 	return c == CategoryHubATSRoot || c == CategoryHubSelfHosted
 }
 
+// LabelForCategory returns the binary label implied by a category's polarity:
+// LabelCareerPage for a positive category, LabelNotCareerPage otherwise. The
+// labeler proposes a category; its label is this derivation, which keeps
+// proposed_label/proposed_category polarity-consistent by construction.
+func LabelForCategory(c Category) Label {
+	if c.Positive() {
+		return LabelCareerPage
+	}
+	return LabelNotCareerPage
+}
+
 // VerdictRow is one fixture's full pipeline outcome and the SOLE input to Score.
 // Later tickets ADD fields (LLM verdict, repeat votes) -- never reshape these.
 type VerdictRow struct {
@@ -100,6 +111,14 @@ type VerdictRow struct {
 	// over these N booleans. URL/Category/Label/Gate remain the stable identity
 	// fields; this is the added field.
 	LLMVotes []bool
+	// Verified mirrors the manifest entry's verified flag. A verified row is
+	// human-signed-off and never enters the review queue. Added in #54.
+	Verified bool
+	// ProposedLabel is the polarity of the labeler model's category proposal,
+	// recorded by `llmbench label` (manifest proposed_label). Empty ("") when the
+	// fixture has never been labeler-proposed; the labeler review axis is then
+	// skipped for the row. Added in #54.
+	ProposedLabel Label
 }
 
 // GateScorecard is the deterministic Gate regression report.
@@ -185,6 +204,26 @@ var AllCategories = []Category{
 	CategoryCultureAbout, CategoryAggregator, CategoryUnrelated,
 }
 
+// ReviewReason is why an unverified fixture is surfaced for human confirmation.
+type ReviewReason string
+
+const (
+	ReviewLabelerDisagrees  ReviewReason = "labeler"  // labeler proposal polarity != provisional label
+	ReviewGateDisagrees     ReviewReason = "gate"     // Gate's certain verdict != provisional label
+	ReviewPipelineDisagrees ReviewReason = "pipeline" // end-to-end production verdict != provisional label
+)
+
+// ReviewItem is one unverified fixture whose provisional label is contradicted
+// by >=1 independent signal. A human resolves it by editing the manifest
+// (correcting the label if needed) and setting verified:true, which drops it
+// from the queue on the next run.
+type ReviewItem struct {
+	URL      string
+	Category Category
+	Label    Label          // the provisional (committed) label under review
+	Reasons  []ReviewReason // >=1, fixed order: labeler, gate, pipeline
+}
+
 // endToEndPositive is the production accept decision for one row: reject is
 // negative, certain-accept is positive, uncertain defers to the majority vote of
 // the LLM verdicts. Because certain-accept and reject return unconditionally, the
@@ -231,12 +270,16 @@ func unanimous(votes []bool) bool {
 	return true
 }
 
-// Report is the full bench output. #48 fills only Gate; later tickets add
-// LLM/EndToEnd/ReviewQueue fields alongside it.
+// Report is the full bench output. #48 fills Gate, #52 LLM/EndToEnd; #54 adds
+// the descriptive ReviewQueue (the unverified fixtures a human should confirm).
 type Report struct {
 	Gate     GateScorecard
 	LLM      LLMScorecard
 	EndToEnd EndToEndScorecard
+	// ReviewQueue lists the unverified fixtures whose provisional label is
+	// contradicted by the labeler proposal, the Gate, or the pipeline. Purely
+	// descriptive -- it never moves Failed() or the exit code.
+	ReviewQueue []ReviewItem
 }
 
 // Failed reports whether the run must exit non-zero: any Leak, False-Certain, or
@@ -325,7 +368,57 @@ func Score(rows []VerdictRow) Report {
 			Overall:    scoreClass(overall[0], overall[1], overall[2], overall[3]),
 			ByCategory: byCategory,
 		},
+		ReviewQueue: reviewQueue(rows),
 	}
+}
+
+// gateCertainBinary is the Gate's definitive polarity opinion: certain-accept
+// is positive, reject is negative; uncertain carries no opinion (ok=false).
+func gateCertainBinary(g GateOutcome) (positive, ok bool) {
+	switch g {
+	case GateCertainAccept:
+		return true, true
+	case GateReject:
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+// pipelineHasVerdict reports whether the production decision is defined for the
+// row: certain-accept/reject always are; an uncertain row only when the LLM voted.
+func pipelineHasVerdict(row VerdictRow) bool {
+	if row.Gate == GateUncertain {
+		return len(row.LLMVotes) > 0
+	}
+	return true
+}
+
+// reviewQueue selects the unverified fixtures whose provisional label is
+// contradicted by the labeler proposal, the Gate's certain verdict, or the
+// end-to-end pipeline verdict. Verified rows are skipped. Descriptive only.
+func reviewQueue(rows []VerdictRow) []ReviewItem {
+	items := []ReviewItem{}
+	for _, row := range rows {
+		if row.Verified {
+			continue
+		}
+		labelPos := row.Label.Positive()
+		reasons := []ReviewReason{}
+		if row.ProposedLabel != "" && row.ProposedLabel.Positive() != labelPos {
+			reasons = append(reasons, ReviewLabelerDisagrees)
+		}
+		if gPos, ok := gateCertainBinary(row.Gate); ok && gPos != labelPos {
+			reasons = append(reasons, ReviewGateDisagrees)
+		}
+		if pipelineHasVerdict(row) && endToEndPositive(row) != labelPos {
+			reasons = append(reasons, ReviewPipelineDisagrees)
+		}
+		if len(reasons) > 0 {
+			items = append(items, ReviewItem{URL: row.URL, Category: row.Category, Label: row.Label, Reasons: reasons})
+		}
+	}
+	return items
 }
 
 // confusion increments the confusion-matrix quadrant for one (predicted, gold)
