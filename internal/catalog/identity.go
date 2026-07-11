@@ -277,7 +277,7 @@ var aggregatorHosts = map[string]struct{}{
 	// VC-portfolio board platforms.
 	"getro.com":       {}, // powers many portfolio boards; tenants on *.getro.com fold in via eTLD+1
 	"speedinvest.com": {},
-	"hvcapital.com":   {},
+	"hv.capital":      {}, // HV Capital; ".capital" is the live gTLD domain (not hvcapital.com)
 }
 
 // IsAggregatorHost reports whether u sits on a known multi-company aggregator,

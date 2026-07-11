@@ -194,6 +194,7 @@ func TestIsAggregatorHost(t *testing.T) {
 		{"builtin city sibling", "https://builtinnyc.com/company/acme", true},
 		{"getro portfolio board on a subdomain", "https://jobsinvc.getro.com/companies/acme", true},
 		{"speedinvest portfolio board", "https://careers.speedinvest.com/companies/bitpanda", true},
+		{"hv capital portfolio board on its .capital gTLD", "https://www.hv.capital/portfolio", true},
 		{"xing professional network", "https://www.xing.com/pages/acme", true},
 		{"linkedin professional network", "https://www.linkedin.com/company/acme/jobs", true},
 		{"linkedin country subdomain folds in via eTLD+1", "https://de.linkedin.com/jobs/view/123", true},
