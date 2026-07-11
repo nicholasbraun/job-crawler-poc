@@ -1,0 +1,29 @@
+[
+  {
+    "file": "greenhouse_acme.html",
+    "url": "https://boards.greenhouse.io/acme",
+    "label": "career_page",
+    "category": "hub_ats_root",
+    "verified": true,
+    "fetched_at": "2026-07-11",
+    "note": "greenhouse board root -> RoleCareerPage -> certain-accept"
+  },
+  {
+    "file": "linkedin_jobs.html",
+    "url": "https://www.linkedin.com/jobs/acme",
+    "label": "not_career_page",
+    "category": "aggregator",
+    "verified": true,
+    "fetched_at": "2026-07-11",
+    "note": "linkedin is a known aggregator host -> gate rejects"
+  },
+  {
+    "file": "acme_posting.html",
+    "url": "https://acme.example/careers/senior-go-engineer",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": true,
+    "fetched_at": "2026-07-11",
+    "note": "single posting under /careers/<slug>, no same-host posting links -> gate rejects"
+  }
+]
