@@ -69,8 +69,10 @@ func DefaultLLMGateConfig() LLMGateConfig {
 			// reach the gate: shed them here before the LLM, since an editorial page
 			// is never itself a Career Page or Job Listing even when its copy trips
 			// the careerish content heuristic (e.g. a post about "joining the team").
-			"blog", "news", "press", "media", "articles", "stories",
-			"posts", "magazine",
+			// Both singular and plural forms, since the match is per-segment exact.
+			"blog", "news", "press", "media", "articles", "article",
+			"stories", "story", "posts", "post", "magazine",
+			"authors", "author",
 			// Legal / commercial boilerplate. Still blocked by the URL filter too,
 			// so these rarely reach the gate; kept as a backstop.
 			"legal", "privacy", "terms", "imprint", "impressum", "cookie",

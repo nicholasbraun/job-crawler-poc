@@ -160,6 +160,20 @@ func TestCareerPage(t *testing.T) {
 			wantCertain: false,
 		},
 		{
+			// Singular editorial forms are covered too (per-segment exact match
+			// means "posts" does not catch "/post/..."). A careerish post is
+			// still shed before the LLM.
+			name: "singular editorial path is rejected before the LLM",
+			url:  "https://acme.com/post/why-we-are-hiring",
+			content: &crawler.Content{
+				Title: "Why we are hiring",
+				URLs:  []string{"/post/other", "/about"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
 			// A neutral path (no career or reject signal, no career keyword in the
 			// URL or title) falls through to the link count; outbound postings on
 			// another host are not counted, so it is rejected.
