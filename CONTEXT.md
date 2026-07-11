@@ -56,3 +56,27 @@ _Avoid_: queue, backlog
 **Seed**:
 A Run's starting URLs. Configured for a Discovery Crawl; resolved from the Catalog (its Career Pages) at run start for a Keyword Crawl.
 _Avoid_: entry point, root URL
+
+### Classification
+
+**Gate**:
+The deterministic, pre-LLM pass over a candidate page that returns one of three verdicts — reject, certain-accept, or uncertain — so only the ambiguous middle costs an LLM call.
+_Avoid_: filter, pre-check, heuristic
+
+**Certain / Uncertain**:
+The Gate's confidence in an accept. A *certain* accept is structurally definitive (an ATS board root, a career-path URL) and is catalogued with no LLM call; an *uncertain* accept is forwarded to the LLM to confirm.
+_Avoid_: sure/maybe, confident, definite
+
+**Leak**:
+A real Career Page the Gate rejects. Irrecoverable — the LLM never gets to save it — so it is a hard failure the benchmark targets at zero.
+_Avoid_: false negative, miss
+
+**False-Certain**:
+A non–Career-Page the Gate certain-accepts. Irrecoverable — catalogued with no LLM veto — so it is a hard failure the benchmark targets at zero.
+_Avoid_: false positive
+
+### Benchmark
+
+**Gold Set**:
+The curated collection of real HTML pages, each stored with its true URL, a human-owned ground-truth label (Career Page or not), and a category, that the classifier benchmark scores against.
+_Avoid_: test set, fixtures (bare), corpus, sample
