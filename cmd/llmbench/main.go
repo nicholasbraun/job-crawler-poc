@@ -244,7 +244,13 @@ func printReport(w io.Writer, r Report, llm bool, mode string) {
 		if !ok || c.Total == 0 {
 			continue
 		}
-		fmt.Fprintf(w, "  %-18s p %.4f r %.4f f1 %.4f (n=%d)\n", cat, c.Precision, c.Recall, c.F1, c.Total)
+		// Each category is single-polarity (LoadManifest ties label to category),
+		// so positive-class precision/recall/f1 collapse to 0 for negative strata
+		// and hide false-accepts. Report accuracy (meaningful for every stratum)
+		// plus the two error counts: false-accept = a negative page the pipeline
+		// lets through (catalog pollution), false-reject = a real Career Page dropped.
+		fmt.Fprintf(w, "  %-18s acc %.4f  (n=%d, false-accept %d, false-reject %d)\n",
+			cat, c.Accuracy, c.Total, c.FP, c.FN)
 	}
 }
 
