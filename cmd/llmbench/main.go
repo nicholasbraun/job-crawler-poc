@@ -1,11 +1,12 @@
 // Package main is llmbench: the career-page classifier benchmark over the Gold
 // Set (ADR-0008). Its default verb, bench, runs each labeled HTML fixture
 // through the real pipeline (parser.Parse -> pagegate.CareerPage) and prints a
-// Gate scorecard, exiting non-zero on any Leak, False-Certain, or structural
-// violation. The capture verb (#49) fetches a page through the crawler
-// downloader and freezes it as a Gold-Set fixture; the label verb (#54) has a
-// stronger LABELER_* model propose labels for unverified fixtures; the diff verb
-// remains a stub a later ticket (#53) fills in.
+// Gate scorecard (or, with -json, the full machine-readable Report), exiting
+// non-zero on any Leak, False-Certain, or structural violation. The capture verb
+// (#49) fetches a page through the crawler downloader and freezes it as a Gold-Set
+// fixture; the label verb (#54) has a stronger LABELER_* model propose labels for
+// unverified fixtures; the diff verb (#53) reads two -json reports and prints the
+// per-metric delta between them.
 package main
 
 import (
@@ -35,7 +36,7 @@ func main() {
 	case "label":
 		os.Exit(runLabel(rest))
 	case "diff":
-		os.Exit(runStub(verb, rest))
+		os.Exit(runDiff(rest))
 	default:
 		fmt.Fprintf(os.Stderr, "llmbench: unknown verb %q\n", verb)
 		os.Exit(2)
@@ -67,6 +68,7 @@ func runBench(args []string) int {
 	llm := fs.Bool("llm", true, "confirm gate-uncertain fixtures with the real openrouter classifier (LLM_* env); -llm=false runs gate-only")
 	mode := fs.String("mode", "as-wired", "as-wired: classify only gate-uncertain fixtures (production wiring); isolated: classify every fixture, bypassing the gate for LLM scoring only")
 	repeats := fs.Int("n", 1, "repeat each LLM classification N times (same seed); the scored verdict is the majority vote and the LLM scorecard reports a by-URL flip-rate")
+	jsonOut := fs.Bool("json", false, "emit the full scorecard as JSON to stdout instead of the human-readable report; the exit code is unchanged")
 	_ = fs.Parse(args)
 
 	isolated := *mode == "isolated"
@@ -144,7 +146,14 @@ func runBench(args []string) int {
 	}
 
 	report := bench.Score(rows)
-	printReport(os.Stdout, report, *llm, *mode)
+	if *jsonOut {
+		if err := bench.EncodeReport(os.Stdout, report); err != nil {
+			fmt.Fprintf(os.Stderr, "llmbench bench: encode json: %v\n", err)
+			return 2
+		}
+	} else {
+		printReport(os.Stdout, report, *llm, *mode)
+	}
 	if report.Failed() {
 		return 1
 	}
@@ -245,13 +254,3 @@ type Report = bench.Report
 // red wraps s in the ANSI red escape so gate regressions are visible on a
 // terminal. Redirected output keeps the codes; that is acceptable for a dev tool.
 func red(s string) string { return "\033[31m" + s + "\033[0m" }
-
-// runStub handles the not-yet-implemented verbs (label, diff -> #53). It
-// still builds the verb's FlagSet so the dispatch scaffold is real, then reports
-// the verb is unimplemented.
-func runStub(verb string, args []string) int {
-	fs := flag.NewFlagSet(verb, flag.ExitOnError)
-	_ = fs.Parse(args)
-	fmt.Fprintf(os.Stderr, "llmbench %s: not yet implemented\n", verb)
-	return 2
-}

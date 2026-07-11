@@ -123,33 +123,36 @@ type VerdictRow struct {
 
 // GateScorecard is the deterministic Gate regression report.
 type GateScorecard struct {
-	Total         int
-	LLMCalls      int         // rows with GateUncertain (the gate forwards to the LLM)
-	LLMCallRate   float64     // ratio(LLMCalls, Total), 4dp, 0 when Total==0
-	Leaks         []string    // URLs: Label positive AND Gate==GateReject
-	FalseCertains []string    // URLs: Label negative AND Gate==GateCertainAccept
-	Violations    []Violation // per-category structural expectation failures
+	Total         int         `json:"total"`
+	LLMCalls      int         `json:"llm_calls"`      // rows with GateUncertain (the gate forwards to the LLM)
+	LLMCallRate   float64     `json:"llm_call_rate"`  // ratio(LLMCalls, Total), 4dp, 0 when Total==0
+	Leaks         []string    `json:"leaks"`          // URLs: Label positive AND Gate==GateReject
+	FalseCertains []string    `json:"false_certains"` // URLs: Label negative AND Gate==GateCertainAccept
+	Violations    []Violation `json:"violations"`     // per-category structural expectation failures
 }
 
 // Violation is a category whose gate verdict is structurally fixed but wrong: an
 // ATS board root that does not certain-accept, or an aggregator that does not
-// reject.
+// reject. Want/Got serialize as their GateOutcome String() form (see report.go).
 type Violation struct {
-	URL      string
-	Category Category
-	Want     GateOutcome
-	Got      GateOutcome
+	URL      string      `json:"url"`
+	Category Category    `json:"category"`
+	Want     GateOutcome `json:"want"`
+	Got      GateOutcome `json:"got"`
 }
 
 // ClassScore is a binary confusion matrix plus its derived rates. Precision,
 // Recall, Accuracy, and F1 are rounded to 4dp and are 0 on a zero denominator.
 type ClassScore struct {
-	TP, FP, FN, TN int
-	Total          int
-	Precision      float64 // tp/(tp+fp)
-	Recall         float64 // tp/(tp+fn)
-	Accuracy       float64 // (tp+tn)/total
-	F1             float64 // harmonic mean of Precision and Recall
+	TP        int     `json:"tp"`
+	FP        int     `json:"fp"`
+	FN        int     `json:"fn"`
+	TN        int     `json:"tn"`
+	Total     int     `json:"total"`
+	Precision float64 `json:"precision"` // tp/(tp+fp)
+	Recall    float64 `json:"recall"`    // tp/(tp+fn)
+	Accuracy  float64 `json:"accuracy"`  // (tp+tn)/total
+	F1        float64 `json:"f1"`        // harmonic mean of Precision and Recall
 }
 
 // scoreClass folds a confusion matrix into a ClassScore. F1 is computed from the
@@ -185,17 +188,17 @@ type LLMScorecard struct {
 	// FlipRate is the share of the LLM population whose N repeat verdicts are
 	// not unanimous: ratio(len(Flips), population), 4dp, 0 when population==0.
 	// Purely descriptive; N=1 runs are always 0.
-	FlipRate float64
+	FlipRate float64 `json:"flip_rate"`
 	// Flips lists, in input order, the URLs whose N verdicts disagree.
-	Flips []string
+	Flips []string `json:"flips"`
 }
 
 // EndToEndScorecard measures the production decision (reject=>negative,
 // certain-accept=>positive, uncertain=>the LLM's Confirm verdict) against the
 // gold label, overall and sliced by category.
 type EndToEndScorecard struct {
-	Overall    ClassScore
-	ByCategory map[Category]ClassScore
+	Overall    ClassScore              `json:"overall"`
+	ByCategory map[Category]ClassScore `json:"by_category"`
 }
 
 // AllCategories is the fixed print order for per-category breakdowns.
@@ -218,10 +221,10 @@ const (
 // (correcting the label if needed) and setting verified:true, which drops it
 // from the queue on the next run.
 type ReviewItem struct {
-	URL      string
-	Category Category
-	Label    Label          // the provisional (committed) label under review
-	Reasons  []ReviewReason // >=1, fixed order: labeler, gate, pipeline
+	URL      string         `json:"url"`
+	Category Category       `json:"category"`
+	Label    Label          `json:"label"`   // the provisional (committed) label under review
+	Reasons  []ReviewReason `json:"reasons"` // >=1, fixed order: labeler, gate, pipeline
 }
 
 // endToEndPositive is the production accept decision for one row: reject is
@@ -273,13 +276,13 @@ func unanimous(votes []bool) bool {
 // Report is the full bench output. #48 fills Gate, #52 LLM/EndToEnd; #54 adds
 // the descriptive ReviewQueue (the unverified fixtures a human should confirm).
 type Report struct {
-	Gate     GateScorecard
-	LLM      LLMScorecard
-	EndToEnd EndToEndScorecard
+	Gate     GateScorecard     `json:"gate"`
+	LLM      LLMScorecard      `json:"llm"`
+	EndToEnd EndToEndScorecard `json:"end_to_end"`
 	// ReviewQueue lists the unverified fixtures whose provisional label is
 	// contradicted by the labeler proposal, the Gate, or the pipeline. Purely
 	// descriptive -- it never moves Failed() or the exit code.
-	ReviewQueue []ReviewItem
+	ReviewQueue []ReviewItem `json:"review_queue"`
 }
 
 // Failed reports whether the run must exit non-zero: any Leak, False-Certain, or
