@@ -9,18 +9,28 @@ URL are the same page.
 ## How it was built
 
 Fixtures were frozen with `llmbench capture <url>`, which fetches through the
-crawler's **own** `downloader` — matching User-Agent, no JS execution — so the
-bytes are exactly what the pipeline sees in production. Candidate URLs came from:
+crawler's **own** `downloader` (matching User-Agent, no JS execution) — so the
+bytes are exactly what the pipeline sees. Candidate URLs came from the discovery
+**Catalog** (`career_page` rows, positives + single postings; a sampling *hint*
+only — the Catalog is ~45% accurate, #45) plus curated `aggregator` / `culture_about`
+/ `unrelated` negatives the Catalog can't supply. On a redirect, `url` is the final
+resolved URL and the original request is recorded in `note`.
 
-- **Positives and single-posting negatives** — sampled from the discovery
-  **Catalog** (`career_page` rows), host-diversified. Catalog membership is only a
-  *sampling hint*: the Catalog is ~45% accurate (#45), so it never sets a label.
-- **Curated negatives** the Catalog can't supply — `aggregator` (denylisted
-  job-board / professional-network hosts), `culture_about` (career-adjacent prose
-  that isn't a hub), and `unrelated` (homepages, pricing, blogs).
+## Labels are verified
 
-On a redirect, `url` is the final resolved URL and the original request is recorded
-in `note`.
+Labels were produced in three passes and are now **human-owned ground truth**
+(`verified: true`):
+
+1. **Provisional** — each fixture seeded from its sourcing bucket.
+2. **`llmbench label`** — a stronger model (via `LABELER_*`) proposed a
+   `label`/`category` per fixture (kept in `proposed_*`).
+3. **Full-content review** — every fixture whose proposal disagreed with the
+   provisional label was adjudicated against the **full** page (not the pipeline's
+   1500-char cap), and 17 categories were corrected. The distinction applied: a
+   careers **entry/overview** page that seeds the crawler to jobs one level deeper
+   (often an external ATS) is a hub (`hub_self_hosted`); a "working-at-us" /
+   "career-development" culture sub-page, with jobs on a sibling page, is
+   `culture_about`.
 
 ## Strata (78 fixtures)
 
@@ -29,44 +39,34 @@ slices the report.
 
 | Category | Polarity | Count | Role |
 |---|---|---|---|
-| `hub_ats_root` | + | 15 | ATS board root — Gate certain-accepts |
-| `hub_self_hosted` | + | 30 | Self-hosted careers hub — LLM confirms |
-| `job_posting_single` | − | 17 | A single posting (dangerous false-positive) |
-| `culture_about` | − | 6 | Career-adjacent prose (LLM trap) |
+| `hub_ats_root` | + | 16 | ATS board root — Gate certain-accepts |
+| `hub_self_hosted` | + | 32 | Self-hosted careers hub / entry page — LLM confirms |
+| `job_posting_single` | − | 6 | A single posting (dangerous false-positive) |
+| `culture_about` | − | 11 | Career-adjacent prose / hiring-process page (LLM trap) |
 | `aggregator` | − | 3 | Multi-company board — Gate certain-rejects |
-| `unrelated` | − | 7 | Homepage / pricing / blog |
+| `unrelated` | − | 10 | Homepage / pricing / blog / news section |
 
-45 positives (floor met) · 33 negatives (dangerous negatives over-weighted) · all
-six strata populated.
+48 positives · 30 negatives · all six strata populated.
 
-## Labels are provisional — `verified: false`
+## Gate findings on the verified set
 
-Every label here is a **provisional** value derived from its sourcing bucket, not a
-confirmed ground truth. Nothing is committed `verified: true` without a human
-sign-off. To harden the set:
+The Gate scorecard is a hard regression guard (non-zero exit on any Leak,
+False-Certain, or per-category gate violation). Against the verified labels it
+surfaces **four genuine gate gaps** — the harness doing its job, not fixture
+errors. `bench` therefore exits non-zero until these are addressed in the gate
+(discovery / ADR-0007 work, tracked separately from this benchmark):
 
-1. `llmbench label` — a **stronger** model (its own `LABELER_*` env) proposes a
-   `label` + `category` per fixture, written as `proposed_*` with `verified: false`.
-2. `llmbench bench` folds in a **review queue**: the unverified fixtures whose
-   provisional label disagrees with the labeler, the Gate, or the pipeline verdict.
-3. A human confirms those (~20) by editing `manifest.json` and flipping
-   `verified: true`; they drop off the queue on the next run.
-
-## Known findings on this provisional baseline
-
-The Gate scorecard is a hard regression guard (non-zero exit on any Leak or
-False-Certain, plus per-category gate expectations). On this initial set it
-surfaces **one genuine gap**, which is the harness doing its job — not a fixture
-error:
-
-- `remoteok.com/remote-dev-jobs` — a real aggregator the Gate leaves *uncertain*
-  because `remoteok.com` is not yet on the discovery aggregator denylist
-  (`internal/catalog`). The denylist comment already anticipates being "extended as
-  the gold-set harness (#44) surfaces more"; adding it is a one-line discovery
-  follow-up, tracked separately from this benchmark.
-
-`bench` therefore exits non-zero on the committed set until that denylist gap (or
-the label review) is addressed — the guard firing as designed.
+- **0 Leaks** — the gate rejects no real Career Page on this set.
+- **False-Certain — `businessinsider.com/careers`** (a news section) and
+  **`governikus.de/karriere/arbeiten-bei-uns/`** (a culture page): both are
+  certain-accepted — skipping the LLM veto — purely because the path contains a
+  `careers`/`karriere` segment. The gate's `CareerPathSignals` certain-accept rule
+  rubber-stamps any such path, including non-hub sub-pages (the #45 failure mode).
+- **Violation — `job-boards.eu.greenhouse.io/…`**: a greenhouse board root the gate
+  leaves *uncertain* because `.eu.greenhouse.io` isn't in the ATS host allowlist
+  (`internal/catalog`).
+- **Violation — `remoteok.com/…`**: a real aggregator the gate leaves *uncertain*
+  because `remoteok.com` isn't on the aggregator denylist.
 
 ## Growing the set
 
