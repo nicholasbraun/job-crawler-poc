@@ -145,6 +145,21 @@ func TestCareerPage(t *testing.T) {
 			wantCertain: false,
 		},
 		{
+			// A careerish editorial page -- its copy trips the career-keyword
+			// heuristic via "join" -- is still shed by its reject-path segment
+			// before any LLM classify call. This is exactly why the editorial
+			// tokens were added once the URL filter stopped blocking them.
+			name: "careerish editorial path is rejected before the LLM",
+			url:  "https://acme.com/articles/why-you-should-join-our-team",
+			content: &crawler.Content{
+				Title: "Why you should join our team",
+				URLs:  []string{"/articles/other", "/about"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
 			// A neutral path (no career or reject signal, no career keyword in the
 			// URL or title) falls through to the link count; outbound postings on
 			// another host are not counted, so it is rejected.
@@ -234,6 +249,11 @@ func TestShouldExtract(t *testing.T) {
 		{
 			name: "reject path is dropped before the extractor",
 			url:  "https://acme.com/blog/hello",
+			want: false,
+		},
+		{
+			name: "editorial reject path is dropped before the extractor",
+			url:  "https://acme.com/magazine/issue-5",
 			want: false,
 		},
 		{

@@ -64,8 +64,17 @@ func DefaultLLMGateConfig() LLMGateConfig {
 			"stellenangebote", "vacancies",
 		},
 		RejectPathSignals: []string{
-			"blog", "news", "press", "media", "legal", "privacy",
-			"terms", "imprint", "impressum", "cookie", "gdpr", "pricing",
+			// Editorial / content paths. The URL filter no longer blocks these
+			// (they are crawled for their outbound links to companies), so they now
+			// reach the gate: shed them here before the LLM, since an editorial page
+			// is never itself a Career Page or Job Listing even when its copy trips
+			// the careerish content heuristic (e.g. a post about "joining the team").
+			"blog", "news", "press", "media", "articles", "stories",
+			"posts", "magazine",
+			// Legal / commercial boilerplate. Still blocked by the URL filter too,
+			// so these rarely reach the gate; kept as a backstop.
+			"legal", "privacy", "terms", "imprint", "impressum", "cookie",
+			"gdpr", "pricing",
 		},
 	}
 }
