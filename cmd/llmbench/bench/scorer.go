@@ -92,6 +92,10 @@ type VerdictRow struct {
 	Category Category
 	Label    Label
 	Gate     GateOutcome
+	// LLMConfirm is the classifier's Confirm verdict for this fixture. It is
+	// meaningful ONLY when Gate == GateUncertain (the forwarded subset); for
+	// reject / certain-accept rows it is unused and left false.
+	LLMConfirm bool
 }
 
 // GateScorecard is the deterministic Gate regression report.
@@ -114,10 +118,80 @@ type Violation struct {
 	Got      GateOutcome
 }
 
+// ClassScore is a binary confusion matrix plus its derived rates. Precision,
+// Recall, Accuracy, and F1 are rounded to 4dp and are 0 on a zero denominator.
+type ClassScore struct {
+	TP, FP, FN, TN int
+	Total          int
+	Precision      float64 // tp/(tp+fp)
+	Recall         float64 // tp/(tp+fn)
+	Accuracy       float64 // (tp+tn)/total
+	F1             float64 // harmonic mean of Precision and Recall
+}
+
+// scoreClass folds a confusion matrix into a ClassScore. F1 is computed from the
+// already-rounded Precision and Recall so it agrees with the printed rates.
+func scoreClass(tp, fp, fn, tn int) ClassScore {
+	total := tp + fp + fn + tn
+	p := ratio(tp, tp+fp)
+	r := ratio(tp, tp+fn)
+	return ClassScore{
+		TP: tp, FP: fp, FN: fn, TN: tn, Total: total,
+		Precision: p,
+		Recall:    r,
+		Accuracy:  ratio(tp+tn, total),
+		F1:        f1(p, r),
+	}
+}
+
+// f1 is the harmonic mean of precision and recall, rounded to 4dp, or 0 when
+// both are 0 (guards divide-by-zero).
+func f1(precision, recall float64) float64 {
+	if precision+recall == 0 {
+		return 0
+	}
+	return math.Round(2*precision*recall/(precision+recall)*10000) / 10000
+}
+
+// LLMScorecard measures the classifier over the subset the gate forwarded
+// (GateUncertain rows). Descriptive only -- it never affects Report.Failed().
+type LLMScorecard struct {
+	ClassScore
+}
+
+// EndToEndScorecard measures the production decision (reject=>negative,
+// certain-accept=>positive, uncertain=>the LLM's Confirm verdict) against the
+// gold label, overall and sliced by category.
+type EndToEndScorecard struct {
+	Overall    ClassScore
+	ByCategory map[Category]ClassScore
+}
+
+// AllCategories is the fixed print order for per-category breakdowns.
+var AllCategories = []Category{
+	CategoryHubATSRoot, CategoryHubSelfHosted, CategoryJobPostingSingle,
+	CategoryCultureAbout, CategoryAggregator, CategoryUnrelated,
+}
+
+// endToEndPositive is the production accept decision for one row: reject is
+// negative, certain-accept is positive, uncertain defers to the LLM verdict.
+func endToEndPositive(row VerdictRow) bool {
+	switch row.Gate {
+	case GateCertainAccept:
+		return true
+	case GateUncertain:
+		return row.LLMConfirm
+	default: // GateReject
+		return false
+	}
+}
+
 // Report is the full bench output. #48 fills only Gate; later tickets add
 // LLM/EndToEnd/ReviewQueue fields alongside it.
 type Report struct {
-	Gate GateScorecard
+	Gate     GateScorecard
+	LLM      LLMScorecard
+	EndToEnd EndToEndScorecard
 }
 
 // Failed reports whether the run must exit non-zero: any Leak, False-Certain, or
@@ -159,7 +233,57 @@ func Score(rows []VerdictRow) Report {
 		}
 	}
 	sc.LLMCallRate = ratio(sc.LLMCalls, sc.Total)
-	return Report{Gate: sc}
+
+	// LLM fold: score Confirm over ONLY the forwarded (GateUncertain) subset;
+	// reject / certain-accept rows never reach the classifier.
+	llm := [4]int{}
+	for _, row := range rows {
+		if row.Gate != GateUncertain {
+			continue
+		}
+		confusion(&llm, row.LLMConfirm, row.Label.Positive())
+	}
+
+	// End-to-end fold: score the production decision over ALL rows, overall plus
+	// one confusion matrix per category.
+	overall := [4]int{}
+	byCat := map[Category][4]int{}
+	for _, row := range rows {
+		predicted := endToEndPositive(row)
+		gold := row.Label.Positive()
+		confusion(&overall, predicted, gold)
+		m := byCat[row.Category]
+		confusion(&m, predicted, gold)
+		byCat[row.Category] = m
+	}
+	byCategory := map[Category]ClassScore{}
+	for cat, m := range byCat {
+		byCategory[cat] = scoreClass(m[0], m[1], m[2], m[3])
+	}
+
+	return Report{
+		Gate: sc,
+		LLM:  LLMScorecard{ClassScore: scoreClass(llm[0], llm[1], llm[2], llm[3])},
+		EndToEnd: EndToEndScorecard{
+			Overall:    scoreClass(overall[0], overall[1], overall[2], overall[3]),
+			ByCategory: byCategory,
+		},
+	}
+}
+
+// confusion increments the confusion-matrix quadrant for one (predicted, gold)
+// pair. m indices are [tp, fp, fn, tn].
+func confusion(m *[4]int, predicted, gold bool) {
+	switch {
+	case predicted && gold:
+		m[0]++
+	case predicted && !gold:
+		m[1]++
+	case !predicted && gold:
+		m[2]++
+	default:
+		m[3]++
+	}
 }
 
 // gateExpectation returns the structurally-fixed gate outcome a category must

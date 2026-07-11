@@ -8,6 +8,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -17,8 +18,10 @@ import (
 
 	"github.com/nicholasbraun/job-crawler-poc/cmd/llmbench/bench"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
+	"github.com/nicholasbraun/job-crawler-poc/internal/openrouter"
 	"github.com/nicholasbraun/job-crawler-poc/internal/pagegate"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
+	careerpageprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/career_page_processor"
 )
 
 func main() {
@@ -54,12 +57,24 @@ func runBench(args []string) int {
 	fs := flag.NewFlagSet("bench", flag.ExitOnError)
 	gold := fs.String("gold", "cmd/llmbench/testdata", "Gold-Set directory holding manifest.json and pages/*.html")
 	gateConfig := fs.String("gate-config", "", "path to a JSON LLMGateConfig override; keys are the Go field names CareerPathSignals/RejectPathSignals (the struct has no json tags); empty uses DefaultLLMGateConfig")
+	llm := fs.Bool("llm", true, "confirm gate-uncertain fixtures with the real openrouter classifier (LLM_* env); -llm=false runs gate-only")
 	_ = fs.Parse(args)
 
 	cfg, err := loadGateConfig(*gateConfig)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench bench: load gate config: %v\n", err)
 		return 2
+	}
+
+	ctx := context.Background()
+	var confirmer careerpageprocessor.Confirmer
+	if *llm {
+		cfg, err := loadLLMConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "llmbench bench: %v\n", err)
+			return 2
+		}
+		confirmer = openrouter.NewCareerPageClassifier(cfg)
 	}
 
 	fsys := os.DirFS(*gold)
@@ -88,16 +103,21 @@ func runBench(args []string) int {
 			return 2
 		}
 		accept, certain := pagegate.CareerPage(u, content, cfg)
-		rows = append(rows, bench.VerdictRow{
-			URL:      e.URL,
-			Category: e.Category,
-			Label:    e.Label,
-			Gate:     bench.GateOutcomeFrom(accept, certain),
-		})
+		gate := bench.GateOutcomeFrom(accept, certain)
+		row := bench.VerdictRow{URL: e.URL, Category: e.Category, Label: e.Label, Gate: gate}
+		if *llm && gate == bench.GateUncertain {
+			confirmed, err := confirmer.Confirm(ctx, e.URL, content)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "llmbench bench: confirm %q: %v\n", e.URL, err)
+				return 2
+			}
+			row.LLMConfirm = confirmed
+		}
+		rows = append(rows, row)
 	}
 
 	report := bench.Score(rows)
-	printReport(os.Stdout, report)
+	printReport(os.Stdout, report, *llm)
 	if report.Failed() {
 		return 1
 	}
@@ -125,7 +145,9 @@ func loadGateConfig(path string) (crawler.LLMGateConfig, error) {
 // printReport writes the Gate scorecard: the descriptive summary (total, LLM
 // calls, call rate) to w, and each hard failure (Leak, False-Certain, structural
 // Violation) to stderr in ANSI red so a regression stands out on the terminal.
-func printReport(w io.Writer, r Report) {
+// When llm is set it also appends the descriptive LLM and end-to-end scorecards
+// to w; those numbers never move the exit code.
+func printReport(w io.Writer, r Report, llm bool) {
 	g := r.Gate
 	fmt.Fprintln(w, "gate scorecard")
 	fmt.Fprintf(w, "  total          %d\n", g.Total)
@@ -141,6 +163,31 @@ func printReport(w io.Writer, r Report) {
 	for _, v := range g.Violations {
 		fmt.Fprintln(os.Stderr, red(fmt.Sprintf("VIOLATION     %s [%s] want %s got %s", v.URL, v.Category, v.Want, v.Got)))
 	}
+
+	if !llm {
+		return
+	}
+
+	l := r.LLM
+	fmt.Fprintln(w, "llm scorecard (gate-uncertain subset, descriptive)")
+	fmt.Fprintf(w, "  forwarded      %d\n", l.Total)
+	fmt.Fprintf(w, "  precision      %.4f\n", l.Precision)
+	fmt.Fprintf(w, "  recall         %.4f\n", l.Recall)
+	fmt.Fprintf(w, "  accuracy       %.4f\n", l.Accuracy)
+
+	e := r.EndToEnd.Overall
+	fmt.Fprintln(w, "end-to-end scorecard (production decision, descriptive)")
+	fmt.Fprintf(w, "  precision      %.4f\n", e.Precision)
+	fmt.Fprintf(w, "  recall         %.4f\n", e.Recall)
+	fmt.Fprintf(w, "  f1             %.4f\n", e.F1)
+	fmt.Fprintf(w, "  accuracy       %.4f\n", e.Accuracy)
+	for _, cat := range bench.AllCategories {
+		c, ok := r.EndToEnd.ByCategory[cat]
+		if !ok || c.Total == 0 {
+			continue
+		}
+		fmt.Fprintf(w, "  %-18s p %.4f r %.4f f1 %.4f (n=%d)\n", cat, c.Precision, c.Recall, c.F1, c.Total)
+	}
 }
 
 // Report aliases bench.Report so printReport reads without the package qualifier.
@@ -150,7 +197,7 @@ type Report = bench.Report
 // terminal. Redirected output keeps the codes; that is acceptable for a dev tool.
 func red(s string) string { return "\033[31m" + s + "\033[0m" }
 
-// runStub handles the not-yet-implemented verbs (label -> #51, diff -> #53). It
+// runStub handles the not-yet-implemented verbs (label, diff -> #53). It
 // still builds the verb's FlagSet so the dispatch scaffold is real, then reports
 // the verb is unimplemented.
 func runStub(verb string, args []string) int {
