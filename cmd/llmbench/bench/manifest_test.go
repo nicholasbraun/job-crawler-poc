@@ -142,19 +142,23 @@ func TestReadHTML(t *testing.T) {
 	}
 }
 
-// TestLoadManifest_CommittedSet guards that the real testdata Gold Set parses
-// and every fixture's HTML is present. It stays dependency-light: no parser or
-// gate runs here -- the real pipeline is exercised only by manual `go run`.
+// TestLoadManifest_CommittedSet guards that the real testdata Gold Set parses,
+// every fixture's HTML is present, and every category stratum is populated (the
+// ADR-0008 / #50 stratification requirement). It stays dependency-light: no
+// parser or gate runs here -- the real pipeline is exercised only by manual
+// `go run`.
 func TestLoadManifest_CommittedSet(t *testing.T) {
 	fsys := os.DirFS("../testdata")
 	m, err := bench.LoadManifest(fsys)
 	if err != nil {
 		t.Fatalf("LoadManifest(testdata) error: %v", err)
 	}
-	if len(m.Entries) != 3 {
-		t.Fatalf("len(Entries) = %d, want 3", len(m.Entries))
+	if len(m.Entries) == 0 {
+		t.Fatal("committed Gold Set is empty")
 	}
+	counts := map[bench.Category]int{}
 	for _, e := range m.Entries {
+		counts[e.Category]++
 		html, err := e.ReadHTML(fsys)
 		if err != nil {
 			t.Errorf("ReadHTML(%q) error: %v", e.File, err)
@@ -162,6 +166,13 @@ func TestLoadManifest_CommittedSet(t *testing.T) {
 		}
 		if len(html) == 0 {
 			t.Errorf("ReadHTML(%q) returned empty bytes", e.File)
+		}
+	}
+	// Each of the six strata must carry at least one fixture so every scorecard
+	// slice has data to score.
+	for _, c := range bench.AllCategories {
+		if counts[c] == 0 {
+			t.Errorf("category %q has no fixtures in the committed Gold Set", c)
 		}
 	}
 }

@@ -1,29 +1,704 @@
 [
   {
-    "file": "greenhouse_acme.html",
-    "url": "https://boards.greenhouse.io/acme",
+    "file": "0000-job-boards-greenhouse-io-tide.html",
+    "url": "https://job-boards.greenhouse.io/tide",
     "label": "career_page",
     "category": "hub_ats_root",
-    "verified": true,
-    "fetched_at": "2026-07-11",
-    "note": "greenhouse board root -> RoleCareerPage -> certain-accept"
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:28Z",
+    "note": "provisional:hub_ats_root (verified:false)"
   },
   {
-    "file": "linkedin_jobs.html",
-    "url": "https://www.linkedin.com/jobs/acme",
+    "file": "0001-migosens-gmbh-jobs-personio-de.html",
+    "url": "https://migosens-gmbh.jobs.personio.de",
+    "label": "career_page",
+    "category": "hub_ats_root",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:29Z",
+    "note": "provisional:hub_ats_root (verified:false)"
+  },
+  {
+    "file": "0002-helicon-jobs-personio-com.html",
+    "url": "https://helicon.jobs.personio.com",
+    "label": "career_page",
+    "category": "hub_ats_root",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:29Z",
+    "note": "provisional:hub_ats_root (verified:false)"
+  },
+  {
+    "file": "0003-graswald-gmbh-jobs-personio-com.html",
+    "url": "https://graswald-gmbh.jobs.personio.com",
+    "label": "career_page",
+    "category": "hub_ats_root",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:29Z",
+    "note": "provisional:hub_ats_root (verified:false)"
+  },
+  {
+    "file": "0004-speedinvest-jobs-personio-com.html",
+    "url": "https://speedinvest.jobs.personio.com",
+    "label": "career_page",
+    "category": "hub_ats_root",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:30Z",
+    "note": "provisional:hub_ats_root (verified:false)"
+  },
+  {
+    "file": "0005-jobs-ashbyhq-com-alephalpha.html",
+    "url": "https://jobs.ashbyhq.com/alephalpha",
+    "label": "career_page",
+    "category": "hub_ats_root",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:30Z",
+    "note": "provisional:hub_ats_root (verified:false)"
+  },
+  {
+    "file": "0006-everdrop-recruitee-com.html",
+    "url": "https://everdrop.recruitee.com",
+    "label": "career_page",
+    "category": "hub_ats_root",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:30Z",
+    "note": "provisional:hub_ats_root (verified:false)"
+  },
+  {
+    "file": "0007-job-boards-greenhouse-io-headspaceproviders.html",
+    "url": "https://job-boards.greenhouse.io/headspaceproviders",
+    "label": "career_page",
+    "category": "hub_ats_root",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:32Z",
+    "note": "redirected https://boards.greenhouse.io/headspaceproviders -> https://job-boards.greenhouse.io/headspaceproviders | provisional:hub_ats_root (verified:false)"
+  },
+  {
+    "file": "0008-jobs-ashbyhq-com-alan.html",
+    "url": "https://jobs.ashbyhq.com/alan",
+    "label": "career_page",
+    "category": "hub_ats_root",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:32Z",
+    "note": "provisional:hub_ats_root (verified:false)"
+  },
+  {
+    "file": "0009-constellr-recruitee-com.html",
+    "url": "https://constellr.recruitee.com",
+    "label": "career_page",
+    "category": "hub_ats_root",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:32Z",
+    "note": "provisional:hub_ats_root (verified:false)"
+  },
+  {
+    "file": "0010-eqs-group-jobs-personio-de.html",
+    "url": "https://eqs-group.jobs.personio.de",
+    "label": "career_page",
+    "category": "hub_ats_root",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:32Z",
+    "note": "provisional:hub_ats_root (verified:false)"
+  },
+  {
+    "file": "0011-jobs-ashbyhq-com-finary.html",
+    "url": "https://jobs.ashbyhq.com/finary",
+    "label": "career_page",
+    "category": "hub_ats_root",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:33Z",
+    "note": "provisional:hub_ats_root (verified:false)"
+  },
+  {
+    "file": "0012-job-boards-greenhouse-io-degreed.html",
+    "url": "https://job-boards.greenhouse.io/degreed",
+    "label": "career_page",
+    "category": "hub_ats_root",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:33Z",
+    "note": "redirected https://boards.greenhouse.io/degreed -> https://job-boards.greenhouse.io/degreed | provisional:hub_ats_root (verified:false)"
+  },
+  {
+    "file": "0013-job-boards-greenhouse-io-newsela.html",
+    "url": "https://job-boards.greenhouse.io/newsela",
+    "label": "career_page",
+    "category": "hub_ats_root",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:34Z",
+    "note": "redirected https://boards.greenhouse.io/newsela -> https://job-boards.greenhouse.io/newsela | provisional:hub_ats_root (verified:false)"
+  },
+  {
+    "file": "0014-jobs-ashbyhq-com-fyxer.html",
+    "url": "https://jobs.ashbyhq.com/fyxer",
+    "label": "career_page",
+    "category": "hub_ats_root",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:34Z",
+    "note": "provisional:hub_ats_root (verified:false)"
+  },
+  {
+    "file": "0015-enclaive-io-careers.html",
+    "url": "https://www.enclaive.io/careers",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:35Z",
+    "note": "redirected https://enclaive.io/careers -> https://www.enclaive.io/careers | provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0016-en-bitsea-de-career.html",
+    "url": "https://en.bitsea.de/career/",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:42Z",
+    "note": "redirected https://en.bitsea.de/career -> https://en.bitsea.de/career/ | provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0017-businessinsider-com-careers.html",
+    "url": "https://www.businessinsider.com/careers",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:43Z",
+    "note": "provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0018-quartr-com-careers.html",
+    "url": "https://quartr.com/careers",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:43Z",
+    "note": "provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0019-icann-org-en-careers.html",
+    "url": "https://www.icann.org/en/careers",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:44Z",
+    "note": "redirected http://www.icann.org/en/careers -> https://www.icann.org/en/careers | provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0020-shopify-com-careers.html",
+    "url": "https://www.shopify.com/careers",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:45Z",
+    "note": "provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0021-iserv-de-karriere.html",
+    "url": "https://iserv.de/karriere",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:45Z",
+    "note": "provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0022-unternehmertum-de-jobs.html",
+    "url": "https://www.unternehmertum.de/jobs",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:46Z",
+    "note": "provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0023-nexcess-com-careers.html",
+    "url": "https://www.nexcess.com/careers/",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:46Z",
+    "note": "redirected https://www.nexcess.com/careers -> https://www.nexcess.com/careers/ | provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0024-ashlandfilm-org-jobs.html",
+    "url": "https://www.ashlandfilm.org/jobs",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:47Z",
+    "note": "provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0025-accurx-com-careers.html",
+    "url": "https://www.accurx.com/careers",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:47Z",
+    "note": "provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0026-stormking-org-jobs.html",
+    "url": "https://stormking.org/jobs/",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:48Z",
+    "note": "redirected https://stormking.org/jobs -> https://stormking.org/jobs/ | provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0027-medivise-de-jobs.html",
+    "url": "https://medivise.de/jobs/",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:50Z",
+    "note": "redirected https://medivise.de/jobs -> https://medivise.de/jobs/ | provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0028-cedar-com-careers.html",
+    "url": "https://www.cedar.com/careers",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:50Z",
+    "note": "provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0029-jobs-infineon-com-careers.html",
+    "url": "https://jobs.infineon.com/careers",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:51Z",
+    "note": "provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0030-dexory-com-career.html",
+    "url": "https://www.dexory.com/career",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:51Z",
+    "note": "provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0031-newsela-com-careers.html",
+    "url": "https://newsela.com/careers",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:52Z",
+    "note": "provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0032-cision-com-careers.html",
+    "url": "https://www.cision.com/careers/",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:52Z",
+    "note": "redirected https://www.cision.com/careers -> https://www.cision.com/careers/ | provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0033-redcare-pharmacy-com-de-careers.html",
+    "url": "https://www.redcare-pharmacy.com/de/careers",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:52Z",
+    "note": "provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0034-opus-tech-ai.html",
+    "url": "https://www.opus-tech.ai/",
     "label": "not_career_page",
-    "category": "aggregator",
-    "verified": true,
-    "fetched_at": "2026-07-11",
-    "note": "linkedin is a known aggregator host -> gate rejects"
+    "category": "unrelated",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:53Z",
+    "note": "redirected http://get-opus.de/karriere -> https://www.opus-tech.ai/ | provisional:hub_self_hosted (verified:false) | recategorized: /careers 301->homepage, page is company home (data fix)"
   },
   {
-    "file": "acme_posting.html",
-    "url": "https://acme.example/careers/senior-go-engineer",
+    "file": "0035-prsliving-org-careers.html",
+    "url": "https://www.prsliving.org/careers",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:54Z",
+    "note": "redirected https://retirement.org/careers -> https://www.prsliving.org/careers | provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0036-roguevalleymanor-org-about-careers.html",
+    "url": "https://www.roguevalleymanor.org/about/careers",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:07:56Z",
+    "note": "redirected https://roguevalleymanor.org/about/careers -> https://www.roguevalleymanor.org/about/careers | provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0037-bitsea-de-karriere-bei-bitsea-arbeiten-bei-bitsea.html",
+    "url": "https://bitsea.de/karriere-bei-bitsea/arbeiten-bei-bitsea/",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:05Z",
+    "note": "redirected https://bitsea.de/karriere/arbeiten-bei-bitsea -> https://bitsea.de/karriere-bei-bitsea/arbeiten-bei-bitsea/ | provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0038-schwarz-digits-de-jobsearch.html",
+    "url": "https://schwarz-digits.de/jobsearch",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:06Z",
+    "note": "provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0039-bundesumweltministerium-de-ministerium-karriere.html",
+    "url": "https://www.bundesumweltministerium.de/ministerium/karriere",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:07Z",
+    "note": "redirected https://www.bmu.de/ministerium/karriere -> https://www.bundesumweltministerium.de/ministerium/karriere | provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0040-degreed-com-experience-careers.html",
+    "url": "https://degreed.com/experience/careers/",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:07Z",
+    "note": "redirected https://degreed.com/experience/careers -> https://degreed.com/experience/careers/ | provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0041-kfw-de-ber-die-kfw-karriere-studierende.html",
+    "url": "https://www.kfw.de/%C3%9Cber-die-KfW/Karriere/Studierende/",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:08Z",
+    "note": "redirected https://www.kfw.de/%C3%9Cber-die-KfW/Karriere/Studierende -> https://www.kfw.de/%C3%9Cber-die-KfW/Karriere/Studierende/ | provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0042-eqs-com-about-eqs-careers.html",
+    "url": "https://www.eqs.com/about-eqs/careers/",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:08Z",
+    "note": "redirected https://www.eqs.com/about-eqs/careers -> https://www.eqs.com/about-eqs/careers/ | provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0043-careers-blackrock-com-career-development.html",
+    "url": "https://careers.blackrock.com/career-development",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:08Z",
+    "note": "provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0044-ionos-group-com-de-jobs-karriere-html.html",
+    "url": "https://www.ionos-group.com/de/jobs-karriere.html",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:09Z",
+    "note": "provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0045-governikus-de-karriere-arbeiten-bei-uns.html",
+    "url": "https://www.governikus.de/karriere/arbeiten-bei-uns/",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:10Z",
+    "note": "redirected https://www.governikus.de/karriere/arbeiten-bei-uns -> https://www.governikus.de/karriere/arbeiten-bei-uns/ | provisional:hub_self_hosted (verified:false)"
+  },
+  {
+    "file": "0046-nenna-ai-jobs-platform-engineer-m-f-d.html",
+    "url": "https://www.nenna.ai/jobs/platform-engineer-(m-f-d)",
     "label": "not_career_page",
     "category": "job_posting_single",
-    "verified": true,
-    "fetched_at": "2026-07-11",
-    "note": "single posting under /careers/<slug>, no same-host posting links -> gate rejects"
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:10Z",
+    "note": "provisional:job_posting_single (verified:false)"
+  },
+  {
+    "file": "0047-careers-remitly-com-job-23582019-principal-product-manager-p.html",
+    "url": "https://careers.remitly.com/job/23582019/principal-product-manager-p2p-payments/",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:11Z",
+    "note": "redirected https://careers.remitly.com/job/23582019/principal-product-manager-p2p-payments -> https://careers.remitly.com/job/23582019/principal-product-manager-p2p-payments/ | provisional:job_posting_single (verified:false)"
+  },
+  {
+    "file": "0048-datarobot-com-careers-open-positions.html",
+    "url": "https://www.datarobot.com/careers/open-positions/",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:11Z",
+    "note": "redirected https://www.datarobot.com/careers/open-positions -> https://www.datarobot.com/careers/open-positions/ | provisional:job_posting_single (verified:false)"
+  },
+  {
+    "file": "0049-careers-moove-io-jobs-8041975-director-head-of-fleet-vehicle.html",
+    "url": "https://careers.moove.io/jobs/8041975-director-head-of-fleet-vehicle-procurement-strategic-sourcing",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:12Z",
+    "note": "provisional:job_posting_single (verified:false)"
+  },
+  {
+    "file": "0050-shiftmove-com-it-careers-job-board.html",
+    "url": "https://www.shiftmove.com/it/careers/job-board",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:12Z",
+    "note": "provisional:job_posting_single (verified:false)"
+  },
+  {
+    "file": "0051-firsty-app-pt-jobs-other-customer-experience-management-inte.html",
+    "url": "https://www.firsty.app/pt/jobs/other/customer-experience-management-intern",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:12Z",
+    "note": "provisional:job_posting_single (verified:false)"
+  },
+  {
+    "file": "0052-gtlaw-com-de-general-careers-berlin-karriere.html",
+    "url": "https://www.gtlaw.com/de/general/careers/berlin/karriere",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:14Z",
+    "note": "provisional:job_posting_single (verified:false)"
+  },
+  {
+    "file": "0053-job-boards-eu-greenhouse-io-arxroboticsgmbh.html",
+    "url": "https://job-boards.eu.greenhouse.io/arxroboticsgmbh?error=true",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:14Z",
+    "note": "redirected https://job-boards.eu.greenhouse.io/arxroboticsgmbh/jobs/4852966101 -> https://job-boards.eu.greenhouse.io/arxroboticsgmbh?error=true | provisional:job_posting_single (verified:false)"
+  },
+  {
+    "file": "0054-jobs-ionos-de-karriere-jobs-alle-jobs.html",
+    "url": "https://jobs.ionos.de/karriere/jobs/alle-jobs",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:15Z",
+    "note": "provisional:job_posting_single (verified:false)"
+  },
+  {
+    "file": "0055-redcare-pharmacy-com-de-careers-open-jobs.html",
+    "url": "https://www.redcare-pharmacy.com/de/careers/open-jobs",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:15Z",
+    "note": "provisional:job_posting_single (verified:false)"
+  },
+  {
+    "file": "0056-jobs-kes-informationssicherheit-de-job-leitung-entwicklung-w.html",
+    "url": "https://jobs.kes-informationssicherheit.de/job/leitung-entwicklung-w-m-d-mechatronische-systeme-industrielle-sicherheits-und-automatisierungstechnik.2006621285.html",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:16Z",
+    "note": "provisional:job_posting_single (verified:false)"
+  },
+  {
+    "file": "0057-hometogo-com-careers-how-we-hire.html",
+    "url": "https://www.hometogo.com/careers/how-we-hire/",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:17Z",
+    "note": "redirected https://www.hometogo.com/careers/how-we-hire -> https://www.hometogo.com/careers/how-we-hire/ | provisional:job_posting_single (verified:false)"
+  },
+  {
+    "file": "0058-cedar-com-careers-interviewing-at-cedar.html",
+    "url": "https://www.cedar.com/careers/interviewing-at-cedar",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:17Z",
+    "note": "provisional:job_posting_single (verified:false)"
+  },
+  {
+    "file": "0059-nationalgeographic-org-society-internships.html",
+    "url": "https://www.nationalgeographic.org/society/internships/",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:18Z",
+    "note": "redirected https://www.nationalgeographic.org/careers/internships -> https://www.nationalgeographic.org/society/internships/ | provisional:job_posting_single (verified:false)"
+  },
+  {
+    "file": "0060-playlist-com-careers-opportunities.html",
+    "url": "https://www.playlist.com/careers/opportunities",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:19Z",
+    "note": "redirected https://playlist.com/careers/opportunities -> https://www.playlist.com/careers/opportunities | provisional:job_posting_single (verified:false)"
+  },
+  {
+    "file": "0061-sendbird-com-careers-inside-the-build.html",
+    "url": "https://sendbird.com/careers/inside-the-build",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:19Z",
+    "note": "provisional:job_posting_single (verified:false)"
+  },
+  {
+    "file": "0062-careers-fifthdimensionai-com-jobs-4876297-ai-engineer-staff.html",
+    "url": "https://careers.fifthdimensionai.com/jobs/4876297-ai-engineer-staff-principal?gh_src=Speedinvest+job+board&utm_medium=getro.com&utm_source=Speedinvest+job+board",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:20Z",
+    "note": "provisional:job_posting_single (verified:false)"
+  },
+  {
+    "file": "0063-getro-com.html",
+    "url": "https://www.getro.com",
+    "label": "not_career_page",
+    "category": "aggregator",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:20Z",
+    "note": "provisional:aggregator (verified:false)"
+  },
+  {
+    "file": "0064-xing-com.html",
+    "url": "https://www.xing.com/",
+    "label": "not_career_page",
+    "category": "aggregator",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:21Z",
+    "note": "redirected https://www.xing.com/jobs -> https://www.xing.com/ | provisional:aggregator (verified:false)"
+  },
+  {
+    "file": "0065-remoteok-com-remote-dev-jobs.html",
+    "url": "https://remoteok.com/remote-dev-jobs",
+    "label": "not_career_page",
+    "category": "aggregator",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:22Z",
+    "note": "provisional:aggregator (verified:false)"
+  },
+  {
+    "file": "0066-stripe-com-de.html",
+    "url": "https://stripe.com/de",
+    "label": "not_career_page",
+    "category": "culture_about",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:23Z",
+    "note": "redirected https://stripe.com/about -> https://stripe.com/de | provisional:culture_about (verified:false)"
+  },
+  {
+    "file": "0067-handbook-gitlab-com-handbook-company-culture.html",
+    "url": "https://handbook.gitlab.com/handbook/company/culture//",
+    "label": "not_career_page",
+    "category": "culture_about",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:24Z",
+    "note": "redirected https://about.gitlab.com/company/culture/ -> https://handbook.gitlab.com/handbook/company/culture// | provisional:culture_about (verified:false)"
+  },
+  {
+    "file": "0068-atlassian-com-company.html",
+    "url": "https://www.atlassian.com/company",
+    "label": "not_career_page",
+    "category": "culture_about",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:24Z",
+    "note": "provisional:culture_about (verified:false)"
+  },
+  {
+    "file": "0069-basecamp-com-about.html",
+    "url": "https://basecamp.com/about",
+    "label": "not_career_page",
+    "category": "culture_about",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:25Z",
+    "note": "provisional:culture_about (verified:false)"
+  },
+  {
+    "file": "0070-vercel-com-about.html",
+    "url": "https://vercel.com/about",
+    "label": "not_career_page",
+    "category": "culture_about",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:25Z",
+    "note": "provisional:culture_about (verified:false)"
+  },
+  {
+    "file": "0071-about-google.html",
+    "url": "https://about.google/",
+    "label": "not_career_page",
+    "category": "culture_about",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:25Z",
+    "note": "provisional:culture_about (verified:false)"
+  },
+  {
+    "file": "0072-stripe-com-de-pricing.html",
+    "url": "https://stripe.com/de/pricing",
+    "label": "not_career_page",
+    "category": "unrelated",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:26Z",
+    "note": "redirected https://stripe.com/pricing -> https://stripe.com/de/pricing | provisional:unrelated (verified:false)"
+  },
+  {
+    "file": "0073-postgresql-org.html",
+    "url": "https://www.postgresql.org",
+    "label": "not_career_page",
+    "category": "unrelated",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:26Z",
+    "note": "provisional:unrelated (verified:false)"
+  },
+  {
+    "file": "0074-go-dev-blog.html",
+    "url": "https://go.dev/blog/",
+    "label": "not_career_page",
+    "category": "unrelated",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:27Z",
+    "note": "redirected https://go.dev/blog -> https://go.dev/blog/ | provisional:unrelated (verified:false)"
+  },
+  {
+    "file": "0075-redis-io.html",
+    "url": "https://redis.io",
+    "label": "not_career_page",
+    "category": "unrelated",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:28Z",
+    "note": "provisional:unrelated (verified:false)"
+  },
+  {
+    "file": "0076-vercel-com-pricing.html",
+    "url": "https://vercel.com/pricing",
+    "label": "not_career_page",
+    "category": "unrelated",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:28Z",
+    "note": "provisional:unrelated (verified:false)"
+  },
+  {
+    "file": "0077-news-ycombinator-com.html",
+    "url": "https://news.ycombinator.com",
+    "label": "not_career_page",
+    "category": "unrelated",
+    "verified": false,
+    "fetched_at": "2026-07-11T14:08:29Z",
+    "note": "provisional:unrelated (verified:false)"
   }
 ]
