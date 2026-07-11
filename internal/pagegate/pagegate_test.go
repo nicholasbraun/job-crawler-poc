@@ -96,6 +96,33 @@ func TestCareerPage(t *testing.T) {
 			wantCertain: true,
 		},
 		{
+			// A labeled sub-page beneath a career section (e.g. /karriere/arbeiten-bei-uns)
+			// is NOT a hub root: the career signal is not the last path segment, so it is
+			// accepted only as uncertain and left to the LLM, never certain-accepted.
+			name: "career sub-page is accepted but uncertain, not certain",
+			url:  "https://acme.com/karriere/arbeiten-bei-uns",
+			content: &crawler.Content{
+				Title: "Arbeiten bei Acme",
+				URLs:  []string{"/about", "/contact"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// A bare career-hub root nested under other segments still certain-accepts:
+			// the career signal is the terminal segment.
+			name: "nested career-hub root is still certain",
+			url:  "https://acme.com/about/careers",
+			content: &crawler.Content{
+				Title: "Careers",
+				URLs:  []string{"/about", "/contact"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		{
 			name: "self-hosted single posting that lists no other jobs is rejected",
 			url:  "https://acme.com/careers/senior-go",
 			content: &crawler.Content{

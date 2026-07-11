@@ -39,7 +39,8 @@ var careerKeywords = []string{
 // career-page pool skip the LLM classifier. A known aggregator/board host is
 // rejected outright (never a single-company hub). On a recognized ATS host the
 // decision is purely structural. On any other host a strong-negative reject
-// path rejects without the LLM; a bare career-hub path accepts as certain; an
+// path rejects without the LLM; a bare career-hub root path (the career signal is
+// the last path segment) accepts as certain; a deeper career sub-page or an
 // otherwise career-signalled non-posting (or a page that links to postings) is
 // accepted but left to the LLM to confirm.
 func CareerPage(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConfig) (accept, certain bool) {
@@ -60,7 +61,7 @@ func CareerPage(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConf
 			return false, false
 		}
 		isPosting := isJobPostingPath(u.RawURL)
-		if !isPosting && pathHasSegment(u.RawURL, cfg.CareerPathSignals) {
+		if !isPosting && careerHubRoot(u.RawURL, cfg.CareerPathSignals) {
 			return true, true
 		}
 		careerish := containsAny(u.RawURL, careerKeywords) || containsAny(content.Title, careerKeywords)
@@ -125,6 +126,33 @@ func isJobPostingPath(rawURL string) bool {
 			if strings.EqualFold(s, kw) && i+1 < len(segs) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// careerHubRoot reports whether rawURL's LAST non-empty path segment equals
+// (case-insensitively) one of signals -- i.e. the URL is a bare career-section
+// root ("/careers", "/about/careers", "/ministerium/karriere"), not a labeled
+// sub-page beneath it ("/careers/how-we-hire", "/karriere/arbeiten-bei-uns").
+// Only a hub root is structurally certain enough to catalog without the LLM; a
+// deeper career sub-page is ambiguous -- often a culture, hiring-process, or
+// career-development page that is not itself a jobs hub (#45) -- so the gate
+// leaves it to the LLM. This is strictly narrower than pathHasSegment (the
+// signal must be terminal, not merely present), so it can only shrink the
+// certain-accept set, never grow it.
+func careerHubRoot(rawURL string, signals []string) bool {
+	if len(signals) == 0 {
+		return false
+	}
+	segs := pathSegmentsOf(rawURL)
+	if len(segs) == 0 {
+		return false
+	}
+	last := segs[len(segs)-1]
+	for _, want := range signals {
+		if strings.EqualFold(last, want) {
+			return true
 		}
 	}
 	return false
