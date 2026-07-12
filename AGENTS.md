@@ -83,6 +83,7 @@ skills; the session breaks in the feature/fix lane are deliberate human gates.
 ### Feature / fix lane (non-trivial work — spans several sessions)
 
 Session 1 — align & specify:
+
 1. `/grilling` — reach a shared understanding of what to build before any code.
 2. `/domain-modeling` — record any new decisions and terms the grilling surfaced:
    ADRs to `docs/adr/NNNN-slug.md`, domain language to `CONTEXT.md`.
@@ -91,10 +92,12 @@ Session 1 — align & specify:
 
 Session 2 — deliver (fresh session; hand it the spec issue number):
 
-5. `/deliver <spec#>` — create the `feat/…` or `fix/…` branch, orchestrate the
-   sub-issues (parallel by dependency: a sub-issue runs once its blockers are
-   done), and open the PR that closes the spec and its sub-issues. Stops at the
-   PR; it does not self-review or merge.
+5. `/deliver <spec#>` — create the `feat/<spec#>_…` or `fix/<spec#>_…` branch, create an ultra workflow
+   that orchestrates sub processes. Each process has the following pipeline:
+   plan agent -> handoff to implementer agent -> 1-3 adversarial review agents -> fix if necessary -> commit.
+   Run them in parallel when possible. In sequence otherwise.
+   Open the PR that closes the spec and its sub-issues.
+   Stops at the PR; it does not self-review or merge.
 
 Session 3 — review (fresh session):
 
@@ -243,17 +246,17 @@ internal/
 
 ## Dependencies
 
-| Package | Purpose |
-|---|---|
-| `github.com/PuerkitoBio/goquery` | HTML parsing with CSS selectors |
-| `github.com/jackc/pgx/v5` | PostgreSQL driver + connection pool |
-| `github.com/pressly/goose/v3` | SQL schema migrations |
-| `github.com/redis/go-redis/v9` | Redis client (per-run frontier state) |
-| `github.com/google/uuid` | UUID generation for run/entity IDs |
-| `github.com/temoto/robotstxt` | robots.txt parsing/matching |
-| `github.com/joho/godotenv` | Load `.env` into the environment |
-| `github.com/prometheus/client_golang`, `go.opentelemetry.io/otel/*` | Metrics + observability |
-| `github.com/testcontainers/testcontainers-go` (+ postgres/redis modules) | Throwaway Postgres/Redis for tests |
+| Package                                                                  | Purpose                               |
+| ------------------------------------------------------------------------ | ------------------------------------- |
+| `github.com/PuerkitoBio/goquery`                                         | HTML parsing with CSS selectors       |
+| `github.com/jackc/pgx/v5`                                                | PostgreSQL driver + connection pool   |
+| `github.com/pressly/goose/v3`                                            | SQL schema migrations                 |
+| `github.com/redis/go-redis/v9`                                           | Redis client (per-run frontier state) |
+| `github.com/google/uuid`                                                 | UUID generation for run/entity IDs    |
+| `github.com/temoto/robotstxt`                                            | robots.txt parsing/matching           |
+| `github.com/joho/godotenv`                                               | Load `.env` into the environment      |
+| `github.com/prometheus/client_golang`, `go.opentelemetry.io/otel/*`      | Metrics + observability               |
+| `github.com/testcontainers/testcontainers-go` (+ postgres/redis modules) | Throwaway Postgres/Redis for tests    |
 
 All other functionality (HTTP, logging, testing, concurrency) uses the Go
 standard library.
