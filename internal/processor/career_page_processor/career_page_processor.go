@@ -105,11 +105,15 @@ func (w *CareerPageProcessor) Process(ctx context.Context, raw *crawler.RawCaree
 	}
 
 	// Collapse pagination and posting variants to one canonical Career Page per
-	// Company on a known ATS; self-hosted pages keep their own index URL.
+	// Company on a known ATS; self-hosted pages keep their own index URL. The
+	// final stored URL is then canonicalised (https, no query, no trailing
+	// slash) so http/https, root-slash, and query-string twins fold to one row
+	// under UNIQUE(company_id, url), and fuzzer query strings never persist.
 	careerURL := raw.URL.RawURL
 	if canonical, ok := catalog.CareerPageURL(raw.URL); ok {
 		careerURL = canonical
 	}
+	careerURL = catalog.CanonicalURL(careerURL)
 
 	careerPage := &crawler.CareerPage{
 		CompanyID:        company.ID,
