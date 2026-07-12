@@ -71,6 +71,7 @@ export function QueryState({
 const STATUS_STYLES: Record<RunStatus, string> = {
   running: "bg-emerald-100 text-emerald-700",
   stopping: "bg-amber-100 text-amber-700",
+  pausing: "bg-amber-50 text-amber-600",
   paused: "bg-indigo-100 text-indigo-700",
   stopped: "bg-slate-200 text-slate-600",
   completed: "bg-blue-100 text-blue-700",

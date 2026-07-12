@@ -9,6 +9,50 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/postgres"
 )
 
+// TestPausingStatusRoundTrip drives the `pausing` status through the repository
+// to prove goose migration 0006 widened the crawl_run status CHECK to admit it:
+// a constraint that still rejected `pausing` would surface here as an UpdateStatus
+// error. It then reads the value back via GetStatus and ListByStatus.
+func TestPausingStatusRoundTrip(t *testing.T) {
+	pool := newTestPool(t)
+	runs := postgres.NewCrawlRunRepository(pool)
+	defID := createDefinition(t, pool, "pausing-round-trip-test")
+
+	id := uuid.New()
+	if err := runs.Create(t.Context(), &crawler.CrawlRun{
+		ID:           id,
+		DefinitionID: defID,
+		Status:       crawler.RunStatusRunning,
+		StartedAt:    time.Now(),
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// A non-terminal transition to pausing: nil finishedAt, no error message.
+	if err := runs.UpdateStatus(t.Context(), id, crawler.RunStatusPausing, nil, ""); err != nil {
+		t.Fatalf("UpdateStatus to pausing (CHECK constraint should admit it): %v", err)
+	}
+
+	status, err := runs.GetStatus(t.Context(), id)
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if status != crawler.RunStatusPausing {
+		t.Errorf("GetStatus: got %q, want pausing", status)
+	}
+
+	got, err := runs.ListByStatus(t.Context(), crawler.RunStatusPausing)
+	if err != nil {
+		t.Fatalf("ListByStatus: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ListByStatus(pausing) count: got %d, want 1", len(got))
+	}
+	if got[0].ID != id {
+		t.Errorf("ListByStatus(pausing): got run %s, want %s", got[0].ID, id)
+	}
+}
+
 func TestListByStatus(t *testing.T) {
 	pool := newTestPool(t)
 	runs := postgres.NewCrawlRunRepository(pool)

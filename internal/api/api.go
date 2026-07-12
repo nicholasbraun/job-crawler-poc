@@ -20,6 +20,8 @@ import (
 type Runner interface {
 	Start(ctx context.Context, definitionID uuid.UUID) (*crawler.CrawlRun, error)
 	Stop(ctx context.Context, runID uuid.UUID) error
+	Pause(ctx context.Context, runID uuid.UUID) error
+	Resume(ctx context.Context, runID uuid.UUID) error
 }
 
 // FrontierSizer reports the number of URLs still in a run's frontier (queued
@@ -69,6 +71,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /api/crawls/{id}", h.getCrawl)
 	mux.HandleFunc("GET /api/crawls/{id}/status", h.getCrawlStatus)
 	mux.HandleFunc("POST /api/crawls/{id}/stop", h.stopCrawl)
+	mux.HandleFunc("POST /api/crawls/{id}/pause", h.pauseCrawl)
+	mux.HandleFunc("POST /api/crawls/{id}/resume", h.resumeCrawl)
 
 	// Definitions: a re-runnable library (create is split from start, ADR-0005).
 	mux.HandleFunc("GET /api/definitions", h.listDefinitions)
@@ -363,10 +367,25 @@ func (h *Handler) getCrawlStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// stopCrawl requests a stop of a run: 202 on success, 409 when the run is not
+// stoppable (already terminal), 404 for an unknown id. The existence Get is
+// required for the same reason as pauseCrawl/resumeCrawl: the runner cannot
+// distinguish an unknown id from a non-active run, so without it a 404 for an
+// unknown id would collapse into a 409.
 func (h *Handler) stopCrawl(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid crawl id")
+		return
+	}
+
+	if _, err := h.cfg.Runs.Get(r.Context(), id); err != nil {
+		if errors.Is(err, crawler.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "crawl not found")
+			return
+		}
+		slog.Error("api: error getting crawl before stop", "err", err)
+		writeError(w, http.StatusInternalServerError, "could not stop crawl")
 		return
 	}
 
@@ -377,6 +396,76 @@ func (h *Handler) stopCrawl(w http.ResponseWriter, r *http.Request) {
 		}
 		slog.Error("api: error stopping crawl", "err", err)
 		writeError(w, http.StatusInternalServerError, "could not stop crawl")
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// pauseCrawl requests a pause of a running run: 202 on success, 409 when the run
+// is not the live running run (any other state), 404 for an unknown id. The
+// existence Get is required because the runner's active set cannot distinguish
+// an unknown id from a terminal/paused run — both are simply "not active" — so a
+// 404 for an unknown id would otherwise collapse into a 409.
+func (h *Handler) pauseCrawl(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid crawl id")
+		return
+	}
+
+	if _, err := h.cfg.Runs.Get(r.Context(), id); err != nil {
+		if errors.Is(err, crawler.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "crawl not found")
+			return
+		}
+		slog.Error("api: error getting crawl before pause", "err", err)
+		writeError(w, http.StatusInternalServerError, "could not pause crawl")
+		return
+	}
+
+	if err := h.cfg.Runner.Pause(r.Context(), id); err != nil {
+		if errors.Is(err, runner.ErrRunNotActive) {
+			writeError(w, http.StatusConflict, "crawl is not running")
+			return
+		}
+		slog.Error("api: error pausing crawl", "err", err)
+		writeError(w, http.StatusInternalServerError, "could not pause crawl")
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// resumeCrawl relaunches a paused run: 202 on success, 409 from any other state
+// (running/pausing/stopping/terminal), 404 for an unknown id. The existence Get is
+// required for the same reason as pauseCrawl: the runner returns ErrRunNotPaused
+// for both an unknown id and a non-paused run, so without it a 404 would collapse
+// into a 409.
+func (h *Handler) resumeCrawl(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid crawl id")
+		return
+	}
+
+	if _, err := h.cfg.Runs.Get(r.Context(), id); err != nil {
+		if errors.Is(err, crawler.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "crawl not found")
+			return
+		}
+		slog.Error("api: error getting crawl before resume", "err", err)
+		writeError(w, http.StatusInternalServerError, "could not resume crawl")
+		return
+	}
+
+	if err := h.cfg.Runner.Resume(r.Context(), id); err != nil {
+		if errors.Is(err, runner.ErrRunNotPaused) {
+			writeError(w, http.StatusConflict, "crawl is not paused")
+			return
+		}
+		slog.Error("api: error resuming crawl", "err", err)
+		writeError(w, http.StatusInternalServerError, "could not resume crawl")
 		return
 	}
 
