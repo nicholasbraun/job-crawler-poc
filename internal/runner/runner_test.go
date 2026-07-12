@@ -22,6 +22,10 @@ import (
 type fakeRunRepo struct {
 	mu   sync.Mutex
 	runs map[uuid.UUID]*crawler.CrawlRun
+	// nextUpdateStatusErr, when non-nil, makes the next UpdateStatus call return
+	// it without mutating state, then clears itself — a one-shot injected
+	// status-write failure. Guarded by mu.
+	nextUpdateStatusErr error
 }
 
 func newFakeRunRepo() *fakeRunRepo {
@@ -79,6 +83,11 @@ func (f *fakeRunRepo) GetStatus(ctx context.Context, id uuid.UUID) (crawler.RunS
 func (f *fakeRunRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status crawler.RunStatus, finishedAt *time.Time, errMsg string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.nextUpdateStatusErr != nil {
+		err := f.nextUpdateStatusErr
+		f.nextUpdateStatusErr = nil
+		return err
+	}
 	run := f.runs[id]
 	run.Status = status
 	run.FinishedAt = finishedAt
@@ -97,6 +106,12 @@ func (f *fakeRunRepo) setStatus(id uuid.UUID, status crawler.RunStatus) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.runs[id].Status = status
+}
+
+func (f *fakeRunRepo) failNextUpdateStatus(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextUpdateStatusErr = err
 }
 
 type fakeDefRepo struct {
@@ -950,6 +965,62 @@ func TestPauseParksRunAsPaused(t *testing.T) {
 	defer cleanMu.Unlock()
 	if cleaned[run.ID] {
 		t.Error("paused run's frontier must be preserved for resume, not cleaned")
+	}
+}
+
+// TestPauseUpdateStatusFailureDoesNotLatchPauseRequested verifies that when the
+// status write inside Pause fails, the in-memory pauseRequested flag is NOT
+// latched — so a later Pause (with a working status write) still parks the run.
+// Regression: latching the flag before the write turned any transient write
+// failure into a permanent 409 lockout via Pause's re-entry guard.
+func TestPauseUpdateStatusFailureDoesNotLatchPauseRequested(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   blockingFrontier{},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: shouldStop,
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	r := New(runs, defs, factory)
+
+	run, err := r.Start(t.Context(), defID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// First Pause: the status write fails, so Pause returns the error and must
+	// leave pauseRequested unset and the run still running.
+	wantErr := errors.New("transient status write failure")
+	runs.failNextUpdateStatus(wantErr)
+	if err := r.Pause(t.Context(), run.ID); !errors.Is(err, wantErr) {
+		t.Fatalf("Pause with failing UpdateStatus: got err %v, want %v", err, wantErr)
+	}
+
+	r.mu.Lock()
+	active, ok := r.active[run.ID]
+	latched := ok && active.pauseRequested
+	r.mu.Unlock()
+	if !ok {
+		t.Fatal("run must remain active after a failed pause write")
+	}
+	if latched {
+		t.Fatal("pauseRequested must not be latched after a failed status write")
+	}
+
+	// Second Pause: UpdateStatus now succeeds, so the run must actually park as
+	// paused (status pausing→paused, context cancelled, FinishedAt unset).
+	if err := r.Pause(t.Context(), run.ID); err != nil {
+		t.Fatalf("second Pause: %v", err)
+	}
+	final := waitForStatus(t, runs, run.ID, crawler.RunStatusPaused)
+	if final.FinishedAt != nil {
+		t.Errorf("paused run must not be finished; got FinishedAt=%v", final.FinishedAt)
 	}
 }
 

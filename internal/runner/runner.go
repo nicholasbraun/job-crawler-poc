@@ -353,10 +353,15 @@ func (r *Runner) Pause(ctx context.Context, runID uuid.UUID) error {
 		return ErrRunNotActive
 	}
 
-	active.pauseRequested = true
+	// Write the durable desired state first. Only after it succeeds do we latch
+	// the in-memory pause flag and cancel the run: if the status write fails
+	// (transient DB error, or ctx cancelling because the client disconnected),
+	// pauseRequested must stay false so the re-entry guard above does not
+	// permanently lock this running run out of a retried Pause.
 	if err := r.runs.UpdateStatus(ctx, runID, crawler.RunStatusPausing, nil, ""); err != nil {
 		return err
 	}
+	active.pauseRequested = true
 	active.cancel()
 
 	return nil
