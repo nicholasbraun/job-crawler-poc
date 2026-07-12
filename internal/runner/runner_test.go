@@ -1151,49 +1151,68 @@ func TestStopPrecedenceOverPause(t *testing.T) {
 // re-derives the intent (sets the flag + cancels). This is the analog of
 // TestDesiredStateStopViaWatcher.
 func TestWatcherParksPausingRun(t *testing.T) {
-	defID := uuid.New()
-	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
-	runs := newFakeRunRepo()
+	synctest.Test(t, func(t *testing.T) {
+		defID := uuid.New()
+		defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+		runs := newFakeRunRepo()
 
-	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
-		o := orchestrator.NewOrchestrator(orchestrator.Config{
-			Frontier:   blockingFrontier{},
-			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
-			ShouldStop: func(context.Context) bool { return false },
-		})
-		return &Engine{Orchestrator: o, Close: func() {}}, nil
-	}
+		factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+			o := orchestrator.NewOrchestrator(orchestrator.Config{
+				Frontier:   blockingFrontier{},
+				OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+				ShouldStop: func(context.Context) bool { return false },
+			})
+			return &Engine{Orchestrator: o, Close: func() {}}, nil
+		}
 
-	var cleanMu sync.Mutex
-	cleaned := map[uuid.UUID]bool{}
-	cleaner := func(ctx context.Context, runID uuid.UUID) error {
+		var cleanMu sync.Mutex
+		cleaned := map[uuid.UUID]bool{}
+		cleaner := func(ctx context.Context, runID uuid.UUID) error {
+			cleanMu.Lock()
+			defer cleanMu.Unlock()
+			cleaned[runID] = true
+			return nil
+		}
+
+		r := New(runs, defs, factory, WithFrontierCleaner(cleaner))
+
+		run, err := r.Start(t.Context(), defID)
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+
+		// Let supervise reach steady state: the crawl loop blocked in the frontier's
+		// perpetual Next and the desired-state watcher blocked on its ticker.
+		synctest.Wait()
+
+		// Flip the desired state directly (not via Pause, which also sets the flag and
+		// cancels): only the watcher's status poll can re-derive the park.
+		runs.setStatus(run.ID, crawler.RunStatusPausing)
+
+		// Advance the fake clock past one watcher tick so the watcher observes the
+		// pausing status, re-derives the park (sets the flag + cancels), and supervise
+		// drives the run to paused. synctest.Wait then lets that cascade settle
+		// before asserting.
+		time.Sleep(statusPollInterval)
+		synctest.Wait()
+
+		final, err := runs.Get(t.Context(), run.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if final.Status != crawler.RunStatusPaused {
+			t.Errorf("run status: got %q, want paused", final.Status)
+		}
+		if final.FinishedAt != nil {
+			t.Errorf("paused run must not be finished; got FinishedAt=%v", final.FinishedAt)
+		}
+
 		cleanMu.Lock()
 		defer cleanMu.Unlock()
-		cleaned[runID] = true
-		return nil
-	}
-
-	r := New(runs, defs, factory, WithFrontierCleaner(cleaner))
-
-	run, err := r.Start(t.Context(), defID)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-
-	// Flip the desired state directly (not via Pause, which also sets the flag and
-	// cancels): only the watcher's status poll can re-derive the park.
-	runs.setStatus(run.ID, crawler.RunStatusPausing)
-
-	final := waitForStatus(t, runs, run.ID, crawler.RunStatusPaused)
-	if final.FinishedAt != nil {
-		t.Errorf("paused run must not be finished; got FinishedAt=%v", final.FinishedAt)
-	}
-
-	cleanMu.Lock()
-	defer cleanMu.Unlock()
-	if cleaned[run.ID] {
-		t.Error("paused run's frontier must be preserved, not cleaned")
-	}
+		if cleaned[run.ID] {
+			t.Error("paused run's frontier must be preserved, not cleaned")
+		}
+	})
 }
 
 // TestReconcileRelaunchesPausingReDrivesToPaused verifies acceptance criterion 3
@@ -1201,32 +1220,48 @@ func TestWatcherParksPausingRun(t *testing.T) {
 // run without flipping it to running (#57's behavior), and the watcher then
 // re-drives it to paused — never running, never terminal.
 func TestReconcileRelaunchesPausingReDrivesToPaused(t *testing.T) {
-	defID := uuid.New()
-	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
-	runs := newFakeRunRepo()
+	synctest.Test(t, func(t *testing.T) {
+		defID := uuid.New()
+		defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+		runs := newFakeRunRepo()
 
-	pausingID := uuid.New()
-	runs.Create(t.Context(), &crawler.CrawlRun{ID: pausingID, DefinitionID: defID, Status: crawler.RunStatusPausing})
+		pausingID := uuid.New()
+		runs.Create(t.Context(), &crawler.CrawlRun{ID: pausingID, DefinitionID: defID, Status: crawler.RunStatusPausing})
 
-	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
-		o := orchestrator.NewOrchestrator(orchestrator.Config{
-			Frontier:   blockingFrontier{},
-			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
-			ShouldStop: func(context.Context) bool { return false },
-		})
-		return &Engine{Orchestrator: o, Close: func() {}}, nil
-	}
+		factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+			o := orchestrator.NewOrchestrator(orchestrator.Config{
+				Frontier:   blockingFrontier{},
+				OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+				ShouldStop: func(context.Context) bool { return false },
+			})
+			return &Engine{Orchestrator: o, Close: func() {}}, nil
+		}
 
-	r := New(runs, defs, factory)
+		r := New(runs, defs, factory)
 
-	if err := r.Reconcile(t.Context()); err != nil {
-		t.Fatalf("Reconcile: %v", err)
-	}
+		if err := r.Reconcile(t.Context()); err != nil {
+			t.Fatalf("Reconcile: %v", err)
+		}
 
-	final := waitForStatus(t, runs, pausingID, crawler.RunStatusPaused)
-	if final.FinishedAt != nil {
-		t.Errorf("re-driven paused run must not be finished; got FinishedAt=%v", final.FinishedAt)
-	}
+		// Let the adopted run's supervise reach steady state (loop blocked in Next,
+		// watcher blocked on its ticker), then advance past one watcher tick so the
+		// watcher re-derives the park from the durable pausing status and supervise
+		// drives the run to paused.
+		synctest.Wait()
+		time.Sleep(statusPollInterval)
+		synctest.Wait()
+
+		final, err := runs.Get(t.Context(), pausingID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if final.Status != crawler.RunStatusPaused {
+			t.Errorf("re-driven run status: got %q, want paused", final.Status)
+		}
+		if final.FinishedAt != nil {
+			t.Errorf("re-driven paused run must not be finished; got FinishedAt=%v", final.FinishedAt)
+		}
+	})
 }
 
 // TestPauseRejectsNonRunning verifies carry-forward requirement 4 at the runner
