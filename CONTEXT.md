@@ -61,6 +61,14 @@ _Avoid_: job, posting, vacancy, ad
 The durable collection of Companies and Career Pages that Discovery fills and Keyword Crawls consume.
 _Avoid_: index, database
 
+**Aggregator**:
+A multi-company job board, VC-portfolio board, or professional network — never a single Company's Career Page. Rejected at the Gate by host: it is structurally indistinguishable from a legitimate multi-tenant ATS (both serve many companies under `/{slug}` paths), so only a curated host list can tell them apart.
+_Avoid_: job board, directory, portal
+
+**Catalog Doctor**:
+An idempotent maintenance pass that replays the current URL-structural rules over the already-stored Catalog, hard-deleting or re-attributing rows the rules now reject. It corrects only URL-decidable errors — the Catalog stores no page content, so it cannot re-judge a page the way the Gate and LLM first did.
+_Avoid_: cleanup, migration, backfill
+
 ### Crawl mechanics
 
 **Frontier**:
@@ -80,6 +88,10 @@ _Avoid_: filter, pre-check, heuristic
 **Certain / Uncertain**:
 The Gate's confidence in an accept. A *certain* accept is structurally definitive (an ATS board root, a career-path URL) and is catalogued with no LLM call; an *uncertain* accept is forwarded to the LLM to confirm.
 _Avoid_: sure/maybe, confident, definite
+
+**Terminal-Hub Word**:
+The last path segment of a deep career URL that keeps it a Career Page rather than a Job Listing — an openings-index token (`open-positions`, `opportunities`, `vacancies`) as opposed to a role slug. It is what separates `/careers/open-positions` (a hub) from `/careers/senior-engineer` (a single posting) when the Gate would otherwise reject both as postings.
+_Avoid_: listing keyword, hub keyword
 
 **Leak**:
 A real Career Page the Gate rejects. Irrecoverable — the LLM never gets to save it — so it is a hard failure the benchmark targets at zero.
