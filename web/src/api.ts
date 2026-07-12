@@ -20,6 +20,13 @@ export function isActive(status: RunStatus): boolean {
   );
 }
 
+// A run is terminal once it has stopped for good: it holds no live Frontier and is
+// not worth polling. A paused run is NOT terminal — it keeps a preserved Frontier,
+// so it is still polled for its remaining size until a human Resumes or Stops it.
+export function isTerminal(status: RunStatus): boolean {
+  return status === "stopped" || status === "completed" || status === "failed";
+}
+
 export type Run = {
   id: string;
   definitionId: string;
@@ -130,6 +137,10 @@ export function stopCrawl(id: string): Promise<void> {
 
 export function pauseCrawl(id: string): Promise<void> {
   return request<void>(`/crawls/${id}/pause`, { method: "POST" });
+}
+
+export function resumeCrawl(id: string): Promise<void> {
+  return request<void>(`/crawls/${id}/resume`, { method: "POST" });
 }
 
 // --- Definitions ---

@@ -2,9 +2,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getRunStatus,
   isActive,
+  isTerminal,
   listCrawls,
   listDefinitions,
   pauseCrawl,
+  resumeCrawl,
   stopCrawl,
   type Definition,
   type Run,
@@ -42,6 +44,11 @@ export function RunsPage() {
 
   const pause = useMutation({
     mutationFn: pauseCrawl,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: CRAWLS_KEY }),
+  });
+
+  const resume = useMutation({
+    mutationFn: resumeCrawl,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: CRAWLS_KEY }),
   });
 
@@ -87,6 +94,8 @@ export function RunsPage() {
                     stopping={stop.isPending}
                     onPause={() => pause.mutate(run.id)}
                     pausing={pause.isPending}
+                    onResume={() => resume.mutate(run.id)}
+                    resuming={resume.isPending}
                   />
                 ))}
               </tbody>
@@ -105,6 +114,8 @@ function RunRow({
   stopping,
   onPause,
   pausing,
+  onResume,
+  resuming,
 }: {
   run: Run;
   definition?: Definition;
@@ -112,18 +123,24 @@ function RunRow({
   stopping: boolean;
   onPause: () => void;
   pausing: boolean;
+  onResume: () => void;
+  resuming: boolean;
 }) {
   const active = isActive(run.status);
+  // A paused run keeps a preserved Frontier, so poll it too; only terminal runs
+  // have no live Frontier worth showing.
+  const polling = !isTerminal(run.status);
 
   // Only failed runs carry a diagnostic message worth surfacing.
   const failure = run.status === "failed" && run.error ? run.error : null;
 
-  // Only active runs have a live frontier; polling stops once terminal.
+  // Non-terminal runs (including paused) have a live/preserved frontier; polling
+  // stops once terminal.
   const status = useQuery({
     queryKey: ["run-status", run.id],
     queryFn: () => getRunStatus(run.id),
     refetchInterval: 1500,
-    enabled: active,
+    enabled: polling,
   });
 
   return (
@@ -149,7 +166,7 @@ function RunRow({
       <td className="px-3 py-2 text-right tabular-nums">{run.pagesCrawled}</td>
       <td className="px-3 py-2 text-right tabular-nums">{run.listingsFound}</td>
       <td className="px-3 py-2 text-right tabular-nums text-slate-600">
-        {active ? (status.data?.frontierSize ?? "…") : "—"}
+        {polling ? (status.data?.frontierSize ?? "…") : "—"}
       </td>
       <td className="px-3 py-2 text-slate-500">{formatTime(run.startedAt)}</td>
       <td className="px-3 py-2">
@@ -162,6 +179,11 @@ function RunRow({
           {run.status === "pausing" && (
             <Button variant="secondary" disabled>
               Pausing…
+            </Button>
+          )}
+          {run.status === "paused" && (
+            <Button variant="primary" onClick={onResume} disabled={resuming}>
+              Resume
             </Button>
           )}
           {active && (

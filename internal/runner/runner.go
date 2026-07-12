@@ -10,7 +10,10 @@
 // by cmd/server), which keeps the runner testable and independent of the
 // concrete downloader/parser/pool stack. Concurrent runs are isolated: each has
 // its own engine, worker pools, per-run Redis frontier namespace, and counters —
-// the only shared state is the active map, guarded by a mutex.
+// the only shared state is the active map, guarded by a mutex. A human-paused run
+// is relaunched on demand by Resume — a live, per-run reconcile that flips the run
+// back to running and rebuilds its engine through the same Factory, seeded from the
+// persisted counters and re-attached to the preserved frontier by run id.
 package runner
 
 import (
@@ -35,6 +38,12 @@ var ErrRunNotActive = errors.New("runner: run not active")
 // intake path is closed so a new run cannot be launched into a WaitGroup that
 // is already being waited on.
 var ErrShuttingDown = errors.New("runner: shutting down")
+
+// ErrRunNotPaused is returned by Resume when the target run's durable status is
+// not paused — it is running, pausing, stopping, terminal, or already being
+// resumed/adopted (present in the active set, so a concurrent Resume or a residual
+// Reconcile won the race). The API maps it to 409.
+var ErrRunNotPaused = errors.New("runner: run not paused")
 
 // counterFlushInterval is how often live counters are flushed to the run row
 // so the dashboard sees progress while a crawl is in flight.
@@ -220,18 +229,7 @@ func (r *Runner) launch(run *crawler.CrawlRun, def *crawler.CrawlDefinition, cou
 	engine, err := r.factory(runCtx, run.ID, *def, counters, shouldStop)
 	if err != nil {
 		cancel()
-		finishedAt := time.Now()
-		if uerr := r.runs.UpdateStatus(context.Background(), run.ID, crawler.RunStatusFailed, &finishedAt, err.Error()); uerr != nil {
-			slog.Error("runner: error marking run failed after factory error", "err", uerr, "run_id", run.ID)
-		}
-		// The factory may already have created the run's Redis frontier keys
-		// before failing; this run never reaches supervise, so clean them up
-		// here or they leak with no owner (see #24).
-		if r.frontierCleaner != nil {
-			if cerr := r.frontierCleaner(context.Background(), run.ID); cerr != nil {
-				slog.Error("runner: error cleaning up frontier after factory error", "err", cerr, "run_id", run.ID)
-			}
-		}
+		r.markFailedAndClean(run.ID, err)
 		return err
 	}
 
@@ -244,6 +242,24 @@ func (r *Runner) launch(run *crawler.CrawlRun, def *crawler.CrawlDefinition, cou
 	go r.supervise(runCtx, cancel, run.ID, ar, engine, counters)
 
 	return nil
+}
+
+// markFailedAndClean records a run as terminally failed and drops its transient
+// frontier state. It is the shared cleanup for a factory error on a run that never
+// reached supervise: the factory may already have created the run's Redis frontier
+// keys before failing, so they must be cleaned here or they leak with no owner
+// (see #24). Terminal DB writes use context.Background because the failure often
+// coincides with a cancelled request/run context.
+func (r *Runner) markFailedAndClean(runID uuid.UUID, cause error) {
+	finishedAt := time.Now()
+	if uerr := r.runs.UpdateStatus(context.Background(), runID, crawler.RunStatusFailed, &finishedAt, cause.Error()); uerr != nil {
+		slog.Error("runner: error marking run failed after factory error", "err", uerr, "run_id", runID)
+	}
+	if r.frontierCleaner != nil {
+		if cerr := r.frontierCleaner(context.Background(), runID); cerr != nil {
+			slog.Error("runner: error cleaning up frontier after factory error", "err", cerr, "run_id", runID)
+		}
+	}
 }
 
 // Stop requests a desired-state stop: it writes status=stopping (the source of
@@ -295,6 +311,101 @@ func (r *Runner) Pause(ctx context.Context, runID uuid.UUID) error {
 		return err
 	}
 	active.cancel()
+
+	return nil
+}
+
+// Resume relaunches a human-paused run from exactly where it left off: it verifies
+// the run's durable status is paused, flips it to running, and rebuilds the engine
+// through the same Factory used by Start and Reconcile — seeded from the run's
+// persisted counters (so counters continue rather than reset) and re-attached to
+// the preserved frontier by run id. The frontier is deliberately NOT cleaned.
+//
+// Resume is a live, per-run reconcile and must be race-safe: the run's active-set
+// slot is the mutual-exclusion mechanism. Under a single r.mu critical section it
+// rejects a run already in the active set (a concurrent Resume or a residual
+// boot-time Reconcile won), verifies the durable status is paused (read under the
+// same lock so it is atomic against a racing flip), flips it to running, and
+// reserves the slot — only then, outside the lock, is the Factory invoked exactly
+// once. It cannot reuse launch, which invokes the Factory before reserving the slot
+// and would let two concurrent Resumes each build an engine against one frontier.
+//
+// Returns ErrRunNotPaused when the run is not paused (running/pausing/stopping/
+// terminal, or already being resumed), ErrShuttingDown during a drain, or the
+// repository's error for an unknown id.
+func (r *Runner) Resume(ctx context.Context, runID uuid.UUID) error {
+	// Load the run (for its persisted counters) and definition before taking the
+	// lock, so only the cheap reserve-and-flip happens under r.mu. An unknown id
+	// surfaces the repository error here, before any state is touched.
+	run, err := r.runs.Get(ctx, runID)
+	if err != nil {
+		return err
+	}
+	def, err := r.defs.Get(ctx, run.DefinitionID)
+	if err != nil {
+		return err
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	shouldStop := r.newStopPoller(runID)
+	ar := &activeRun{cancel: cancel}
+
+	r.mu.Lock()
+	// Never wg.Add after Shutdown began waiting on it (see #14); the lock also
+	// serializes this reservation against Shutdown's cancel-all loop.
+	if r.draining {
+		r.mu.Unlock()
+		cancel()
+		return ErrShuttingDown
+	}
+	// The slot is the true mutual exclusion: if the run is already active a
+	// concurrent Resume or a residual Reconcile is already driving it.
+	if _, exists := r.active[runID]; exists {
+		r.mu.Unlock()
+		cancel()
+		return ErrRunNotPaused
+	}
+	// Read the durable status under the lock so the paused→running flip is atomic
+	// against a racing transition.
+	status, err := r.runs.GetStatus(ctx, runID)
+	if err != nil {
+		r.mu.Unlock()
+		cancel()
+		return err
+	}
+	if status != crawler.RunStatusPaused {
+		r.mu.Unlock()
+		cancel()
+		return ErrRunNotPaused
+	}
+	if err := r.runs.UpdateStatus(ctx, runID, crawler.RunStatusRunning, nil, ""); err != nil {
+		r.mu.Unlock()
+		cancel()
+		return err
+	}
+	r.active[runID] = ar
+	r.wg.Add(1)
+	r.mu.Unlock()
+
+	// Heavy per-run I/O (rebuilding the engine, re-attaching Redis state) runs
+	// outside the lock. The reservation above guarantees this factory call is the
+	// only one for this run.
+	counters := countersFrom(run.Counters)
+	engine, err := r.factory(runCtx, runID, *def, counters, shouldStop)
+	if err != nil {
+		cancel()
+		// Unwind the reservation made above before recording the failure (unlike
+		// launch, which had not yet reserved when its factory failed): a leaked
+		// wg count hangs Shutdown, a stranded active entry blocks a later Resume.
+		r.mu.Lock()
+		delete(r.active, runID)
+		r.wg.Done()
+		r.mu.Unlock()
+		r.markFailedAndClean(runID, err)
+		return err
+	}
+
+	go r.supervise(runCtx, cancel, runID, ar, engine, counters)
 
 	return nil
 }

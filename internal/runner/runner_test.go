@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -1195,6 +1196,220 @@ func TestPauseRejectsNonRunning(t *testing.T) {
 	}
 
 	r.Shutdown(t.Context())
+}
+
+// TestResumeContinuesFromCounters verifies acceptance criterion 1 / carry-forward
+// requirement 3: resuming a paused run relaunches it seeded from its persisted
+// counters (not reset to zero) through the same engine factory, and it proceeds
+// to completion. doneFrontier drains immediately, so the resumed run runs to
+// completed with FinishedAt set and its frontier cleaned on terminal completion.
+func TestResumeContinuesFromCounters(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	pausedID := uuid.New()
+	runs.Create(t.Context(), &crawler.CrawlRun{ID: pausedID, DefinitionID: defID, Status: crawler.RunStatusPaused, Counters: crawler.RunCounters{PagesCrawled: 7}})
+
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   doneFrontier{},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: shouldStop,
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	var cleanMu sync.Mutex
+	cleaned := map[uuid.UUID]bool{}
+	cleaner := func(ctx context.Context, runID uuid.UUID) error {
+		cleanMu.Lock()
+		defer cleanMu.Unlock()
+		cleaned[runID] = true
+		return nil
+	}
+
+	r := New(runs, defs, factory, WithFrontierCleaner(cleaner))
+
+	if err := r.Resume(t.Context(), pausedID); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	final := waitForFinish(t, runs, pausedID)
+	if final.Status != crawler.RunStatusCompleted {
+		t.Errorf("resumed run: got %q, want completed", final.Status)
+	}
+	if final.FinishedAt == nil {
+		t.Error("resumed run should have FinishedAt set once completed")
+	}
+	if final.Counters.PagesCrawled != 7 {
+		t.Errorf("resumed counters: got %d pages, want 7 (seeded from persisted, not reset)", final.Counters.PagesCrawled)
+	}
+
+	// A terminated run's frontier is cleaned. Cleanup fires just after the
+	// terminal status write, outside the lock, so poll for it.
+	waitFor(t, func() bool {
+		cleanMu.Lock()
+		defer cleanMu.Unlock()
+		return cleaned[pausedID]
+	}, "frontier cleaner to run for the completed run")
+}
+
+// TestConcurrentResumeLaunchesOneEngine verifies the hard race-safety requirement
+// (carry-forward 1): two concurrent Resume calls on the same paused run reserve
+// the run's active-set slot inside one critical section, so the factory is invoked
+// exactly once — one call wins (nil), the other loses (ErrRunNotPaused) — and the
+// run ends up running against a single engine.
+func TestConcurrentResumeLaunchesOneEngine(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	pausedID := uuid.New()
+	runs.Create(t.Context(), &crawler.CrawlRun{ID: pausedID, DefinitionID: defID, Status: crawler.RunStatusPaused})
+
+	var factoryCount atomic.Int64
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		factoryCount.Add(1)
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   blockingFrontier{},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: func(context.Context) bool { return false },
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	r := New(runs, defs, factory)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			errs[idx] = r.Resume(t.Context(), pausedID)
+		}(i)
+	}
+	wg.Wait()
+
+	if got := factoryCount.Load(); got != 1 {
+		t.Errorf("factory invocations: got %d, want exactly 1 (one engine per frontier)", got)
+	}
+
+	nils, notPaused := 0, 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			nils++
+		case errors.Is(err, ErrRunNotPaused):
+			notPaused++
+		default:
+			t.Errorf("unexpected Resume error: %v", err)
+		}
+	}
+	if nils != 1 || notPaused != 1 {
+		t.Errorf("Resume outcomes: got %d nil / %d ErrRunNotPaused, want 1 / 1", nils, notPaused)
+	}
+
+	got, err := runs.Get(t.Context(), pausedID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != crawler.RunStatusRunning {
+		t.Errorf("resumed run status: got %q, want running", got.Status)
+	}
+
+	// Drain the surviving engine's blocking goroutine.
+	r.Shutdown(t.Context())
+}
+
+// TestResumeRejectsNonPaused verifies acceptance criterion 3 / carry-forward
+// requirement 2 at the runner seam: Resume on a run that is not paused returns
+// ErrRunNotPaused and never invokes the factory. It covers a durable non-paused
+// run absent from the active set (running, completed) and a live running run
+// present in the active set (rejected via the in-active-set guard).
+func TestResumeRejectsNonPaused(t *testing.T) {
+	t.Run("durable running run is rejected without relaunch", func(t *testing.T) {
+		defID := uuid.New()
+		defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+		runs := newFakeRunRepo()
+		id := uuid.New()
+		runs.Create(t.Context(), &crawler.CrawlRun{ID: id, DefinitionID: defID, Status: crawler.RunStatusRunning})
+
+		var factoryCount atomic.Int64
+		factory := func(context.Context, uuid.UUID, crawler.CrawlDefinition, *Counters, func(context.Context) bool) (*Engine, error) {
+			factoryCount.Add(1)
+			return nil, errors.New("factory must not be called")
+		}
+		r := New(runs, defs, factory)
+
+		if err := r.Resume(t.Context(), id); !errors.Is(err, ErrRunNotPaused) {
+			t.Errorf("Resume on running run: got %v, want ErrRunNotPaused", err)
+		}
+		if factoryCount.Load() != 0 {
+			t.Error("factory must not be invoked for a non-paused run")
+		}
+		got, _ := runs.Get(t.Context(), id)
+		if got.Status != crawler.RunStatusRunning {
+			t.Errorf("status must be unchanged: got %q, want running", got.Status)
+		}
+	})
+
+	t.Run("terminal completed run is rejected", func(t *testing.T) {
+		defID := uuid.New()
+		defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+		runs := newFakeRunRepo()
+		id := uuid.New()
+		finished := time.Now()
+		runs.Create(t.Context(), &crawler.CrawlRun{ID: id, DefinitionID: defID, Status: crawler.RunStatusCompleted, FinishedAt: &finished})
+
+		var factoryCount atomic.Int64
+		factory := func(context.Context, uuid.UUID, crawler.CrawlDefinition, *Counters, func(context.Context) bool) (*Engine, error) {
+			factoryCount.Add(1)
+			return nil, errors.New("factory must not be called")
+		}
+		r := New(runs, defs, factory)
+
+		if err := r.Resume(t.Context(), id); !errors.Is(err, ErrRunNotPaused) {
+			t.Errorf("Resume on completed run: got %v, want ErrRunNotPaused", err)
+		}
+		if factoryCount.Load() != 0 {
+			t.Error("factory must not be invoked for a terminal run")
+		}
+	})
+
+	t.Run("live running run in the active set is rejected", func(t *testing.T) {
+		defID := uuid.New()
+		defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+		runs := newFakeRunRepo()
+
+		var factoryCount atomic.Int64
+		factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+			factoryCount.Add(1)
+			o := orchestrator.NewOrchestrator(orchestrator.Config{
+				Frontier:   blockingFrontier{},
+				OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+				ShouldStop: func(context.Context) bool { return false },
+			})
+			return &Engine{Orchestrator: o, Close: func() {}}, nil
+		}
+		r := New(runs, defs, factory)
+
+		run, err := r.Start(t.Context(), defID)
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		startCount := factoryCount.Load()
+
+		if err := r.Resume(t.Context(), run.ID); !errors.Is(err, ErrRunNotPaused) {
+			t.Errorf("Resume on live running run: got %v, want ErrRunNotPaused", err)
+		}
+		if factoryCount.Load() != startCount {
+			t.Error("Resume must not invoke the factory for a run already in the active set")
+		}
+
+		r.Shutdown(t.Context())
+	})
 }
 
 // waitForStatus polls until the run reaches want (regardless of FinishedAt) or
