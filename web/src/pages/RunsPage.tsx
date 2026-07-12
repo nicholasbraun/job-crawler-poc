@@ -4,6 +4,7 @@ import {
   isActive,
   listCrawls,
   listDefinitions,
+  pauseCrawl,
   stopCrawl,
   type Definition,
   type Run,
@@ -36,6 +37,11 @@ export function RunsPage() {
 
   const stop = useMutation({
     mutationFn: stopCrawl,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: CRAWLS_KEY }),
+  });
+
+  const pause = useMutation({
+    mutationFn: pauseCrawl,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: CRAWLS_KEY }),
   });
 
@@ -79,6 +85,8 @@ export function RunsPage() {
                     definition={defsById.get(run.definitionId)}
                     onStop={() => stop.mutate(run.id)}
                     stopping={stop.isPending}
+                    onPause={() => pause.mutate(run.id)}
+                    pausing={pause.isPending}
                   />
                 ))}
               </tbody>
@@ -95,11 +103,15 @@ function RunRow({
   definition,
   onStop,
   stopping,
+  onPause,
+  pausing,
 }: {
   run: Run;
   definition?: Definition;
   onStop: () => void;
   stopping: boolean;
+  onPause: () => void;
+  pausing: boolean;
 }) {
   const active = isActive(run.status);
 
@@ -140,16 +152,28 @@ function RunRow({
         {active ? (status.data?.frontierSize ?? "…") : "—"}
       </td>
       <td className="px-3 py-2 text-slate-500">{formatTime(run.startedAt)}</td>
-      <td className="px-3 py-2 text-right">
-        {active && (
-          <Button
-            variant="danger"
-            onClick={onStop}
-            disabled={stopping || run.status === "stopping"}
-          >
-            Stop
-          </Button>
-        )}
+      <td className="px-3 py-2">
+        <div className="flex justify-end gap-2">
+          {run.status === "running" && (
+            <Button variant="secondary" onClick={onPause} disabled={pausing}>
+              Pause
+            </Button>
+          )}
+          {run.status === "pausing" && (
+            <Button variant="secondary" disabled>
+              Pausing…
+            </Button>
+          )}
+          {active && (
+            <Button
+              variant="danger"
+              onClick={onStop}
+              disabled={stopping || run.status === "stopping"}
+            >
+              Stop
+            </Button>
+          )}
+        </div>
       </td>
     </tr>
   );

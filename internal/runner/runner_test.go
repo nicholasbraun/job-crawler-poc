@@ -423,7 +423,8 @@ func TestReconcileSkipsPausedAdoptsPausing(t *testing.T) {
 
 	// The adopted pausing run keeps its pausing status: reconcile does not flip it
 	// to running, so a later watcher can re-derive the park. Asserted before the
-	// final Shutdown (which leaves it running via Option C).
+	// watcher's first 1s tick (which parks the adopted run as paused) and before
+	// the final Shutdown.
 	pausing, err := runs.Get(t.Context(), pausingID)
 	if err != nil {
 		t.Fatalf("Get pausing: %v", err)
@@ -896,6 +897,324 @@ func TestFactoryErrorCleansFrontier(t *testing.T) {
 	if !cleaned[failed[0].ID] {
 		t.Errorf("frontier cleaner was not invoked for the failed run %s", failed[0].ID)
 	}
+}
+
+// TestPauseParksRunAsPaused verifies acceptance criterion 1: pausing a running
+// run drives it running → pausing → paused with FinishedAt unset and its
+// Frontier preserved (the cleaner is not invoked). blockingFrontier's perpetual
+// Next models both a Discovery (perpetual) and a mid-flight Keyword run, so this
+// also covers criterion 4 (pause works for both crawl kinds).
+func TestPauseParksRunAsPaused(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   blockingFrontier{},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: shouldStop,
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	var cleanMu sync.Mutex
+	cleaned := map[uuid.UUID]bool{}
+	cleaner := func(ctx context.Context, runID uuid.UUID) error {
+		cleanMu.Lock()
+		defer cleanMu.Unlock()
+		cleaned[runID] = true
+		return nil
+	}
+
+	r := New(runs, defs, factory, WithFrontierCleaner(cleaner))
+
+	run, err := r.Start(t.Context(), defID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := r.Pause(t.Context(), run.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	// The run parks as paused; FinishedAt stays nil (paused is non-terminal), so
+	// poll on the status rather than waitForFinish.
+	final := waitForStatus(t, runs, run.ID, crawler.RunStatusPaused)
+	if final.FinishedAt != nil {
+		t.Errorf("paused run must not be finished; got FinishedAt=%v", final.FinishedAt)
+	}
+
+	cleanMu.Lock()
+	defer cleanMu.Unlock()
+	if cleaned[run.ID] {
+		t.Error("paused run's frontier must be preserved for resume, not cleaned")
+	}
+}
+
+// TestPausePrecedenceOverShutdown verifies carry-forward requirement 1: when a
+// pause races a graceful shutdown, the pause wins. Even though Shutdown latches
+// draining and cancels the run, the run must park as paused (not left running by
+// the Option-C shutdown branch), with FinishedAt unset and its Frontier
+// preserved — because pauseRequested is set before Shutdown's cancel and the
+// paused-park branch is evaluated before the shutdown-drain branch.
+func TestPausePrecedenceOverShutdown(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   blockingFrontier{},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: shouldStop,
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	var cleanMu sync.Mutex
+	cleaned := map[uuid.UUID]bool{}
+	cleaner := func(ctx context.Context, runID uuid.UUID) error {
+		cleanMu.Lock()
+		defer cleanMu.Unlock()
+		cleaned[runID] = true
+		return nil
+	}
+
+	r := New(runs, defs, factory, WithFrontierCleaner(cleaner))
+
+	run, err := r.Start(t.Context(), defID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := r.Pause(t.Context(), run.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	// Shutdown latches draining and cancels; the pause must still win.
+	r.Shutdown(t.Context())
+
+	got, err := runs.Get(t.Context(), run.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != crawler.RunStatusPaused {
+		t.Errorf("run status: got %q, want paused (pause wins over shutdown drain)", got.Status)
+	}
+	if got.FinishedAt != nil {
+		t.Errorf("paused run must not be finished; got FinishedAt=%v", got.FinishedAt)
+	}
+
+	cleanMu.Lock()
+	defer cleanMu.Unlock()
+	if cleaned[run.ID] {
+		t.Error("paused run's frontier must be preserved, not cleaned")
+	}
+}
+
+// TestStopPrecedenceOverPause verifies carry-forward requirement 1's converse:
+// an explicit Stop issued on a pausing run still terminates it as stopped with
+// its Frontier cleaned. The paused-park branch's `&& !ar.stopRequested` guard
+// lets the Stop win over a concurrent pause. hangFrontier ignores context
+// cancellation until released, so the run is still in flight when both Pause and
+// Stop have been issued.
+func TestStopPrecedenceOverPause(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	release := make(chan struct{})
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   hangFrontier{release: release},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: func(context.Context) bool { return false },
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	var cleanMu sync.Mutex
+	cleaned := map[uuid.UUID]bool{}
+	cleaner := func(ctx context.Context, runID uuid.UUID) error {
+		cleanMu.Lock()
+		defer cleanMu.Unlock()
+		cleaned[runID] = true
+		return nil
+	}
+
+	r := New(runs, defs, factory, WithFrontierCleaner(cleaner))
+
+	run, err := r.Start(t.Context(), defID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Pause first (sets pauseRequested, cancels — the run is still blocked in the
+	// hang frontier), then Stop (sets stopRequested). Only now release Next so the
+	// loop unwinds and supervise makes its fate decision.
+	if err := r.Pause(t.Context(), run.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if err := r.Stop(t.Context(), run.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	close(release)
+
+	final := waitForFinish(t, runs, run.ID)
+	if final.Status != crawler.RunStatusStopped {
+		t.Errorf("run status: got %q, want stopped (explicit Stop wins over pause)", final.Status)
+	}
+
+	waitFor(t, func() bool {
+		cleanMu.Lock()
+		defer cleanMu.Unlock()
+		return cleaned[run.ID]
+	}, "frontier cleaner to run for the stopped run")
+}
+
+// TestWatcherParksPausingRun verifies acceptance criterion 2 / carry-forward
+// requirement 2 (the crash-mid-pause recovery path): a run whose durable status
+// is flipped directly to pausing — with no in-memory pause flag, as after a
+// crash-and-relaunch — is parked as paused by the desired-state watcher, which
+// re-derives the intent (sets the flag + cancels). This is the analog of
+// TestDesiredStateStopViaWatcher.
+func TestWatcherParksPausingRun(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   blockingFrontier{},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: func(context.Context) bool { return false },
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	var cleanMu sync.Mutex
+	cleaned := map[uuid.UUID]bool{}
+	cleaner := func(ctx context.Context, runID uuid.UUID) error {
+		cleanMu.Lock()
+		defer cleanMu.Unlock()
+		cleaned[runID] = true
+		return nil
+	}
+
+	r := New(runs, defs, factory, WithFrontierCleaner(cleaner))
+
+	run, err := r.Start(t.Context(), defID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Flip the desired state directly (not via Pause, which also sets the flag and
+	// cancels): only the watcher's status poll can re-derive the park.
+	runs.setStatus(run.ID, crawler.RunStatusPausing)
+
+	final := waitForStatus(t, runs, run.ID, crawler.RunStatusPaused)
+	if final.FinishedAt != nil {
+		t.Errorf("paused run must not be finished; got FinishedAt=%v", final.FinishedAt)
+	}
+
+	cleanMu.Lock()
+	defer cleanMu.Unlock()
+	if cleaned[run.ID] {
+		t.Error("paused run's frontier must be preserved, not cleaned")
+	}
+}
+
+// TestReconcileRelaunchesPausingReDrivesToPaused verifies acceptance criterion 3
+// / carry-forward requirement 3: boot-time reconcile adopts a durable pausing
+// run without flipping it to running (#57's behavior), and the watcher then
+// re-drives it to paused — never running, never terminal.
+func TestReconcileRelaunchesPausingReDrivesToPaused(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	pausingID := uuid.New()
+	runs.Create(t.Context(), &crawler.CrawlRun{ID: pausingID, DefinitionID: defID, Status: crawler.RunStatusPausing})
+
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   blockingFrontier{},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: func(context.Context) bool { return false },
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	r := New(runs, defs, factory)
+
+	if err := r.Reconcile(t.Context()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	final := waitForStatus(t, runs, pausingID, crawler.RunStatusPaused)
+	if final.FinishedAt != nil {
+		t.Errorf("re-driven paused run must not be finished; got FinishedAt=%v", final.FinishedAt)
+	}
+}
+
+// TestPauseRejectsNonRunning verifies carry-forward requirement 4 at the runner
+// seam: Pause on an unknown (non-active) run returns ErrRunNotActive, as does a
+// redundant Pause on a run already pausing or a run already stopping. The API
+// maps this sentinel to 409.
+func TestPauseRejectsNonRunning(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   blockingFrontier{},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: func(context.Context) bool { return false },
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	r := New(runs, defs, factory)
+
+	if err := r.Pause(t.Context(), uuid.New()); !errors.Is(err, ErrRunNotActive) {
+		t.Errorf("Pause on unknown id: got %v, want ErrRunNotActive", err)
+	}
+
+	run, err := r.Start(t.Context(), defID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := r.Pause(t.Context(), run.ID); err != nil {
+		t.Fatalf("first Pause: %v", err)
+	}
+	// A second Pause on an already-pausing run is redundant and rejected.
+	if err := r.Pause(t.Context(), run.ID); !errors.Is(err, ErrRunNotActive) {
+		t.Errorf("redundant Pause: got %v, want ErrRunNotActive", err)
+	}
+
+	r.Shutdown(t.Context())
+}
+
+// waitForStatus polls until the run reaches want (regardless of FinishedAt) or
+// the test times out. Used for non-terminal parks like paused, where
+// waitForFinish (which keys off FinishedAt) never fires.
+func waitForStatus(t *testing.T, runs *fakeRunRepo, id uuid.UUID, want crawler.RunStatus) *crawler.CrawlRun {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		run, err := runs.Get(t.Context(), id)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if run.Status == want {
+			return run
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("run did not reach status %q before deadline", want)
+	return nil
 }
 
 // waitFor polls cond until it returns true or the test times out.

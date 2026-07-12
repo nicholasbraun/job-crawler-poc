@@ -5,15 +5,19 @@ const BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 export type RunStatus =
   | "running"
   | "stopping"
+  | "pausing"
   | "paused"
   | "stopped"
   | "completed"
   | "failed";
 
 // A run is active while it is still doing work; only active runs are stoppable
-// and worth polling for live status.
+// and worth polling for live status. A pausing run is still draining, so it
+// keeps its per-run frontier poll alive and its row controls rendered.
 export function isActive(status: RunStatus): boolean {
-  return status === "running" || status === "stopping";
+  return (
+    status === "running" || status === "stopping" || status === "pausing"
+  );
 }
 
 export type Run = {
@@ -122,6 +126,10 @@ export function getRunStatus(id: string): Promise<RunStatusSnapshot> {
 
 export function stopCrawl(id: string): Promise<void> {
   return request<void>(`/crawls/${id}/stop`, { method: "POST" });
+}
+
+export function pauseCrawl(id: string): Promise<void> {
+  return request<void>(`/crawls/${id}/pause`, { method: "POST" });
 }
 
 // --- Definitions ---

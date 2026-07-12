@@ -18,8 +18,10 @@ import (
 type fakeRunner struct {
 	started  uuid.UUID
 	stopped  uuid.UUID
+	paused   uuid.UUID
 	startErr error
 	stopErr  error
+	pauseErr error
 	startFn  func(uuid.UUID) *crawler.CrawlRun
 }
 
@@ -37,6 +39,11 @@ func (f *fakeRunner) Start(ctx context.Context, definitionID uuid.UUID) (*crawle
 func (f *fakeRunner) Stop(ctx context.Context, runID uuid.UUID) error {
 	f.stopped = runID
 	return f.stopErr
+}
+
+func (f *fakeRunner) Pause(ctx context.Context, runID uuid.UUID) error {
+	f.paused = runID
+	return f.pauseErr
 }
 
 type fakeDefRepo struct {
@@ -328,6 +335,54 @@ func TestStopCrawlNotActive(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status: got %d, want 409", rec.Code)
 	}
+}
+
+func TestPauseCrawl(t *testing.T) {
+	t.Run("running run pauses and returns 202", func(t *testing.T) {
+		run := &crawler.CrawlRun{ID: uuid.New(), Status: crawler.RunStatusRunning}
+		runs := &fakeRunRepo{runs: []*crawler.CrawlRun{run}}
+		rnr := &fakeRunner{}
+		srv := newHandler(api.Config{Runner: rnr, Runs: runs})
+
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls/"+run.ID.String()+"/pause", nil))
+
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("status: got %d, want 202; body=%s", rec.Code, rec.Body)
+		}
+		if rnr.paused != run.ID {
+			t.Errorf("runner paused %v, want %v", rnr.paused, run.ID)
+		}
+	})
+
+	t.Run("non-running run returns 409", func(t *testing.T) {
+		run := &crawler.CrawlRun{ID: uuid.New(), Status: crawler.RunStatusPaused}
+		runs := &fakeRunRepo{runs: []*crawler.CrawlRun{run}}
+		rnr := &fakeRunner{pauseErr: runner.ErrRunNotActive}
+		srv := newHandler(api.Config{Runner: rnr, Runs: runs})
+
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls/"+run.ID.String()+"/pause", nil))
+
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("status: got %d, want 409; body=%s", rec.Code, rec.Body)
+		}
+	})
+
+	t.Run("unknown run is 404", func(t *testing.T) {
+		rnr := &fakeRunner{}
+		srv := newHandler(api.Config{Runner: rnr, Runs: &fakeRunRepo{}})
+
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls/"+uuid.New().String()+"/pause", nil))
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status: got %d, want 404; body=%s", rec.Code, rec.Body)
+		}
+		if rnr.paused != uuid.Nil {
+			t.Errorf("runner.Pause must not be called for an unknown id; got %v", rnr.paused)
+		}
+	})
 }
 
 func TestListCrawls(t *testing.T) {

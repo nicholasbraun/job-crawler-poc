@@ -83,6 +83,10 @@ type activeRun struct {
 	// from a shutdown drain (park as resumable) when both cancel the same
 	// context. Guarded by Runner.mu.
 	stopRequested bool
+	// pauseRequested is set by Pause (or re-derived by the status watcher from a
+	// durable pausing status) to mark this run for a park as paused: supervise
+	// preserves its frontier and leaves FinishedAt unset. Guarded by Runner.mu.
+	pauseRequested bool
 }
 
 // FrontierCleaner drops a run's externalized frontier state once the run reaches
@@ -266,6 +270,35 @@ func (r *Runner) Stop(ctx context.Context, runID uuid.UUID) error {
 	return nil
 }
 
+// Pause requests a desired-state pause of a running run: it marks an in-memory
+// pause-requested flag, writes status=pausing (the durable desired state honored
+// by the run's status watcher), and cancels the run context to unblock a
+// frontier that may be sleeping or parked on a perpetual Next. Unlike Stop, this
+// parks the run as paused — non-terminal, FinishedAt unset, frontier preserved
+// for a later Resume. Returns ErrRunNotActive if the run is not the live running
+// run, or if it is already pausing or stopping (a redundant/invalid request the
+// API maps to 409).
+func (r *Runner) Pause(ctx context.Context, runID uuid.UUID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	active, ok := r.active[runID]
+	if !ok {
+		return ErrRunNotActive
+	}
+	if active.pauseRequested || active.stopRequested {
+		return ErrRunNotActive
+	}
+
+	active.pauseRequested = true
+	if err := r.runs.UpdateStatus(ctx, runID, crawler.RunStatusPausing, nil, ""); err != nil {
+		return err
+	}
+	active.cancel()
+
+	return nil
+}
+
 // Shutdown closes intake, cancels every active run, then blocks until all have
 // drained or the context deadline elapses. It never calls os.Exit; the caller
 // exits only after this returns. The drain is bounded by ctx: if a worker is
@@ -358,7 +391,19 @@ func (r *Runner) supervise(runCtx context.Context, cancel context.CancelFunc, ru
 					slog.Error("runner: error polling run status in watcher", "err", err, "run_id", runID)
 					continue
 				}
-				if status == crawler.RunStatusStopping {
+				switch status {
+				case crawler.RunStatusStopping:
+					cancel()
+					return
+				case crawler.RunStatusPausing:
+					// Re-derive a pause whose in-memory flag was lost across a
+					// restart (a reconcile-adopted crash-mid-pause run): mark the
+					// flag under the lock so supervise's fate decision parks it as
+					// paused, then cancel to unblock the loop. The exact analog of
+					// how a persisted stopping is re-honored above.
+					r.mu.Lock()
+					ar.pauseRequested = true
+					r.mu.Unlock()
 					cancel()
 					return
 				}
@@ -381,6 +426,26 @@ func (r *Runner) supervise(runCtx context.Context, cancel context.CancelFunc, ru
 	// Serialize the fate decision + deregistration against Stop so a run that
 	// finishes just as Stop fires cannot be left stuck in 'stopping'.
 	r.mu.Lock()
+	// A pause-requested run parks as paused: non-terminal (FinishedAt stays nil),
+	// frontier preserved (this returns before the cleaner call below), so a later
+	// Resume continues it. This MUST precede the shutdown-drain branch: when a
+	// pause races a graceful shutdown, the deliberate human park must win over the
+	// auto-resumable "leave running" park, and a pause-requested run must never
+	// fall through to a terminal status. The `!ar.stopRequested` guard yields to
+	// an explicit Stop, which still terminates the run as stopped (frontier
+	// cleaned) in the branches below. The `runErr != nil && runCtx cancelled`
+	// guards mirror the shutdown branch: a run that hit ErrDone (→ nil) exactly as
+	// a pause fired is recorded on its own terms below, not resurrected as paused.
+	if ar.pauseRequested && !ar.stopRequested && runErr != nil && errors.Is(runCtx.Err(), context.Canceled) {
+		if err := r.runs.UpdateStatus(context.Background(), runID, crawler.RunStatusPaused, nil, ""); err != nil {
+			slog.Error("runner: error parking run as paused", "err", err, "run_id", runID)
+		}
+		delete(r.active, runID)
+		r.mu.Unlock()
+		slog.Info("runner: parked run as paused", "run_id", runID)
+		return
+	}
+
 	// A shutdown drain that cancelled a run the user did not explicitly Stop is
 	// a resumable interruption, not a completion: leave it running (Option C —
 	// non-terminal, finishedAt stays nil) and keep its Redis frontier intact so
