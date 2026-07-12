@@ -344,6 +344,27 @@ func TestStopCrawlNotActive(t *testing.T) {
 	}
 }
 
+// TestStopCrawlPausedReturns202 verifies acceptance criterion 2 / carry-forward
+// requirement 3: a paused run is now stoppable, so runner.Stop returns nil rather
+// than ErrRunNotActive and the handler answers 202 (not the 409 a paused run used
+// to collapse to).
+func TestStopCrawlPausedReturns202(t *testing.T) {
+	run := &crawler.CrawlRun{ID: uuid.New(), Status: crawler.RunStatusPaused}
+	runs := &fakeRunRepo{runs: []*crawler.CrawlRun{run}}
+	rnr := &fakeRunner{} // stopErr nil: Stop now drives a paused run to stopped
+	srv := newHandler(api.Config{Runner: rnr, Runs: runs})
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls/"+run.ID.String()+"/stop", nil))
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status: got %d, want 202; body=%s", rec.Code, rec.Body)
+	}
+	if rnr.stopped != run.ID {
+		t.Errorf("runner stopped %v, want %v", rnr.stopped, run.ID)
+	}
+}
+
 func TestPauseCrawl(t *testing.T) {
 	t.Run("running run pauses and returns 202", func(t *testing.T) {
 		run := &crawler.CrawlRun{ID: uuid.New(), Status: crawler.RunStatusRunning}

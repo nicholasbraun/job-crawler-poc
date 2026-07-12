@@ -1412,6 +1412,194 @@ func TestResumeRejectsNonPaused(t *testing.T) {
 	})
 }
 
+// TestStopOnNotActiveRun verifies acceptance criterion 1 / carry-forward
+// requirement 1+5: Stop on a run absent from the active set consults its durable
+// status. A human-parked paused run is driven straight to terminal stopped
+// (FinishedAt set) with its Frontier cleaned (the cleaner IS invoked) — the exact
+// contrast to TestPauseParksRunAsPaused, which parks paused without invoking the
+// cleaner. Any other not-active state (terminal, unknown id) is unchanged: Stop
+// returns ErrRunNotActive and touches nothing.
+func TestStopOnNotActiveRun(t *testing.T) {
+	newRunner := func(runs *fakeRunRepo, cleaned *map[uuid.UUID]bool, cleanMu *sync.Mutex) *Runner {
+		defID := uuid.New()
+		defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+		// A paused run holds no engine, so Stop must never invoke the factory.
+		factory := func(context.Context, uuid.UUID, crawler.CrawlDefinition, *Counters, func(context.Context) bool) (*Engine, error) {
+			return nil, errors.New("factory must not be called")
+		}
+		cleaner := func(ctx context.Context, runID uuid.UUID) error {
+			cleanMu.Lock()
+			defer cleanMu.Unlock()
+			(*cleaned)[runID] = true
+			return nil
+		}
+		return New(runs, defs, factory, WithFrontierCleaner(cleaner))
+	}
+
+	t.Run("paused run terminates as stopped and cleans its frontier", func(t *testing.T) {
+		runs := newFakeRunRepo()
+		id := uuid.New()
+		runs.Create(t.Context(), &crawler.CrawlRun{ID: id, Status: crawler.RunStatusPaused})
+
+		var cleanMu sync.Mutex
+		cleaned := map[uuid.UUID]bool{}
+		r := newRunner(runs, &cleaned, &cleanMu)
+
+		if err := r.Stop(t.Context(), id); err != nil {
+			t.Fatalf("Stop on paused run: %v", err)
+		}
+
+		got, err := runs.Get(t.Context(), id)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.Status != crawler.RunStatusStopped {
+			t.Errorf("status: got %q, want stopped", got.Status)
+		}
+		if got.FinishedAt == nil {
+			t.Error("stopped paused run should have FinishedAt set")
+		}
+
+		// The preserved frontier is dropped now the run is terminal; cleanup fires
+		// just after the terminal write, outside the lock, so poll for it.
+		waitFor(t, func() bool {
+			cleanMu.Lock()
+			defer cleanMu.Unlock()
+			return cleaned[id]
+		}, "frontier cleaner to run for the stopped paused run")
+	})
+
+	t.Run("completed run returns ErrRunNotActive and is untouched", func(t *testing.T) {
+		runs := newFakeRunRepo()
+		id := uuid.New()
+		finished := time.Now()
+		runs.Create(t.Context(), &crawler.CrawlRun{ID: id, Status: crawler.RunStatusCompleted, FinishedAt: &finished})
+
+		var cleanMu sync.Mutex
+		cleaned := map[uuid.UUID]bool{}
+		r := newRunner(runs, &cleaned, &cleanMu)
+
+		if err := r.Stop(t.Context(), id); !errors.Is(err, ErrRunNotActive) {
+			t.Errorf("Stop on completed run: got %v, want ErrRunNotActive", err)
+		}
+
+		got, _ := runs.Get(t.Context(), id)
+		if got.Status != crawler.RunStatusCompleted {
+			t.Errorf("status must be unchanged: got %q, want completed", got.Status)
+		}
+		cleanMu.Lock()
+		defer cleanMu.Unlock()
+		if cleaned[id] {
+			t.Error("a terminal run's frontier must not be cleaned by a rejected Stop")
+		}
+	})
+
+	t.Run("unknown id returns ErrRunNotActive", func(t *testing.T) {
+		runs := newFakeRunRepo()
+		var cleanMu sync.Mutex
+		cleaned := map[uuid.UUID]bool{}
+		r := newRunner(runs, &cleaned, &cleanMu)
+
+		if err := r.Stop(t.Context(), uuid.New()); !errors.Is(err, ErrRunNotActive) {
+			t.Errorf("Stop on unknown id: got %v, want ErrRunNotActive", err)
+		}
+	})
+}
+
+// TestStopAndResumeRacePausedRun verifies carry-forward requirement 2: a Stop and
+// a Resume racing the same paused run leave it in exactly one coherent state, with
+// the factory invoked at most once and no leaked frontier. Because every decision
+// (active-set check, status read, terminal/reserve write) sits under r.mu, the two
+// critical sections cannot interleave:
+//   - Stop wins first  → factory never runs (0 invocations); Stop returns nil and
+//     Resume then reads a non-paused status → ErrRunNotPaused.
+//   - Resume wins first → factory runs once; Resume returns nil and Stop finds the
+//     run in the active set, taking the normal active-run stopping path (nil).
+//
+// In BOTH orderings the run converges to terminal stopped with FinishedAt set and
+// its frontier cleaned — never two engines, never a leaked frontier.
+func TestStopAndResumeRacePausedRun(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	pausedID := uuid.New()
+	runs.Create(t.Context(), &crawler.CrawlRun{ID: pausedID, DefinitionID: defID, Status: crawler.RunStatusPaused})
+
+	var factoryCount atomic.Int64
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		factoryCount.Add(1)
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   blockingFrontier{},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: shouldStop,
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	var cleanMu sync.Mutex
+	cleaned := map[uuid.UUID]bool{}
+	cleaner := func(ctx context.Context, runID uuid.UUID) error {
+		cleanMu.Lock()
+		defer cleanMu.Unlock()
+		cleaned[runID] = true
+		return nil
+	}
+
+	r := New(runs, defs, factory, WithFrontierCleaner(cleaner))
+
+	var wg sync.WaitGroup
+	var stopErr, resumeErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		stopErr = r.Stop(t.Context(), pausedID)
+	}()
+	go func() {
+		defer wg.Done()
+		resumeErr = r.Resume(t.Context(), pausedID)
+	}()
+	wg.Wait()
+
+	switch got := factoryCount.Load(); got {
+	case 0:
+		// Stop took the paused-terminal path; Resume then saw a non-paused status.
+		if stopErr != nil {
+			t.Errorf("Stop-wins: stopErr = %v, want nil", stopErr)
+		}
+		if !errors.Is(resumeErr, ErrRunNotPaused) {
+			t.Errorf("Stop-wins: resumeErr = %v, want ErrRunNotPaused", resumeErr)
+		}
+	case 1:
+		// Resume reserved the slot; Stop found the run active and stopped it.
+		if resumeErr != nil {
+			t.Errorf("Resume-wins: resumeErr = %v, want nil", resumeErr)
+		}
+		if stopErr != nil {
+			t.Errorf("Resume-wins: stopErr = %v, want nil", stopErr)
+		}
+	default:
+		t.Fatalf("factory invocations: got %d, want 0 or 1 (never two engines on one frontier)", got)
+	}
+
+	// Either ordering must converge to terminal stopped with a cleaned frontier.
+	final := waitForFinish(t, runs, pausedID)
+	if final.Status != crawler.RunStatusStopped {
+		t.Errorf("final status: got %q, want stopped", final.Status)
+	}
+	if final.FinishedAt == nil {
+		t.Error("stopped run should have FinishedAt set")
+	}
+	waitFor(t, func() bool {
+		cleanMu.Lock()
+		defer cleanMu.Unlock()
+		return cleaned[pausedID]
+	}, "frontier cleaner to run (no leaked frontier in either race outcome)")
+
+	// Join any supervise goroutine the resume-wins path started.
+	r.Shutdown(t.Context())
+}
+
 // waitForStatus polls until the run reaches want (regardless of FinishedAt) or
 // the test times out. Used for non-terminal parks like paused, where
 // waitForFinish (which keys off FinishedAt) never fires.

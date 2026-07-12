@@ -186,7 +186,9 @@ function RunRow({
               Resume
             </Button>
           )}
-          {active && (
+          {/* A paused run is also stoppable (paused → stopped, terminal, cleans
+              the Frontier), so it shows Stop alongside Resume. */}
+          {(active || run.status === "paused") && (
             <Button
               variant="danger"
               onClick={onStop}

@@ -262,27 +262,74 @@ func (r *Runner) markFailedAndClean(runID uuid.UUID, cause error) {
 	}
 }
 
-// Stop requests a desired-state stop: it writes status=stopping (the source of
-// truth polled by the loop) and then cancels the run context to unblock a
-// frontier that may be sleeping on a cooldown. Returns ErrRunNotActive if the
-// run already finished.
+// Stop terminates a run as stopped, via one of two paths chosen by whether the
+// run is live (in the active set):
+//
+//   - A live run (running/stopping, or one a concurrent Resume just reserved)
+//     gets a desired-state stop: status=stopping (the source of truth polled by
+//     the loop), then the run context is cancelled to unblock a frontier that may
+//     be sleeping on a cooldown; supervise drives it to terminal stopped and
+//     cleans its frontier.
+//   - A human-parked paused run holds no engine and is absent from the active
+//     set. There is nothing to cancel, so Stop writes terminal stopped
+//     (FinishedAt set) directly and cleans the preserved frontier itself,
+//     mirroring supervise's terminal path.
+//
+// The active-set check and the paused status read + terminal write all happen
+// under one r.mu critical section, so Stop cannot interleave with a concurrent
+// Resume of the same paused run: exactly one of {Stop terminates, Resume
+// relaunches} wins. If Resume reserved the slot first, the run is in the active
+// set and Stop takes the live path (cancelling the just-reserved run); if Stop
+// wrote stopped first, Resume then reads a non-paused status and returns
+// ErrRunNotPaused.
+//
+// Returns ErrRunNotActive when the run is neither active nor paused (already
+// terminal, unknown, or a status read failure — deliberately mapped to
+// "not active" rather than surfaced, matching the pre-existing not-active path).
 func (r *Runner) Stop(ctx context.Context, runID uuid.UUID) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
-	active, ok := r.active[runID]
-	if !ok {
+	// Live run: desired-state stop. Marking stopRequested makes a concurrent
+	// Shutdown drain terminate it (stopped, frontier cleaned) rather than parking
+	// it for resume.
+	if active, ok := r.active[runID]; ok {
+		active.stopRequested = true
+		if err := r.runs.UpdateStatus(ctx, runID, crawler.RunStatusStopping, nil, ""); err != nil {
+			r.mu.Unlock()
+			return err
+		}
+		active.cancel()
+		r.mu.Unlock()
+		return nil
+	}
+
+	// Not active: the only stoppable not-active state is a human-parked paused
+	// run. Read the status under the SAME lock as the terminal write so a
+	// concurrent Resume's paused→running flip cannot interleave. Any other state
+	// (terminal, unknown id, or an unreadable status) is treated as "not active".
+	status, err := r.runs.GetStatus(ctx, runID)
+	if err != nil || status != crawler.RunStatusPaused {
+		r.mu.Unlock()
 		return ErrRunNotActive
 	}
 
-	// Mark this as an explicit stop so a concurrent Shutdown drain terminates it
-	// (status stopped, frontier cleaned) rather than parking it for resume.
-	active.stopRequested = true
-	if err := r.runs.UpdateStatus(ctx, runID, crawler.RunStatusStopping, nil, ""); err != nil {
+	// Terminal write uses context.Background so a cancelled request cannot lose the
+	// stopped status (matches markFailedAndClean and supervise's terminal writes).
+	finishedAt := time.Now()
+	if err := r.runs.UpdateStatus(context.Background(), runID, crawler.RunStatusStopped, &finishedAt, ""); err != nil {
+		r.mu.Unlock()
 		return err
 	}
-	active.cancel()
+	r.mu.Unlock()
 
+	// Drop the preserved frontier + transient LLM-stage state now the run is
+	// terminal. Done outside the lock (Redis I/O) and detached from the request,
+	// mirroring supervise's terminal cleanup.
+	if r.frontierCleaner != nil {
+		if cerr := r.frontierCleaner(context.Background(), runID); cerr != nil {
+			slog.Error("runner: error cleaning up frontier for stopped paused run", "err", cerr, "run_id", runID)
+		}
+	}
 	return nil
 }
 
