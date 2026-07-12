@@ -718,5 +718,32 @@
     "verified": true,
     "fetched_at": "2026-07-12T21:26:32Z",
     "note": "Terminal-Hub-Word deep hub: `/company/careers/all-jobs` (terminal `all-jobs`); captured via llmbench capture (real HTML, title \"Atlassian Jobs: View Listings for Open Positions\"); guards the posting-path veto exemption (#63)"
+  },
+  {
+    "file": "0078-join-com-companies-fugro.html",
+    "url": "https://join.com/companies/fugro",
+    "label": "career_page",
+    "category": "hub_ats_root",
+    "verified": true,
+    "fetched_at": "2026-07-12T21:23:36Z",
+    "note": "#64 join.com tenant root: the /companies/{slug} prefix rule certain-accepts it"
+  },
+  {
+    "file": "0079-join-com-companies-fugro-16405887-geowissenschaftler-m-w-d.html",
+    "url": "https://join.com/companies/fugro/16405887-geowissenschaftler-m-w-d",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": true,
+    "fetched_at": "2026-07-12T21:24:00Z",
+    "note": "#64 join.com posting: /companies/{slug}/{id} classifies as a Job Listing (rejected). redirected https://join.com/companies/fugro/16344680-geowissenschaftler-m-w-d -> https://join.com/companies/fugro/16405887-geowissenschaftler-m-w-d"
+  },
+  {
+    "file": "0080-eu-startups-com-directory.html",
+    "url": "https://www.eu-startups.com/directory/",
+    "label": "not_career_page",
+    "category": "aggregator",
+    "verified": true,
+    "fetched_at": "2026-07-12T21:24:01Z",
+    "note": "#64 aggregator: eu-startups.com added to the denylist, rejected on eTLD+1"
   }
 ]

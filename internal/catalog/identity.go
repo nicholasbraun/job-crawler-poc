@@ -56,6 +56,10 @@ const (
 type pathRule struct {
 	provider string
 	hosts    []string
+	// prefix is an optional fixed path segment that precedes the tenant slug on
+	// a tenant-under-path board (e.g. "companies" for join.com/companies/{slug}).
+	// Empty means the slug is the first path segment (greenhouse, lever, …).
+	prefix string
 }
 
 // subdomainRule matches an ATS whose tenants live on a per-tenant subdomain
@@ -78,6 +82,10 @@ var pathRules = []pathRule{
 	{provider: "lever", hosts: []string{"jobs.lever.co"}},
 	{provider: "ashby", hosts: []string{"jobs.ashbyhq.com"}},
 	{provider: "workable", hosts: []string{"apply.workable.com"}},
+	// join.com lays each employer under /companies/{slug}; the extra "companies"
+	// prefix segment shifts the tenant slug right by one. Splitting this out is the
+	// #46 fix that stops 20+ real employers collapsing into one fake "join.com".
+	{provider: "join", hosts: []string{"join.com"}, prefix: "companies"},
 }
 
 var subdomainRules = []subdomainRule{
@@ -85,6 +93,23 @@ var subdomainRules = []subdomainRule{
 	{provider: "personio", suffix: "jobs.personio.com"},
 	{provider: "recruitee", suffix: "recruitee.com"},
 	{provider: "workable", suffix: "workable.com"},
+	// Evidence-driven long-tail ATS platforms seen self-hosted in the catalog audit
+	// (#46). Each hosts one employer per subdomain; the tenant slug is the leftmost
+	// host label. Workday is deliberately omitted (its {tenant}.{shard}.myworkdayjobs.com
+	// puts a data-center shard where subdomainLabel expects the tenant).
+	//
+	// Tradeoff: a subdomainRule treats the subdomain root as the Career Page and any
+	// path as a Job Listing, so a platform whose hub sits at a path
+	// ({tenant}.bamboohr.com/careers) reports RoleJobListing for that hub. This does
+	// not affect the per-tenant attribution these rules exist for -- Identify keys
+	// every URL on the host to the correct tenant regardless of path -- and no Gold
+	// Set fixture lives on these hosts. Recognising path-hub shapes is out of scope.
+	{provider: "bamboohr", suffix: "bamboohr.com"},
+	{provider: "teamtailor", suffix: "teamtailor.com"},
+	{provider: "icims", suffix: "icims.com"},
+	{provider: "indigo", suffix: "indigo.jobs"},
+	{provider: "hibob", suffix: "careers.hibob.com"},
+	{provider: "haileyhr", suffix: "careers.haileyhr.app"},
 }
 
 // atsMatch describes how a host maps to a known ATS tenant.
@@ -94,15 +119,29 @@ type atsMatch struct {
 	// slug is the tenant label for subdomain rules; for path rules the slug is
 	// taken from the URL path instead, so this is empty.
 	slug string
+	// prefix mirrors the matched pathRule.prefix so Classify/matchATS/CareerPageURL
+	// can shift the slug index; empty for subdomain rules and prefixless boards.
+	prefix string
 }
 
-// matchHost resolves host to a known ATS rule, or reports ok=false.
-func matchHost(host string) (atsMatch, bool) {
+// matchHost resolves u to a known ATS rule, or reports ok=false. A path rule
+// with a prefix matches only when the URL's first path segment is that prefix,
+// so a bare host or a non-tenant path (join.com/, join.com/blog) is left to the
+// eTLD+1 fallback rather than treated as a tenant.
+func matchHost(u crawler.URL) (atsMatch, bool) {
+	host := u.Hostname
 	for _, r := range pathRules {
 		for _, h := range r.hosts {
-			if host == h {
-				return atsMatch{provider: r.provider, kind: rulePath}, true
+			if host != h {
+				continue
 			}
+			if r.prefix != "" {
+				segs := pathSegments(u.RawURL)
+				if len(segs) == 0 || !strings.EqualFold(segs[0], r.prefix) {
+					return atsMatch{}, false
+				}
+			}
+			return atsMatch{provider: r.provider, kind: rulePath, prefix: r.prefix}, true
 		}
 	}
 	for _, r := range subdomainRules {
@@ -137,7 +176,7 @@ func Identify(u crawler.URL) Identity {
 // ATS Job Listing (a posting beneath the root), or on an unrecognized host
 // (RoleUnknown), where the caller must decide from page content.
 func Classify(u crawler.URL) Role {
-	m, ok := matchHost(u.Hostname)
+	m, ok := matchHost(u)
 	if !ok {
 		return RoleUnknown
 	}
@@ -145,9 +184,15 @@ func Classify(u crawler.URL) Role {
 	segs := pathSegments(u.RawURL)
 	switch m.kind {
 	case rulePath:
-		// The board root is exactly "/{slug}"; anything deeper is a posting,
-		// and a bare host with no tenant slug is not a company Career Page.
-		if len(segs) == 1 {
+		// A prefix rule shifts the tenant slug right by one segment; the board root
+		// is exactly "prefix?/slug", anything deeper is a posting, and anything
+		// shallower carries no tenant. For prefixless boards slugIdx is 0, so this
+		// reduces to the original "/{slug}" root check.
+		slugIdx := 0
+		if m.prefix != "" {
+			slugIdx = 1
+		}
+		if len(segs) == slugIdx+1 {
 			return RoleCareerPage
 		}
 		return RoleJobListing
@@ -168,7 +213,7 @@ func Classify(u crawler.URL) Role {
 // upsert to a single Career Page per Company. ok is false when the host is not a
 // recognized ATS (self-hosted), in which case the caller uses the page's own URL.
 func CareerPageURL(u crawler.URL) (string, bool) {
-	m, ok := matchHost(u.Hostname)
+	m, ok := matchHost(u)
 	if !ok {
 		return "", false
 	}
@@ -181,9 +226,21 @@ func CareerPageURL(u crawler.URL) (string, bool) {
 
 	switch m.kind {
 	case rulePath:
-		slug := strings.ToLower(firstPathSegment(u.RawURL))
+		segs := pathSegments(u.RawURL)
+		slugIdx := 0
+		if m.prefix != "" {
+			slugIdx = 1
+		}
+		if len(segs) <= slugIdx {
+			return "", false
+		}
+		slug := strings.ToLower(segs[slugIdx])
 		if slug == "" {
 			return "", false
+		}
+		if m.prefix != "" {
+			// Re-emit the prefix so join collapses to https://join.com/companies/{slug}.
+			return base + "/" + strings.ToLower(m.prefix) + "/" + slug, true
 		}
 		return base + "/" + slug, true
 	case ruleSubdomain:
@@ -197,13 +254,21 @@ func CareerPageURL(u crawler.URL) (string, bool) {
 // or an empty slug when the host is not recognized (or is a board host with no
 // tenant segment).
 func matchATS(u crawler.URL) (provider, slug string) {
-	m, ok := matchHost(u.Hostname)
+	m, ok := matchHost(u)
 	if !ok {
 		return "", ""
 	}
 	switch m.kind {
 	case rulePath:
-		return m.provider, strings.ToLower(firstPathSegment(u.RawURL))
+		segs := pathSegments(u.RawURL)
+		slugIdx := 0
+		if m.prefix != "" {
+			slugIdx = 1
+		}
+		if len(segs) <= slugIdx {
+			return m.provider, ""
+		}
+		return m.provider, strings.ToLower(segs[slugIdx])
 	case ruleSubdomain:
 		return m.provider, strings.ToLower(m.slug)
 	default:
@@ -224,14 +289,6 @@ func pathSegments(rawURL string) []string {
 		}
 	}
 	return segs
-}
-
-// firstPathSegment returns the first non-empty path segment of rawURL, or "".
-func firstPathSegment(rawURL string) string {
-	if segs := pathSegments(rawURL); len(segs) > 0 {
-		return segs[0]
-	}
-	return ""
 }
 
 // subdomainLabel returns the leftmost host label preceding suffix (the tenant
@@ -283,6 +340,33 @@ var aggregatorHosts = map[string]struct{}{
 	"getro.com":       {}, // powers many portfolio boards; tenants on *.getro.com fold in via eTLD+1
 	"speedinvest.com": {},
 	"hv.capital":      {}, // HV Capital; ".capital" is the live gTLD domain (not hvcapital.com)
+	// #46 audit additions -- boards and portfolio directories the discovery run
+	// (frozen definition 0b29f7f2; docs/discovery-baseline-definition.md) crawled
+	// and that minted fake host-companies. eTLD+1 match, so subdomains fold in.
+	// Job boards / niche directories:
+	"eu-startups.com":            {}, // startup directory
+	"schuelerkarriere.de":        {}, // student job board
+	"musicbusinessworldwide.com": {}, // industry job board
+	"ausbildung.de":              {}, // apprenticeship board
+	// Startup directories / company databases:
+	"deutsche-startups.de": {},
+	"gruenderszene.de":     {},
+	"startupbrett.de":      {},
+	"dealroom.co":          {},
+	"crunchbase.com":       {},
+	"f6s.com":              {},
+	// Member associations / directories:
+	"bitkom.org":        {},
+	"startupverband.de": {},
+	// VC / accelerator portfolio boards:
+	"balderton.com":            {},
+	"earlybird.com":            {},
+	"pointnine.com":            {},
+	"cherry.vc":                {},
+	"holtzbrinck-ventures.com": {},
+	"lakestar.com":             {},
+	"techstars.com":            {},
+	"ycombinator.com":          {}, // portfolio; folds in news.ycombinator.com (already a negative fixture)
 }
 
 // IsAggregatorHost reports whether u sits on a known multi-company aggregator,
