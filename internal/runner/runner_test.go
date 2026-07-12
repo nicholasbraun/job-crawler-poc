@@ -1394,6 +1394,92 @@ func TestConcurrentResumeLaunchesOneEngine(t *testing.T) {
 	r.Shutdown(t.Context())
 }
 
+// TestResumeFactoryErrorRevertsToPausedNoRacingStop verifies bug #2's fix:
+// when the factory fails on Resume with no concurrent Stop, the run is reverted
+// to paused (not failed) and its preserved frontier is NOT cleaned, so a
+// transient Redis/Postgres hiccup leaves the parked work retryable — and a
+// later Resume with a working factory succeeds.
+func TestResumeFactoryErrorRevertsToPausedNoRacingStop(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	pausedID := uuid.New()
+	runs.Create(t.Context(), &crawler.CrawlRun{ID: pausedID, DefinitionID: defID, Status: crawler.RunStatusPaused, Counters: crawler.RunCounters{PagesCrawled: 3}})
+
+	// First factory call fails (transient); subsequent calls succeed. doneFrontier
+	// drains immediately so the retried run runs to completed.
+	var factoryCalls atomic.Int64
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		if factoryCalls.Add(1) == 1 {
+			return nil, errors.New("transient redis hiccup")
+		}
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   doneFrontier{},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: shouldStop,
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	var cleanMu sync.Mutex
+	cleaned := map[uuid.UUID]bool{}
+	cleaner := func(ctx context.Context, runID uuid.UUID) error {
+		cleanMu.Lock()
+		defer cleanMu.Unlock()
+		cleaned[runID] = true
+		return nil
+	}
+
+	r := New(runs, defs, factory, WithFrontierCleaner(cleaner))
+
+	// First Resume: the factory fails with no racing Stop. The run must revert to
+	// paused (not failed) and its frontier must be preserved for a retry.
+	if err := r.Resume(t.Context(), pausedID); err == nil {
+		t.Fatal("first Resume: expected factory error, got nil")
+	}
+
+	got, err := runs.Get(t.Context(), pausedID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != crawler.RunStatusPaused {
+		t.Errorf("after failed Resume: got status %q, want paused (reverted, not failed)", got.Status)
+	}
+	if got.FinishedAt != nil {
+		t.Errorf("reverted run must not be finished; got FinishedAt=%v", got.FinishedAt)
+	}
+
+	// The preserved frontier must NOT be cleaned on a transient factory failure.
+	// The revert path performs no async cleanup, so this can be checked directly.
+	cleanMu.Lock()
+	if cleaned[pausedID] {
+		t.Error("preserved frontier must NOT be cleaned on a transient factory failure")
+	}
+	cleanMu.Unlock()
+
+	// No stranded active-set entry (which would block the retry with ErrRunNotPaused).
+	r.mu.Lock()
+	_, stillActive := r.active[pausedID]
+	r.mu.Unlock()
+	if stillActive {
+		t.Error("failed Resume must not leak an active-set entry")
+	}
+
+	// Second Resume: the factory now works, so the retry succeeds and the run runs
+	// to completion, seeded from its preserved counters.
+	if err := r.Resume(t.Context(), pausedID); err != nil {
+		t.Fatalf("second Resume: %v", err)
+	}
+	final := waitForFinish(t, runs, pausedID)
+	if final.Status != crawler.RunStatusCompleted {
+		t.Errorf("retried run: got %q, want completed", final.Status)
+	}
+	if final.Counters.PagesCrawled != 3 {
+		t.Errorf("retried counters: got %d, want 3 (seeded from preserved, not reset)", final.Counters.PagesCrawled)
+	}
+}
+
 // TestResumeRejectsNonPaused verifies acceptance criterion 3 / carry-forward
 // requirement 2 at the runner seam: Resume on a run that is not paused returns
 // ErrRunNotPaused and never invokes the factory. It covers a durable non-paused
@@ -1577,18 +1663,23 @@ func TestStopOnNotActiveRun(t *testing.T) {
 	})
 }
 
-// TestStopAndResumeRacePausedRun verifies carry-forward requirement 2: a Stop and
-// a Resume racing the same paused run leave it in exactly one coherent state, with
-// the factory invoked at most once and no leaked frontier. Because every decision
-// (active-set check, status read, terminal/reserve write) sits under r.mu, the two
-// critical sections cannot interleave:
+// TestStopAndResumeRacePausedRun verifies carry-forward requirement 2 and the
+// factory-error race (#3): a Stop and a Resume racing the same paused run leave
+// it in exactly one coherent state — terminal stopped, frontier cleaned, factory
+// invoked at most once, never failed. Because every decision (active-set check,
+// status read, terminal/reserve write, stopRequested read) sits under r.mu, the
+// two critical sections cannot interleave:
 //   - Stop wins first  → factory never runs (0 invocations); Stop returns nil and
 //     Resume then reads a non-paused status → ErrRunNotPaused.
-//   - Resume wins first → factory runs once; Resume returns nil and Stop finds the
-//     run in the active set, taking the normal active-run stopping path (nil).
+//   - Resume wins first → Resume reserves the slot; Stop finds the run active,
+//     marks stopRequested and cancels runCtx; the context-honoring factory fails
+//     on the cancelled context (1 invocation); Resume's factory-error path sees
+//     stopRequested and drives the run to terminal stopped (cleaning the frontier
+//     itself, since supervise never started) — not failed.
 //
 // In BOTH orderings the run converges to terminal stopped with FinishedAt set and
-// its frontier cleaned — never two engines, never a leaked frontier.
+// its frontier cleaned — never two engines, never a leaked or destroyed frontier,
+// never failed.
 func TestStopAndResumeRacePausedRun(t *testing.T) {
 	defID := uuid.New()
 	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
@@ -1600,12 +1691,13 @@ func TestStopAndResumeRacePausedRun(t *testing.T) {
 	var factoryCount atomic.Int64
 	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
 		factoryCount.Add(1)
-		o := orchestrator.NewOrchestrator(orchestrator.Config{
-			Frontier:   blockingFrontier{},
-			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
-			ShouldStop: shouldStop,
-		})
-		return &Engine{Orchestrator: o, Close: func() {}}, nil
+		// Honor the run context: when the racing Stop cancels it mid-rebuild, fail
+		// on the cancelled context (as the real factory does when XGROUP / ListURLs
+		// hit a cancelled ctx). This drives Resume's failing-factory race branch.
+		// Only reached in the Resume-wins ordering, where Stop always cancels, so
+		// this never blocks forever.
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 
 	var cleanMu sync.Mutex
@@ -1642,9 +1734,13 @@ func TestStopAndResumeRacePausedRun(t *testing.T) {
 			t.Errorf("Stop-wins: resumeErr = %v, want ErrRunNotPaused", resumeErr)
 		}
 	case 1:
-		// Resume reserved the slot; Stop found the run active and stopped it.
-		if resumeErr != nil {
-			t.Errorf("Resume-wins: resumeErr = %v, want nil", resumeErr)
+		// Resume reserved the slot first; Stop then found the run active, marked
+		// stopRequested and cancelled runCtx, so the context-honoring factory failed
+		// on the cancelled context. Resume's factory-error path observes
+		// stopRequested and drives the run to terminal stopped — never failed — so
+		// Resume surfaces the factory's cancellation error while Stop returns nil.
+		if !errors.Is(resumeErr, context.Canceled) {
+			t.Errorf("Resume-wins: resumeErr = %v, want context.Canceled (factory failed on cancel)", resumeErr)
 		}
 		if stopErr != nil {
 			t.Errorf("Resume-wins: stopErr = %v, want nil", stopErr)

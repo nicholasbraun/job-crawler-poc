@@ -382,6 +382,16 @@ func (r *Runner) Pause(ctx context.Context, runID uuid.UUID) error {
 // once. It cannot reuse launch, which invokes the Factory before reserving the slot
 // and would let two concurrent Resumes each build an engine against one frontier.
 //
+// If the Factory fails (transient Redis/Postgres I/O while rebuilding the
+// engine), Resume unwinds its reservation and recovers race-awarely instead of
+// failing the run: if a concurrent Stop marked the reserved slot (stopRequested)
+// — cancelling runCtx and likely causing the failure — the run is driven to
+// terminal stopped and its frontier cleaned, honoring the Stop; otherwise the
+// run is reverted to paused with its frontier preserved, so a transient hiccup
+// leaves the parked work retryable by a later Resume rather than destroying it.
+// These recovery writes use context.Background because the request ctx may
+// already be cancelled.
+//
 // Returns ErrRunNotPaused when the run is not paused (running/pausing/stopping/
 // terminal, or already being resumed), ErrShuttingDown during a drain, or the
 // repository's error for an unknown id.
@@ -446,14 +456,45 @@ func (r *Runner) Resume(ctx context.Context, runID uuid.UUID) error {
 	engine, err := r.factory(runCtx, runID, *def, counters, shouldStop)
 	if err != nil {
 		cancel()
-		// Unwind the reservation made above before recording the failure (unlike
-		// launch, which had not yet reserved when its factory failed): a leaked
-		// wg count hangs Shutdown, a stranded active entry blocks a later Resume.
+		// Unwind the reservation made above before recovering (unlike launch,
+		// which had not yet reserved when its factory failed): a leaked wg count
+		// hangs Shutdown, a stranded active entry blocks a later Resume. Read
+		// stopRequested under the same lock that removes the entry so a concurrent
+		// Stop's intent is observed atomically with the deregistration.
 		r.mu.Lock()
+		stopRequested := ar.stopRequested
 		delete(r.active, runID)
 		r.wg.Done()
 		r.mu.Unlock()
-		r.markFailedAndClean(runID, err)
+
+		// supervise never started, so this path owns the run's fate and its
+		// one-time frontier cleanup. Recovery writes use context.Background
+		// because the request ctx may already be cancelled (matching supervise's
+		// terminal writes and markFailedAndClean).
+		if stopRequested {
+			// A concurrent Stop reserved this run for termination and cancelled
+			// runCtx (the likely cause of the failure). Honor the Stop: write
+			// terminal stopped and clean the preserved frontier, exactly as Stop's
+			// paused-run path and supervise's terminal path would (#3).
+			finishedAt := time.Now()
+			if uerr := r.runs.UpdateStatus(context.Background(), runID, crawler.RunStatusStopped, &finishedAt, ""); uerr != nil {
+				slog.Error("runner: error stopping resumed run after factory error", "err", uerr, "run_id", runID)
+			}
+			if r.frontierCleaner != nil {
+				if cerr := r.frontierCleaner(context.Background(), runID); cerr != nil {
+					slog.Error("runner: error cleaning up frontier for stopped resumed run", "err", cerr, "run_id", runID)
+				}
+			}
+			return err
+		}
+
+		// A genuine (likely transient) factory failure with no racing Stop: revert
+		// the run from running back to paused and DO NOT clean the frontier, so a
+		// momentary Redis/Postgres hiccup leaves the preserved work retryable by a
+		// later Resume rather than destroying it (#2).
+		if uerr := r.runs.UpdateStatus(context.Background(), runID, crawler.RunStatusPaused, nil, ""); uerr != nil {
+			slog.Error("runner: error reverting resumed run to paused after factory error", "err", uerr, "run_id", runID)
+		}
 		return err
 	}
 
