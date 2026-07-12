@@ -12,4 +12,6 @@ is a refactor, not a rewrite.
 
 Slightly more plumbing now — no convenient in-memory registry, all reads go to
 Redis/Postgres — in exchange for a clean single-binary → distributed seam. A server restart
-pauses in-flight runs but they resume from externalized state.
+halts in-flight runs but they resume from externalized state. (ADR-0009 later reserved the
+`paused` status for a human-initiated pause that deliberately does *not* auto-resume; a
+restart leaves runs `running` and `Reconcile` resumes them.)

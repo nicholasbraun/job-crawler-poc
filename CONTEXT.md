@@ -25,6 +25,20 @@ _Avoid_: spider, broad crawl
 A Crawl Definition kind: seeded from the Catalog, it extracts Job Listings matching a set of OR-matched keywords.
 _Avoid_: search, filter crawl
 
+### Run lifecycle
+
+**Pause / Paused**:
+A human deliberately parks a running Crawl Run: it stops fetching, keeps its Frontier intact, and stays parked — across restarts — until a human Resumes it. Distinct from the automatic halt of a server restart (which resumes on its own) and from a Stopped run (which is terminal and not resumable).
+_Avoid_: stop, suspend, halt, freeze
+
+**Pausing**:
+The transient state of a Crawl Run that has been asked to Pause and is draining its in-flight work before it parks as Paused.
+_Avoid_: stopping, halting
+
+**Resume**:
+Relaunch a Paused Crawl Run from its preserved Frontier and counters, continuing where it left off.
+_Avoid_: restart, unpause, continue
+
 ### Catalog
 
 **Company**:
