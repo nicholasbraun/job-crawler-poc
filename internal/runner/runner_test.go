@@ -363,6 +363,79 @@ func TestReconcileAdoptsInterruptedRuns(t *testing.T) {
 	}
 }
 
+// TestReconcileSkipsPausedAdoptsPausing verifies the Option-C reconcile contract:
+// a deliberately human-parked `paused` run is never auto-resumed (the factory is
+// not invoked for it and its row is left untouched), while a transient `pausing`
+// run IS adopted — the factory is invoked and its status is kept `pausing` (not
+// flipped to running) so a later status watcher can re-derive the park.
+func TestReconcileSkipsPausedAdoptsPausing(t *testing.T) {
+	defID := uuid.New()
+	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
+	runs := newFakeRunRepo()
+
+	pausedID := uuid.New()
+	pausingID := uuid.New()
+	runs.Create(t.Context(), &crawler.CrawlRun{ID: pausedID, DefinitionID: defID, Status: crawler.RunStatusPaused})
+	runs.Create(t.Context(), &crawler.CrawlRun{ID: pausingID, DefinitionID: defID, Status: crawler.RunStatusPausing})
+
+	var launchMu sync.Mutex
+	launched := map[uuid.UUID]bool{}
+	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
+		launchMu.Lock()
+		launched[runID] = true
+		launchMu.Unlock()
+		o := orchestrator.NewOrchestrator(orchestrator.Config{
+			Frontier:   blockingFrontier{},
+			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
+			ShouldStop: shouldStop,
+		})
+		return &Engine{Orchestrator: o, Close: func() {}}, nil
+	}
+
+	r := New(runs, defs, factory)
+
+	if err := r.Reconcile(t.Context()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// launch invokes the factory synchronously, so by the time Reconcile returns
+	// the launched map reflects exactly which runs were adopted.
+	launchMu.Lock()
+	if launched[pausedID] {
+		t.Error("paused run must not be adopted (reconcile never auto-resumes a human park)")
+	}
+	if !launched[pausingID] {
+		t.Error("pausing run must be adopted by reconcile")
+	}
+	launchMu.Unlock()
+
+	// The skipped paused run is left exactly as it was: still paused, not finished.
+	paused, err := runs.Get(t.Context(), pausedID)
+	if err != nil {
+		t.Fatalf("Get paused: %v", err)
+	}
+	if paused.Status != crawler.RunStatusPaused {
+		t.Errorf("paused run: got %q, want paused (untouched)", paused.Status)
+	}
+	if paused.FinishedAt != nil {
+		t.Errorf("paused run must not be finished; got FinishedAt=%v", paused.FinishedAt)
+	}
+
+	// The adopted pausing run keeps its pausing status: reconcile does not flip it
+	// to running, so a later watcher can re-derive the park. Asserted before the
+	// final Shutdown (which leaves it running via Option C).
+	pausing, err := runs.Get(t.Context(), pausingID)
+	if err != nil {
+		t.Fatalf("Get pausing: %v", err)
+	}
+	if pausing.Status != crawler.RunStatusPausing {
+		t.Errorf("adopted pausing run: got %q, want pausing (not flipped to running)", pausing.Status)
+	}
+
+	// Drain the adopted run's blocking goroutine.
+	r.Shutdown(t.Context())
+}
+
 func TestConcurrentRunsIndependent(t *testing.T) {
 	defID := uuid.New()
 	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
@@ -410,12 +483,13 @@ func TestConcurrentRunsIndependent(t *testing.T) {
 	r.Shutdown(t.Context())
 }
 
-// TestShutdownParksRunsForResume verifies that a graceful Shutdown leaves an
-// un-stopped run resumable rather than terminating it: the row is marked paused
-// (no FinishedAt) and its frontier is preserved (the cleaner is not invoked), so
-// a later Reconcile can adopt it. A run the user explicitly Stopped before the
+// TestShutdownLeavesRunRunningForResume verifies the Option-C contract: a
+// graceful Shutdown leaves an un-stopped, un-paused run resumable rather than
+// terminating it — the row stays running (no FinishedAt) and its frontier is
+// preserved (the cleaner is not invoked), so a later Reconcile adopts and
+// auto-resumes it like a crash. A run the user explicitly Stopped before the
 // drain must still terminate as stopped and have its frontier cleaned.
-func TestShutdownParksRunsForResume(t *testing.T) {
+func TestShutdownLeavesRunRunningForResume(t *testing.T) {
 	defID := uuid.New()
 	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
 	runs := newFakeRunRepo()
@@ -466,47 +540,51 @@ func TestShutdownParksRunsForResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get parked: %v", err)
 	}
-	if got.Status != crawler.RunStatusPaused {
-		t.Errorf("parked run status: got %q, want paused (resumable)", got.Status)
+	if got.Status != crawler.RunStatusRunning {
+		t.Errorf("left-running run status: got %q, want running (resumable)", got.Status)
 	}
 	if got.FinishedAt != nil {
-		t.Errorf("parked run must not be finished; got FinishedAt=%v", got.FinishedAt)
+		t.Errorf("left-running run must not be finished; got FinishedAt=%v", got.FinishedAt)
 	}
 
 	cleanMu.Lock()
 	if cleaned[parked.ID] {
-		t.Error("parked run's frontier must be preserved for resume, not cleaned")
+		t.Error("left-running run's frontier must be preserved for resume, not cleaned")
 	}
 	if !cleaned[stopped.ID] {
 		t.Error("explicitly stopped run's frontier must be cleaned")
 	}
 	cleanMu.Unlock()
 
-	// A fresh process reconciles: the paused run is adopted and flipped back to
-	// running (it is no longer paused once it is live again).
+	// A fresh process reconciles and genuinely adopts the left-running run.
+	// Prove adoption observably: only an adopted (in-active-set) run can be
+	// Stopped — a non-adopted run would return ErrRunNotActive — and it must
+	// then drain to stopped.
 	r2 := New(runs, defs, factory, WithFrontierCleaner(cleaner))
 	if err := r2.Reconcile(t.Context()); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	resumed, err := runs.Get(t.Context(), parked.ID)
-	if err != nil {
-		t.Fatalf("Get resumed: %v", err)
+	if err := r2.Stop(t.Context(), parked.ID); err != nil {
+		t.Fatalf("Stop after reconcile (run should have been adopted): %v", err)
 	}
-	if resumed.Status != crawler.RunStatusRunning {
-		t.Errorf("resumed run status: got %q, want running", resumed.Status)
+	resumed := waitForFinish(t, runs, parked.ID)
+	if resumed.Status != crawler.RunStatusStopped {
+		t.Errorf("adopted run after Stop: got %q, want stopped", resumed.Status)
 	}
 	r2.Shutdown(t.Context())
 }
 
-// TestShutdownParksRunDespiteFrontierTimeout is the regression test for #32: a
-// graceful Shutdown must park a busy run even when its frontier surfaces the
-// cancellation as a net i/o timeout rather than a wrapped context.Canceled. The
-// run must be marked paused (no FinishedAt) with its frontier preserved (the
-// cleaner is not invoked), so a later Reconcile can resume it — not marked failed
-// with its resume state destroyed. Unlike TestShutdownParksRunsForResume (whose
-// blockingFrontier returns context.Canceled on cancel, so it passes even with the
-// bug present), timeoutFrontier reproduces the real failure shape.
-func TestShutdownParksRunDespiteFrontierTimeout(t *testing.T) {
+// TestShutdownLeavesRunRunningDespiteFrontierTimeout is the regression test for
+// #32 under the Option-C contract: a graceful Shutdown must leave a busy run
+// resumable even when its frontier surfaces the cancellation as a net i/o
+// timeout rather than a wrapped context.Canceled. The run must stay running (no
+// FinishedAt) with its frontier preserved (the cleaner is not invoked), so a
+// later Reconcile can resume it — not marked failed with its resume state
+// destroyed. Unlike TestShutdownLeavesRunRunningForResume (whose blockingFrontier
+// returns context.Canceled on cancel, so it passes even with the bug present),
+// timeoutFrontier reproduces the real failure shape, locking in that the drain
+// branch keys off runCtx.Err() not the error shape.
+func TestShutdownLeavesRunRunningDespiteFrontierTimeout(t *testing.T) {
 	defID := uuid.New()
 	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
 	runs := newFakeRunRepo()
@@ -546,17 +624,17 @@ func TestShutdownParksRunDespiteFrontierTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get parked: %v", err)
 	}
-	if got.Status != crawler.RunStatusPaused {
-		t.Errorf("parked run status: got %q, want paused (resumable despite i/o timeout)", got.Status)
+	if got.Status != crawler.RunStatusRunning {
+		t.Errorf("left-running run status: got %q, want running (resumable despite i/o timeout)", got.Status)
 	}
 	if got.FinishedAt != nil {
-		t.Errorf("parked run must not be finished; got FinishedAt=%v", got.FinishedAt)
+		t.Errorf("left-running run must not be finished; got FinishedAt=%v", got.FinishedAt)
 	}
 
 	cleanMu.Lock()
 	defer cleanMu.Unlock()
 	if cleaned[parked.ID] {
-		t.Error("parked run's frontier must be preserved for resume, not cleaned")
+		t.Error("left-running run's frontier must be preserved for resume, not cleaned")
 	}
 }
 
@@ -619,15 +697,15 @@ func TestStopClassifiesFrontierTimeoutAsStopped(t *testing.T) {
 	}, "frontier cleaner to run for the stopped run")
 }
 
-// TestShutdownParksRunWithRealErrorDuringDrain locks in the broadened park
-// condition: during a graceful Shutdown the cancelled run context is the
-// dominant signal, so even a genuine, non-cancellation error surfacing as the
-// run drains parks the run (paused, frontier preserved) rather than failing it.
-// This favours resume over a terminal failure during shutdown; a genuinely
-// broken run just re-fails after Reconcile. It is the counterpart to the
-// terminalStatus "io timeout under live ctx still fails" case: the same class of
-// error under a LIVE (non-cancelled) context stays failed.
-func TestShutdownParksRunWithRealErrorDuringDrain(t *testing.T) {
+// TestShutdownLeavesRunRunningWithRealErrorDuringDrain locks in the broadened
+// drain condition under Option C: during a graceful Shutdown the cancelled run
+// context is the dominant signal, so even a genuine, non-cancellation error
+// surfacing as the run drains leaves the run running (frontier preserved) rather
+// than failing it. This favours resume over a terminal failure during shutdown;
+// a genuinely broken run just re-fails after Reconcile. It is the counterpart to
+// the terminalStatus "io timeout under live ctx still fails" case: the same class
+// of error under a LIVE (non-cancelled) context stays failed.
+func TestShutdownLeavesRunRunningWithRealErrorDuringDrain(t *testing.T) {
 	defID := uuid.New()
 	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
 	runs := newFakeRunRepo()
@@ -667,17 +745,17 @@ func TestShutdownParksRunWithRealErrorDuringDrain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get parked: %v", err)
 	}
-	if got.Status != crawler.RunStatusPaused {
-		t.Errorf("parked run status: got %q, want paused (drain parks even a real error)", got.Status)
+	if got.Status != crawler.RunStatusRunning {
+		t.Errorf("left-running run status: got %q, want running (drain leaves running even on a real error)", got.Status)
 	}
 	if got.FinishedAt != nil {
-		t.Errorf("parked run must not be finished; got FinishedAt=%v", got.FinishedAt)
+		t.Errorf("left-running run must not be finished; got FinishedAt=%v", got.FinishedAt)
 	}
 
 	cleanMu.Lock()
 	defer cleanMu.Unlock()
 	if cleaned[parked.ID] {
-		t.Error("parked run's frontier must be preserved for resume, not cleaned")
+		t.Error("left-running run's frontier must be preserved for resume, not cleaned")
 	}
 }
 
