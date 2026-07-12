@@ -367,10 +367,25 @@ func (h *Handler) getCrawlStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// stopCrawl requests a stop of a run: 202 on success, 409 when the run is not
+// stoppable (already terminal), 404 for an unknown id. The existence Get is
+// required for the same reason as pauseCrawl/resumeCrawl: the runner cannot
+// distinguish an unknown id from a non-active run, so without it a 404 for an
+// unknown id would collapse into a 409.
 func (h *Handler) stopCrawl(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid crawl id")
+		return
+	}
+
+	if _, err := h.cfg.Runs.Get(r.Context(), id); err != nil {
+		if errors.Is(err, crawler.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "crawl not found")
+			return
+		}
+		slog.Error("api: error getting crawl before stop", "err", err)
+		writeError(w, http.StatusInternalServerError, "could not stop crawl")
 		return
 	}
 
