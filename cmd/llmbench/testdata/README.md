@@ -32,7 +32,7 @@ Labels were produced in three passes and are now **human-owned ground truth**
    "career-development" culture sub-page, with jobs on a sibling page, is
    `culture_about`.
 
-## Strata (78 fixtures)
+## Strata (80 fixtures)
 
 Binary `label` (`career_page` / `not_career_page`) drives scoring; `category`
 slices the report.
@@ -40,33 +40,38 @@ slices the report.
 | Category | Polarity | Count | Role |
 |---|---|---|---|
 | `hub_ats_root` | + | 16 | ATS board root — Gate certain-accepts |
-| `hub_self_hosted` | + | 32 | Self-hosted careers hub / entry page — LLM confirms |
+| `hub_self_hosted` | + | 33 | Self-hosted careers hub / entry page — LLM confirms |
 | `job_posting_single` | − | 6 | A single posting (dangerous false-positive) |
 | `culture_about` | − | 11 | Career-adjacent prose / hiring-process page (LLM trap) |
 | `aggregator` | − | 3 | Multi-company board — Gate certain-rejects |
-| `unrelated` | − | 10 | Homepage / pricing / blog / news section |
+| `unrelated` | − | 11 | Homepage / pricing / blog / news / software-docs |
 
-48 positives · 30 negatives · all six strata populated.
+49 positives · 31 negatives · all six strata populated.
+
+Two fixtures guard the #63 posting-path work: `0079-atlassian-com-company-careers-all-jobs`
+is a Terminal-Hub-Word deep hub (`/company/careers/all-jobs`) the exemption must keep
+out of the posting-path veto (else a Leak), and `0078-docs-rundeck-com-docs-manual-jobs`
+is a software-docs page (`/docs/manual/jobs`) the `docs` reject-path must shed (else a
+False-Certain).
 
 ## Gate findings on the verified set
 
 The Gate scorecard is a hard regression guard (non-zero exit on any Leak,
-False-Certain, or per-category gate violation). Against the verified labels it
-surfaces **four genuine gate gaps** — the harness doing its job, not fixture
-errors. `bench` therefore exits non-zero until these are addressed in the gate
-(discovery / ADR-0007 work, tracked separately from this benchmark):
+False-Certain, or per-category gate violation). Against the verified labels it now
+surfaces **one genuine gate gap** — the harness doing its job, not a fixture error.
+`bench` therefore exits non-zero until it is addressed in the gate (discovery /
+ADR-0007 work, tracked separately from this benchmark):
 
 - **0 Leaks** — the gate rejects no real Career Page on this set.
-- **False-Certain — `businessinsider.com/careers`** (a news section) and
-  **`governikus.de/karriere/arbeiten-bei-uns/`** (a culture page): both are
-  certain-accepted — skipping the LLM veto — purely because the path contains a
-  `careers`/`karriere` segment. The gate's `CareerPathSignals` certain-accept rule
-  rubber-stamps any such path, including non-hub sub-pages (the #45 failure mode).
-- **Violation — `job-boards.eu.greenhouse.io/…`**: a greenhouse board root the gate
-  leaves *uncertain* because `.eu.greenhouse.io` isn't in the ATS host allowlist
-  (`internal/catalog`).
-- **Violation — `remoteok.com/…`**: a real aggregator the gate leaves *uncertain*
-  because `remoteok.com` isn't on the aggregator denylist.
+- **0 Violations** — every ATS board root certain-accepts and every aggregator
+  certain-rejects (the earlier `job-boards.eu.greenhouse.io` ATS-host and
+  `remoteok.com` aggregator gaps are resolved in `internal/catalog`).
+- **False-Certain — `businessinsider.com/careers`**: a news section certain-accepted,
+  skipping the LLM veto, purely because its path contains a `careers` segment. This is
+  a content/aggregator gap, not a posting-path one — it is closed by the
+  Aggregator-denylist sub-issue of spec #62, which adds `businessinsider.com` to
+  `catalog`'s aggregator hosts. (The earlier `governikus.de/karriere/arbeiten-bei-uns`
+  culture-page False-Certain is already resolved.)
 
 ## Growing the set
 

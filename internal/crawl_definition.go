@@ -77,6 +77,12 @@ func DefaultLLMGateConfig() LLMGateConfig {
 			// so these rarely reach the gate; kept as a backstop.
 			"legal", "privacy", "terms", "imprint", "impressum", "cookie",
 			"gdpr", "pricing",
+			// Software-docs and media-taxonomy paths. A framework's `/docs/.../jobs`
+			// page or a media site's `/tag/careers` / `/category/jobs` page trips the
+			// certain-accept career-hub rule purely because a path segment is a career
+			// token; shed them here so they are rejected before the LLM, never
+			// certain-accepted (#62 catalog audit false positives).
+			"docs", "tag", "category",
 		},
 	}
 }

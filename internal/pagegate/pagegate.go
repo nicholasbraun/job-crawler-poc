@@ -34,15 +34,37 @@ var careerKeywords = []string{
 	"hiring", "join", "karriere", "stellen", "stellenangebote",
 }
 
+// terminalHubWords are the openings-index tokens that, as a deep career URL's
+// FINAL path segment, keep it a Career Page hub rather than a single posting,
+// exempting it from the posting-path veto (ADR-0010). The set is the career
+// path signals plus openings-index synonyms. It is fixed by the Gold Set's
+// zero-Leak requirement -- the naive "job-segment + segment => posting" veto
+// leaked six real deep-path hubs -- and is bench-guarded (ADR-0008). It is a
+// package-level curated list, deliberately config-independent, so the exported
+// IsPostingPath predicate the Catalog Doctor reuses needs no gate config.
+var terminalHubWords = []string{
+	// Career path signals (a terminal career token marks a hub, e.g. /a/b/careers).
+	"careers", "career", "jobs", "karriere", "stellenangebote", "vacancies",
+	// Openings-index synonyms.
+	"open-positions", "open-jobs", "opportunities", "openings", "positions",
+	"job-board", "alle-jobs", "all-jobs", "jobsearch", "job-search",
+	"offene-stellen",
+}
+
 // CareerPage decides whether a discovery candidate is a Career Page (accept)
 // and whether that decision is structurally definitive (certain), letting the
 // career-page pool skip the LLM classifier. A known aggregator/board host is
 // rejected outright (never a single-company hub). On a recognized ATS host the
-// decision is purely structural. On any other host a strong-negative reject
-// path rejects without the LLM; a bare career-hub root path (the career signal is
-// the last path segment) accepts as certain; a deeper career sub-page or an
-// otherwise career-signalled non-posting (or a page that links to postings) is
-// accepted but left to the LLM to confirm.
+// decision is purely structural. On any other host: a strong-negative reject
+// path rejects without the LLM; the deterministic posting-path veto (ADR-0010)
+// then rejects a single posting or deep career sub-page -- a job-section segment
+// followed by a further segment -- ahead of the link-count heuristic, so a
+// posting that links sibling postings can no longer re-admit itself; a URL whose
+// final path segment is a Terminal-Hub Word (a real deep hub such as
+// /careers/open-positions) is exempted from the veto. A bare career-hub root path
+// (the career signal is the last path segment) then accepts as certain; any other
+// career-signalled page (or a page that links to postings) is accepted but left
+// to the LLM to confirm.
 func CareerPage(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConfig) (accept, certain bool) {
 	// Multi-company aggregators, VC-portfolio boards, and professional networks
 	// are never a single company's hub. Reject them before any accept path so
@@ -60,13 +82,20 @@ func CareerPage(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConf
 		if pathHasSegment(u.RawURL, cfg.RejectPathSignals) {
 			return false, false
 		}
-		isPosting := isJobPostingPath(u.RawURL)
-		if !isPosting && careerHubRoot(u.RawURL, cfg.CareerPathSignals) {
+		// Deterministic posting-path veto (ADR-0010): a job-section segment
+		// followed by a further segment is a single posting or deep career
+		// sub-page. It runs ahead of the link-count heuristic below, so a posting
+		// that links sibling postings can no longer re-admit itself. Terminal-Hub-
+		// Word paths (e.g. /careers/open-positions) are exempted as real deep hubs.
+		if IsPostingPath(u) {
+			return false, false
+		}
+		if careerHubRoot(u.RawURL, cfg.CareerPathSignals) {
 			return true, true
 		}
 		careerish := containsAny(u.RawURL, careerKeywords) || containsAny(content.Title, careerKeywords)
 		listsJobs := countJobPostingLinks(u, content) > 0
-		return (careerish && !isPosting) || listsJobs, false
+		return careerish || listsJobs, false
 	}
 }
 
@@ -113,6 +142,33 @@ func countJobPostingLinks(base crawler.URL, content *crawler.Content) int {
 		}
 	}
 	return len(seen)
+}
+
+// IsPostingPath reports whether u's path is structurally a single Job Listing or
+// a deep career sub-page that the Discovery Gate deterministically rejects
+// (ADR-0010): a job-section segment ("careers", "jobs", …) followed by a further
+// segment, EXCEPT when the URL's final path segment is a Terminal-Hub Word (a
+// real deep-path hub such as /careers/open-positions). It reads only the URL, no
+// page content, so the Catalog Doctor replays the identical veto over stored
+// Career Page URLs from a single implementation.
+func IsPostingPath(u crawler.URL) bool {
+	return isJobPostingPath(u.RawURL) && !isTerminalHubWord(u.RawURL)
+}
+
+// isTerminalHubWord reports whether rawURL's final non-empty path segment is a
+// Terminal-Hub Word, exempting the URL from the posting-path veto.
+func isTerminalHubWord(rawURL string) bool {
+	segs := pathSegmentsOf(rawURL)
+	if len(segs) == 0 {
+		return false
+	}
+	last := segs[len(segs)-1]
+	for _, w := range terminalHubWords {
+		if strings.EqualFold(last, w) {
+			return true
+		}
+	}
+	return false
 }
 
 // isJobPostingPath reports whether rawURL's path points at a single posting:

@@ -187,6 +187,105 @@ func TestCareerPage(t *testing.T) {
 			wantAccept:  false,
 			wantCertain: false,
 		},
+		{
+			// The posting-path veto (ADR-0010) runs ahead of the link-count
+			// heuristic: a single posting that links sibling postings can no longer
+			// re-admit itself. Without the reorder this would be accept=true.
+			name: "single posting linking sibling postings is still rejected (veto beats link count)",
+			url:  "https://acme.com/careers/senior-engineer",
+			content: &crawler.Content{
+				Title: "Senior Engineer",
+				URLs:  []string{"/careers/eng-1", "/careers/eng-2", "/careers/eng-3"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
+			name: "numeric posting slug that lists jobs is rejected",
+			url:  "https://careers.moove.io/jobs/8041975-director-head-of-fleet",
+			content: &crawler.Content{
+				Title: "Director",
+				URLs:  []string{"/jobs/1", "/jobs/2"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
+			// A deep career URL whose terminal segment is a Terminal-Hub Word is a
+			// real deep hub: exempted from the veto and accepted (uncertain, since
+			// "open-positions" is not a certain CareerPathSignal).
+			name: "terminal-hub-word deep path is accepted (synonym, uncertain)",
+			url:  "https://acme.com/careers/open-positions",
+			content: &crawler.Content{
+				Title: "Open Positions",
+				URLs:  []string{"/careers/eng-1"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			name: "terminal-hub-word nested deep path is accepted (alle-jobs)",
+			url:  "https://jobs.example.de/karriere/jobs/alle-jobs",
+			content: &crawler.Content{
+				Title: "Alle Jobs",
+				URLs:  []string{},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// A deep path whose terminal segment is BOTH a Terminal-Hub Word and a
+			// CareerPathSignal is exempted from the veto and then certain-accepts as
+			// a hub root.
+			name: "terminal career-signal deep path is certain (exempt + hub root)",
+			url:  "https://acme.com/careers/vacancies",
+			content: &crawler.Content{
+				Title: "Vacancies",
+				URLs:  []string{},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		{
+			// A software-docs page ending in a career token would be certain-accepted
+			// by the career-hub rule; the new `docs` reject-path sheds it first.
+			name: "software-docs path ending in jobs is rejected, not certain-accepted",
+			url:  "https://acme.com/docs/advanced/jobs",
+			content: &crawler.Content{
+				Title: "Jobs API",
+				URLs:  []string{"/docs/advanced/queue"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
+			name: "media tag path is rejected",
+			url:  "https://acme.com/tag/careers",
+			content: &crawler.Content{
+				Title: "Careers tag",
+				URLs:  []string{},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
+			name: "media category path is rejected",
+			url:  "https://acme.com/category/jobs",
+			content: &crawler.Content{
+				Title: "Jobs category",
+				URLs:  []string{},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
 		// Zero-value config reproduces the legacy behavior: no URL-path signals,
 		// so a career-hub path is only accepted via the careerish/listsJobs
 		// heuristic and is never certain.
@@ -233,6 +332,48 @@ func TestCareerPage(t *testing.T) {
 			}
 			if certain != tt.wantCertain {
 				t.Errorf("CareerPage(%q) certain = %v, want %v", tt.url, certain, tt.wantCertain)
+			}
+		})
+	}
+}
+
+// TestIsPostingPath locks the URL-only posting-path predicate the Catalog Doctor
+// reuses (ADR-0010): it makes the terminalHubWords exemption explicit and proves
+// the veto reads only the URL, no page content.
+func TestIsPostingPath(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		// Exempted deep hubs -- every Terminal-Hub Word as a terminal segment.
+		{"open-positions terminal is a hub", "https://acme.com/careers/open-positions", false},
+		{"open-jobs terminal is a hub", "https://acme.com/careers/open-jobs", false},
+		{"opportunities terminal is a hub", "https://acme.com/careers/opportunities", false},
+		{"openings terminal is a hub", "https://acme.com/jobs/openings", false},
+		{"positions terminal is a hub", "https://acme.com/jobs/positions", false},
+		{"vacancies terminal is a hub", "https://acme.com/careers/vacancies", false},
+		{"job-board terminal is a hub", "https://acme.com/careers/job-board", false},
+		{"alle-jobs terminal is a hub", "https://acme.com/karriere/jobs/alle-jobs", false},
+		{"all-jobs terminal is a hub", "https://acme.com/jobs/all-jobs", false},
+		{"jobsearch terminal is a hub", "https://acme.com/careers/jobsearch", false},
+		{"job-search terminal is a hub", "https://acme.com/careers/job-search", false},
+		{"offene-stellen terminal is a hub", "https://acme.com/karriere/offene-stellen", false},
+		{"karriere terminal is a hub", "https://acme.com/de/careers/berlin/karriere", false},
+		// Vetoed single postings / deep sub-pages (role slug or culture leaf).
+		{"role slug is a posting", "https://acme.com/careers/senior-engineer", true},
+		{"numeric id is a posting", "https://acme.com/jobs/8041975-director", true},
+		{"singular job segment posting", "https://acme.com/job/leitung-entwicklung", true},
+		{"culture sub-page under careers is vetoed", "https://acme.com/careers/how-we-hire", true},
+		// Non-posting shapes: bare hubs and unrelated paths.
+		{"bare careers root is not a posting", "https://acme.com/careers", false},
+		{"nested careers root is not a posting", "https://acme.com/about/careers", false},
+		{"blog path is not a posting", "https://acme.com/blog/hello", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pagegate.IsPostingPath(newURL(t, tt.url)); got != tt.want {
+				t.Errorf("IsPostingPath(%q) = %v, want %v", tt.url, got, tt.want)
 			}
 		})
 	}
