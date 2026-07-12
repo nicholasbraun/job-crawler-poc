@@ -12,35 +12,12 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/postgres"
 )
 
-// doctorStore adapts the Postgres Company and CareerPage repositories to the
-// catalogdoctor.Store port, mirroring the cmd/doctor CLI adapter so the
-// end-to-end test drives the same code path.
-type doctorStore struct {
-	companies *postgres.CompanyRepository
-	pages     *postgres.CareerPageRepository
-}
-
-var _ catalogdoctor.Store = doctorStore{}
-
-func (s doctorStore) UpsertCompany(ctx context.Context, c *crawler.Company) error {
-	return s.companies.Upsert(ctx, c)
-}
-func (s doctorStore) DeleteCompany(ctx context.Context, id uuid.UUID) error {
-	return s.companies.Delete(ctx, id)
-}
-func (s doctorStore) DeleteCareerPage(ctx context.Context, id uuid.UUID) error {
-	return s.pages.Delete(ctx, id)
-}
-func (s doctorStore) ReattributeCareerPage(ctx context.Context, id, companyID uuid.UUID) error {
-	return s.pages.Reattribute(ctx, id, companyID)
-}
-
 func TestCatalogDoctorApplyEndToEnd(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := t.Context()
 	companyRepo := postgres.NewCompanyRepository(pool)
 	pageRepo := postgres.NewCareerPageRepository(pool)
-	store := doctorStore{companies: companyRepo, pages: pageRepo}
+	store := postgres.NewCatalogDoctorStore(companyRepo, pageRepo)
 
 	seedPage := func(companyKey, ats, domain, url string) {
 		t.Helper()

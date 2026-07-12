@@ -13,9 +13,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/google/uuid"
 	"github.com/joho/godotenv"
-	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/catalogdoctor"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/postgres"
 )
@@ -65,7 +63,7 @@ func main() {
 		return
 	}
 
-	store := pgStore{companies: companies, pages: pages}
+	store := postgres.NewCatalogDoctorStore(companies, pages)
 	if err := catalogdoctor.Apply(ctx, store, result); err != nil {
 		fmt.Fprintf(os.Stderr, "doctor: %v\n", err)
 		os.Exit(1)
@@ -102,31 +100,6 @@ func printReport(w *os.File, total int, result catalogdoctor.Result) {
 	for _, c := range result.Orphans {
 		fmt.Fprintf(w, "  orphan company   %s\n", c.CompanyKey)
 	}
-}
-
-// pgStore adapts the separate Postgres Company and CareerPage repositories to the
-// catalogdoctor.Store port.
-type pgStore struct {
-	companies *postgres.CompanyRepository
-	pages     *postgres.CareerPageRepository
-}
-
-var _ catalogdoctor.Store = pgStore{}
-
-func (s pgStore) UpsertCompany(ctx context.Context, c *crawler.Company) error {
-	return s.companies.Upsert(ctx, c)
-}
-
-func (s pgStore) DeleteCompany(ctx context.Context, id uuid.UUID) error {
-	return s.companies.Delete(ctx, id)
-}
-
-func (s pgStore) DeleteCareerPage(ctx context.Context, id uuid.UUID) error {
-	return s.pages.Delete(ctx, id)
-}
-
-func (s pgStore) ReattributeCareerPage(ctx context.Context, id, companyID uuid.UUID) error {
-	return s.pages.Reattribute(ctx, id, companyID)
 }
 
 // envOr returns the value of environment variable key, or fallback if it is
