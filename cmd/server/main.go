@@ -56,6 +56,15 @@ const (
 	defaultRedisAddr   = "localhost:6379"
 	shutdownTimeout    = 30 * time.Second
 
+	// redisReadyTimeout bounds how long startup waits for Redis to answer a
+	// Ping, and redisReadyPollInterval is how often it retries within that
+	// window. After a restart Redis replies "LOADING" until it finishes loading
+	// its persisted dataset (the prior run's frontier/visited state); that is a
+	// transient not-ready state, so we poll through it rather than treating the
+	// first failure as fatal.
+	redisReadyTimeout      = 60 * time.Second
+	redisReadyPollInterval = 500 * time.Millisecond
+
 	// Crawl tuning defaults, previously sourced from config.json. maxDepth and
 	// maxDomains seed a new crawl definition's fields (overridable per
 	// definition via the API); maxWorkers sizes the per-run worker pools.
@@ -143,7 +152,7 @@ func main() {
 		redisAddr = defaultRedisAddr
 	}
 	redisClient := redis.NewClient(&redis.Options{Addr: redisAddr})
-	if err := redisClient.Ping(ctx).Err(); err != nil {
+	if err := waitForRedis(ctx, redisClient, redisReadyTimeout); err != nil {
 		log.Fatalf("error connecting to redis at %s: %v", redisAddr, err)
 	}
 
@@ -502,6 +511,33 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// waitForRedis blocks until Redis answers a Ping or timeout elapses, retrying
+// every redisReadyPollInterval. It tolerates the transient state right after a
+// restart, when Redis replies "LOADING" while it loads its persisted dataset:
+// go-redis retries LOADING internally but only within a sub-second backoff
+// budget, too small for a sizable frontier/visited dump. On timeout (or if the
+// parent ctx is cancelled) it returns the last Ping error.
+func waitForRedis(ctx context.Context, client *redis.Client, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	for {
+		err := client.Ping(ctx).Err()
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return err
+		}
+		slog.Info("waiting for redis to become ready", "err", err)
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(redisReadyPollInterval):
+		}
+	}
 }
 
 // spaHandler serves the API under /api and the embedded SPA everywhere else,
