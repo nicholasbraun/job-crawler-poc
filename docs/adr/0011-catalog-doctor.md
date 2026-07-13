@@ -21,6 +21,12 @@ slow, non-deterministic, and *still* never deletes rows that no longer qualify.
   reads as careers, a marketplace's gig-signup page) survive until the next crawl.
   This bounds what "cleanup" can mean and is why the Doctor is not a precision
   silver bullet.
+- URL canonicalization is applied for grouping/dedup, not as an in-place rewrite:
+  the `Store` port has no update-URL primitive, so the Doctor merges
+  canonical-equivalent duplicates but keeps a surviving row's stored URL verbatim.
+  A *lone* pre-fix row (e.g. `http://x.com/careers/` with no `https` twin) is
+  therefore left as-is and only folds to canonical form on the next crawl+doctor
+  cycle, once the crawler writes the canonical twin and the Doctor merges the two.
 - We hard-delete, gated by the default dry-run report, rather than add a
   `quarantine`/`rejected_at` column — keeping this fix small. The rows are
   re-derivable derived data, so deletion is low-stakes.

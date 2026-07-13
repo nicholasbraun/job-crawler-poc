@@ -11,7 +11,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/joho/godotenv"
 	"github.com/nicholasbraun/job-crawler-poc/internal/catalogdoctor"
@@ -29,7 +32,11 @@ func main() {
 	// Best-effort .env load for local development (DATABASE_URL).
 	_ = godotenv.Load()
 
-	ctx := context.Background()
+	// Cancel in-flight DB work on Ctrl-C / SIGTERM so a long --apply against the
+	// live Catalog can be interrupted without leaving a stuck connection. Apply is
+	// idempotent and FK-ordered, so an interrupted run converges on a clean re-run.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	dsn := envOr("DATABASE_URL", defaultDatabaseURL)
 	// The Catalog is assumed already migrated (by the server); the Doctor never
@@ -73,7 +80,7 @@ func main() {
 
 // printReport writes the plan to w: a per-action summary, then one line per
 // non-Keep page disposition, then the orphaned Companies.
-func printReport(w *os.File, total int, result catalogdoctor.Result) {
+func printReport(w io.Writer, total int, result catalogdoctor.Result) {
 	counts := map[catalogdoctor.Action]int{}
 	for _, d := range result.Pages {
 		counts[d.Action]++
