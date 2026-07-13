@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 )
@@ -46,6 +47,20 @@ func (r *CompanyRepository) Upsert(ctx context.Context, c *crawler.Company) erro
 		return fmt.Errorf("postgres: error upserting company: %w", err)
 	}
 
+	return nil
+}
+
+// Delete removes the Company with the given id. Deleting a row that does not
+// exist is a no-op that returns nil. The career_page.company_id foreign key has
+// no ON DELETE CASCADE, so deleting a Company that still owns Career Pages is
+// rejected by the database and the violation is returned wrapped; the Catalog
+// Doctor must delete or re-attribute a Company's Career Pages before sweeping
+// the orphaned Company.
+func (r *CompanyRepository) Delete(ctx context.Context, id uuid.UUID) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM company WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("postgres: error deleting company: %w", err)
+	}
 	return nil
 }
 

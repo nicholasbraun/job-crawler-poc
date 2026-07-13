@@ -7,7 +7,7 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/cmd/llmbench/bench"
 )
 
-// TestDiff_Metrics locks the fixed 13-metric base order (gate, llm, e2e overall)
+// TestDiff_Metrics locks the fixed 14-metric base order (gate, llm, e2e overall)
 // and their signed deltas when ByCategory is nil on both sides, and that round4
 // strips the floating-point tail a raw subtraction would leave (e.g. 0.6667-0.3333).
 func TestDiff_Metrics(t *testing.T) {
@@ -36,6 +36,7 @@ func TestDiff_Metrics(t *testing.T) {
 		{Name: "gate.llm-call-rate", A: 0.5, B: 0.25, Delta: -0.25},
 		{Name: "gate.leaks", A: 1, B: 0, Delta: -1},
 		{Name: "gate.false-certains", A: 0, B: 0, Delta: 0},
+		{Name: "gate.accepted-false-certains", A: 0, B: 0, Delta: 0},
 		{Name: "gate.violations", A: 0, B: 0, Delta: 0},
 		{Name: "llm.precision", A: 0.8, B: 0.9, Delta: 0.1},
 		{Name: "llm.recall", A: 0.6, B: 0.7, Delta: 0.1},
@@ -74,8 +75,8 @@ func TestDiff_PerCategory(t *testing.T) {
 	}
 
 	metrics := bench.Diff(a, b).Metrics
-	if len(metrics) != 19 {
-		t.Fatalf("len(Metrics) = %d, want 19 (13 base + 6 per-category)", len(metrics))
+	if len(metrics) != 20 {
+		t.Fatalf("len(Metrics) = %d, want 20 (14 base + 6 per-category)", len(metrics))
 	}
 	wantTail := []bench.ScalarDelta{
 		{Name: "e2e.hub_ats_root.precision", A: 1, B: 0.5, Delta: -0.5},
@@ -85,7 +86,7 @@ func TestDiff_PerCategory(t *testing.T) {
 		{Name: "e2e.culture_about.recall", A: 0, B: 0.3, Delta: 0.3},
 		{Name: "e2e.culture_about.f1", A: 0, B: 0.2, Delta: 0.2},
 	}
-	if got := metrics[13:]; !reflect.DeepEqual(got, wantTail) {
+	if got := metrics[14:]; !reflect.DeepEqual(got, wantTail) {
 		t.Errorf("per-category tail mismatch:\n got  = %+v\n want = %+v", got, wantTail)
 	}
 }

@@ -138,6 +138,76 @@ func TestCompanyRepository(t *testing.T) {
 	})
 }
 
+func TestCompanyRepositoryDelete(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCompanyRepository(pool)
+	careerPageRepo := postgres.NewCareerPageRepository(pool)
+
+	t.Run("deletes a company with no career pages", func(t *testing.T) {
+		company := &crawler.Company{CompanyKey: "greenhouse:acme", ATSProvider: "greenhouse", DisplayDomain: "boards.greenhouse.io", Name: "Acme"}
+		if err := repo.Upsert(t.Context(), company); err != nil {
+			t.Fatalf("error seeding company: %v", err)
+		}
+		if countCompanies(t, pool) != 1 {
+			t.Fatalf("want 1 company before delete, got %d", countCompanies(t, pool))
+		}
+
+		if err := repo.Delete(t.Context(), company.ID); err != nil {
+			t.Fatalf("error deleting company: %v", err)
+		}
+		if countCompanies(t, pool) != 0 {
+			t.Errorf("want 0 companies after delete, got %d", countCompanies(t, pool))
+		}
+
+		// Idempotency: re-deleting and deleting an unknown id are no-ops.
+		if err := repo.Delete(t.Context(), company.ID); err != nil {
+			t.Fatalf("re-deleting should be a no-op, got error: %v", err)
+		}
+		if err := repo.Delete(t.Context(), uuid.New()); err != nil {
+			t.Fatalf("deleting an unknown id should be a no-op, got error: %v", err)
+		}
+		if countCompanies(t, pool) != 0 {
+			t.Errorf("want 0 companies, got %d", countCompanies(t, pool))
+		}
+	})
+
+	t.Run("deleting a company that still owns career pages is rejected, then succeeds once they are removed", func(t *testing.T) {
+		company := &crawler.Company{CompanyKey: "greenhouse:globex", ATSProvider: "greenhouse", DisplayDomain: "boards.greenhouse.io", Name: "Globex"}
+		if err := repo.Upsert(t.Context(), company); err != nil {
+			t.Fatalf("error seeding company: %v", err)
+		}
+		const url = "https://boards.greenhouse.io/globex/jobs/1"
+		if err := careerPageRepo.Upsert(t.Context(), &crawler.CareerPage{
+			CompanyID:        company.ID,
+			URL:              url,
+			PolitenessDomain: "boards.greenhouse.io",
+		}); err != nil {
+			t.Fatalf("error seeding career page: %v", err)
+		}
+
+		// The FK has no ON DELETE CASCADE, so the owning Company cannot be swept
+		// while it still owns a Career Page.
+		if err := repo.Delete(t.Context(), company.ID); err == nil {
+			t.Error("deleting a company that still owns career pages should violate the FK, got nil error")
+		}
+		if countCompanies(t, pool) != 1 {
+			t.Errorf("company should remain after the rejected delete, got %d", countCompanies(t, pool))
+		}
+
+		// Remove the Career Page first, then the orphaned Company sweeps cleanly.
+		id := careerPageIDByURL(t, careerPageRepo, url)
+		if err := careerPageRepo.Delete(t.Context(), id); err != nil {
+			t.Fatalf("error deleting career page: %v", err)
+		}
+		if err := repo.Delete(t.Context(), company.ID); err != nil {
+			t.Fatalf("error deleting company after its career pages were removed: %v", err)
+		}
+		if countCompanies(t, pool) != 0 {
+			t.Errorf("want 0 companies after the orphan sweep, got %d", countCompanies(t, pool))
+		}
+	})
+}
+
 func companyTimestamps(t *testing.T, pool *pgxpool.Pool, companyKey string) (firstSeen, lastSeen time.Time) {
 	t.Helper()
 	err := pool.QueryRow(context.Background(),

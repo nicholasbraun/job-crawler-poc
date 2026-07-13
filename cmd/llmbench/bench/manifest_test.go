@@ -109,6 +109,30 @@ func TestLoadManifest(t *testing.T) {
 	}
 }
 
+// TestLoadManifest_GateCertainAcceptOK checks the whitelist flag: it parses and
+// sets the Entry field on a negative fixture, and is rejected (ErrInvalidManifest)
+// on a positive one, since the whitelist only applies to negatives the gate
+// certain-accepts.
+func TestLoadManifest_GateCertainAcceptOK(t *testing.T) {
+	t.Run("valid-on-negative", func(t *testing.T) {
+		json := `[{"file":"a.html","url":"https://www.businessinsider.com/careers","label":"not_career_page","category":"unrelated","verified":true,"gate_certain_accept_ok":true}]`
+		m, err := bench.LoadManifest(manifestFS(t, json))
+		if err != nil {
+			t.Fatalf("LoadManifest() error: %v", err)
+		}
+		if !m.Entries[0].GateCertainAcceptOK {
+			t.Errorf("GateCertainAcceptOK = false, want true")
+		}
+	})
+
+	t.Run("rejected-on-positive", func(t *testing.T) {
+		json := `[{"file":"a.html","url":"https://boards.greenhouse.io/acme","label":"career_page","category":"hub_ats_root","gate_certain_accept_ok":true}]`
+		if _, err := bench.LoadManifest(manifestFS(t, json)); !errors.Is(err, bench.ErrInvalidManifest) {
+			t.Fatalf("LoadManifest() error = %v, want errors.Is ErrInvalidManifest", err)
+		}
+	})
+}
+
 func TestReadHTML(t *testing.T) {
 	fsys := fstest.MapFS{
 		"pages/x.html": &fstest.MapFile{Data: []byte("<title>x</title>")},

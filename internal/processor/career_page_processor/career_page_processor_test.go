@@ -210,6 +210,84 @@ func TestCareerPageProcessorCanonicalizesPostingToBoardRoot(t *testing.T) {
 	}
 }
 
+func TestCareerPageProcessorCanonicalizesStoredURL(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"http twin coerced to https", "http://careers.acme.com/jobs", "https://careers.acme.com/jobs"},
+		{"query string stripped", "https://careers.acme.com/careers?p=6774", "https://careers.acme.com/careers"},
+		{"root slash stripped", "https://careers.acme.com/", "https://careers.acme.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			companyRepo := &spyCompanyRepo{assignID: uuid.New()}
+			careerPageRepo := &spyCareerPageRepo{}
+			proc := careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
+				CompanyRepository:    companyRepo,
+				CareerPageRepository: careerPageRepo,
+				Confirmer:            &spyConfirmer{result: true},
+			})
+			raw := &crawler.RawCareerPage{
+				URL:     newURL(t, tt.raw),
+				Content: crawler.Content{Title: "Careers at Acme"},
+				Certain: false,
+			}
+			if err := proc.Process(t.Context(), raw); err != nil {
+				t.Fatalf("Process returned error: %v", err)
+			}
+			if len(careerPageRepo.upserted) != 1 {
+				t.Fatalf("want 1 career page upserted, got %d", len(careerPageRepo.upserted))
+			}
+			if got := careerPageRepo.upserted[0].URL; got != tt.want {
+				t.Errorf("stored career page URL = %q, want canonical %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCareerPageProcessorTwinsCollapseToOneStoredURL(t *testing.T) {
+	companyRepo := &spyCompanyRepo{assignID: uuid.New()}
+	careerPageRepo := &spyCareerPageRepo{}
+	proc := careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
+		CompanyRepository:    companyRepo,
+		CareerPageRepository: careerPageRepo,
+		Confirmer:            &spyConfirmer{result: true},
+	})
+	// http/https, trailing-slash, and query-string twins of the same hub. The
+	// spy repo does not enforce the DB UNIQUE(company_id, url) constraint, so we
+	// assert the equivalent invariant: every twin yields the same (CompanyID,
+	// URL) pair, so the real constraint would fold them to a single row.
+	twins := []string{
+		"http://careers.acme.com/careers/",
+		"https://careers.acme.com/careers",
+		"https://careers.acme.com/careers?p=6774",
+	}
+	for _, u := range twins {
+		raw := &crawler.RawCareerPage{
+			URL:     newURL(t, u),
+			Content: crawler.Content{Title: "Careers at Acme"},
+			Certain: false,
+		}
+		if err := proc.Process(t.Context(), raw); err != nil {
+			t.Fatalf("Process(%q) returned error: %v", u, err)
+		}
+	}
+	first := careerPageRepo.upserted[0]
+	for _, cp := range careerPageRepo.upserted {
+		if cp.URL != first.URL {
+			t.Errorf("twin stored as %q, want all twins as %q", cp.URL, first.URL)
+		}
+		if cp.CompanyID != first.CompanyID {
+			t.Errorf("twin attributed to %v, want %v", cp.CompanyID, first.CompanyID)
+		}
+	}
+	if first.URL != "https://careers.acme.com/careers" {
+		t.Errorf("canonical stored URL = %q, want https://careers.acme.com/careers", first.URL)
+	}
+}
+
 func TestCareerPageProcessorConfirmRejectDrops(t *testing.T) {
 	companyRepo := &spyCompanyRepo{assignID: uuid.New()}
 	careerPageRepo := &spyCareerPageRepo{}
