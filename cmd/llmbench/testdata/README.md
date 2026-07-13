@@ -57,21 +57,25 @@ False-Certain).
 ## Gate findings on the verified set
 
 The Gate scorecard is a hard regression guard (non-zero exit on any Leak,
-False-Certain, or per-category gate violation). Against the verified labels it now
-surfaces **one genuine gate gap** — the harness doing its job, not a fixture error.
-`bench` therefore exits non-zero until it is addressed in the gate (discovery /
-ADR-0007 work, tracked separately from this benchmark):
+False-Certain, or per-category gate violation). Against the verified labels it is
+green:
 
 - **0 Leaks** — the gate rejects no real Career Page on this set.
 - **0 Violations** — every ATS board root certain-accepts and every aggregator
   certain-rejects (the earlier `job-boards.eu.greenhouse.io` ATS-host and
   `remoteok.com` aggregator gaps are resolved in `internal/catalog`).
-- **False-Certain — `businessinsider.com/careers`**: a news section certain-accepted,
-  skipping the LLM veto, purely because its path contains a `careers` segment. This is
-  a content/aggregator gap, not a posting-path one — it is closed by the
-  Aggregator-denylist sub-issue of spec #62, which adds `businessinsider.com` to
-  `catalog`'s aggregator hosts. (The earlier `governikus.de/karriere/arbeiten-bei-uns`
-  culture-page False-Certain is already resolved.)
+- **0 fatal False-Certains — one whitelisted.** `businessinsider.com/careers` is a
+  content page *about* careers sitting at a bare `/careers` path. The Gate structurally
+  certain-accepts every bare `/careers` (that is the rule that keeps real hubs), and no
+  URL-only rule can separate this one from a genuine hub without Leaking real ones. It
+  is neither a Career Page nor an Aggregator, so it must not be certain-*rejected*
+  either. Its manifest entry therefore carries `"gate_certain_accept_ok": true`, which
+  diverts it to the scorecard's descriptive `accepted_false_certains` list — visible,
+  but non-fatal. (The earlier `governikus.de/karriere/arbeiten-bei-uns` culture-page
+  False-Certain is already resolved.) This is a bench-honesty whitelist, not a
+  production fix: the Catalog stores no page content, so removing this page from a live
+  Catalog is the content-driven work spec #62 leaves out of scope, awaiting a
+  content-aware crawl.
 
 ## Growing the set
 

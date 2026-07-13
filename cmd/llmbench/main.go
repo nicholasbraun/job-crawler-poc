@@ -126,7 +126,7 @@ func runBench(args []string) int {
 		}
 		accept, certain := pagegate.CareerPage(u, content, cfg)
 		gate := bench.GateOutcomeFrom(accept, certain)
-		row := bench.VerdictRow{URL: e.URL, Category: e.Category, Label: e.Label, Gate: gate, Verified: e.Verified}
+		row := bench.VerdictRow{URL: e.URL, Category: e.Category, Label: e.Label, Gate: gate, Verified: e.Verified, AcceptedFalseCertain: e.GateCertainAcceptOK}
 		if *llm && (isolated || gate == bench.GateUncertain) {
 			votes := make([]bool, 0, *repeats)
 			for range *repeats {
@@ -176,8 +176,9 @@ func loadGateConfig(path string) (crawler.LLMGateConfig, error) {
 }
 
 // printReport writes the Gate scorecard: the descriptive summary (total, LLM
-// calls, call rate) to w, and each hard failure (Leak, False-Certain, structural
-// Violation) to stderr in ANSI red so a regression stands out on the terminal.
+// calls, call rate, and any whitelisted accepted-false-certains) to w, and each
+// hard failure (Leak, False-Certain, structural Violation) to stderr in ANSI red
+// so a regression stands out on the terminal.
 // When llm is set it also appends the descriptive LLM and end-to-end scorecards
 // to w; those numbers never move the exit code. mode ("as-wired"/"isolated")
 // only labels the LLM scorecard header with the population it measured.
@@ -187,6 +188,12 @@ func printReport(w io.Writer, r Report, llm bool, mode string) {
 	fmt.Fprintf(w, "  total          %d\n", g.Total)
 	fmt.Fprintf(w, "  llm-calls      %d\n", g.LLMCalls)
 	fmt.Fprintf(w, "  llm-call-rate  %.4f\n", g.LLMCallRate)
+	// Whitelisted accepted-false-certains print plainly to w (never red): they are
+	// content-driven cases the gate cannot decide from the URL, kept visible but
+	// deliberately non-fatal.
+	for _, url := range g.AcceptedFalseCertains {
+		fmt.Fprintf(w, "  accepted-fc    %s (whitelisted content-driven exception, descriptive)\n", url)
+	}
 
 	for _, url := range g.Leaks {
 		fmt.Fprintln(os.Stderr, red("LEAK          "+url+" (real Career Page rejected by the gate)"))

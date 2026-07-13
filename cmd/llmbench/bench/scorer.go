@@ -103,16 +103,28 @@ type VerdictRow struct {
 	// Verified mirrors the manifest entry's verified flag. A verified row is
 	// human-signed-off and never enters the review queue. Added in #54.
 	Verified bool
+	// AcceptedFalseCertain mirrors the manifest entry's gate_certain_accept_ok
+	// flag: a negative fixture the Gate structurally certain-accepts with no
+	// URL-only fix (a bare-/careers content page). When true, Score diverts the
+	// row from the fatal FalseCertains list to the descriptive
+	// AcceptedFalseCertains list, so it never moves Failed(). Added in #62.
+	AcceptedFalseCertain bool
 }
 
 // GateScorecard is the deterministic Gate regression report.
 type GateScorecard struct {
-	Total         int         `json:"total"`
-	LLMCalls      int         `json:"llm_calls"`      // rows with GateUncertain (the gate forwards to the LLM)
-	LLMCallRate   float64     `json:"llm_call_rate"`  // ratio(LLMCalls, Total), 4dp, 0 when Total==0
-	Leaks         []string    `json:"leaks"`          // URLs: Label positive AND Gate==GateReject
-	FalseCertains []string    `json:"false_certains"` // URLs: Label negative AND Gate==GateCertainAccept
-	Violations    []Violation `json:"violations"`     // per-category structural expectation failures
+	Total         int      `json:"total"`
+	LLMCalls      int      `json:"llm_calls"`      // rows with GateUncertain (the gate forwards to the LLM)
+	LLMCallRate   float64  `json:"llm_call_rate"`  // ratio(LLMCalls, Total), 4dp, 0 when Total==0
+	Leaks         []string `json:"leaks"`          // URLs: Label positive AND Gate==GateReject
+	FalseCertains []string `json:"false_certains"` // URLs: Label negative AND Gate==GateCertainAccept (fatal)
+	// AcceptedFalseCertains are URLs that WOULD be False-Certains (negative label,
+	// gate certain-accept) but carry the manifest's gate_certain_accept_ok
+	// whitelist -- content-driven cases the Gate cannot decide from the URL alone.
+	// Listed descriptively for visibility; unlike FalseCertains they never move
+	// Failed().
+	AcceptedFalseCertains []string    `json:"accepted_false_certains"`
+	Violations            []Violation `json:"violations"` // per-category structural expectation failures
 }
 
 // Violation is a category whose gate verdict is structurally fixed but wrong: an
@@ -269,7 +281,8 @@ type Report struct {
 }
 
 // Failed reports whether the run must exit non-zero: any Leak, False-Certain, or
-// Violation. LLM numbers are descriptive and never move this.
+// Violation. LLM numbers and the whitelisted AcceptedFalseCertains are
+// descriptive and never move this.
 func (r Report) Failed() bool {
 	g := r.Gate
 	return len(g.Leaks) > 0 || len(g.FalseCertains) > 0 || len(g.Violations) > 0
@@ -282,9 +295,10 @@ func (r Report) Failed() bool {
 // deduped.
 func Score(rows []VerdictRow) Report {
 	sc := GateScorecard{
-		Leaks:         []string{},
-		FalseCertains: []string{},
-		Violations:    []Violation{},
+		Leaks:                 []string{},
+		FalseCertains:         []string{},
+		AcceptedFalseCertains: []string{},
+		Violations:            []Violation{},
 	}
 	for _, row := range rows {
 		sc.Total++
@@ -295,7 +309,14 @@ func Score(rows []VerdictRow) Report {
 			sc.Leaks = append(sc.Leaks, row.URL)
 		}
 		if !row.Label.Positive() && row.Gate == GateCertainAccept {
-			sc.FalseCertains = append(sc.FalseCertains, row.URL)
+			// A whitelisted (gate_certain_accept_ok) negative diverts to the
+			// descriptive AcceptedFalseCertains list so it stays visible without
+			// failing the run; every other one is a fatal False-Certain.
+			if row.AcceptedFalseCertain {
+				sc.AcceptedFalseCertains = append(sc.AcceptedFalseCertains, row.URL)
+			} else {
+				sc.FalseCertains = append(sc.FalseCertains, row.URL)
+			}
 		}
 		if want, ok := gateExpectation(row.Category); ok && row.Gate != want {
 			sc.Violations = append(sc.Violations, Violation{

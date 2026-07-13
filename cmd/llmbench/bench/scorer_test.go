@@ -286,6 +286,55 @@ func TestScore(t *testing.T) {
 	}
 }
 
+// TestScoreAcceptedFalseCertain checks the whitelist divert: a negative fixture
+// the gate certain-accepts is a fatal False-Certain by default, but with
+// AcceptedFalseCertain set it moves to the descriptive AcceptedFalseCertains list
+// and no longer fails the run. The flag is inert on a row that is not a
+// false-certain (e.g. a reject).
+func TestScoreAcceptedFalseCertain(t *testing.T) {
+	t.Run("whitelisted-diverts-and-passes", func(t *testing.T) {
+		got := bench.Score([]bench.VerdictRow{
+			{URL: "bi", Category: bench.CategoryUnrelated, Label: bench.LabelNotCareerPage, Gate: bench.GateCertainAccept, AcceptedFalseCertain: true},
+		})
+		if !reflect.DeepEqual(got.Gate.FalseCertains, []string{}) {
+			t.Errorf("FalseCertains = %v, want []", got.Gate.FalseCertains)
+		}
+		if !reflect.DeepEqual(got.Gate.AcceptedFalseCertains, []string{"bi"}) {
+			t.Errorf("AcceptedFalseCertains = %v, want [bi]", got.Gate.AcceptedFalseCertains)
+		}
+		if got.Failed() {
+			t.Errorf("Failed() = true, want false (a whitelisted false-certain must not fail the run)")
+		}
+	})
+
+	t.Run("unwhitelisted-still-fatal", func(t *testing.T) {
+		got := bench.Score([]bench.VerdictRow{
+			{URL: "bi", Category: bench.CategoryUnrelated, Label: bench.LabelNotCareerPage, Gate: bench.GateCertainAccept},
+		})
+		if !reflect.DeepEqual(got.Gate.FalseCertains, []string{"bi"}) {
+			t.Errorf("FalseCertains = %v, want [bi]", got.Gate.FalseCertains)
+		}
+		if !reflect.DeepEqual(got.Gate.AcceptedFalseCertains, []string{}) {
+			t.Errorf("AcceptedFalseCertains = %v, want []", got.Gate.AcceptedFalseCertains)
+		}
+		if !got.Failed() {
+			t.Errorf("Failed() = false, want true")
+		}
+	})
+
+	t.Run("flag-inert-on-non-false-certain", func(t *testing.T) {
+		got := bench.Score([]bench.VerdictRow{
+			{URL: "rej", Category: bench.CategoryUnrelated, Label: bench.LabelNotCareerPage, Gate: bench.GateReject, AcceptedFalseCertain: true},
+		})
+		if len(got.Gate.FalseCertains) != 0 || len(got.Gate.AcceptedFalseCertains) != 0 {
+			t.Errorf("FalseCertains=%v AcceptedFalseCertains=%v, want both empty", got.Gate.FalseCertains, got.Gate.AcceptedFalseCertains)
+		}
+		if got.Failed() {
+			t.Errorf("Failed() = true, want false")
+		}
+	})
+}
+
 // TestScoreLLM checks the LLM scorecard folds ONLY the rows the classifier saw
 // (rows with LLMVotes): certain-accept and reject rows without votes are excluded.
 // Every case here is N=1, so FlipRate is 0 and Flips is empty.

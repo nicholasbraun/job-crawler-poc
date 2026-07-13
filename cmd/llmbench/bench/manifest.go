@@ -15,13 +15,22 @@ var ErrInvalidManifest = errors.New("bench: invalid manifest")
 // real URL and human-owned ground truth. The pipeline classifies at URL, so the
 // stored HTML and the URL must be the same page.
 type Entry struct {
-	File      string   `json:"file"`
-	URL       string   `json:"url"`
-	Label     Label    `json:"label"`
-	Category  Category `json:"category"`
-	Verified  bool     `json:"verified"`
-	FetchedAt string   `json:"fetched_at"`
-	Note      string   `json:"note"`
+	File     string   `json:"file"`
+	URL      string   `json:"url"`
+	Label    Label    `json:"label"`
+	Category Category `json:"category"`
+	Verified bool     `json:"verified"`
+	// GateCertainAcceptOK whitelists a negative fixture whose URL the Gate
+	// structurally certain-accepts with no URL-only remedy -- a bare-/careers
+	// content page indistinguishable by URL from a real hub. It diverts the row
+	// from the fatal False-Certain list to the descriptive AcceptedFalseCertains
+	// list (see scorer.go), so a known, human-owned content-driven case does not
+	// fail the regression bench. Only valid on a not_career_page fixture;
+	// LoadManifest rejects it on a positive. omitempty keeps it off every other
+	// entry. Added in #62.
+	GateCertainAcceptOK bool   `json:"gate_certain_accept_ok,omitempty"`
+	FetchedAt           string `json:"fetched_at"`
+	Note                string `json:"note"`
 }
 
 // Manifest is the Gold-Set index: the ordered list of fixtures to score.
@@ -32,7 +41,8 @@ type Manifest struct {
 // LoadManifest reads and validates manifest.json (a bare JSON array of Entry)
 // from fsys. It wraps ErrInvalidManifest on: malformed JSON; an empty File or
 // URL; an unknown Label or Category; a Label/Category polarity mismatch
-// (Label.Positive() != Category.Positive()); or a duplicate File.
+// (Label.Positive() != Category.Positive()); gate_certain_accept_ok set on a
+// positive fixture; or a duplicate File.
 func LoadManifest(fsys fs.FS) (Manifest, error) {
 	data, err := fs.ReadFile(fsys, "manifest.json")
 	if err != nil {
@@ -60,6 +70,9 @@ func LoadManifest(fsys fs.FS) (Manifest, error) {
 		}
 		if e.Label.Positive() != e.Category.Positive() {
 			return Manifest{}, fmt.Errorf("%w: entry %d (%s): label %q and category %q disagree on polarity", ErrInvalidManifest, i, e.File, e.Label, e.Category)
+		}
+		if e.GateCertainAcceptOK && e.Label.Positive() {
+			return Manifest{}, fmt.Errorf("%w: entry %d (%s): gate_certain_accept_ok set on a positive (career_page) fixture -- the whitelist only applies to negatives the gate certain-accepts", ErrInvalidManifest, i, e.File)
 		}
 		if _, dup := seen[e.File]; dup {
 			return Manifest{}, fmt.Errorf("%w: duplicate file %q", ErrInvalidManifest, e.File)

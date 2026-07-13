@@ -35,6 +35,7 @@ func Diff(a, b Report) ReportDiff {
 	add("gate.llm-call-rate", a.Gate.LLMCallRate, b.Gate.LLMCallRate)
 	add("gate.leaks", float64(len(a.Gate.Leaks)), float64(len(b.Gate.Leaks)))
 	add("gate.false-certains", float64(len(a.Gate.FalseCertains)), float64(len(b.Gate.FalseCertains)))
+	add("gate.accepted-false-certains", float64(len(a.Gate.AcceptedFalseCertains)), float64(len(b.Gate.AcceptedFalseCertains)))
 	add("gate.violations", float64(len(a.Gate.Violations)), float64(len(b.Gate.Violations)))
 
 	add("llm.precision", a.LLM.Precision, b.LLM.Precision)

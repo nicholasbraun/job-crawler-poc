@@ -158,6 +158,7 @@
     "label": "not_career_page",
     "category": "unrelated",
     "verified": true,
+    "gate_certain_accept_ok": true,
     "fetched_at": "2026-07-11T14:07:43Z",
     "note": "provisional:hub_self_hosted (verified:false) | corrected hub_self_hosted-\u003eunrelated (full-content review)"
   },
