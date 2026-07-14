@@ -57,8 +57,8 @@ function CrawlHeaderCard({ crawl }: { crawl: KeywordCrawl }) {
             <span style={{ fontSize: 12, color: "var(--color-neutral-500)" }}>bounded run · seeds from catalog</span>
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {crawl.keywords.map((kw) => (
-              <span key={kw} className="tag tag-accent">
+            {crawl.keywords.map((kw, i) => (
+              <span key={`${kw}-${i}`} className="tag tag-accent">
                 {kw}
               </span>
             ))}
@@ -180,8 +180,8 @@ function ListingRow({ listing }: { listing: Listing }) {
       </td>
       <td>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-          {listing.techStack.map((t) => (
-            <span key={t} className="tag tag-neutral" style={{ fontSize: 10, padding: "2px 7px" }}>
+          {listing.techStack.map((t, i) => (
+            <span key={`${t}-${i}`} className="tag tag-neutral" style={{ fontSize: 10, padding: "2px 7px" }}>
               {t}
             </span>
           ))}

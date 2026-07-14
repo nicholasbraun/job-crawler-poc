@@ -51,8 +51,8 @@ export function CrawlCard({ crawl }: { crawl: KeywordCrawl }) {
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-        {crawl.keywords.slice(0, 4).map((kw) => (
-          <span key={kw} className="tag tag-neutral">
+        {crawl.keywords.slice(0, 4).map((kw, i) => (
+          <span key={`${kw}-${i}`} className="tag tag-neutral">
             {kw}
           </span>
         ))}
