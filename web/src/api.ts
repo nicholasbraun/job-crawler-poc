@@ -33,6 +33,10 @@ export type Run = {
   status: RunStatus;
   pagesCrawled: number;
   listingsFound: number;
+  // Live frontier size (queued + in-flight URLs), served on the list/get run
+  // endpoints. 0 for terminal runs and on create/start responses (poll to
+  // observe a fresh run's frontier fill). See internal/api runDTO.
+  frontierSize: number;
   startedAt: string;
   finishedAt: string | null;
   error: string;
@@ -124,6 +128,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function listCrawls(): Promise<Run[]> {
   return request<Run[]>("/crawls");
+}
+
+// createCrawl is the fused create-and-start endpoint: it persists a definition
+// and immediately starts a run, atomically (a failed start rolls the definition
+// back server-side). It backs the "Create & start" modal action. A keyword
+// crawl seeds from the catalog, so it carries keywords but no seedUrls.
+export function createCrawl(req: CreateDefinitionRequest): Promise<Run> {
+  return request<Run>("/crawls", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
 }
 
 export function getRunStatus(id: string): Promise<RunStatusSnapshot> {

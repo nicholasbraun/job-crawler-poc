@@ -1,124 +1,124 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { listCareerPages, listCompanies, type Company } from "../api";
-import {
-  Card,
-  formatTime,
-  PageHeader,
-  QueryState,
-} from "../components/ui";
+
+import type { Company } from "../api";
+import { useCareerPages, useCompanies } from "../hooks";
+import { fmt, relativeTime } from "../lib/format";
+import { atsSplit, careerPageCountByCompany, companySource } from "../lib/model";
+import { PageShell } from "../components/PageShell";
+import { EmptyState, ErrorNote, Loading, StatCard } from "../components/primitives";
+
+type Filter = "all" | "ats" | "self";
+const FILTERS: { key: Filter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "ats", label: "ATS" },
+  { key: "self", label: "Self-hosted" },
+];
 
 export function CatalogPage() {
-  const [selected, setSelected] = useState<Company | null>(null);
+  const [filter, setFilter] = useState<Filter>("all");
+  const companiesQ = useCompanies();
+  const pagesQ = useCareerPages();
 
-  const companies = useQuery({
-    queryKey: ["companies"],
-    queryFn: listCompanies,
-    refetchInterval: 3000,
-  });
+  const companies = companiesQ.data ?? [];
+  const pages = pagesQ.data ?? [];
+  const split = atsSplit(companies);
+  const pageCounts = careerPageCountByCompany(pages);
+  const atsProviders = new Set(companies.filter((c) => c.atsProvider).map((c) => c.atsProvider)).size;
+  const avgPerCompany = companies.length ? (pages.length / companies.length).toFixed(1) : "0.0";
 
-  const rows = companies.data ?? [];
+  const filtered = companies.filter((c) =>
+    filter === "all" ? true : filter === "ats" ? c.atsProvider !== "" : c.atsProvider === "",
+  );
+
+  const error = companiesQ.error ?? pagesQ.error;
+  const loading = companiesQ.isLoading || pagesQ.isLoading;
 
   return (
-    <div>
-      <PageHeader
-        title="Catalog"
-        subtitle="Companies and Career Pages discovered by Discovery Crawls."
-      />
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card title="Companies">
-          <QueryState
-            isLoading={companies.isLoading}
-            error={companies.error}
-            isEmpty={rows.length === 0}
-            emptyMessage="No companies catalogued yet. Run a discovery crawl."
-          >
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+    <PageShell
+      title="Catalog"
+      subtitle="Companies and career pages the discovery run has catalogued"
+      back={{ to: "/", label: "Overview" }}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "var(--space-4)" }}>
+          <StatCard size="md" label="Companies" value={fmt(companies.length)} sub="globally-unique keys" />
+          <StatCard size="md" label="Career pages" value={fmt(pages.length)} sub={`${avgPerCompany} avg per company`} />
+          <StatCard size="md" label="Self-hosted" value={`${split.selfPct}%`} sub={`${fmt(split.selfCount)} companies`} />
+          <StatCard size="md" label="ATS hubs" value={`${split.atsPct}%`} sub={`${fmt(split.atsCount)} · ${atsProviders} providers`} />
+        </div>
+
+        <div className="card elev-sm" style={{ gap: "var(--space-4)", padding: "var(--space-6)" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--space-4)", flexWrap: "wrap" }}>
+            <h4 style={{ margin: 0, fontSize: 17 }}>Companies</h4>
+            <div className="seg">
+              {FILTERS.map((f) => (
+                <label key={f.key} className="seg-opt">
+                  <input
+                    type="radio"
+                    name="catfilter"
+                    checked={filter === f.key}
+                    onChange={() => setFilter(f.key)}
+                  />
+                  {f.label}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {error ? (
+            <ErrorNote error={error} />
+          ) : loading ? (
+            <Loading />
+          ) : filtered.length === 0 ? (
+            <EmptyState
+              icon="ph-buildings"
+              title={companies.length === 0 ? "Nothing catalogued yet" : "No companies match this filter"}
+              hint={companies.length === 0 ? "The discovery run catalogues companies as it confirms career pages." : undefined}
+            />
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table className="table">
                 <thead>
-                  <tr className="border-b border-slate-200 text-left text-xs tracking-wide text-slate-500 uppercase">
-                    <th className="px-3 py-2">Company</th>
-                    <th className="px-3 py-2">ATS</th>
-                    <th className="px-3 py-2">Last seen</th>
+                  <tr>
+                    <th>Company</th>
+                    <th>Identity key</th>
+                    <th>Source</th>
+                    <th style={{ textAlign: "right" }}>Career pages</th>
+                    <th style={{ textAlign: "right" }}>Last seen</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((c) => (
-                    <tr
-                      key={c.id}
-                      onClick={() => setSelected(c)}
-                      className={`cursor-pointer border-b border-slate-100 last:border-0 hover:bg-slate-50 ${
-                        selected?.id === c.id ? "bg-indigo-50" : ""
-                      }`}
-                    >
-                      <td className="px-3 py-2">
-                        <div className="font-medium text-slate-800">
-                          {c.name || c.companyKey}
-                        </div>
-                        <div className="text-xs text-slate-400">
-                          {c.displayDomain}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 text-slate-600">
-                        {c.atsProvider || "self-hosted"}
-                      </td>
-                      <td className="px-3 py-2 text-slate-500">
-                        {formatTime(c.lastSeen)}
-                      </td>
-                    </tr>
+                  {filtered.map((c) => (
+                    <CompanyRow key={c.id} company={c} pages={pageCounts.get(c.id) ?? 0} />
                   ))}
                 </tbody>
               </table>
             </div>
-          </QueryState>
-        </Card>
-
-        <Card title={selected ? `Career pages — ${selected.name || selected.companyKey}` : "Career pages"}>
-          {selected ? (
-            <CareerPages companyId={selected.id} />
-          ) : (
-            <p className="text-sm text-slate-500">
-              Select a company to see its Career Pages.
-            </p>
           )}
-        </Card>
+        </div>
       </div>
-    </div>
+    </PageShell>
   );
 }
 
-function CareerPages({ companyId }: { companyId: string }) {
-  const pages = useQuery({
-    queryKey: ["career-pages", companyId],
-    queryFn: () => listCareerPages(companyId),
-  });
-
-  const rows = pages.data ?? [];
-
+function CompanyRow({ company, pages }: { company: Company; pages: number }) {
+  const isAts = company.atsProvider !== "";
   return (
-    <QueryState
-      isLoading={pages.isLoading}
-      error={pages.error}
-      isEmpty={rows.length === 0}
-      emptyMessage="No career pages for this company."
-    >
-      <ul className="divide-y divide-slate-100">
-        {rows.map((p) => (
-          <li key={p.id} className="py-2">
-            <a
-              href={p.url}
-              target="_blank"
-              rel="noreferrer"
-              className="text-sm text-indigo-600 hover:underline"
-            >
-              {p.url}
-            </a>
-            <div className="text-xs text-slate-400">
-              {p.politenessDomain} · last seen {formatTime(p.lastSeen)}
-            </div>
-          </li>
-        ))}
-      </ul>
-    </QueryState>
+    <tr>
+      <td>
+        <div style={{ fontSize: 14 }}>{company.name || company.displayDomain}</div>
+        <div style={{ fontSize: 11, color: "var(--color-neutral-500)" }}>{company.displayDomain}</div>
+      </td>
+      <td>
+        <code style={{ fontSize: 12, color: "var(--color-neutral-300)", fontFamily: "ui-monospace, monospace" }}>
+          {company.companyKey}
+        </code>
+      </td>
+      <td>
+        <span className={isAts ? "tag tag-accent-2" : "tag tag-neutral"}>{companySource(company)}</span>
+      </td>
+      <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{pages}</td>
+      <td style={{ textAlign: "right", color: "var(--color-neutral-500)", fontSize: 12 }}>{relativeTime(company.lastSeen)}</td>
+    </tr>
   );
 }

@@ -1,11 +1,10 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
 
 // The dev server proxies /api to the Go server on :8080; production builds are
 // embedded into the Go binary and served from the same origin.
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react()],
   build: {
     outDir: "dist",
   },
