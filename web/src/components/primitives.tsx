@@ -1,10 +1,65 @@
 import type { CSSProperties, ReactNode } from "react";
 
+import {
+  ArrowClockwise,
+  ArrowLeft,
+  ArrowRight,
+  ArrowSquareOut,
+  Broadcast,
+  Buildings,
+  CaretDown,
+  CaretRight,
+  CircleNotch,
+  FileText,
+  GlobeHemisphereWest,
+  type Icon as PhosphorIcon,
+  Info,
+  MagnifyingGlass,
+  Pause,
+  Play,
+  Plus,
+  SquaresFour,
+  Stack,
+  Stop,
+  WarningCircle,
+  X,
+} from "@phosphor-icons/react";
+
 import { useCrawlControls } from "../hooks";
 import { primaryAction, statusMeta, stoppable, type DisplayStatus } from "../lib/status";
 import { sparklinePoints } from "../lib/sparkline";
 
-// Icon renders a Phosphor (regular) glyph by class name, e.g. "ph-broadcast".
+// GLYPHS maps the legacy Phosphor class names (e.g. "ph-broadcast") to their
+// @phosphor-icons/react components. Keying by the old strings keeps every call
+// site unchanged while the static imports let the bundler tree-shake down to
+// only the glyphs listed here (vs. shipping the whole web font).
+const GLYPHS: Record<string, PhosphorIcon> = {
+  "ph-arrow-clockwise": ArrowClockwise,
+  "ph-arrow-left": ArrowLeft,
+  "ph-arrow-right": ArrowRight,
+  "ph-arrow-square-out": ArrowSquareOut,
+  "ph-broadcast": Broadcast,
+  "ph-buildings": Buildings,
+  "ph-caret-down": CaretDown,
+  "ph-caret-right": CaretRight,
+  "ph-circle-notch": CircleNotch,
+  "ph-file-text": FileText,
+  "ph-globe-hemisphere-west": GlobeHemisphereWest,
+  "ph-info": Info,
+  "ph-magnifying-glass": MagnifyingGlass,
+  "ph-pause": Pause,
+  "ph-play": Play,
+  "ph-plus": Plus,
+  "ph-squares-four": SquaresFour,
+  "ph-stack": Stack,
+  "ph-stop": Stop,
+  "ph-warning-circle": WarningCircle,
+  "ph-x": X,
+};
+
+// Icon renders a Phosphor (regular) glyph by its legacy class name, e.g.
+// "ph-broadcast". An unmapped name renders nothing. `color` defaults to the
+// inherited text color, matching the former font-glyph behaviour.
 export function Icon({
   name,
   size = 16,
@@ -16,7 +71,9 @@ export function Icon({
   color?: string;
   style?: CSSProperties;
 }) {
-  return <i className={`ph ${name}`} style={{ fontSize: size, color, ...style }} />;
+  const Glyph = GLYPHS[name];
+  if (!Glyph) return null;
+  return <Glyph size={size} color={color} weight="regular" style={style} />;
 }
 
 // StatusTag renders a run's status pill using the nocturne tag classes.
