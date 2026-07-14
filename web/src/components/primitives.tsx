@@ -9,6 +9,7 @@ import {
   Buildings,
   CaretDown,
   CaretRight,
+  CheckCircle,
   CircleNotch,
   DownloadSimple,
   FileText,
@@ -22,6 +23,7 @@ import {
   SquaresFour,
   Stack,
   Stop,
+  UploadSimple,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
@@ -43,6 +45,7 @@ const GLYPHS: Record<string, PhosphorIcon> = {
   "ph-buildings": Buildings,
   "ph-caret-down": CaretDown,
   "ph-caret-right": CaretRight,
+  "ph-check-circle": CheckCircle,
   "ph-circle-notch": CircleNotch,
   "ph-download-simple": DownloadSimple,
   "ph-file-text": FileText,
@@ -55,6 +58,7 @@ const GLYPHS: Record<string, PhosphorIcon> = {
   "ph-squares-four": SquaresFour,
   "ph-stack": Stack,
   "ph-stop": Stop,
+  "ph-upload-simple": UploadSimple,
   "ph-warning-circle": WarningCircle,
   "ph-x": X,
 };

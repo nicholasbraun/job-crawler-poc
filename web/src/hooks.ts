@@ -3,22 +3,32 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createCrawl,
   getCatalogHistory,
+  getImportJob,
+  isImportTerminal,
   listCareerPages,
   listCompanies,
   listCrawls,
   listDefinitions,
+  listImportJobs,
   listListings,
   pauseCrawl,
   resumeCrawl,
   startRun,
   stopCrawl,
+  submitImport,
 } from "./api";
+import type { ImportJob } from "./api";
 
 // Live-ish polling cadence for the run list; catalog/definition data changes
 // slowly, so it polls lazily. The run list now carries frontierSize inline
 // (backend enrichment), so cards read the live frontier without an extra poll.
 const RUNS_POLL_MS = 2000;
 const CATALOG_POLL_MS = 8000;
+// Recent-imports list refresh while the modal is open. The active job is polled
+// faster (see useImportJob); this only needs to catch externally-changed jobs
+// (a concurrent submission, a boot-time restart sweep). Completion also
+// invalidates it directly, so it can afford to be lazy.
+const IMPORT_JOBS_POLL_MS = 4000;
 
 export const keys = {
   crawls: ["crawls"] as const,
@@ -26,6 +36,8 @@ export const keys = {
   companies: ["companies"] as const,
   careerPages: ["career-pages"] as const,
   catalogHistory: ["catalog-history"] as const,
+  importJobs: ["import-jobs"] as const,
+  importJob: (id: string) => ["import-job", id] as const,
   listings: (definitionId: string, keyword: string) =>
     ["listings", definitionId, keyword] as const,
 };
@@ -50,6 +62,47 @@ export function useCareerPages() {
 // catalog cadence since the curve only moves as new pages are catalogued.
 export function useCatalogHistory() {
   return useQuery({ queryKey: keys.catalogHistory, queryFn: getCatalogHistory, refetchInterval: CATALOG_POLL_MS });
+}
+
+// useImportJobs lists recent Import Jobs for the modal history, newest first.
+// `enabled` is the modal's open state so it polls only while visible. The list
+// endpoint returns every job, so jobs from before a server restart (swept to
+// failed) still appear.
+export function useImportJobs(enabled: boolean) {
+  return useQuery({
+    queryKey: keys.importJobs,
+    queryFn: listImportJobs,
+    enabled,
+    refetchInterval: IMPORT_JOBS_POLL_MS,
+  });
+}
+
+// useImportJob polls one Import Job at ~1 s while it is live and stops once it
+// reaches a terminal state (completed/failed), so a finished job is not polled.
+export function useImportJob(jobId: string | null) {
+  return useQuery({
+    queryKey: keys.importJob(jobId ?? ""),
+    queryFn: () => getImportJob(jobId as string),
+    enabled: !!jobId,
+    refetchInterval: (query) => {
+      const job = query.state.data as ImportJob | undefined;
+      return job && isImportTerminal(job.status) ? false : 1000;
+    },
+  });
+}
+
+// useSubmitImport posts a catalog file and starts an Import Job, invalidating the
+// recent-imports list so a just-started job appears immediately. The caller mints
+// the idempotency key (one per user action) and, on success, adopts the returned
+// job id for polling.
+export function useSubmitImport() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: submitImport,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.importJobs });
+    },
+  });
 }
 
 export function useListings(definitionId: string, keyword: string) {

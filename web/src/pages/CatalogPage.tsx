@@ -4,6 +4,7 @@ import type { CareerPage, Company } from "../api";
 import { useCareerPages, useCompanies } from "../hooks";
 import { fmt, prettyUrl, relativeTime } from "../lib/format";
 import { atsSplit, careerPagesByCompany, companyInitial, companySource } from "../lib/model";
+import { ImportModal } from "../components/ImportModal";
 import { PageShell } from "../components/PageShell";
 import { EmptyState, ErrorNote, Icon, Loading, StatCard } from "../components/primitives";
 
@@ -21,6 +22,7 @@ const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 export function CatalogPage() {
   const [filter, setFilter] = useState<Filter>("all");
   const [letter, setLetter] = useState<string>("all");
+  const [importOpen, setImportOpen] = useState(false);
   const companiesQ = useCompanies();
   const pagesQ = useCareerPages();
 
@@ -57,11 +59,16 @@ export function CatalogPage() {
       subtitle="Companies and career pages the discovery run has catalogued"
       back={{ to: "/", label: "Overview" }}
       actions={
-        // A plain anchor, not a fetch: the browser follows the server's
-        // Content-Disposition and saves the Catalog Export directly.
-        <a className="btn btn-secondary" href="/api/catalog/export" download>
-          <Icon name="ph-download-simple" size={14} /> Export
-        </a>
+        <>
+          <button className="btn btn-secondary" onClick={() => setImportOpen(true)}>
+            <Icon name="ph-upload-simple" size={14} /> Import
+          </button>
+          {/* A plain anchor, not a fetch: the browser follows the server's
+              Content-Disposition and saves the Catalog Export directly. */}
+          <a className="btn btn-secondary" href="/api/catalog/export" download>
+            <Icon name="ph-download-simple" size={14} /> Export
+          </a>
+        </>
       }
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
@@ -141,6 +148,9 @@ export function CatalogPage() {
           )}
         </div>
       </div>
+      {/* Sibling of the content, not a child of the table: the modal is
+          position:fixed, so its place in the tree does not affect layout. */}
+      <ImportModal open={importOpen} onClose={() => setImportOpen(false)} />
     </PageShell>
   );
 }
