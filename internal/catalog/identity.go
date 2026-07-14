@@ -1,6 +1,9 @@
 // Package catalog derives ATS-aware Company identity from a crawled URL
 // (ADR-0001) and classifies a URL as a Career Page (the index that lists a
-// Company's open jobs) versus a single Job Listing beneath it. It is pure,
+// Company's open jobs) versus a single Job Listing beneath it. It also
+// resolves a Catalog Import record's Company identity down the Identity
+// Ladder (ADR-0013): explicit companyKey, else the Website's registrable
+// domain, else ATS-aware derivation from its Career Page URLs. It is pure,
 // table-tested logic with no repository dependencies: given a URL it computes
 // the globally-unique, provider-qualified CompanyKey used to attribute a Career
 // Page to a Company, while keeping the host-based Politeness Domain separate so
