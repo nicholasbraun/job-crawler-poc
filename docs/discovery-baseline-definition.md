@@ -13,7 +13,7 @@ changes rather than to a different seed set / filter.
 - **Definition id (v3 audit run):** `0b29f7f2-3201-4ecf-aa4d-001cac42480e`
 - **First used:** the v3 discovery run (2026-07-10), which measured ~62% career-page
   precision after the #45/#46 fixes shipped.
-- **Kind:** `discovery` · **maxDepth:** 4 · **maxDomains:** 10000
+- **Kind:** `discovery` · **maxDepth:** 4
 
 ## Seed URLs (25)
 

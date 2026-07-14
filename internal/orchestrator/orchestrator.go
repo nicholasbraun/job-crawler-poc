@@ -59,10 +59,6 @@ func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
 
 		// AddURL dedups internally now, so no separate visited check is needed.
 		err = o.frontier.AddURL(ctx, parsed)
-		if errors.Is(err, frontier.ErrMaxDomainLimit) {
-			slog.Info("max domain limit reached, dropping new domains")
-			continue
-		}
 		if err != nil {
 			slog.Error("error adding seed url", "err", err)
 			continue

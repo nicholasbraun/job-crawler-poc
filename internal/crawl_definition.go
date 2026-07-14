@@ -96,11 +96,10 @@ type CrawlDefinition struct {
 	Kind     CrawlKind
 	SeedURLs []string
 	// Keywords gate pages for keyword crawls. Unused for discovery crawls.
-	Keywords   []string
-	MaxDepth   int
-	MaxDomains int
-	URLFilter  URLFilterConfig
-	CreatedAt  time.Time
+	Keywords  []string
+	MaxDepth  int
+	URLFilter URLFilterConfig
+	CreatedAt time.Time
 }
 
 // CrawlDefinitionRepository persists and retrieves crawl definitions.

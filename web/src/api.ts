@@ -63,12 +63,11 @@ export type Definition = {
   seedUrls: string[];
   keywords: string[];
   maxDepth: number;
-  maxDomains: number;
   urlFilter: UrlFilterConfig;
   createdAt: string;
 };
 
-// Only the fields a user supplies; the server fills depth/domains/urlFilter from
+// Only the fields a user supplies; the server fills depth/urlFilter from
 // its configured defaults when omitted.
 export type CreateDefinitionRequest = {
   name: string;

@@ -130,27 +130,3 @@ func TestFrontierDedup(t *testing.T) {
 		}
 	})
 }
-
-func TestMaxDomains(t *testing.T) {
-	inmemFrontier := inmem.NewFrontier(inmem.WithMaxDomains(1))
-
-	// Distinct RawURLs so dedup doesn't short-circuit before the domain cap.
-	url := crawler.URL{Hostname: "base", RawURL: "path1"}
-	err := inmemFrontier.AddURL(t.Context(), url)
-	if err != nil {
-		t.Fatalf("error adding URL to frontier. error: %v", err)
-	}
-
-	url2 := crawler.URL{Hostname: "base", RawURL: "path2"}
-	err = inmemFrontier.AddURL(t.Context(), url2)
-	if err != nil {
-		t.Fatalf("error adding URL to frontier. error: %v", err)
-	}
-
-	// A brand-new hostname past the cap is rejected.
-	url3 := crawler.URL{Hostname: "base2", RawURL: "path3"}
-	err = inmemFrontier.AddURL(t.Context(), url3)
-	if !errors.Is(err, frontier.ErrMaxDomainLimit) {
-		t.Errorf("expected %v, got: %v", frontier.ErrMaxDomainLimit, err)
-	}
-}
