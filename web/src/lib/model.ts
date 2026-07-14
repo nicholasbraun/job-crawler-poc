@@ -6,13 +6,21 @@
 import type { CareerPage, Company, Definition, Run } from "../api";
 import type { DisplayStatus } from "./status";
 
+// isoAfter reports whether ISO timestamp a is strictly later than b, comparing
+// parsed instants rather than the raw strings. Go marshals time.Time as
+// RFC3339Nano, which trims trailing zeros in the fractional seconds, so
+// lexicographic order is not reliably chronological within the same second.
+function isoAfter(a: string, b: string): boolean {
+  return Date.parse(a) > Date.parse(b);
+}
+
 // latestRunByDefinition reduces the flat run list to each definition's most
 // recent run (by startedAt). A definition with no runs is simply absent.
 export function latestRunByDefinition(runs: Run[]): Map<string, Run> {
   const latest = new Map<string, Run>();
   for (const run of runs) {
     const prev = latest.get(run.definitionId);
-    if (!prev || run.startedAt > prev.startedAt) {
+    if (!prev || isoAfter(run.startedAt, prev.startedAt)) {
       latest.set(run.definitionId, run);
     }
   }
@@ -53,7 +61,7 @@ export function buildKeywordCrawls(defs: Definition[], runs: Run[]): KeywordCraw
   const latest = latestRunByDefinition(runs);
   return defs
     .filter((d) => d.kind === "keyword")
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
     .map((d) => fuse(d, latest.get(d.id)));
 }
 
@@ -92,7 +100,7 @@ export function buildDiscovery(defs: Definition[], runs: Run[]): Discovery | nul
     }
     const bestStart = best.run?.startedAt ?? best.def.createdAt;
     const thisStart = run?.startedAt ?? def.createdAt;
-    if (thisStart > bestStart) best = { def, run };
+    if (isoAfter(thisStart, bestStart)) best = { def, run };
   }
   if (!best) return null;
 
@@ -159,7 +167,7 @@ export function recentlyCatalogued(
   limit: number,
 ): RecentPage[] {
   return [...pages]
-    .sort((a, b) => b.firstSeen.localeCompare(a.firstSeen))
+    .sort((a, b) => Date.parse(b.firstSeen) - Date.parse(a.firstSeen))
     .map((p) => {
       const company = companiesById.get(p.companyId);
       if (!company) return null;
