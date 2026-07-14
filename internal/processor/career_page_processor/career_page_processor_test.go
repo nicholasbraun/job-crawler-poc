@@ -34,6 +34,10 @@ func (r *spyCompanyRepo) MergeImport(ctx context.Context, m *crawler.CompanyMerg
 	return nil // career-page processor never imports; unused
 }
 
+func (r *spyCompanyRepo) ListPagelessWebsites(ctx context.Context) ([]string, error) {
+	return nil, nil // career-page processor never seeds; unused
+}
+
 type spyCareerPageRepo struct {
 	upserted []*crawler.CareerPage
 }

@@ -195,6 +195,9 @@ func (f *fakeCompanyRepo) MergeImport(ctx context.Context, m *crawler.CompanyMer
 	m.ID = c.ID
 	return nil
 }
+func (f *fakeCompanyRepo) ListPagelessWebsites(ctx context.Context) ([]string, error) {
+	return nil, nil
+}
 
 // fakeCareerPageRepo is a mutex-guarded in-memory CareerPageRepository. Like
 // fakeCompanyRepo it is guarded so the importer's background merges never race

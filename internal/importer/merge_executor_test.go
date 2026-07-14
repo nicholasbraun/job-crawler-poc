@@ -21,6 +21,9 @@ type fakeCatalogCompanyRepo struct {
 
 func (f *fakeCatalogCompanyRepo) Upsert(context.Context, *crawler.Company) error   { return nil }
 func (f *fakeCatalogCompanyRepo) List(context.Context) ([]*crawler.Company, error) { return nil, nil }
+func (f *fakeCatalogCompanyRepo) ListPagelessWebsites(context.Context) ([]string, error) {
+	return nil, nil
+}
 func (f *fakeCatalogCompanyRepo) MergeImport(ctx context.Context, m *crawler.CompanyMerge) error {
 	if f.err != nil {
 		return f.err
