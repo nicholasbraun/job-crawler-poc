@@ -1,26 +1,9 @@
-// A live, session-scoped trend for the discovery panel's sparkline.
+// SVG geometry for the discovery panel's sparkline.
 //
-// The API exposes only point-in-time counts — there is no history endpoint (a
-// deliberately deferred backend feature). Rather than fabricate a trend, we
-// honestly accumulate the real values observed during this browser session:
-// each time a polled metric changes, we append it. The line therefore starts
-// flat and fills in as the dashboard runs, reflecting only data actually seen.
-
-const store = new Map<string, number[]>();
-const CAP = 48;
-
-// record appends `value` to the series for `key` when it differs from the last
-// sample (steady state stays flat rather than piling up duplicates), capping the
-// retained history. Returns the current series.
-export function record(key: string, value: number): number[] {
-  const series = store.get(key) ?? [];
-  if (series.length === 0 || series[series.length - 1] !== value) {
-    series.push(value);
-    if (series.length > CAP) series.shift();
-    store.set(key, series);
-  }
-  return series;
-}
+// The series itself comes from the /catalog-history endpoint (a cumulative,
+// gap-filled daily growth curve reconstructed from first_seen, per ADR-0012).
+// This module is a pure renderer: it maps that number[] onto polyline/polygon
+// point strings and holds no state of its own.
 
 // sparklinePoints maps a series onto SVG polyline/polygon point strings for a
 // w×h viewBox. The line hugs a small top/bottom padding; the area closes the

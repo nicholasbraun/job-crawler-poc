@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   createCrawl,
+  getCatalogHistory,
   listCareerPages,
   listCompanies,
   listCrawls,
@@ -13,7 +13,6 @@ import {
   startRun,
   stopCrawl,
 } from "./api";
-import { record } from "./lib/sparkline";
 
 // Live-ish polling cadence for the run list; catalog/definition data changes
 // slowly, so it polls lazily. The run list now carries frontierSize inline
@@ -26,6 +25,7 @@ export const keys = {
   definitions: ["definitions"] as const,
   companies: ["companies"] as const,
   careerPages: ["career-pages"] as const,
+  catalogHistory: ["catalog-history"] as const,
   listings: (definitionId: string, keyword: string) =>
     ["listings", definitionId, keyword] as const,
 };
@@ -44,6 +44,12 @@ export function useCompanies() {
 
 export function useCareerPages() {
   return useQuery({ queryKey: keys.careerPages, queryFn: () => listCareerPages(), refetchInterval: CATALOG_POLL_MS });
+}
+
+// useCatalogHistory polls the catalog-growth sparkline series. It shares the
+// catalog cadence since the curve only moves as new pages are catalogued.
+export function useCatalogHistory() {
+  return useQuery({ queryKey: keys.catalogHistory, queryFn: getCatalogHistory, refetchInterval: CATALOG_POLL_MS });
 }
 
 export function useListings(definitionId: string, keyword: string) {
@@ -91,15 +97,4 @@ export function useCreateCrawl() {
       qc.invalidateQueries({ queryKey: keys.definitions });
     },
   });
-}
-
-// useSampledSeries accumulates a live session trend for `value`, appending each
-// changed reading so the discovery sparkline reflects only real observed data.
-export function useSampledSeries(key: string, value: number | undefined): number[] {
-  const [series, setSeries] = useState<number[]>([]);
-  useEffect(() => {
-    if (value == null || Number.isNaN(value)) return;
-    setSeries([...record(key, value)]);
-  }, [key, value]);
-  return series;
 }

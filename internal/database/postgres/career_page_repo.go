@@ -84,6 +84,37 @@ func (r *CareerPageRepository) Reattribute(ctx context.Context, id, companyID uu
 	return nil
 }
 
+// FirstSeenByDay returns the per-UTC-day count of newly-catalogued Career Pages,
+// ascending by day, days with no new pages omitted. It buckets on
+// first_seen AT TIME ZONE 'UTC' so the day boundaries are fixed at UTC midnight
+// regardless of the connection's session TimeZone — matching the pure transform
+// that gap-fills and cumulates these counts into the sparkline. Cumulation is
+// deliberately kept out of SQL (a plain GROUP BY here) so the fiddly logic stays
+// unit-testable without a database.
+func (r *CareerPageRepository) FirstSeenByDay(ctx context.Context) ([]crawler.DayCount, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT date_trunc('day', first_seen AT TIME ZONE 'UTC') AS day, count(*)
+		FROM career_page
+		GROUP BY day
+		ORDER BY day
+		`)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: error counting career pages by day: %w", err)
+	}
+	defer rows.Close()
+
+	counts := []crawler.DayCount{}
+	for rows.Next() {
+		var dc crawler.DayCount
+		if err := rows.Scan(&dc.Day, &dc.Count); err != nil {
+			return nil, fmt.Errorf("postgres: error scanning career page day count: %w", err)
+		}
+		counts = append(counts, dc)
+	}
+
+	return counts, rows.Err()
+}
+
 // List returns every catalogued Career Page as a full entity, most-recently-seen
 // first. CompanyID is included so the dashboard can group pages under their
 // Company.

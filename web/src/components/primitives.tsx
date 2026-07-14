@@ -137,8 +137,8 @@ export function StatCard({
   );
 }
 
-// Sparkline draws a filled trend line for a session-sampled series in a 280×70
-// viewBox that stretches to fill its flex slot.
+// Sparkline draws a filled trend line for the catalog-growth series (from
+// /catalog-history) in a 280×70 viewBox that stretches to fill its flex slot.
 export function Sparkline({ series }: { series: number[] }) {
   const { line, area } = sparklinePoints(series, 280, 70);
   return (

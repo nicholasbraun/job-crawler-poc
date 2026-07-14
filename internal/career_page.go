@@ -22,6 +22,15 @@ type CareerPage struct {
 	LastSeen         time.Time
 }
 
+// DayCount is a single UTC-day bucket of newly-catalogued Career Pages: Count
+// pages whose FirstSeen falls on Day (truncated to UTC midnight). It is the raw
+// per-day tally the Catalog History sparkline is reconstructed from; the
+// cumulation and gap-filling live in a pure transform, not the query.
+type DayCount struct {
+	Day   time.Time
+	Count int
+}
+
 // CareerPageRepository persists Career Pages in the Catalog.
 type CareerPageRepository interface {
 	// Upsert inserts p or, when a row with the same (CompanyID, URL) already
@@ -38,6 +47,15 @@ type CareerPageRepository interface {
 	// most-recently-seen first. It never returns nil; an empty Catalog yields
 	// an empty slice.
 	List(ctx context.Context) ([]*CareerPage, error)
+
+	// FirstSeenByDay returns how many Career Pages were first catalogued on each
+	// UTC day, ascending by day, with days that catalogued nothing omitted. It
+	// backs the Catalog History sparkline (see the Catalog History term in
+	// CONTEXT.md): because it derives from surviving rows' FirstSeen, the trend
+	// it reconstructs is revisionist — pages the Catalog Doctor later removes
+	// drop out of the whole history. It never returns nil; an empty Catalog
+	// yields an empty slice.
+	FirstSeenByDay(ctx context.Context) ([]DayCount, error)
 }
 
 // RawCareerPage is a candidate Career Page emitted by the discovery pool for

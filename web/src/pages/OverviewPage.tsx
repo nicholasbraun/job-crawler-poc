@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 
-import { useCareerPages, useCompanies, useDefinitions, useRuns, useSampledSeries } from "../hooks";
+import { useCareerPages, useCatalogHistory, useCompanies, useDefinitions, useRuns } from "../hooks";
 import { fmt, prettyUrl, relativeTime } from "../lib/format";
 import {
   atsSplit,
@@ -82,10 +82,12 @@ function DiscoveryPanel({
   companies: number;
   split: ReturnType<typeof atsSplit>;
 }) {
-  // Honest, session-scoped trend (no history endpoint): samples the live
-  // career-page count as it changes. Hooks run unconditionally, so sample even
-  // when there is no discovery run yet.
-  const series = useSampledSeries("discovery-career-pages", careerPages);
+  // Cumulative catalog-growth curve reconstructed server-side from each page's
+  // first_seen (ADR-0012), so it survives reloads and restarts. Its endpoint
+  // equals the headline careerPages count. Hooks run unconditionally, so fetch
+  // even when there is no discovery run yet.
+  const { data } = useCatalogHistory();
+  const series = data?.careerPages ?? [];
 
   if (!discovery) {
     return (

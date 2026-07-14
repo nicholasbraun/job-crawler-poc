@@ -84,6 +84,7 @@ func (h *Handler) Routes() http.Handler {
 	// Catalog + listings (read-only browse).
 	mux.HandleFunc("GET /api/companies", h.listCompanies)
 	mux.HandleFunc("GET /api/career-pages", h.listCareerPages)
+	mux.HandleFunc("GET /api/catalog-history", h.catalogHistory)
 	mux.HandleFunc("GET /api/listings", h.listListings)
 
 	return mux
@@ -204,6 +205,15 @@ func toCareerPageDTO(p *crawler.CareerPage) careerPageDTO {
 		FirstSeen:        p.FirstSeen,
 		LastSeen:         p.LastSeen,
 	}
+}
+
+// catalogHistoryResponse is the Catalog History sparkline series: a cumulative,
+// daily, gap-filled growth curve of catalogued Career Pages. It is an object
+// rather than a bare array so a parallel company-growth series
+// (// Companies []int `json:"companies"`) can be added later without breaking
+// the client.
+type catalogHistoryResponse struct {
+	CareerPages []int `json:"careerPages"`
 }
 
 type listingDTO struct {
@@ -663,6 +673,29 @@ func (h *Handler) listCareerPages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, dtos)
+}
+
+// maxCatalogHistoryPoints caps the sparkline series so a long-lived Catalog does
+// not stream thousands of daily points to the dashboard. The <Sparkline> renders
+// into a 280×70 viewBox (see primitives.tsx), where points past roughly 90 merge
+// into an indistinguishable line; the backend downsamples to keep the payload
+// small while the curve's shape is preserved.
+const maxCatalogHistoryPoints = 90
+
+// catalogHistory serves the Catalog History growth sparkline: the cumulative,
+// gap-filled daily count of catalogued Career Pages, reconstructed read-only from
+// their first_seen timestamps (ADR-0012). Its endpoint equals the live "career
+// pages catalogued" count, so the two can never drift.
+func (h *Handler) catalogHistory(w http.ResponseWriter, r *http.Request) {
+	counts, err := h.cfg.CareerPages.FirstSeenByDay(r.Context())
+	if err != nil {
+		slog.Error("api: error reading catalog history", "err", err)
+		writeError(w, http.StatusInternalServerError, "could not read catalog history")
+		return
+	}
+
+	series := catalogSparkline(counts, time.Now(), maxCatalogHistoryPoints)
+	writeJSON(w, http.StatusOK, catalogHistoryResponse{CareerPages: series})
 }
 
 // listListings returns the job listings extracted under a definition, filtered

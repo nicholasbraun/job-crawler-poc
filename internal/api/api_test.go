@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,13 +122,17 @@ func (f *fakeCompanyRepo) List(ctx context.Context) ([]*crawler.Company, error) 
 }
 
 type fakeCareerPageRepo struct {
-	pages []*crawler.CareerPage
+	pages          []*crawler.CareerPage
+	firstSeenByDay []crawler.DayCount
 }
 
 func (f *fakeCareerPageRepo) Upsert(ctx context.Context, p *crawler.CareerPage) error { return nil }
 func (f *fakeCareerPageRepo) ListURLs(ctx context.Context) ([]string, error)          { return nil, nil }
 func (f *fakeCareerPageRepo) List(ctx context.Context) ([]*crawler.CareerPage, error) {
 	return f.pages, nil
+}
+func (f *fakeCareerPageRepo) FirstSeenByDay(ctx context.Context) ([]crawler.DayCount, error) {
+	return f.firstSeenByDay, nil
 }
 
 type fakeListingRepo struct {
@@ -719,6 +724,53 @@ func TestListCareerPagesFiltersByCompany(t *testing.T) {
 		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/career-pages?companyId=not-a-uuid", nil))
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("status: got %d, want 400", rec.Code)
+		}
+	})
+}
+
+func TestCatalogHistory(t *testing.T) {
+	utcDay := func(d int) time.Time { return time.Date(2026, 1, d, 0, 0, 0, 0, time.UTC) }
+
+	t.Run("returns the cumulative gap-filled series under careerPages", func(t *testing.T) {
+		// Jan 10: +2, gap on Jan 11, Jan 12: +3. The endpoint (5) equals the total.
+		pages := &fakeCareerPageRepo{firstSeenByDay: []crawler.DayCount{
+			{Day: utcDay(10), Count: 2},
+			{Day: utcDay(12), Count: 3},
+		}}
+		srv := newHandler(api.Config{CareerPages: pages})
+
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/catalog-history", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status: got %d, want 200; body=%s", rec.Code, rec.Body)
+		}
+
+		var got struct {
+			CareerPages []int `json:"careerPages"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("error decoding body %s: %v", rec.Body, err)
+		}
+		if len(got.CareerPages) < 3 {
+			t.Fatalf("want at least the 3 seeded days, got %v", got.CareerPages)
+		}
+		if got.CareerPages[0] != 2 {
+			t.Errorf("series should start at the first day's count 2, got %v", got.CareerPages)
+		}
+		if last := got.CareerPages[len(got.CareerPages)-1]; last != 5 {
+			t.Errorf("endpoint should equal the cumulative total 5, got %d", last)
+		}
+	})
+
+	t.Run("empty catalog yields an empty, non-null array", func(t *testing.T) {
+		srv := newHandler(api.Config{CareerPages: &fakeCareerPageRepo{}})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/catalog-history", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status: got %d, want 200", rec.Code)
+		}
+		if body := rec.Body.String(); !strings.Contains(body, `"careerPages":[]`) {
+			t.Errorf("empty catalog should serialize an empty array, got %s", body)
 		}
 	})
 }

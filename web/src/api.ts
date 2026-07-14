@@ -99,6 +99,14 @@ export type CareerPage = {
   lastSeen: string;
 };
 
+// CatalogHistory is the Catalog's growth sparkline: a cumulative, daily,
+// gap-filled series of catalogued career pages, downsampled server-side. It is
+// an object rather than a bare array so a parallel `companies` series can be
+// added later without breaking this client.
+export type CatalogHistory = {
+  careerPages: number[];
+};
+
 export type Listing = {
   url: string;
   title: string;
@@ -190,6 +198,13 @@ export function listCompanies(): Promise<Company[]> {
 export function listCareerPages(companyId?: string): Promise<CareerPage[]> {
   const q = companyId ? `?companyId=${encodeURIComponent(companyId)}` : "";
   return request<CareerPage[]>(`/career-pages${q}`);
+}
+
+// getCatalogHistory returns the catalog-growth sparkline series. Its endpoint
+// equals the live "career pages catalogued" count (both derive from the same
+// data), so the two never drift.
+export function getCatalogHistory(): Promise<CatalogHistory> {
+  return request<CatalogHistory>("/catalog-history");
 }
 
 export function listListings(params: {

@@ -69,6 +69,10 @@ _Avoid_: job board, directory, portal
 An idempotent maintenance pass that replays the current URL-structural rules over the already-stored Catalog, hard-deleting or re-attributing rows the rules now reject. It corrects only URL-decidable errors — the Catalog stores no page content, so it cannot re-judge a page the way the Gate and LLM first did.
 _Avoid_: cleanup, migration, backfill
 
+**Catalog History**:
+The Catalog's growth over time, reconstructed from when each surviving entry was first catalogued rather than recorded as it happened. Because it derives from today's Catalog, it is *revisionist*: entries the Catalog Doctor later removes vanish from the entire history, so it depicts how the current Catalog grew — not a ledger of the Catalog's past sizes.
+_Avoid_: catalog snapshot, growth log, time series
+
 ### Crawl mechanics
 
 **Frontier**:

@@ -153,6 +153,75 @@ func TestCareerPageRepositoryListURLsEmpty(t *testing.T) {
 	}
 }
 
+func TestCareerPageRepositoryFirstSeenByDay(t *testing.T) {
+	pool := newTestPool(t)
+	companyRepo := postgres.NewCompanyRepository(pool)
+	repo := postgres.NewCareerPageRepository(pool)
+
+	acme := &crawler.Company{CompanyKey: "greenhouse:acme", ATSProvider: "greenhouse", DisplayDomain: "boards.greenhouse.io", Name: "Acme"}
+	if err := companyRepo.Upsert(t.Context(), acme); err != nil {
+		t.Fatalf("error seeding company: %v", err)
+	}
+
+	// Two pages first-seen on 2026-01-10 (one near each end of the UTC day, so a
+	// non-UTC session bucketing would split them), a gap day 2026-01-11 with
+	// nothing, and one page on 2026-01-12. Upsert always stamps first_seen = now(),
+	// so seed the timestamps directly to control the buckets.
+	day10 := time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC)
+	day12 := time.Date(2026, 1, 12, 0, 0, 0, 0, time.UTC)
+	seedCareerPageFirstSeen(t, pool, acme.ID, "https://boards.greenhouse.io/acme/jobs/1", time.Date(2026, 1, 10, 8, 0, 0, 0, time.UTC))
+	seedCareerPageFirstSeen(t, pool, acme.ID, "https://boards.greenhouse.io/acme/jobs/2", time.Date(2026, 1, 10, 23, 59, 0, 0, time.UTC))
+	seedCareerPageFirstSeen(t, pool, acme.ID, "https://boards.greenhouse.io/acme/jobs/3", time.Date(2026, 1, 12, 6, 0, 0, 0, time.UTC))
+
+	counts, err := repo.FirstSeenByDay(t.Context())
+	if err != nil {
+		t.Fatalf("error counting first-seen by day: %v", err)
+	}
+
+	want := []crawler.DayCount{{Day: day10, Count: 2}, {Day: day12, Count: 1}}
+	if len(counts) != len(want) {
+		t.Fatalf("want %d day buckets (empty gap day omitted), got %d: %+v", len(want), len(counts), counts)
+	}
+	for i, w := range want {
+		if !counts[i].Day.Equal(w.Day) {
+			t.Errorf("bucket %d day: want %s, got %s", i, w.Day, counts[i].Day.UTC())
+		}
+		if counts[i].Count != w.Count {
+			t.Errorf("bucket %d count for %s: want %d, got %d", i, w.Day.Format("2006-01-02"), w.Count, counts[i].Count)
+		}
+	}
+}
+
+func TestCareerPageRepositoryFirstSeenByDayEmpty(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCareerPageRepository(pool)
+
+	counts, err := repo.FirstSeenByDay(t.Context())
+	if err != nil {
+		t.Fatalf("error counting first-seen by day: %v", err)
+	}
+	if counts == nil {
+		t.Fatal("FirstSeenByDay must return a non-nil slice, got nil")
+	}
+	if len(counts) != 0 {
+		t.Errorf("empty catalog should yield no day buckets, got %+v", counts)
+	}
+}
+
+// seedCareerPageFirstSeen inserts a career_page row with an explicit first_seen,
+// which the repository's Upsert cannot set (it always stamps now()).
+func seedCareerPageFirstSeen(t *testing.T, pool *pgxpool.Pool, companyID uuid.UUID, url string, firstSeen time.Time) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(),
+		`INSERT INTO career_page (company_id, url, politeness_domain, first_seen, last_seen)
+		 VALUES ($1, $2, $3, $4, $4)`,
+		companyID, url, "boards.greenhouse.io", firstSeen,
+	)
+	if err != nil {
+		t.Fatalf("error seeding career page with first_seen %s: %v", firstSeen, err)
+	}
+}
+
 func TestCareerPageRepositoryDelete(t *testing.T) {
 	pool := newTestPool(t)
 	companyRepo := postgres.NewCompanyRepository(pool)
