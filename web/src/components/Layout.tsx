@@ -2,7 +2,7 @@ import { useState } from "react";
 import { NavLink, Outlet, useOutletContext } from "react-router-dom";
 
 import { useDefinitions, useRuns } from "../hooks";
-import { buildDiscovery, buildKeywordCrawls } from "../lib/model";
+import { buildDiscovery, buildKeywordCrawls, crawlLabel } from "../lib/model";
 import { statusMeta } from "../lib/status";
 import { Dot, Icon } from "./primitives";
 import { NewCrawlModal } from "./NewCrawlModal";
@@ -16,7 +16,7 @@ export function useLayout(): LayoutContext {
   return useOutletContext<LayoutContext>();
 }
 
-type NavDef = { to: string; label: string; icon: string; end?: boolean; count?: number };
+type NavDef = { to: string; label: string; icon?: string; end?: boolean; count?: number; nested?: boolean };
 
 function NavItem({ item }: { item: NavDef }) {
   return (
@@ -27,9 +27,9 @@ function NavItem({ item }: { item: NavDef }) {
         display: "flex",
         alignItems: "center",
         gap: 11,
-        padding: "9px 11px",
+        padding: item.nested ? "7px 11px 7px 40px" : "9px 11px",
         borderRadius: "var(--radius-md)",
-        fontSize: 14,
+        fontSize: item.nested ? 13 : 14,
         textDecoration: "none",
         cursor: "pointer",
         color: isActive ? "var(--color-accent-200)" : "var(--color-neutral-300)",
@@ -39,8 +39,10 @@ function NavItem({ item }: { item: NavDef }) {
     >
       {({ isActive }) => (
         <>
-          <Icon name={item.icon} size={18} style={{ width: 18 }} />
-          <span style={{ flex: 1 }}>{item.label}</span>
+          {item.icon && <Icon name={item.icon} size={18} style={{ width: 18 }} />}
+          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {item.label}
+          </span>
           {item.count != null && (
             <span
               style={{
@@ -69,7 +71,8 @@ export function Layout() {
   const runList = runs.data ?? [];
 
   const discovery = buildDiscovery(defs, runList);
-  const keywordCount = buildKeywordCrawls(defs, runList).length;
+  const crawls = buildKeywordCrawls(defs, runList);
+  const totalListings = crawls.reduce((sum, c) => sum + c.listingsFound, 0);
   const discoveryMeta = discovery ? statusMeta(discovery.status) : null;
 
   return (
@@ -111,7 +114,13 @@ export function Layout() {
         <nav style={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <NavItem item={{ to: "/", label: "Overview", icon: "ph-squares-four", end: true }} />
           <NavItem item={{ to: "/discovery", label: "Discovery", icon: "ph-broadcast" }} />
-          <NavItem item={{ to: "/crawls", label: "Keyword crawls", icon: "ph-magnifying-glass", count: keywordCount }} />
+          <NavItem item={{ to: "/crawls", label: "Keyword crawls", icon: "ph-magnifying-glass", end: true, count: totalListings }} />
+          {crawls.map((c) => (
+            <NavItem
+              key={c.definitionId}
+              item={{ to: `/crawls/${c.definitionId}`, label: crawlLabel(c), count: c.listingsFound, nested: true }}
+            />
+          ))}
           <NavItem item={{ to: "/catalog", label: "Catalog", icon: "ph-stack" }} />
         </nav>
 

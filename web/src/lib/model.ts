@@ -57,6 +57,13 @@ export function buildKeywordCrawls(defs: Definition[], runs: Run[]): KeywordCraw
     .map((d) => fuse(d, latest.get(d.id)));
 }
 
+// crawlLabel is the sidebar/detail-friendly name for a keyword crawl, falling
+// back to a legible placeholder when the crawl was saved without a name so the
+// nav entry stays readable and clickable.
+export function crawlLabel(crawl: KeywordCrawl): string {
+  return crawl.name.trim() || "Untitled crawl";
+}
+
 // Discovery is the single perpetual discovery run the dashboard centers on: the
 // discovery definition plus its latest run. Null when no discovery crawl exists.
 export type Discovery = {
