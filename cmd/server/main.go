@@ -197,7 +197,8 @@ func main() {
 		slog.Error("error reconciling interrupted runs", "err", err)
 	}
 
-	catalogImporter := importer.New(importJobRepository)
+	catalogImporter := importer.New(importJobRepository,
+		importer.WithExecutor(importer.NewMergeExecutor(companyRepository, careerPageRepository)))
 	// Fail any import a previous process left mid-flight; recovery is a re-upload
 	// (ADR-0014). Best-effort — a sweep failure must not stop the server.
 	if err := catalogImporter.Sweep(ctx); err != nil {

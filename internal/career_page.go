@@ -31,12 +31,31 @@ type DayCount struct {
 	Count int
 }
 
+// CareerPageMerge is one import line's Career Page rendered as a merge
+// instruction (ADR-0013), keyed on (CompanyID, URL). URL is the storage form and
+// PolitenessDomain is derived from the URL host (never carried by the file), so
+// both are always present. FirstSeen/LastSeen are nil when the file omitted them.
+type CareerPageMerge struct {
+	CompanyID        uuid.UUID
+	URL              string
+	PolitenessDomain string
+	FirstSeen        *time.Time
+	LastSeen         *time.Time
+}
+
 // CareerPageRepository persists Career Pages in the Catalog.
 type CareerPageRepository interface {
 	// Upsert inserts p or, when a row with the same (CompanyID, URL) already
 	// exists, refreshes its mutable fields and advances last_seen while
 	// preserving first_seen.
 	Upsert(ctx context.Context, p *CareerPage) error
+
+	// MergeImport lands an imported Career Page keyed on (CompanyID, URL)
+	// (ADR-0013). Like the Company merge it is not a Sighting: last_seen never
+	// advances to now on update; timestamps merge monotonically (LEAST/GREATEST)
+	// and default to now() on first insert only. politeness_domain (always
+	// present, derived from the URL host) is refreshed. Re-merging changes no data.
+	MergeImport(ctx context.Context, m *CareerPageMerge) error
 
 	// ListURLs returns every catalogued Career Page URL. A Keyword Crawl calls
 	// this at run start to seed the Frontier from the Catalog.

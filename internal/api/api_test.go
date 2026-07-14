@@ -115,20 +115,89 @@ func (f *fakeRunRepo) UpdateCounters(ctx context.Context, id uuid.UUID, c crawle
 	return nil
 }
 
+// fakeCompanyRepo is a mutex-guarded in-memory CompanyRepository. The mutex
+// matters when a real importer.Importer is wired over it: it merges on a
+// background goroutine while handlers read List, so the two race under -race.
+// MergeImport is a faithful port of the Postgres merge (presence-wins fields,
+// monotone LEAST/GREATEST timestamps, not-a-Sighting) so the API-seam
+// idempotency test is meaningful.
 type fakeCompanyRepo struct {
+	mu        sync.Mutex
 	companies []*crawler.Company
 	listErr   error
 }
 
-func (f *fakeCompanyRepo) Upsert(ctx context.Context, c *crawler.Company) error { return nil }
+func (f *fakeCompanyRepo) Upsert(ctx context.Context, c *crawler.Company) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if c.ID == uuid.Nil {
+		c.ID = uuid.New()
+	}
+	saved := *c
+	f.companies = append(f.companies, &saved)
+	return nil
+}
 func (f *fakeCompanyRepo) List(ctx context.Context) ([]*crawler.Company, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
 	return f.companies, nil
 }
+func (f *fakeCompanyRepo) MergeImport(ctx context.Context, m *crawler.CompanyMerge) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.companies {
+		if c.CompanyKey != m.CompanyKey {
+			continue
+		}
+		if m.ATSProviderPresent {
+			c.ATSProvider = m.ATSProvider
+		}
+		if m.DisplayDomainPresent {
+			c.DisplayDomain = m.DisplayDomain
+		}
+		if m.NamePresent {
+			c.Name = m.Name
+		}
+		if m.FirstSeen != nil && m.FirstSeen.Before(c.FirstSeen) {
+			c.FirstSeen = *m.FirstSeen
+		}
+		if m.LastSeen != nil && m.LastSeen.After(c.LastSeen) {
+			c.LastSeen = *m.LastSeen
+		}
+		m.ID = c.ID
+		return nil
+	}
+	now := time.Now().UTC()
+	firstSeen, lastSeen := now, now
+	if m.FirstSeen != nil {
+		firstSeen = *m.FirstSeen
+	}
+	if m.LastSeen != nil {
+		lastSeen = *m.LastSeen
+	}
+	c := &crawler.Company{
+		ID:            uuid.New(),
+		CompanyKey:    m.CompanyKey,
+		ATSProvider:   m.ATSProvider,
+		DisplayDomain: m.DisplayDomain,
+		Name:          m.Name,
+		FirstSeen:     firstSeen,
+		LastSeen:      lastSeen,
+	}
+	f.companies = append(f.companies, c)
+	m.ID = c.ID
+	return nil
+}
 
+// fakeCareerPageRepo is a mutex-guarded in-memory CareerPageRepository. Like
+// fakeCompanyRepo it is guarded so the importer's background merges never race
+// handler reads under -race, and its MergeImport faithfully ports the Postgres
+// merge (monotone timestamps, refreshed politeness domain, not-a-Sighting).
 type fakeCareerPageRepo struct {
+	mu             sync.Mutex
 	pages          []*crawler.CareerPage
 	firstSeenByDay []crawler.DayCount
 	listErr        error
@@ -138,19 +207,63 @@ type fakeCareerPageRepo struct {
 	onList func()
 }
 
-func (f *fakeCareerPageRepo) Upsert(ctx context.Context, p *crawler.CareerPage) error { return nil }
-func (f *fakeCareerPageRepo) ListURLs(ctx context.Context) ([]string, error)          { return nil, nil }
+func (f *fakeCareerPageRepo) Upsert(ctx context.Context, p *crawler.CareerPage) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	saved := *p
+	f.pages = append(f.pages, &saved)
+	return nil
+}
+func (f *fakeCareerPageRepo) ListURLs(ctx context.Context) ([]string, error) { return nil, nil }
 func (f *fakeCareerPageRepo) List(ctx context.Context) ([]*crawler.CareerPage, error) {
 	if f.onList != nil {
 		f.onList()
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
 	return f.pages, nil
 }
 func (f *fakeCareerPageRepo) FirstSeenByDay(ctx context.Context) ([]crawler.DayCount, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.firstSeenByDay, nil
+}
+func (f *fakeCareerPageRepo) MergeImport(ctx context.Context, m *crawler.CareerPageMerge) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.pages {
+		if p.CompanyID != m.CompanyID || p.URL != m.URL {
+			continue
+		}
+		p.PolitenessDomain = m.PolitenessDomain
+		if m.FirstSeen != nil && m.FirstSeen.Before(p.FirstSeen) {
+			p.FirstSeen = *m.FirstSeen
+		}
+		if m.LastSeen != nil && m.LastSeen.After(p.LastSeen) {
+			p.LastSeen = *m.LastSeen
+		}
+		return nil
+	}
+	now := time.Now().UTC()
+	firstSeen, lastSeen := now, now
+	if m.FirstSeen != nil {
+		firstSeen = *m.FirstSeen
+	}
+	if m.LastSeen != nil {
+		lastSeen = *m.LastSeen
+	}
+	f.pages = append(f.pages, &crawler.CareerPage{
+		ID:               uuid.New(),
+		CompanyID:        m.CompanyID,
+		URL:              m.URL,
+		PolitenessDomain: m.PolitenessDomain,
+		FirstSeen:        firstSeen,
+		LastSeen:         lastSeen,
+	})
+	return nil
 }
 
 type fakeListingRepo struct {

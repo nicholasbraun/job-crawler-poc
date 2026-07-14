@@ -41,6 +41,30 @@ func (r *CareerPageRepository) Upsert(ctx context.Context, p *crawler.CareerPage
 	return nil
 }
 
+// MergeImport merges an imported Career Page into the Catalog (ADR-0013). Not a
+// Sighting: last_seen merges with GREATEST against the file timestamp only, so an
+// import never advances it to now(); now() is the first-insert default. Timestamps
+// merge monotonically; politeness_domain (always derived, always present) is
+// refreshed. Re-merging the same page changes no data.
+func (r *CareerPageRepository) MergeImport(ctx context.Context, m *crawler.CareerPageMerge) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO career_page
+			(company_id, url, politeness_domain, first_seen, last_seen)
+		VALUES
+			($1, $2, $3, COALESCE($4, now()), COALESCE($5, now()))
+		ON CONFLICT (company_id, url) DO UPDATE SET
+			politeness_domain = EXCLUDED.politeness_domain,
+			first_seen        = LEAST(career_page.first_seen, $4),
+			last_seen         = GREATEST(career_page.last_seen, $5)
+		`,
+		m.CompanyID, m.URL, m.PolitenessDomain, m.FirstSeen, m.LastSeen,
+	)
+	if err != nil {
+		return fmt.Errorf("postgres: error merging import career page: %w", err)
+	}
+	return nil
+}
+
 // ListURLs returns every catalogued Career Page URL, most-recently-seen first.
 // It never returns nil; an empty Catalog yields an empty slice.
 func (r *CareerPageRepository) ListURLs(ctx context.Context) ([]string, error) {
