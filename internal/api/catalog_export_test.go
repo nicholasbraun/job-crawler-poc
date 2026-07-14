@@ -117,6 +117,57 @@ func TestCatalogExportIsDeterministicallyOrdered(t *testing.T) {
 	}
 }
 
+// TestCatalogExportEmitsWebsite pins the website field's byte-level contract: a
+// company with a website emits it at the promised key position (between
+// displayDomain and firstSeen), and a company without one omits the key entirely
+// (omitempty) so a re-import never reads a presence-wins blanking write.
+func TestCatalogExportEmitsWebsite(t *testing.T) {
+	at := func(day int) time.Time { return time.Date(2026, 1, day, 0, 0, 0, 0, time.UTC) }
+	acme := &crawler.Company{
+		ID:            uuid.New(),
+		CompanyKey:    "acme.com",
+		Name:          "Acme",
+		DisplayDomain: "acme.com",
+		Website:       "https://acme.com",
+		FirstSeen:     at(1),
+		LastSeen:      at(5),
+	}
+	zeta := &crawler.Company{
+		ID:            uuid.New(),
+		CompanyKey:    "zeta.com",
+		Name:          "Zeta",
+		DisplayDomain: "zeta.com",
+		FirstSeen:     at(3),
+		LastSeen:      at(7),
+	}
+	companies := &fakeCompanyRepo{companies: []*crawler.Company{acme, zeta}}
+	srv := newHandler(api.Config{Companies: companies})
+
+	rec := exportBody(t, srv)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+
+	var acmeLine, zetaLine string
+	for _, line := range strings.Split(strings.TrimSuffix(rec.Body.String(), "\n"), "\n") {
+		switch {
+		case strings.Contains(line, `"companyKey":"acme.com"`):
+			acmeLine = line
+		case strings.Contains(line, `"companyKey":"zeta.com"`):
+			zetaLine = line
+		}
+	}
+	// Value and key position: website sits between displayDomain and firstSeen.
+	if !strings.Contains(acmeLine, `"displayDomain":"acme.com","website":"https://acme.com","firstSeen"`) {
+		t.Errorf("acme line missing website at the promised position; got %s", acmeLine)
+	}
+	// omitempty: a website-less company must not emit the key, so a re-import
+	// cannot read it as a presence-wins blank.
+	if strings.Contains(zetaLine, `"website"`) {
+		t.Errorf("website-less company must omit the website key; got %s", zetaLine)
+	}
+}
+
 func TestCatalogExportIncludesPagelessCompanies(t *testing.T) {
 	companies := &fakeCompanyRepo{companies: []*crawler.Company{
 		{ID: uuid.New(), CompanyKey: "pageless.example", Name: "Pageless"},

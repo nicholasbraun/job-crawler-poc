@@ -23,8 +23,13 @@ type Company struct {
 	// DisplayDomain is the human-facing host for the company.
 	DisplayDomain string
 	Name          string
-	FirstSeen     time.Time
-	LastSeen      time.Time
+	// Website is the Company's declared homepage (CONTEXT.md "Website"), or "" when
+	// unknown. Known only from a Catalog Import — Discovery never learns it — and
+	// stored as SQL NULL when "" (the ats_provider idiom). The empty domain value
+	// round-trips as "".
+	Website   string
+	FirstSeen time.Time
+	LastSeen  time.Time
 }
 
 // CompanyMerge is one import line's Company rendered as a merge instruction
@@ -43,8 +48,13 @@ type CompanyMerge struct {
 	DisplayDomainPresent bool
 	Name                 string
 	NamePresent          bool
-	FirstSeen            *time.Time // nil = absent; first_seen = LEAST(existing, this)
-	LastSeen             *time.Time // nil = absent; last_seen = GREATEST(existing, this)
+	// Website is presence-wins like the other mutable fields: written only when
+	// WebsitePresent (ADR-0013). An explicit "" clears it to SQL NULL; absent
+	// (WebsitePresent=false) leaves any catalogued Website untouched.
+	Website        string
+	WebsitePresent bool
+	FirstSeen      *time.Time // nil = absent; first_seen = LEAST(existing, this)
+	LastSeen       *time.Time // nil = absent; last_seen = GREATEST(existing, this)
 }
 
 // CompanyRepository persists Companies in the Catalog.
@@ -64,7 +74,8 @@ type CompanyRepository interface {
 	// file), last_seen = GREATEST(existing, file), each honoring an absent file
 	// value as "leave unchanged"); on first insert an absent timestamp defaults to
 	// now(). Each mutable field is written only when its Present flag is set (an
-	// explicit empty ATSProvider sets self-hosted). It writes the merged row's id
-	// into m.ID. Re-merging the same instruction changes no data.
+	// explicit empty ATSProvider sets self-hosted; an explicit empty Website
+	// clears it to NULL). It writes the merged row's id into m.ID. Re-merging the
+	// same instruction changes no data.
 	MergeImport(ctx context.Context, m *CompanyMerge) error
 }

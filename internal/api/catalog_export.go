@@ -14,19 +14,20 @@ import (
 
 // companyExportRecord is one Catalog Export line: a Company with its Career
 // Pages nested (ADR-0015). Field declaration order is the JSON key order the
-// exchange format promises, so exports diff meaningfully; #88 slots `website`
+// exchange format promises, so exports diff meaningfully; `website` slots
 // between DisplayDomain and FirstSeen. Row ids and politeness domains never
 // appear in the file — ids are instance-local, and the politeness domain is
 // always derivable from the page URL's host. ATSProvider is emitted even when
 // "" because "" is a definite value (self-hosted, ADR-0001), not an unknown;
-// Name and DisplayDomain are omitted when empty because an empty string there
-// means "not known", and ADR-0013's presence semantics would otherwise turn a
-// re-import of this file into an explicit blanking write.
+// Name, DisplayDomain, and Website are omitted when empty because an empty
+// string there means "not known", and ADR-0013's presence semantics would
+// otherwise turn a re-import of this file into an explicit blanking write.
 type companyExportRecord struct {
 	CompanyKey    string                   `json:"companyKey"`
 	ATSProvider   string                   `json:"atsProvider"`
 	Name          string                   `json:"name,omitempty"`
 	DisplayDomain string                   `json:"displayDomain,omitempty"`
+	Website       string                   `json:"website,omitempty"`
 	FirstSeen     time.Time                `json:"firstSeen"`
 	LastSeen      time.Time                `json:"lastSeen"`
 	CareerPages   []careerPageExportRecord `json:"careerPages"`
@@ -82,6 +83,7 @@ func exportRecords(companies []*crawler.Company, pages []*crawler.CareerPage) []
 			ATSProvider:   c.ATSProvider,
 			Name:          c.Name,
 			DisplayDomain: c.DisplayDomain,
+			Website:       c.Website,
 			FirstSeen:     c.FirstSeen.UTC(),
 			LastSeen:      c.LastSeen.UTC(),
 			CareerPages:   pageRecords,

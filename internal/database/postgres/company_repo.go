@@ -56,28 +56,34 @@ func (r *CompanyRepository) Upsert(ctx context.Context, c *crawler.Company) erro
 // stamp), so an import with an absent or older lastSeen never advances it. now()
 // is the first-insert default only. Mutable fields update only when the caller
 // marks them present; an explicit empty ats_provider is stored as NULL
-// (self-hosted). Writes the merged row's id back into m.ID.
+// (self-hosted), and an explicit empty website is stored as NULL. Writes the
+// merged row's id back into m.ID.
 func (r *CompanyRepository) MergeImport(ctx context.Context, m *crawler.CompanyMerge) error {
 	var atsProvider *string
 	if m.ATSProvider != "" {
 		atsProvider = &m.ATSProvider
 	}
+	var website *string
+	if m.Website != "" {
+		website = &m.Website
+	}
 
 	err := r.pool.QueryRow(ctx, `
 		INSERT INTO company
-			(company_key, ats_provider, display_domain, name, first_seen, last_seen)
+			(company_key, ats_provider, display_domain, name, website, first_seen, last_seen)
 		VALUES
-			($1, $2, $3, $4, COALESCE($5, now()), COALESCE($6, now()))
+			($1, $2, $3, $4, $5, COALESCE($6, now()), COALESCE($7, now()))
 		ON CONFLICT (company_key) DO UPDATE SET
-			ats_provider   = CASE WHEN $7 THEN EXCLUDED.ats_provider   ELSE company.ats_provider   END,
-			display_domain = CASE WHEN $8 THEN EXCLUDED.display_domain ELSE company.display_domain END,
-			name           = CASE WHEN $9 THEN EXCLUDED.name           ELSE company.name           END,
-			first_seen     = LEAST(company.first_seen, $5),
-			last_seen      = GREATEST(company.last_seen, $6)
+			ats_provider   = CASE WHEN $8  THEN EXCLUDED.ats_provider   ELSE company.ats_provider   END,
+			display_domain = CASE WHEN $9  THEN EXCLUDED.display_domain ELSE company.display_domain END,
+			name           = CASE WHEN $10 THEN EXCLUDED.name           ELSE company.name           END,
+			website        = CASE WHEN $11 THEN EXCLUDED.website        ELSE company.website        END,
+			first_seen     = LEAST(company.first_seen, $6),
+			last_seen      = GREATEST(company.last_seen, $7)
 		RETURNING id
 		`,
-		m.CompanyKey, atsProvider, m.DisplayDomain, m.Name, m.FirstSeen, m.LastSeen,
-		m.ATSProviderPresent, m.DisplayDomainPresent, m.NamePresent,
+		m.CompanyKey, atsProvider, m.DisplayDomain, m.Name, website, m.FirstSeen, m.LastSeen,
+		m.ATSProviderPresent, m.DisplayDomainPresent, m.NamePresent, m.WebsitePresent,
 	).Scan(&m.ID)
 	if err != nil {
 		return fmt.Errorf("postgres: error merging import company: %w", err)
@@ -100,11 +106,12 @@ func (r *CompanyRepository) Delete(ctx context.Context, id uuid.UUID) error {
 }
 
 // List returns every catalogued Company, most-recently-seen first. ats_provider
-// is nullable in the schema (self-hosted companies store NULL); a NULL is
-// surfaced as the empty string, matching how Upsert encodes it.
+// and website are nullable in the schema (self-hosted companies store a NULL
+// ats_provider; a Company whose homepage is unknown stores a NULL website); each
+// NULL is surfaced as the empty string, matching how the write path encodes it.
 func (r *CompanyRepository) List(ctx context.Context) ([]*crawler.Company, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, company_key, ats_provider, display_domain, name, first_seen, last_seen
+		SELECT id, company_key, ats_provider, display_domain, name, website, first_seen, last_seen
 		FROM company ORDER BY last_seen DESC
 		`)
 	if err != nil {
@@ -115,15 +122,18 @@ func (r *CompanyRepository) List(ctx context.Context) ([]*crawler.Company, error
 	companies := []*crawler.Company{}
 	for rows.Next() {
 		c := &crawler.Company{}
-		var atsProvider *string
+		var atsProvider, website *string
 		if err := rows.Scan(
-			&c.ID, &c.CompanyKey, &atsProvider, &c.DisplayDomain, &c.Name,
+			&c.ID, &c.CompanyKey, &atsProvider, &c.DisplayDomain, &c.Name, &website,
 			&c.FirstSeen, &c.LastSeen,
 		); err != nil {
 			return nil, fmt.Errorf("postgres: error scanning company: %w", err)
 		}
 		if atsProvider != nil {
 			c.ATSProvider = *atsProvider
+		}
+		if website != nil {
+			c.Website = *website
 		}
 		companies = append(companies, c)
 	}
