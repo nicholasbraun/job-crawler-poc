@@ -679,3 +679,93 @@ func snapshotPages(t *testing.T, repo *fakeCareerPageRepo) map[string]timestamps
 	}
 	return out
 }
+
+// companyByKey reads the catalog and returns the company with the given key, or
+// nil when absent.
+func companyByKey(t *testing.T, repo *fakeCompanyRepo, key string) *crawler.Company {
+	t.Helper()
+	list, err := repo.List(t.Context())
+	if err != nil {
+		t.Fatalf("list companies: %v", err)
+	}
+	for _, c := range list {
+		if c.CompanyKey == key {
+			return c
+		}
+	}
+	return nil
+}
+
+// TestImportPersistsWebsitePresenceWins covers AC bullet 3 end-to-end: a keyed
+// record's website lands, a keyless website-only record (Identity Ladder rung 2)
+// derives its identity and displayDomain from the website and stores it, and a
+// later sparse re-import that omits the website never blanks the catalogued one.
+func TestImportPersistsWebsitePresenceWins(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, companies, _ := newMergeImportHandler(t)
+
+		keyed := `{"companyKey":"acme.com","website":"https://acme.com","careerPages":[{"url":"https://acme.com/careers"}]}`
+		// Keyless + website-only: identity derives from the website's registrable
+		// domain (rung 2), and displayDomain fills from it too.
+		keyless := `{"name":"Initech","website":"https://initech.io","careerPages":[]}`
+		submitAndAwaitImport(t, srv, keyed+"\n"+keyless)
+
+		acme := companyByKey(t, companies, "acme.com")
+		if acme == nil {
+			t.Fatal("acme.com missing from catalog")
+		}
+		if acme.Website != "https://acme.com" {
+			t.Errorf("acme website: got %q, want https://acme.com", acme.Website)
+		}
+
+		initech := companyByKey(t, companies, "initech.io")
+		if initech == nil {
+			t.Fatalf("keyless record should resolve to key initech.io; catalog missing it")
+		}
+		if initech.Website != "https://initech.io" {
+			t.Errorf("initech website: got %q, want https://initech.io", initech.Website)
+		}
+		if initech.DisplayDomain != "initech.io" {
+			t.Errorf("initech displayDomain should fill from the website registrable domain: got %q, want initech.io", initech.DisplayDomain)
+		}
+
+		// Presence-wins: a sparse re-import that omits website must not blank it.
+		reimport := `{"companyKey":"acme.com","careerPages":[{"url":"https://acme.com/careers"}]}`
+		submitAndAwaitImport(t, srv, reimport)
+		if acme := companyByKey(t, companies, "acme.com"); acme == nil || acme.Website != "https://acme.com" {
+			t.Errorf("sparse re-import blanked the website: got %v", acme)
+		}
+	})
+}
+
+// websiteRoundTripExport is a full-fidelity Catalog Export: every field is
+// present, so importing it and re-exporting reproduces it byte-for-byte. Companies
+// are in export order (companyKey ascending: acme.com < greenhouse:zeta <
+// initech.io). It exercises the website round trip in every shape — present
+// (acme, initech) and absent (zeta) — plus displayDomain-from-website. Only
+// full-fidelity lines are byte-stable: a minimal record would gain derivation
+// defaults on import that a second export then emits, diverging.
+const websiteRoundTripExport = `{"companyKey":"acme.com","atsProvider":"","name":"Acme","displayDomain":"acme.com","website":"https://acme.com","firstSeen":"2025-01-01T00:00:00Z","lastSeen":"2025-06-01T00:00:00Z","careerPages":[{"url":"https://acme.com/careers","firstSeen":"2025-01-01T00:00:00Z","lastSeen":"2025-06-01T00:00:00Z"}]}
+{"companyKey":"greenhouse:zeta","atsProvider":"greenhouse","name":"Zeta","displayDomain":"zeta.com","firstSeen":"2025-03-01T00:00:00Z","lastSeen":"2025-07-01T00:00:00Z","careerPages":[{"url":"https://boards.greenhouse.io/zeta","firstSeen":"2025-03-01T00:00:00Z","lastSeen":"2025-07-01T00:00:00Z"}]}
+{"companyKey":"initech.io","atsProvider":"","name":"Initech","displayDomain":"initech.io","website":"https://initech.io","firstSeen":"2025-02-01T00:00:00Z","lastSeen":"2025-02-01T00:00:00Z","careerPages":[]}
+`
+
+// TestCatalogExportImportRoundTripByteIdentical satisfies the AC "an export →
+// import → export round trip is byte-identical including website": importing a
+// full-fidelity export and re-exporting must reproduce it verbatim — website
+// present survives, website absent stays absent, and ordering/timestamps hold.
+func TestCatalogExportImportRoundTripByteIdentical(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, _, _ := newMergeImportHandler(t)
+
+		submitAndAwaitImport(t, srv, websiteRoundTripExport)
+
+		rec := exportBody(t, srv)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("export status: got %d, want 200; body=%s", rec.Code, rec.Body)
+		}
+		if got := rec.Body.String(); got != websiteRoundTripExport {
+			t.Errorf("export → import → export not byte-identical:\ngot:\n%s\nwant:\n%s", got, websiteRoundTripExport)
+		}
+	})
+}

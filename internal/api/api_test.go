@@ -161,6 +161,9 @@ func (f *fakeCompanyRepo) MergeImport(ctx context.Context, m *crawler.CompanyMer
 		if m.NamePresent {
 			c.Name = m.Name
 		}
+		if m.WebsitePresent {
+			c.Website = m.Website
+		}
 		if m.FirstSeen != nil && m.FirstSeen.Before(c.FirstSeen) {
 			c.FirstSeen = *m.FirstSeen
 		}
@@ -184,6 +187,7 @@ func (f *fakeCompanyRepo) MergeImport(ctx context.Context, m *crawler.CompanyMer
 		ATSProvider:   m.ATSProvider,
 		DisplayDomain: m.DisplayDomain,
 		Name:          m.Name,
+		Website:       m.Website,
 		FirstSeen:     firstSeen,
 		LastSeen:      lastSeen,
 	}
@@ -903,7 +907,7 @@ func TestStartRunOfExistingDefinition(t *testing.T) {
 
 func TestListCompanies(t *testing.T) {
 	companies := &fakeCompanyRepo{companies: []*crawler.Company{
-		{ID: uuid.New(), CompanyKey: "greenhouse:acme", ATSProvider: "greenhouse", Name: "Acme"},
+		{ID: uuid.New(), CompanyKey: "greenhouse:acme", ATSProvider: "greenhouse", Name: "Acme", Website: "https://acme.io"},
 	}}
 	srv := newHandler(api.Config{Companies: companies})
 
@@ -918,6 +922,9 @@ func TestListCompanies(t *testing.T) {
 	}
 	if len(got) != 1 || got[0]["companyKey"] != "greenhouse:acme" {
 		t.Errorf("unexpected companies body: %v", got)
+	}
+	if got[0]["website"] != "https://acme.io" {
+		t.Errorf("website not carried by the DTO: got %v, want https://acme.io", got[0]["website"])
 	}
 }
 

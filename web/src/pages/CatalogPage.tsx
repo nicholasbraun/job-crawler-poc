@@ -2,7 +2,7 @@ import { useState } from "react";
 
 import type { CareerPage, Company } from "../api";
 import { useCareerPages, useCompanies } from "../hooks";
-import { fmt, prettyUrl, relativeTime } from "../lib/format";
+import { fmt, hostOf, prettyUrl, relativeTime } from "../lib/format";
 import { atsSplit, careerPagesByCompany, companyInitial, companySource } from "../lib/model";
 import { PageShell } from "../components/PageShell";
 import { EmptyState, ErrorNote, Icon, Loading, StatCard } from "../components/primitives";
@@ -217,7 +217,31 @@ function CompanyRow({ company, pages }: { company: Company; pages: CareerPage[] 
             />
             <div>
               <div style={{ fontSize: 14 }}>{company.name || company.displayDomain}</div>
-              <div style={{ fontSize: 11, color: "var(--color-neutral-500)" }}>{company.displayDomain}</div>
+              {company.website ? (
+                // Imported companies carry a homepage; link the domain to it. The
+                // row toggles its career-page list on click, so following the link
+                // must not also toggle the row (stopPropagation).
+                <a
+                  href={company.website}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    fontSize: 11,
+                    color: "var(--color-neutral-500)",
+                    textDecoration: "none",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    width: "fit-content",
+                  }}
+                >
+                  {company.displayDomain || hostOf(company.website)}
+                  <Icon name="ph-arrow-square-out" size={10} />
+                </a>
+              ) : (
+                <div style={{ fontSize: 11, color: "var(--color-neutral-500)" }}>{company.displayDomain}</div>
+              )}
             </div>
           </div>
         </td>

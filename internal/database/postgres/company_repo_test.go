@@ -208,6 +208,38 @@ func TestCompanyRepositoryDelete(t *testing.T) {
 	})
 }
 
+// TestCompanyUpsertWebsite proves Upsert never touches the website column
+// (ADR-0013): a Discovery-created row leaves it NULL, and a Discovery re-sight of
+// an imported company must not blank the website the import wrote.
+func TestCompanyUpsertWebsite(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCompanyRepository(pool)
+
+	t.Run("discovery Upsert leaves website NULL", func(t *testing.T) {
+		c := &crawler.Company{CompanyKey: "discovered.com", DisplayDomain: "discovered.com", Name: "Discovered"}
+		if err := repo.Upsert(t.Context(), c); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+		if got := companyWebsite(t, pool, "discovered.com"); got != nil {
+			t.Errorf("discovery-created website should be NULL, got %q", *got)
+		}
+	})
+
+	t.Run("Upsert preserves an imported website", func(t *testing.T) {
+		key := "imported.com"
+		if err := repo.MergeImport(t.Context(), &crawler.CompanyMerge{CompanyKey: key, Website: "https://imported.com", WebsitePresent: true}); err != nil {
+			t.Fatalf("import: %v", err)
+		}
+		// Discovery re-sights the company later; its Upsert carries no website ("").
+		if err := repo.Upsert(t.Context(), &crawler.Company{CompanyKey: key, DisplayDomain: "imported.com", Name: "Imported"}); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+		if got := companyWebsite(t, pool, key); got == nil || *got != "https://imported.com" {
+			t.Errorf("Upsert must not blank the imported website, got %v", got)
+		}
+	})
+}
+
 func companyTimestamps(t *testing.T, pool *pgxpool.Pool, companyKey string) (firstSeen, lastSeen time.Time) {
 	t.Helper()
 	err := pool.QueryRow(context.Background(),

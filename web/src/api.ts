@@ -85,6 +85,9 @@ export type Company = {
   companyKey: string;
   atsProvider: string;
   displayDomain: string;
+  // Website is the Company's declared homepage, or "" when unknown (Discovery
+  // never learns it; only a Catalog Import sets it). See internal/company.go.
+  website: string;
   name: string;
   firstSeen: string;
   lastSeen: string;

@@ -219,9 +219,10 @@ func NewMergeExecutor(companies crawler.CompanyRepository, pages crawler.CareerP
 	}
 }
 
-// toCompanyMerge renders a resolved import Company as a merge instruction.
-// Website / WebsitePresent are deliberately omitted: the company.website column
-// and its presence-wins write are #88's scope.
+// toCompanyMerge renders a resolved import Company as a merge instruction. Website
+// merges presence-wins like the other mutable fields (ADR-0013): a rung-2 record
+// carries the Website its identity derived from, and an absent website never blanks
+// a catalogued one.
 func toCompanyMerge(c catalog.ResolvedCompany) *crawler.CompanyMerge {
 	return &crawler.CompanyMerge{
 		CompanyKey:           c.CompanyKey,
@@ -231,6 +232,8 @@ func toCompanyMerge(c catalog.ResolvedCompany) *crawler.CompanyMerge {
 		DisplayDomainPresent: c.DisplayDomainPresent,
 		Name:                 c.Name,
 		NamePresent:          c.NamePresent,
+		Website:              c.Website,
+		WebsitePresent:       c.WebsitePresent,
 		FirstSeen:            c.FirstSeen,
 		LastSeen:             c.LastSeen,
 	}

@@ -24,6 +24,19 @@ func companyFields(t *testing.T, pool *pgxpool.Pool, key string) (atsProvider *s
 	return
 }
 
+// companyWebsite reads the nullable website column: nil == SQL NULL (unknown /
+// self-hosted-no-homepage), matching how MergeImport encodes an empty Website.
+func companyWebsite(t *testing.T, pool *pgxpool.Pool, key string) *string {
+	t.Helper()
+	var website *string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT website FROM company WHERE company_key = $1`, key,
+	).Scan(&website); err != nil {
+		t.Fatalf("read company website: %v", err)
+	}
+	return website
+}
+
 func TestCompanyMergeImport(t *testing.T) {
 	pool := newTestPool(t)
 	repo := postgres.NewCompanyRepository(pool)
@@ -246,6 +259,90 @@ func TestCompanyMergeImport(t *testing.T) {
 		ats1, name1, disp1 := companyFields(t, pool, key)
 		if name1 != name0 || disp1 != disp0 || (ats0 == nil) != (ats1 == nil) || (ats0 != nil && *ats0 != *ats1) {
 			t.Errorf("re-merge changed fields: was (%v,%q,%q), now (%v,%q,%q)", ats0, name0, disp0, ats1, name1, disp1)
+		}
+	})
+}
+
+func TestCompanyMergeImportWebsite(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCompanyRepository(pool)
+
+	t.Run("new company stores the website", func(t *testing.T) {
+		key := "acme.com"
+		m := &crawler.CompanyMerge{CompanyKey: key, Website: "https://acme.com", WebsitePresent: true}
+		if err := repo.MergeImport(t.Context(), m); err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		if got := companyWebsite(t, pool, key); got == nil || *got != "https://acme.com" {
+			t.Errorf("website: got %v, want https://acme.com", got)
+		}
+	})
+
+	t.Run("sparse merge preserves an existing website", func(t *testing.T) {
+		key := "sparse-web.com"
+		seed := &crawler.CompanyMerge{CompanyKey: key, Website: "https://sparse.com", WebsitePresent: true}
+		if err := repo.MergeImport(t.Context(), seed); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		// A merge that does not mention website must leave the catalogued one intact.
+		if err := repo.MergeImport(t.Context(), &crawler.CompanyMerge{CompanyKey: key, Name: "S", NamePresent: true}); err != nil {
+			t.Fatalf("sparse merge: %v", err)
+		}
+		if got := companyWebsite(t, pool, key); got == nil || *got != "https://sparse.com" {
+			t.Errorf("sparse merge changed website: got %v, want https://sparse.com", got)
+		}
+	})
+
+	t.Run("present website updates", func(t *testing.T) {
+		key := "updated-web.com"
+		seed := &crawler.CompanyMerge{CompanyKey: key, Website: "https://a.com", WebsitePresent: true}
+		if err := repo.MergeImport(t.Context(), seed); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		if err := repo.MergeImport(t.Context(), &crawler.CompanyMerge{CompanyKey: key, Website: "https://b.com", WebsitePresent: true}); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		if got := companyWebsite(t, pool, key); got == nil || *got != "https://b.com" {
+			t.Errorf("website should update to https://b.com, got %v", got)
+		}
+	})
+
+	t.Run("explicit empty website clears to NULL", func(t *testing.T) {
+		key := "cleared-web.com"
+		seed := &crawler.CompanyMerge{CompanyKey: key, Website: "https://c.com", WebsitePresent: true}
+		if err := repo.MergeImport(t.Context(), seed); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		// An explicit "" is a deliberate clear, stored as NULL (the ats_provider idiom).
+		if err := repo.MergeImport(t.Context(), &crawler.CompanyMerge{CompanyKey: key, Website: "", WebsitePresent: true}); err != nil {
+			t.Fatalf("clear website: %v", err)
+		}
+		if got := companyWebsite(t, pool, key); got != nil {
+			t.Errorf("explicit empty website should be NULL, got %q", *got)
+		}
+	})
+
+	t.Run("website round-trips through List", func(t *testing.T) {
+		key := "roundtrip.com"
+		if err := repo.MergeImport(t.Context(), &crawler.CompanyMerge{CompanyKey: key, Website: "https://roundtrip.com", WebsitePresent: true}); err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		companies, err := repo.List(t.Context())
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		var found *crawler.Company
+		for _, c := range companies {
+			if c.CompanyKey == key {
+				found = c
+				break
+			}
+		}
+		if found == nil {
+			t.Fatalf("company %q missing from List", key)
+		}
+		if found.Website != "https://roundtrip.com" {
+			t.Errorf("List website: got %q, want https://roundtrip.com", found.Website)
 		}
 	})
 }
