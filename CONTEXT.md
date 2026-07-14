@@ -42,7 +42,7 @@ _Avoid_: restart, unpause, continue
 ### Catalog
 
 **Company**:
-An organization that hires; owns one Career Page. Identity is ATS-aware — the tenant slug on a known ATS host, otherwise the registrable domain (eTLD+1).
+An organization that hires; owns any number of Career Pages — possibly none — and may declare a Website. Identity is ATS-aware — the tenant slug on a known ATS host, otherwise the registrable domain (eTLD+1).
 _Avoid_: org, employer, site, domain
 
 **Politeness Domain**:
@@ -58,8 +58,12 @@ A single job posting, extracted from under a Career Page.
 _Avoid_: job, posting, vacancy, ad
 
 **Catalog**:
-The durable collection of Companies and Career Pages that Discovery fills and Keyword Crawls consume.
+The durable collection of Companies and Career Pages, filled by Discovery and by Catalog Imports, consumed by Keyword Crawls.
 _Avoid_: index, database
+
+**Sighting**:
+A crawl's live observation of a Company or Career Page, refreshing its fields and advancing its last-seen time. Only crawls sight — a Catalog Import is not a Sighting.
+_Avoid_: visit, touch, refresh
 
 **Aggregator**:
 A multi-company job board, VC-portfolio board, or professional network — never a single Company's Career Page. Rejected at the Gate by host: it is structurally indistinguishable from a legitimate multi-tenant ATS (both serve many companies under `/{slug}` paths), so only a curated host list can tell them apart.
@@ -73,6 +77,32 @@ _Avoid_: cleanup, migration, backfill
 The Catalog's growth over time, reconstructed from when each surviving entry was first catalogued rather than recorded as it happened. Because it derives from today's Catalog, it is *revisionist*: entries the Catalog Doctor later removes vanish from the entire history, so it depicts how the current Catalog grew — not a ledger of the Catalog's past sizes.
 _Avoid_: catalog snapshot, growth log, time series
 
+**Website**:
+A Company's declared homepage. Known only when imported — Discovery does not learn it — and the Keyword Crawl's seed of last resort for a Pageless Company.
+_Avoid_: homepage, url, company domain
+
+**Pageless Company**:
+A catalogued Company with no Career Page yet: employer known, page undiscovered.
+_Avoid_: prospect, stub, empty company
+
+### Import / Export
+
+**Catalog Export**:
+A complete snapshot of the Catalog as a single ordered file. Deterministic — the same Catalog always exports byte-identically, so consecutive Exports diff meaningfully.
+_Avoid_: dump, backup, download
+
+**Catalog Import**:
+The idempotent merge of a catalog file — exported or hand-written — into the Catalog. It can only extend recorded history, never rewrite it, and it is not a Sighting.
+_Avoid_: upload, restore, sync
+
+**Import Job**:
+One asynchronous execution of a Catalog Import, durable with a status lifecycle; a dry-run Job validates and reports without writing.
+_Avoid_: task, batch, upload
+
+**Identity Ladder**:
+The precedence deciding an imported record's Company identity: the record's explicit key, else derivation from its Website, else derivation from its Career Page URLs. The file outranks derivation, so content-based attributions survive a round trip.
+_Avoid_: fallback chain, resolution order
+
 ### Crawl mechanics
 
 **Frontier**:
@@ -80,7 +110,7 @@ The set of URLs a Crawl Run still has to fetch, scheduled per Politeness Domain 
 _Avoid_: queue, backlog
 
 **Seed**:
-A Run's starting URLs. Configured for a Discovery Crawl; resolved from the Catalog (its Career Pages) at run start for a Keyword Crawl.
+A Run's starting URLs. Configured for a Discovery Crawl; for a Keyword Crawl, resolved from the Catalog at run start — every Career Page, plus each Pageless Company's Website.
 _Avoid_: entry point, root URL
 
 ### Classification
