@@ -111,7 +111,7 @@ export function Layout() {
           </div>
         </div>
 
-        <nav style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <nav style={{ display: "flex", flexDirection: "column", gap: 2, flex: "1 1 auto", minHeight: 0, overflowY: "auto" }}>
           <NavItem item={{ to: "/", label: "Overview", icon: "ph-squares-four", end: true }} />
           <NavItem item={{ to: "/discovery", label: "Discovery", icon: "ph-broadcast" }} />
           <NavItem item={{ to: "/crawls", label: "Keyword crawls", icon: "ph-magnifying-glass", end: true, count: totalListings }} />
