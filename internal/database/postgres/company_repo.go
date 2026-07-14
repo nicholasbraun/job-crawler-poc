@@ -50,6 +50,41 @@ func (r *CompanyRepository) Upsert(ctx context.Context, c *crawler.Company) erro
 	return nil
 }
 
+// MergeImport merges an imported Company into the Catalog (ADR-0013). It is not a
+// Sighting: last_seen is merged with GREATEST against the *file* timestamp only
+// (never EXCLUDED, whose COALESCE-to-now() would re-introduce a live-sighting
+// stamp), so an import with an absent or older lastSeen never advances it. now()
+// is the first-insert default only. Mutable fields update only when the caller
+// marks them present; an explicit empty ats_provider is stored as NULL
+// (self-hosted). Writes the merged row's id back into m.ID.
+func (r *CompanyRepository) MergeImport(ctx context.Context, m *crawler.CompanyMerge) error {
+	var atsProvider *string
+	if m.ATSProvider != "" {
+		atsProvider = &m.ATSProvider
+	}
+
+	err := r.pool.QueryRow(ctx, `
+		INSERT INTO company
+			(company_key, ats_provider, display_domain, name, first_seen, last_seen)
+		VALUES
+			($1, $2, $3, $4, COALESCE($5, now()), COALESCE($6, now()))
+		ON CONFLICT (company_key) DO UPDATE SET
+			ats_provider   = CASE WHEN $7 THEN EXCLUDED.ats_provider   ELSE company.ats_provider   END,
+			display_domain = CASE WHEN $8 THEN EXCLUDED.display_domain ELSE company.display_domain END,
+			name           = CASE WHEN $9 THEN EXCLUDED.name           ELSE company.name           END,
+			first_seen     = LEAST(company.first_seen, $5),
+			last_seen      = GREATEST(company.last_seen, $6)
+		RETURNING id
+		`,
+		m.CompanyKey, atsProvider, m.DisplayDomain, m.Name, m.FirstSeen, m.LastSeen,
+		m.ATSProviderPresent, m.DisplayDomainPresent, m.NamePresent,
+	).Scan(&m.ID)
+	if err != nil {
+		return fmt.Errorf("postgres: error merging import company: %w", err)
+	}
+	return nil
+}
+
 // Delete removes the Company with the given id. Deleting a row that does not
 // exist is a no-op that returns nil. The career_page.company_id foreign key has
 // no ON DELETE CASCADE, so deleting a Company that still owns Career Pages is

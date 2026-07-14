@@ -2,9 +2,10 @@
 // (ADR-0014). An uploaded NDJSON file is buffered in memory and processed off the
 // request goroutine; the job record tracks its lifecycle (pending -> running ->
 // completed/failed). Execution is serialized through a size-1 semaphore so
-// concurrent uploads never contend. This milestone validates every line down the
-// Identity Ladder and counts would-upserts (ADR-0013); the Catalog-merging
-// Executor for non-dry-run jobs is injected by later work.
+// concurrent uploads never contend. Every line is validated down the Identity
+// Ladder (ADR-0013); NewMergeExecutor then lands the resolved records into the
+// Catalog for a non-dry-run job, injected at the server via WithExecutor. The
+// zero-dependency default (executeImport) only validates and counts.
 package importer
 
 import (
@@ -35,8 +36,8 @@ const interruptedMessage = "interrupted by server restart; re-upload the file"
 // result report, or a non-nil error for an infrastructure failure that fails the
 // whole job. dryRun selects validate-only vs. Catalog-merging behavior. This is
 // the extension seam: the default executor (executeImport) only validates and
-// counts would-upserts because no Catalog write path exists yet; a merging
-// executor is injected via WithExecutor once merge writes land (#86).
+// counts would-upserts; the server injects NewMergeExecutor via WithExecutor to
+// land the merges for real imports.
 type Executor func(ctx context.Context, payload []byte, dryRun bool) (crawler.ImportResult, error)
 
 // Importer runs Catalog Imports as asynchronous, durable Import Jobs (ADR-0014).
@@ -108,9 +109,10 @@ func (im *Importer) run(job crawler.ImportJob, payload []byte) {
 		return
 	}
 
-	// job.DryRun currently changes nothing observable: there is no Catalog write
-	// path in this milestone, so dry-run and real jobs both only validate and
-	// count. The merging executor (#86) gates its writes on dryRun.
+	// The merge executor gates its Catalog writes on job.DryRun: a dry run runs
+	// the identical validation loop and counts would-upserts without writing,
+	// while a real job lands the merges. The default executor ignores dryRun and
+	// only validates.
 	result, execErr := im.execute(ctx, payload, job.DryRun)
 
 	job.UpdatedAt = time.Now().UTC()
@@ -124,12 +126,80 @@ func (im *Importer) run(job crawler.ImportJob, payload []byte) {
 	}
 }
 
-// executeImport validates every line of an NDJSON catalog file down the Identity
-// Ladder and counts would-upserts, collecting per-line data errors best-effort
-// (ADR-0013). It ignores ctx and dryRun: this milestone has no Catalog write
-// path, so validation is identical for dry-run and real jobs. It returns a
-// non-nil error only for an infrastructure failure (an unreadable stream).
+// executeImport is the validate-only default Executor: it counts would-upserts
+// and collects per-line data errors without any Catalog write path. The server
+// injects NewMergeExecutor instead; this remains the zero-dependency default
+// (used by tests and any Importer constructed without WithExecutor). It ignores
+// ctx and dryRun — validation is identical for dry-run and real jobs.
 func executeImport(_ context.Context, payload []byte, _ bool) (crawler.ImportResult, error) {
+	return runImportLoop(payload, func(rec catalog.ResolvedRecord) (int, error) {
+		return len(rec.Pages), nil
+	})
+}
+
+// NewMergeExecutor builds the Catalog-merging Executor for real imports
+// (ADR-0013). For a non-dry-run job it merges each resolved line's Company and
+// then its valid Career Pages into the Catalog; for a dry run it runs the
+// identical validation loop and counts would-upserts without writing. A merge
+// error is an infrastructure failure that fails the whole job (ADR-0013's
+// monotone merges make the partially-applied file a converging state — a
+// re-upload completes it). Injected via WithExecutor at the server wiring site.
+func NewMergeExecutor(companies crawler.CompanyRepository, pages crawler.CareerPageRepository) Executor {
+	return func(ctx context.Context, payload []byte, dryRun bool) (crawler.ImportResult, error) {
+		return runImportLoop(payload, func(rec catalog.ResolvedRecord) (int, error) {
+			if dryRun {
+				return len(rec.Pages), nil // validate only; no writes
+			}
+			company := toCompanyMerge(rec.Company)
+			if err := companies.MergeImport(ctx, company); err != nil {
+				return 0, fmt.Errorf("importer: merging company %q: %w", rec.Company.CompanyKey, err)
+			}
+			for _, p := range rec.Pages {
+				if err := pages.MergeImport(ctx, toPageMerge(company.ID, p)); err != nil {
+					return 0, fmt.Errorf("importer: merging career page %q: %w", p.URL, err)
+				}
+			}
+			return len(rec.Pages), nil
+		})
+	}
+}
+
+// toCompanyMerge renders a resolved import Company as a merge instruction.
+// Website / WebsitePresent are deliberately omitted: the company.website column
+// and its presence-wins write are #88's scope.
+func toCompanyMerge(c catalog.ResolvedCompany) *crawler.CompanyMerge {
+	return &crawler.CompanyMerge{
+		CompanyKey:           c.CompanyKey,
+		ATSProvider:          c.ATSProvider,
+		ATSProviderPresent:   c.ATSProviderPresent,
+		DisplayDomain:        c.DisplayDomain,
+		DisplayDomainPresent: c.DisplayDomainPresent,
+		Name:                 c.Name,
+		NamePresent:          c.NamePresent,
+		FirstSeen:            c.FirstSeen,
+		LastSeen:             c.LastSeen,
+	}
+}
+
+// toPageMerge renders a resolved import Career Page as a merge instruction under
+// its (already-merged) Company's id.
+func toPageMerge(companyID uuid.UUID, p catalog.ResolvedPage) *crawler.CareerPageMerge {
+	return &crawler.CareerPageMerge{
+		CompanyID:        companyID,
+		URL:              p.URL,
+		PolitenessDomain: p.PolitenessDomain,
+		FirstSeen:        p.FirstSeen,
+		LastSeen:         p.LastSeen,
+	}
+}
+
+// runImportLoop scans an NDJSON payload line by line (ADR-0015), decodes and
+// resolves each record down the Identity Ladder (ADR-0013), and calls apply to
+// land it. apply returns the number of Career Pages that landed, or a non-nil
+// error for an infrastructure failure that fails the whole job. Decode/resolve
+// data errors and a resolved record's per-page (sub-line best-effort) errors are
+// collected and capped; blank lines are skipped without counting.
+func runImportLoop(payload []byte, apply func(catalog.ResolvedRecord) (int, error)) (crawler.ImportResult, error) {
 	result := crawler.ImportResult{Errors: []crawler.ImportError{}}
 
 	scanner := bufio.NewScanner(bytes.NewReader(payload))
@@ -162,12 +232,14 @@ func executeImport(_ context.Context, payload []byte, _ bool) (crawler.ImportRes
 			addErr(err.Error()) // whole-line failure (no identity, bad website, keyless ambiguity, ...)
 			continue
 		}
-		// #86 merges resolved.Company + resolved.Pages into the Catalog here for a
-		// non-dry-run job. This milestone only counts would-upserts.
+		pagesUpserted, err := apply(resolved)
+		if err != nil {
+			return crawler.ImportResult{}, err // infrastructure error fails the whole job
+		}
 		result.CompaniesUpserted++
-		result.PagesUpserted += len(resolved.Pages)
+		result.PagesUpserted += pagesUpserted
 		for _, perr := range resolved.PageErrors {
-			addErr(perr.Error()) // sub-line best-effort: bad page, company + valid pages still counted
+			addErr(perr.Error()) // sub-line best-effort: bad page, company + valid pages still landed
 		}
 	}
 	if err := scanner.Err(); err != nil {

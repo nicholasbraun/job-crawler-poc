@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/api"
+	"github.com/nicholasbraun/job-crawler-poc/internal/importer"
 )
 
 // importJobResponse mirrors the import job DTO the handlers emit, for decoding in
@@ -351,4 +352,184 @@ func assertNoJobsCreated(t *testing.T, repo *fakeImportJobRepo) {
 	if len(jobs) != 0 {
 		t.Errorf("a malformed upload must not create a job, got %d", len(jobs))
 	}
+}
+
+// newMergeImportHandler wires a real importer.Importer with the Catalog-merging
+// executor (NewMergeExecutor) over faithful fakes, so submit -> poll -> result
+// exercises the real merge write path end-to-end. The one job repo is shared as
+// both the importer's store and the read-endpoint source, matching the server.
+func newMergeImportHandler(t *testing.T) (http.Handler, *fakeCompanyRepo, *fakeCareerPageRepo) {
+	t.Helper()
+	jobs := newFakeImportJobRepo()
+	companies := &fakeCompanyRepo{}
+	pages := &fakeCareerPageRepo{}
+	im := importer.New(jobs, importer.WithExecutor(importer.NewMergeExecutor(companies, pages)))
+	srv := newHandler(api.Config{ImportJobs: jobs, Importer: im, Companies: companies, CareerPages: pages})
+	return srv, companies, pages
+}
+
+// twoCompanyThreePageImport is a real import file (explicit timestamps, a
+// trailing-slash URL) used by the real-run and idempotency tests.
+const twoCompanyThreePageImport = `{"companyKey":"acme.com","name":"Acme","firstSeen":"2025-01-01T00:00:00Z","lastSeen":"2025-06-01T00:00:00Z","careerPages":[{"url":"https://acme.com/careers/","firstSeen":"2025-01-01T00:00:00Z","lastSeen":"2025-06-01T00:00:00Z"},{"url":"https://acme.com/jobs","firstSeen":"2025-02-01T00:00:00Z","lastSeen":"2025-06-01T00:00:00Z"}]}
+{"companyKey":"globex.com","name":"Globex","firstSeen":"2025-03-01T00:00:00Z","lastSeen":"2025-07-01T00:00:00Z","careerPages":[{"url":"https://globex.com/jobs","firstSeen":"2025-03-01T00:00:00Z","lastSeen":"2025-07-01T00:00:00Z"}]}`
+
+// submitAndAwaitImport submits a real (non-dry-run) import and returns the
+// completed job. Must run inside a synctest bubble.
+func submitAndAwaitImport(t *testing.T, srv http.Handler, body string) importJobResponse {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, newImportRequest(t, "catalog.ndjson", body, ""))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("submit status: got %d, want 202; body=%s", rec.Code, rec.Body)
+	}
+	id := decodeImportJob(t, rec.Body).ID
+	synctest.Wait()
+	got := getImportJob(t, srv, id)
+	if got.Status != "completed" {
+		t.Fatalf("status: got %q, want completed; error=%q", got.Status, got.Error)
+	}
+	return got
+}
+
+func TestImportRealRunLandsCatalogRows(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, companies, pages := newMergeImportHandler(t)
+
+		got := submitAndAwaitImport(t, srv, twoCompanyThreePageImport)
+		if got.Result == nil {
+			t.Fatal("completed job must carry a result")
+		}
+		if got.Result.CompaniesUpserted != 2 {
+			t.Errorf("companiesUpserted: got %d, want 2", got.Result.CompaniesUpserted)
+		}
+		if got.Result.PagesUpserted != 3 {
+			t.Errorf("pagesUpserted: got %d, want 3", got.Result.PagesUpserted)
+		}
+		if got.Result.ErrorCount != 0 {
+			t.Errorf("errorCount: got %d, want 0", got.Result.ErrorCount)
+		}
+
+		catalogCompanies, err := companies.List(t.Context())
+		if err != nil {
+			t.Fatalf("list companies: %v", err)
+		}
+		byKey := map[string]*crawler.Company{}
+		for _, c := range catalogCompanies {
+			byKey[c.CompanyKey] = c
+		}
+		if len(byKey) != 2 || byKey["acme.com"] == nil || byKey["globex.com"] == nil {
+			t.Fatalf("catalog should hold acme.com and globex.com, got %v", byKey)
+		}
+		// User story 5: the imported first_seen survives verbatim (not stamped to
+		// import day).
+		wantAcmeFirstSeen := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		if fs := byKey["acme.com"].FirstSeen; !fs.Equal(wantAcmeFirstSeen) {
+			t.Errorf("acme first_seen: got %v, want %v", fs, wantAcmeFirstSeen)
+		}
+
+		catalogPages, err := pages.List(t.Context())
+		if err != nil {
+			t.Fatalf("list pages: %v", err)
+		}
+		if len(catalogPages) != 3 {
+			t.Fatalf("catalog should hold 3 career pages, got %d", len(catalogPages))
+		}
+		gotURLs := map[string]bool{}
+		for _, p := range catalogPages {
+			gotURLs[p.URL] = true
+		}
+		// The trailing-slash acme/careers URL is stored canonicalised.
+		if !gotURLs["https://acme.com/careers"] {
+			t.Errorf("acme careers page should be canonicalised (no trailing slash); got %v", gotURLs)
+		}
+	})
+}
+
+func TestImportSameFileTwiceIsIdempotent(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, companies, pages := newMergeImportHandler(t)
+
+		first := submitAndAwaitImport(t, srv, twoCompanyThreePageImport)
+
+		companiesAfterFirst := snapshotCompanies(t, companies)
+		pagesAfterFirst := snapshotPages(t, pages)
+
+		second := submitAndAwaitImport(t, srv, twoCompanyThreePageImport)
+
+		// Both runs report identical counters (the Result struct carries a slice,
+		// so compare the scalar counters field by field).
+		if first.Result == nil || second.Result == nil {
+			t.Fatal("both jobs must carry a result")
+		}
+		if first.Result.CompaniesUpserted != second.Result.CompaniesUpserted ||
+			first.Result.PagesUpserted != second.Result.PagesUpserted ||
+			first.Result.ErrorCount != second.Result.ErrorCount {
+			t.Errorf("counters differ between runs: first=%+v second=%+v", first.Result, second.Result)
+		}
+
+		// No duplicate rows: the same file re-uploaded converges to a no-op.
+		companiesAfterSecond := snapshotCompanies(t, companies)
+		pagesAfterSecond := snapshotPages(t, pages)
+		if len(companiesAfterSecond) != len(companiesAfterFirst) {
+			t.Errorf("company count changed on re-import: was %d, now %d", len(companiesAfterFirst), len(companiesAfterSecond))
+		}
+		if len(pagesAfterSecond) != len(pagesAfterFirst) {
+			t.Errorf("page count changed on re-import: was %d, now %d", len(pagesAfterFirst), len(pagesAfterSecond))
+		}
+
+		// The not-a-Sighting property, end-to-end: re-importing advances no
+		// timestamp.
+		for key, ts := range companiesAfterFirst {
+			after, ok := companiesAfterSecond[key]
+			if !ok {
+				t.Errorf("company %q vanished on re-import", key)
+				continue
+			}
+			if !after.first.Equal(ts.first) || !after.last.Equal(ts.last) {
+				t.Errorf("company %q timestamps changed: was (%v,%v), now (%v,%v)", key, ts.first, ts.last, after.first, after.last)
+			}
+		}
+		for key, ts := range pagesAfterFirst {
+			after, ok := pagesAfterSecond[key]
+			if !ok {
+				t.Errorf("page %q vanished on re-import", key)
+				continue
+			}
+			if !after.first.Equal(ts.first) || !after.last.Equal(ts.last) {
+				t.Errorf("page %q timestamps changed: was (%v,%v), now (%v,%v)", key, ts.first, ts.last, after.first, after.last)
+			}
+		}
+	})
+}
+
+type timestamps struct{ first, last time.Time }
+
+// snapshotCompanies reads the catalog's companies keyed by CompanyKey with their
+// first/last seen, for before/after idempotency comparison.
+func snapshotCompanies(t *testing.T, repo *fakeCompanyRepo) map[string]timestamps {
+	t.Helper()
+	list, err := repo.List(t.Context())
+	if err != nil {
+		t.Fatalf("list companies: %v", err)
+	}
+	out := map[string]timestamps{}
+	for _, c := range list {
+		out[c.CompanyKey] = timestamps{first: c.FirstSeen, last: c.LastSeen}
+	}
+	return out
+}
+
+// snapshotPages reads the catalog's career pages keyed by URL with their
+// first/last seen.
+func snapshotPages(t *testing.T, repo *fakeCareerPageRepo) map[string]timestamps {
+	t.Helper()
+	list, err := repo.List(t.Context())
+	if err != nil {
+		t.Fatalf("list pages: %v", err)
+	}
+	out := map[string]timestamps{}
+	for _, p := range list {
+		out[p.URL] = timestamps{first: p.FirstSeen, last: p.LastSeen}
+	}
+	return out
 }

@@ -27,6 +27,26 @@ type Company struct {
 	LastSeen      time.Time
 }
 
+// CompanyMerge is one import line's Company rendered as a merge instruction
+// (ADR-0013). Unlike a Company, each mutable field pairs its value with a
+// Present flag carrying JSON-presence semantics: a presence-wins merge writes a
+// field only when its Present flag is set, so a sparse hand-written record never
+// blanks catalogued data it did not mention. FirstSeen/LastSeen are nil when the
+// file omitted them (defaulting to now() on first insert only). ID is an output:
+// MergeImport writes the merged row's id into it.
+type CompanyMerge struct {
+	ID                   uuid.UUID
+	CompanyKey           string
+	ATSProvider          string // "" is a definite value (self-hosted); stored as NULL
+	ATSProviderPresent   bool
+	DisplayDomain        string
+	DisplayDomainPresent bool
+	Name                 string
+	NamePresent          bool
+	FirstSeen            *time.Time // nil = absent; first_seen = LEAST(existing, this)
+	LastSeen             *time.Time // nil = absent; last_seen = GREATEST(existing, this)
+}
+
 // CompanyRepository persists Companies in the Catalog.
 type CompanyRepository interface {
 	// Upsert inserts c or, when a row with the same CompanyKey already exists,
@@ -37,4 +57,14 @@ type CompanyRepository interface {
 	// List returns every catalogued Company, most-recently-seen first. It never
 	// returns nil; an empty Catalog yields an empty slice.
 	List(ctx context.Context) ([]*Company, error)
+
+	// MergeImport lands an imported Company keyed on CompanyKey (ADR-0013). It is
+	// deliberately not a Sighting: it never stamps last_seen = now() the way
+	// Upsert does. Timestamps merge monotonically (first_seen = LEAST(existing,
+	// file), last_seen = GREATEST(existing, file), each honoring an absent file
+	// value as "leave unchanged"); on first insert an absent timestamp defaults to
+	// now(). Each mutable field is written only when its Present flag is set (an
+	// explicit empty ATSProvider sets self-hosted). It writes the merged row's id
+	// into m.ID. Re-merging the same instruction changes no data.
+	MergeImport(ctx context.Context, m *CompanyMerge) error
 }
