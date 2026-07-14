@@ -27,7 +27,9 @@ type Runner interface {
 // FrontierSizer reports the number of URLs still in a run's frontier (queued
 // plus in-flight). It is injected so the api package stays decoupled from Redis,
 // mirroring runner.WithFrontierCleaner; in the server it wraps
-// redisfrontier.Len. A nil sizer makes the live-status endpoint report 0.
+// redisfrontier.Len. A nil sizer makes every frontier size report 0. It backs
+// both the live-status endpoint and the frontierSize field on the run read
+// endpoints (see h.frontierSize).
 type FrontierSizer func(ctx context.Context, runID uuid.UUID) (int64, error)
 
 // Defaults fill in the fields a create request omits, so a minimal
@@ -99,14 +101,20 @@ type createCrawlRequest struct {
 }
 
 type runDTO struct {
-	ID            string     `json:"id"`
-	DefinitionID  string     `json:"definitionId"`
-	Status        string     `json:"status"`
-	PagesCrawled  int64      `json:"pagesCrawled"`
-	ListingsFound int64      `json:"listingsFound"`
-	StartedAt     time.Time  `json:"startedAt"`
-	FinishedAt    *time.Time `json:"finishedAt"`
-	Error         string     `json:"error"`
+	ID            string `json:"id"`
+	DefinitionID  string `json:"definitionId"`
+	Status        string `json:"status"`
+	PagesCrawled  int64  `json:"pagesCrawled"`
+	ListingsFound int64  `json:"listingsFound"`
+	// FrontierSize is live, transient state read from Redis on the run read
+	// endpoints (list/get), sparing the dashboard an N+1 poll to
+	// /crawls/{id}/status per card. toRunDTO leaves it 0; the read handlers
+	// enrich it via h.frontierSize. It is therefore 0 on create/start responses
+	// (a just-created run's frontier is still seeding — poll to observe it).
+	FrontierSize int64      `json:"frontierSize"`
+	StartedAt    time.Time  `json:"startedAt"`
+	FinishedAt   *time.Time `json:"finishedAt"`
+	Error        string     `json:"error"`
 }
 
 func toRunDTO(run *crawler.CrawlRun) runDTO {
@@ -297,7 +305,9 @@ func (h *Handler) listCrawls(w http.ResponseWriter, r *http.Request) {
 
 	dtos := make([]runDTO, 0, len(runs))
 	for _, run := range runs {
-		dtos = append(dtos, toRunDTO(run))
+		dto := toRunDTO(run)
+		dto.FrontierSize = h.frontierSize(r.Context(), run)
+		dtos = append(dtos, dto)
 	}
 
 	writeJSON(w, http.StatusOK, dtos)
@@ -321,7 +331,28 @@ func (h *Handler) getCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, toRunDTO(run))
+	dto := toRunDTO(run)
+	dto.FrontierSize = h.frontierSize(r.Context(), run)
+	writeJSON(w, http.StatusOK, dto)
+}
+
+// frontierSize resolves a run's live frontier size (queued + in-flight URLs)
+// best-effort. Frontier state is transient and lives in Redis, not the run row,
+// so it is read per request rather than stored by toRunDTO. A terminal run has
+// no frontier — its keys are cleaned up — so it reports 0 without touching
+// Redis, which keeps listCrawls cheap since historical runs dominate it. A nil
+// sizer or a transient sizer error also degrades to 0 rather than failing the
+// whole response.
+func (h *Handler) frontierSize(ctx context.Context, run *crawler.CrawlRun) int64 {
+	if h.cfg.FrontierSizer == nil || run.Status.Terminal() {
+		return 0
+	}
+	size, err := h.cfg.FrontierSizer(ctx, run.ID)
+	if err != nil {
+		slog.Error("api: error reading frontier size", "err", err, "runId", run.ID)
+		return 0
+	}
+	return size
 }
 
 // getCrawlStatus returns a run's live progress: durable counters from Postgres
@@ -344,22 +375,10 @@ func (h *Handler) getCrawlStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Frontier size is best-effort: a transient Redis error should not fail the
-	// whole status poll, so it is logged and reported as 0. A run whose frontier
-	// keys are already gone (terminal + cleaned up) legitimately reports 0 too.
-	var frontierSize int64
-	if h.cfg.FrontierSizer != nil {
-		frontierSize, err = h.cfg.FrontierSizer(r.Context(), id)
-		if err != nil {
-			slog.Error("api: error reading frontier size", "err", err, "runId", id)
-			frontierSize = 0
-		}
-	}
-
 	writeJSON(w, http.StatusOK, runStatusDTO{
 		PagesCrawled:  run.Counters.PagesCrawled,
 		ListingsFound: run.Counters.ListingsFound,
-		FrontierSize:  frontierSize,
+		FrontierSize:  h.frontierSize(r.Context(), run),
 	})
 }
 

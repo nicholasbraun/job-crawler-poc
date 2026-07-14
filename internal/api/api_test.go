@@ -501,6 +501,63 @@ func TestListCrawls(t *testing.T) {
 	}
 }
 
+func TestListCrawlsIncludesFrontierSize(t *testing.T) {
+	active := &crawler.CrawlRun{ID: uuid.New(), Status: crawler.RunStatusRunning}
+	done := &crawler.CrawlRun{ID: uuid.New(), Status: crawler.RunStatusCompleted}
+	runs := &fakeRunRepo{runs: []*crawler.CrawlRun{active, done}}
+
+	var sized []uuid.UUID
+	sizer := func(ctx context.Context, id uuid.UUID) (int64, error) {
+		sized = append(sized, id)
+		return 42, nil
+	}
+	srv := newHandler(api.Config{Runs: runs, FrontierSizer: sizer})
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/crawls", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 runs, got %d", len(got))
+	}
+	// The running run is enriched from the sizer; the terminal run reports 0
+	// without the sizer ever being consulted (its frontier is gone).
+	if got[0]["frontierSize"] != float64(42) {
+		t.Errorf("active run frontierSize: got %v, want 42", got[0]["frontierSize"])
+	}
+	if got[1]["frontierSize"] != float64(0) {
+		t.Errorf("terminal run frontierSize: got %v, want 0", got[1]["frontierSize"])
+	}
+	if len(sized) != 1 || sized[0] != active.ID {
+		t.Errorf("sizer should be called only for the active run; called for %v", sized)
+	}
+}
+
+func TestGetCrawlIncludesFrontierSize(t *testing.T) {
+	run := &crawler.CrawlRun{ID: uuid.New(), Status: crawler.RunStatusRunning}
+	runs := &fakeRunRepo{runs: []*crawler.CrawlRun{run}}
+	sizer := func(ctx context.Context, id uuid.UUID) (int64, error) { return 7, nil }
+	srv := newHandler(api.Config{Runs: runs, FrontierSizer: sizer})
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/crawls/"+run.ID.String(), nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["frontierSize"] != float64(7) {
+		t.Errorf("frontierSize: got %v, want 7", got["frontierSize"])
+	}
+}
+
 func TestCreateDefinitionDoesNotStartRun(t *testing.T) {
 	rnr := &fakeRunner{}
 	defs := &fakeDefRepo{}
