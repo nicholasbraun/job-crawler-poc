@@ -52,6 +52,10 @@ func (r *spyCareerPageRepo) List(ctx context.Context) ([]*crawler.CareerPage, er
 	return r.upserted, nil
 }
 
+func (r *spyCareerPageRepo) FirstSeenByDay(ctx context.Context) ([]crawler.DayCount, error) {
+	return nil, nil
+}
+
 type spyConfirmer struct {
 	calls  int
 	result bool

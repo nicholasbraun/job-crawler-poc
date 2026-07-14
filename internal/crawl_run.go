@@ -31,6 +31,19 @@ const (
 	RunStatusFailed    RunStatus = "failed"
 )
 
+// Terminal reports whether the run has reached a final state it will not leave
+// on its own. A terminal run has no live frontier — its Redis keys are cleaned
+// up — and boot-time reconcile never adopts it. paused is deliberately excluded:
+// it is parked but still resumable, so it is non-terminal.
+func (s RunStatus) Terminal() bool {
+	switch s {
+	case RunStatusStopped, RunStatusCompleted, RunStatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
 // RunCounters is a point-in-time snapshot of a run's progress metrics.
 type RunCounters struct {
 	PagesCrawled  int64

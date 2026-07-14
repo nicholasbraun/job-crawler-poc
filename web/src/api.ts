@@ -33,6 +33,10 @@ export type Run = {
   status: RunStatus;
   pagesCrawled: number;
   listingsFound: number;
+  // Live frontier size (queued + in-flight URLs), served on the list/get run
+  // endpoints. 0 for terminal runs and on create/start responses (poll to
+  // observe a fresh run's frontier fill). See internal/api runDTO.
+  frontierSize: number;
   startedAt: string;
   finishedAt: string | null;
   error: string;
@@ -95,6 +99,14 @@ export type CareerPage = {
   lastSeen: string;
 };
 
+// CatalogHistory is the Catalog's growth sparkline: a cumulative, daily,
+// gap-filled series of catalogued career pages, downsampled server-side. It is
+// an object rather than a bare array so a parallel `companies` series can be
+// added later without breaking this client.
+export type CatalogHistory = {
+  careerPages: number[];
+};
+
 export type Listing = {
   url: string;
   title: string;
@@ -124,6 +136,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function listCrawls(): Promise<Run[]> {
   return request<Run[]>("/crawls");
+}
+
+// createCrawl is the fused create-and-start endpoint: it persists a definition
+// and immediately starts a run, atomically (a failed start rolls the definition
+// back server-side). It backs the "Create & start" modal action. A keyword
+// crawl seeds from the catalog, so it carries keywords but no seedUrls.
+export function createCrawl(req: CreateDefinitionRequest): Promise<Run> {
+  return request<Run>("/crawls", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
 }
 
 export function getRunStatus(id: string): Promise<RunStatusSnapshot> {
@@ -175,6 +198,13 @@ export function listCompanies(): Promise<Company[]> {
 export function listCareerPages(companyId?: string): Promise<CareerPage[]> {
   const q = companyId ? `?companyId=${encodeURIComponent(companyId)}` : "";
   return request<CareerPage[]>(`/career-pages${q}`);
+}
+
+// getCatalogHistory returns the catalog-growth sparkline series. Its endpoint
+// equals the live "career pages catalogued" count (both derive from the same
+// data), so the two never drift.
+export function getCatalogHistory(): Promise<CatalogHistory> {
+  return request<CatalogHistory>("/catalog-history");
 }
 
 export function listListings(params: {
