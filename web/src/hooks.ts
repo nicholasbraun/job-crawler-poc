@@ -93,15 +93,6 @@ export function useCreateCrawl() {
   });
 }
 
-// useRefreshAll returns a callback the header's Refresh button fires to refetch
-// every active query at once.
-export function useRefreshAll() {
-  const qc = useQueryClient();
-  return () => {
-    void qc.invalidateQueries();
-  };
-}
-
 // useSampledSeries accumulates a live session trend for `value`, appending each
 // changed reading so the discovery sparkline reflects only real observed data.
 export function useSampledSeries(key: string, value: number | undefined): number[] {

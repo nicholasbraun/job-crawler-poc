@@ -1,13 +1,12 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import { useRefreshAll } from "../hooks";
 import { useLayout } from "./Layout";
 import { Icon } from "./primitives";
 
 // PageShell is the per-view frame: a sticky header (optional back link, title,
-// subtitle) with the standard Refresh + New-keyword-crawl actions, over the
-// scrolling body. Every page renders one.
+// subtitle) with the New-keyword-crawl action, over the scrolling body. Every
+// page renders one.
 export function PageShell({
   title,
   subtitle,
@@ -19,7 +18,6 @@ export function PageShell({
   back?: { to: string; label: string };
   children: ReactNode;
 }) {
-  const refresh = useRefreshAll();
   const { openNewCrawl } = useLayout();
 
   return (
@@ -60,9 +58,6 @@ export function PageShell({
           )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)", flex: "none" }}>
-          <button className="btn btn-secondary" onClick={refresh}>
-            <Icon name="ph-arrows-clockwise" size={14} /> Refresh
-          </button>
           <button className="btn btn-primary" onClick={openNewCrawl}>
             <Icon name="ph-plus" size={14} /> New keyword crawl
           </button>
