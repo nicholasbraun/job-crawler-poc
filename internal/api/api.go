@@ -44,12 +44,16 @@ type Defaults struct {
 // serve is required; FrontierSizer is optional (nil → the status endpoint
 // reports a zero frontier size).
 type Config struct {
-	Runner        Runner
-	Runs          crawler.CrawlRunRepository
-	Definitions   crawler.CrawlDefinitionRepository
-	Companies     crawler.CompanyRepository
-	CareerPages   crawler.CareerPageRepository
-	Listings      crawler.JobListingRepository
+	Runner      Runner
+	Runs        crawler.CrawlRunRepository
+	Definitions crawler.CrawlDefinitionRepository
+	Companies   crawler.CompanyRepository
+	CareerPages crawler.CareerPageRepository
+	Listings    crawler.JobListingRepository
+	// Importer starts Catalog Imports; required for POST /api/catalog/import.
+	Importer Importer
+	// ImportJobs serves the Import Job read endpoints (list + get by id).
+	ImportJobs    crawler.ImportJobRepository
 	FrontierSizer FrontierSizer
 	Defaults      Defaults
 }
@@ -86,6 +90,9 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /api/career-pages", h.listCareerPages)
 	mux.HandleFunc("GET /api/catalog-history", h.catalogHistory)
 	mux.HandleFunc("GET /api/catalog/export", h.exportCatalog)
+	mux.HandleFunc("POST /api/catalog/import", h.importCatalog)
+	mux.HandleFunc("GET /api/catalog/import-jobs", h.listImportJobs)
+	mux.HandleFunc("GET /api/catalog/import-jobs/{id}", h.getImportJob)
 	mux.HandleFunc("GET /api/listings", h.listListings)
 
 	return mux
