@@ -17,8 +17,11 @@ import (
 // injected. In the server it is *importer.Importer.
 type Importer interface {
 	// Submit buffers an uploaded catalog file and starts an asynchronous Import
-	// Job, returning it in its initial pending state.
-	Submit(ctx context.Context, filename string, payload []byte, dryRun bool) (*crawler.ImportJob, error)
+	// Job. idempotencyKey (empty when no header was sent) makes submission
+	// retriable: replay=true signals the returned job is a replay of a prior
+	// submission (answer 200, not 202). A key reused with a different request
+	// yields crawler.ErrIdempotencyKeyConflict.
+	Submit(ctx context.Context, filename string, payload []byte, dryRun bool, idempotencyKey string) (job *crawler.ImportJob, replay bool, err error)
 }
 
 // maxImportBytes caps an uploaded catalog file at ~32 MB. It bounds the whole
@@ -79,8 +82,11 @@ func toImportJobDTO(job *crawler.ImportJob) importJobDTO {
 }
 
 // importCatalog accepts a multipart catalog file and a ?dryRun= flag, buffers it,
-// and starts an asynchronous Import Job (202 + the pending job DTO). A malformed
-// upload (not multipart, no file field, or over the size cap) is a 400.
+// and starts an asynchronous Import Job (202 + the pending job DTO). An optional
+// Idempotency-Key header makes submission retriable: a replay of the same key and
+// request returns the original job with 200, while reusing a key with a different
+// file or flag is a 422 (ADR-0014). A malformed upload (not multipart, no file
+// field, or over the size cap) is a 400.
 func (h *Handler) importCatalog(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxImportBytes)
 	if err := r.ParseMultipartForm(maxImportBytes); err != nil {
@@ -101,14 +107,27 @@ func (h *Handler) importCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dryRun := r.URL.Query().Get("dryRun") == "true"
-	job, err := h.cfg.Importer.Submit(r.Context(), header.Filename, payload, dryRun)
+	idempotencyKey := r.Header.Get("Idempotency-Key")
+	job, replay, err := h.cfg.Importer.Submit(r.Context(), header.Filename, payload, dryRun, idempotencyKey)
 	if err != nil {
+		if errors.Is(err, crawler.ErrIdempotencyKeyConflict) {
+			// The key was already used for a different file or dry-run flag; refusing
+			// avoids aliasing a job that imported different bytes (ADR-0014).
+			writeError(w, http.StatusUnprocessableEntity, "idempotency key already used with a different request")
+			return
+		}
 		slog.Error("api: error submitting catalog import", "err", err)
 		writeError(w, http.StatusInternalServerError, "could not start import")
 		return
 	}
 
-	writeJSON(w, http.StatusAccepted, toImportJobDTO(job))
+	// A fresh submission is 202 Accepted (async job created); an idempotent replay
+	// returns the original job with 200 OK. Identical DTO shape either way.
+	status := http.StatusAccepted
+	if replay {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, toImportJobDTO(job))
 }
 
 // listImportJobs returns every Import Job, newest first.
