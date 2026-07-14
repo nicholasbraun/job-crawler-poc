@@ -125,11 +125,17 @@ export function atsSplit(companies: Company[]): {
   return { atsCount, selfCount, atsPct, selfPct: 100 - atsPct };
 }
 
-// careerPageCountByCompany counts catalogued career pages per company id.
-export function careerPageCountByCompany(pages: CareerPage[]): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const p of pages) counts.set(p.companyId, (counts.get(p.companyId) ?? 0) + 1);
-  return counts;
+// careerPagesByCompany groups catalogued career pages by company id so the
+// catalog can list a company's pages inline when its row is expanded. Pages
+// keep their input order within each group.
+export function careerPagesByCompany(pages: CareerPage[]): Map<string, CareerPage[]> {
+  const byCompany = new Map<string, CareerPage[]>();
+  for (const p of pages) {
+    const list = byCompany.get(p.companyId);
+    if (list) list.push(p);
+    else byCompany.set(p.companyId, [p]);
+  }
+  return byCompany;
 }
 
 // RecentPage is a career page joined to its company for the "Recently

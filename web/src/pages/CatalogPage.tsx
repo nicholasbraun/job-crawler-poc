@@ -1,11 +1,11 @@
 import { useState } from "react";
 
-import type { Company } from "../api";
+import type { CareerPage, Company } from "../api";
 import { useCareerPages, useCompanies } from "../hooks";
-import { fmt, relativeTime } from "../lib/format";
-import { atsSplit, careerPageCountByCompany, companySource } from "../lib/model";
+import { fmt, prettyUrl, relativeTime } from "../lib/format";
+import { atsSplit, careerPagesByCompany, companySource } from "../lib/model";
 import { PageShell } from "../components/PageShell";
-import { EmptyState, ErrorNote, Loading, StatCard } from "../components/primitives";
+import { EmptyState, ErrorNote, Icon, Loading, StatCard } from "../components/primitives";
 
 type Filter = "all" | "ats" | "self";
 const FILTERS: { key: Filter; label: string }[] = [
@@ -22,7 +22,7 @@ export function CatalogPage() {
   const companies = companiesQ.data ?? [];
   const pages = pagesQ.data ?? [];
   const split = atsSplit(companies);
-  const pageCounts = careerPageCountByCompany(pages);
+  const pagesByCompany = careerPagesByCompany(pages);
   const atsProviders = new Set(companies.filter((c) => c.atsProvider).map((c) => c.atsProvider)).size;
   const avgPerCompany = companies.length ? (pages.length / companies.length).toFixed(1) : "0.0";
 
@@ -89,7 +89,7 @@ export function CatalogPage() {
                 </thead>
                 <tbody>
                   {filtered.map((c) => (
-                    <CompanyRow key={c.id} company={c} pages={pageCounts.get(c.id) ?? 0} />
+                    <CompanyRow key={c.id} company={c} pages={pagesByCompany.get(c.id) ?? []} />
                   ))}
                 </tbody>
               </table>
@@ -101,24 +101,69 @@ export function CatalogPage() {
   );
 }
 
-function CompanyRow({ company, pages }: { company: Company; pages: number }) {
+function CompanyRow({ company, pages }: { company: Company; pages: CareerPage[] }) {
+  const [expanded, setExpanded] = useState(false);
   const isAts = company.atsProvider !== "";
+  const expandable = pages.length > 0;
   return (
-    <tr>
-      <td>
-        <div style={{ fontSize: 14 }}>{company.name || company.displayDomain}</div>
-        <div style={{ fontSize: 11, color: "var(--color-neutral-500)" }}>{company.displayDomain}</div>
-      </td>
-      <td>
-        <code style={{ fontSize: 12, color: "var(--color-neutral-300)", fontFamily: "ui-monospace, monospace" }}>
-          {company.companyKey}
-        </code>
-      </td>
-      <td>
-        <span className={isAts ? "tag tag-accent-2" : "tag tag-neutral"}>{companySource(company)}</span>
-      </td>
-      <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{pages}</td>
-      <td style={{ textAlign: "right", color: "var(--color-neutral-500)", fontSize: 12 }}>{relativeTime(company.lastSeen)}</td>
-    </tr>
+    <>
+      <tr
+        onClick={expandable ? () => setExpanded((e) => !e) : undefined}
+        style={expandable ? { cursor: "pointer" } : undefined}
+        aria-expanded={expandable ? expanded : undefined}
+      >
+        <td>
+          <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+            <Icon
+              name={expanded ? "ph-caret-down" : "ph-caret-right"}
+              size={12}
+              color="var(--color-neutral-500)"
+              style={{ visibility: expandable ? "visible" : "hidden" }}
+            />
+            <div>
+              <div style={{ fontSize: 14 }}>{company.name || company.displayDomain}</div>
+              <div style={{ fontSize: 11, color: "var(--color-neutral-500)" }}>{company.displayDomain}</div>
+            </div>
+          </div>
+        </td>
+        <td>
+          <code style={{ fontSize: 12, color: "var(--color-neutral-300)", fontFamily: "ui-monospace, monospace" }}>
+            {company.companyKey}
+          </code>
+        </td>
+        <td>
+          <span className={isAts ? "tag tag-accent-2" : "tag tag-neutral"}>{companySource(company)}</span>
+        </td>
+        <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{pages.length}</td>
+        <td style={{ textAlign: "right", color: "var(--color-neutral-500)", fontSize: 12 }}>{relativeTime(company.lastSeen)}</td>
+      </tr>
+      {expanded && (
+        <tr>
+          <td colSpan={5} style={{ paddingLeft: "calc(var(--space-2) + 12px + var(--space-3))" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)", padding: "var(--space-2) 0" }}>
+              {pages.map((p) => (
+                <a
+                  key={p.id}
+                  href={p.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    fontSize: 13,
+                    textDecoration: "none",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    width: "fit-content",
+                  }}
+                >
+                  <Icon name="ph-arrow-square-out" size={13} />
+                  {prettyUrl(p.url)}
+                </a>
+              ))}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
