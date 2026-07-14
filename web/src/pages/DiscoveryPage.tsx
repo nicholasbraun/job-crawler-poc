@@ -129,7 +129,6 @@ function DefinitionCard({ discovery }: { discovery: Discovery }) {
     { label: "Kind", value: def.kind },
     { label: "Seed domains", value: fmt(def.seedUrls.length) },
     { label: "Max depth", value: fmt(def.maxDepth) },
-    { label: "Max domains", value: fmt(def.maxDomains) },
   ];
   return (
     <div className="card elev-sm" style={{ gap: "var(--space-4)", padding: "var(--space-6)" }}>
