@@ -30,6 +30,7 @@ import (
 	urlfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/url"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 	redisfrontier "github.com/nicholasbraun/job-crawler-poc/internal/frontier/redis"
+	"github.com/nicholasbraun/job-crawler-poc/internal/importer"
 	"github.com/nicholasbraun/job-crawler-poc/internal/llmobs"
 	"github.com/nicholasbraun/job-crawler-poc/internal/llmstream"
 	"github.com/nicholasbraun/job-crawler-poc/internal/openrouter"
@@ -172,6 +173,7 @@ func main() {
 	careerPageRepository := postgres.NewCareerPageRepository(pgPool)
 	defRepository := postgres.NewCrawlDefinitionRepository(pgPool)
 	runRepository := postgres.NewCrawlRunRepository(pgPool)
+	importJobRepository := postgres.NewImportJobRepository(pgPool)
 
 	factory := newFactory(defaultMaxWorkers, llmMaxWorkers, llmConfig, redisClient,
 		jobListingRepository, companyRepository, careerPageRepository)
@@ -195,6 +197,13 @@ func main() {
 		slog.Error("error reconciling interrupted runs", "err", err)
 	}
 
+	catalogImporter := importer.New(importJobRepository)
+	// Fail any import a previous process left mid-flight; recovery is a re-upload
+	// (ADR-0014). Best-effort — a sweep failure must not stop the server.
+	if err := catalogImporter.Sweep(ctx); err != nil {
+		slog.Error("error sweeping interrupted import jobs", "err", err)
+	}
+
 	apiHandler := api.New(api.Config{
 		Runner:      crawlRunner,
 		Runs:        runRepository,
@@ -202,6 +211,8 @@ func main() {
 		Companies:   companyRepository,
 		CareerPages: careerPageRepository,
 		Listings:    jobListingRepository,
+		Importer:    catalogImporter,
+		ImportJobs:  importJobRepository,
 		// Frontier size is a live Redis read, kept out of the api package so it
 		// stays decoupled from Redis (mirrors runner.WithFrontierCleaner).
 		FrontierSizer: func(ctx context.Context, runID uuid.UUID) (int64, error) {
@@ -242,6 +253,8 @@ func main() {
 		slog.Error("error shutting down http server", "err", err)
 	}
 	crawlRunner.Shutdown(shutdownCtx)
+	// Drain any in-flight import before the pool it writes to closes.
+	catalogImporter.Shutdown(shutdownCtx)
 	otelShutdown(shutdownCtx)
 	pgPool.Close()
 	if err := redisClient.Close(); err != nil {

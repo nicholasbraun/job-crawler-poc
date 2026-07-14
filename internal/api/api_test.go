@@ -6,13 +6,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/api"
+	"github.com/nicholasbraun/job-crawler-poc/internal/importer"
 	"github.com/nicholasbraun/job-crawler-poc/internal/runner"
 )
 
@@ -166,6 +169,74 @@ func (f *fakeListingRepo) FindByDefinition(ctx context.Context, definitionID uui
 	return f.byDefinition, nil
 }
 
+// fakeImportJobRepo is a mutex-guarded in-memory ImportJobRepository shared by
+// the import handler tests (in catalog_import_test.go) and newHandler's
+// nil-defaults. The mutex matters: a real importer.Importer wired over it runs
+// jobs on background goroutines, so Create/Update race handler reads under -race.
+type fakeImportJobRepo struct {
+	mu   sync.Mutex
+	jobs map[uuid.UUID]*crawler.ImportJob
+
+	listErr error
+	getErr  error
+}
+
+func newFakeImportJobRepo() *fakeImportJobRepo {
+	return &fakeImportJobRepo{jobs: map[uuid.UUID]*crawler.ImportJob{}}
+}
+
+func (f *fakeImportJobRepo) Create(ctx context.Context, job *crawler.ImportJob) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if job.ID == uuid.Nil {
+		job.ID = uuid.New()
+	}
+	stored := *job
+	f.jobs[job.ID] = &stored
+	return nil
+}
+
+func (f *fakeImportJobRepo) Get(ctx context.Context, id uuid.UUID) (*crawler.ImportJob, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	job, ok := f.jobs[id]
+	if !ok {
+		return nil, crawler.ErrNotFound
+	}
+	copied := *job
+	return &copied, nil
+}
+
+func (f *fakeImportJobRepo) List(ctx context.Context) ([]*crawler.ImportJob, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	jobs := make([]*crawler.ImportJob, 0, len(f.jobs))
+	for _, j := range f.jobs {
+		copied := *j
+		jobs = append(jobs, &copied)
+	}
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].CreatedAt.After(jobs[j].CreatedAt) })
+	return jobs, nil
+}
+
+func (f *fakeImportJobRepo) Update(ctx context.Context, job *crawler.ImportJob) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	stored := *job
+	f.jobs[job.ID] = &stored
+	return nil
+}
+
+func (f *fakeImportJobRepo) SweepInterrupted(ctx context.Context, msg string, at time.Time) (int64, error) {
+	return 0, nil
+}
+
 func defaults() api.Defaults {
 	return api.Defaults{
 		MaxDepth:  7,
@@ -193,6 +264,14 @@ func newHandler(cfg api.Config) http.Handler {
 	}
 	if cfg.Listings == nil {
 		cfg.Listings = &fakeListingRepo{}
+	}
+	if cfg.ImportJobs == nil {
+		cfg.ImportJobs = newFakeImportJobRepo()
+	}
+	if cfg.Importer == nil {
+		// A real importer over the fake repo, so submit->poll->result exercises
+		// the executor end-to-end in the import handler tests.
+		cfg.Importer = importer.New(cfg.ImportJobs)
 	}
 	cfg.Defaults = defaults()
 	return api.New(cfg).Routes()
