@@ -148,6 +148,10 @@ function ListingsCard({ definitionId }: { definitionId: string }) {
 }
 
 function ListingRow({ listing }: { listing: Listing }) {
+  const host = hostOf(listing.url);
+  // Extraction sometimes yields no title; fall back to the host so the row
+  // always has clickable link text pointing at listing.url.
+  const label = listing.title.trim() || host;
   return (
     <tr>
       <td>
@@ -157,9 +161,11 @@ function ListingRow({ listing }: { listing: Listing }) {
           rel="noreferrer"
           style={{ textDecoration: "none" }}
         >
-          {listing.title}
+          {label}
         </a>
-        <div style={{ fontSize: 11, color: "var(--color-neutral-500)" }}>{hostOf(listing.url)}</div>
+        {listing.title.trim() && (
+          <div style={{ fontSize: 11, color: "var(--color-neutral-500)" }}>{host}</div>
+        )}
       </td>
       <td style={{ fontSize: 13 }}>{listing.company}</td>
       <td style={{ fontSize: 13 }}>
