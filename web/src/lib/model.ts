@@ -158,7 +158,6 @@ export function recentlyCatalogued(
 ): RecentPage[] {
   return [...pages]
     .sort((a, b) => b.lastSeen.localeCompare(a.lastSeen))
-    .slice(0, limit)
     .map((p) => {
       const company = companiesById.get(p.companyId);
       if (!company) return null;
@@ -170,7 +169,8 @@ export function recentlyCatalogued(
         isAts: company.atsProvider !== "",
       };
     })
-    .filter((r): r is RecentPage => r !== null);
+    .filter((r): r is RecentPage => r !== null)
+    .slice(0, limit);
 }
 
 // companySource labels a company by how its career pages are hosted: the ATS
