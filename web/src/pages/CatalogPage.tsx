@@ -39,7 +39,11 @@ export function CatalogPage() {
     filter === "all" ? true : filter === "ats" ? c.atsProvider !== "" : c.atsProvider === "",
   );
   const available = new Set(bySource.map(companyInitial));
-  const byLetter = letter === "all" ? bySource : bySource.filter((c) => companyInitial(c) === letter);
+  // Fall back to "all" when the selected bucket has no companies under the
+  // current source filter (e.g. after switching All → ATS), so the table never
+  // shows an empty view with a stale, disabled bucket still highlighted.
+  const activeLetter = letter === "all" || available.has(letter) ? letter : "all";
+  const byLetter = activeLetter === "all" ? bySource : bySource.filter((c) => companyInitial(c) === activeLetter);
   const filtered = [...byLetter].sort((a, b) =>
     (a.name || a.displayDomain).localeCompare(b.name || b.displayDomain, undefined, { sensitivity: "base" }),
   );
@@ -80,19 +84,19 @@ export function CatalogPage() {
           </div>
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-2)" }}>
-            <AlphaButton label="All" active={letter === "all"} enabled onClick={() => setLetter("all")} />
+            <AlphaButton label="All" active={activeLetter === "all"} enabled onClick={() => setLetter("all")} />
             {LETTERS.map((l) => (
               <AlphaButton
                 key={l}
                 label={l}
-                active={letter === l}
+                active={activeLetter === l}
                 enabled={available.has(l)}
                 onClick={() => setLetter(l)}
               />
             ))}
             <AlphaButton
               label="0–9"
-              active={letter === "0-9"}
+              active={activeLetter === "0-9"}
               enabled={available.has("0-9")}
               onClick={() => setLetter("0-9")}
             />
@@ -181,6 +185,18 @@ function CompanyRow({ company, pages }: { company: Company; pages: CareerPage[] 
     <>
       <tr
         onClick={expandable ? () => setExpanded((e) => !e) : undefined}
+        onKeyDown={
+          expandable
+            ? (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setExpanded((v) => !v);
+                }
+              }
+            : undefined
+        }
+        role={expandable ? "button" : undefined}
+        tabIndex={expandable ? 0 : undefined}
         style={expandable ? { cursor: "pointer" } : undefined}
         aria-expanded={expandable ? expanded : undefined}
       >
