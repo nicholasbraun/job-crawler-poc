@@ -114,21 +114,36 @@ func (f *fakeRunRepo) UpdateCounters(ctx context.Context, id uuid.UUID, c crawle
 
 type fakeCompanyRepo struct {
 	companies []*crawler.Company
+	listErr   error
 }
 
 func (f *fakeCompanyRepo) Upsert(ctx context.Context, c *crawler.Company) error { return nil }
 func (f *fakeCompanyRepo) List(ctx context.Context) ([]*crawler.Company, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return f.companies, nil
 }
 
 type fakeCareerPageRepo struct {
 	pages          []*crawler.CareerPage
 	firstSeenByDay []crawler.DayCount
+	listErr        error
+	// onList runs before List returns, letting a test mutate the catalog
+	// between the export handler's two reads to simulate the
+	// unsynchronised-snapshot race (ADR-0015).
+	onList func()
 }
 
 func (f *fakeCareerPageRepo) Upsert(ctx context.Context, p *crawler.CareerPage) error { return nil }
 func (f *fakeCareerPageRepo) ListURLs(ctx context.Context) ([]string, error)          { return nil, nil }
 func (f *fakeCareerPageRepo) List(ctx context.Context) ([]*crawler.CareerPage, error) {
+	if f.onList != nil {
+		f.onList()
+	}
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return f.pages, nil
 }
 func (f *fakeCareerPageRepo) FirstSeenByDay(ctx context.Context) ([]crawler.DayCount, error) {
