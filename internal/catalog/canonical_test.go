@@ -47,3 +47,25 @@ func TestCanonicalURL(t *testing.T) {
 		})
 	}
 }
+
+func TestStoredCareerPageURL(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"ats posting collapses to board root then canonicalises", "https://boards.greenhouse.io/acme/jobs/123?gh_src=x", "https://boards.greenhouse.io/acme"},
+		{"ats board root with query canonicalises", "http://jobs.lever.co/initech?lever-source=x", "https://jobs.lever.co/initech"},
+		{"self-hosted url only canonicalises", "https://acme.com/", "https://acme.com"},
+		{"self-hosted path kept, query stripped", "http://careers.acme.com/jobs?page=2", "https://careers.acme.com/jobs"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := catalog.StoredCareerPageURL(mustURL(t, tt.in))
+			if got != tt.want {
+				t.Errorf("StoredCareerPageURL(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
