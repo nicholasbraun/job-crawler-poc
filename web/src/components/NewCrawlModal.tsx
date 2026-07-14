@@ -55,7 +55,7 @@ export function NewCrawlModal({ open, onClose }: { open: boolean; onClose: () =>
       <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div className="dialog-title">New keyword crawl</div>
-          <button type="button" className="btn btn-icon btn-secondary" onClick={close}>
+          <button type="button" className="btn btn-icon btn-secondary" onClick={close} aria-label="Close">
             <Icon name="ph-x" size={16} />
           </button>
         </div>

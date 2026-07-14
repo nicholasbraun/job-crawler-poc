@@ -207,6 +207,7 @@ export function RunControls({
           className={stopCls}
           disabled={pending}
           onClick={fire("stop")}
+          aria-label="Stop crawl"
           style={ghost ? { color: "var(--color-neutral-400)" } : undefined}
         >
           <Icon name="ph-stop" size={14} />
