@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { useCareerPages, useCreateCrawl } from "../hooks";
@@ -16,6 +16,7 @@ export function NewCrawlModal({ open, onClose }: { open: boolean; onClose: () =>
   const navigate = useNavigate();
   const careerPages = useCareerPages();
   const careerPageCount = careerPages.data?.length ?? 0;
+  const dialogRef = useRef<HTMLFormElement>(null);
 
   if (!open) return null;
 
@@ -50,9 +51,39 @@ export function NewCrawlModal({ open, onClose }: { open: boolean; onClose: () =>
     );
   };
 
+  // Escape closes the dialog; Tab cycles focus within it so keyboard focus never
+  // slips to the page behind the backdrop.
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+      return;
+    }
+    if (e.key !== "Tab") return;
+    const focusables = dialogRef.current?.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input, [href], [tabindex]:not([tabindex="-1"])',
+    );
+    if (!focusables || focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+
   return (
     <div className="dialog-backdrop" onClick={close}>
-      <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+      <form
+        ref={dialogRef}
+        className="dialog"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={submit}
+        onKeyDown={onKeyDown}
+      >
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div className="dialog-title">New keyword crawl</div>
           <button type="button" className="btn btn-icon btn-secondary" onClick={close} aria-label="Close">
