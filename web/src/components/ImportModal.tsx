@@ -147,7 +147,9 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
           </div>
 
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
-            <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
+            {/* autoFocus moves focus into the dialog on open so the onKeyDown
+                Escape/Tab-trap engages immediately, matching NewCrawlModal. */}
+            <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} autoFocus />
             Dry run — validate the file and report what would happen, without writing
           </label>
 
