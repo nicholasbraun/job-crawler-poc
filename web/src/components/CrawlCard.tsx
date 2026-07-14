@@ -11,12 +11,25 @@ import { Dot, Icon, RunControls, StatusTag } from "./primitives";
 export function CrawlCard({ crawl }: { crawl: KeywordCrawl }) {
   const navigate = useNavigate();
   const meta = statusMeta(crawl.status);
+  const open = () => navigate(`/crawls/${crawl.definitionId}`);
 
   return (
     <div
       className="card elev-sm card-link"
       style={{ gap: "var(--space-3)" }}
-      onClick={() => navigate(`/crawls/${crawl.definitionId}`)}
+      role="button"
+      tabIndex={0}
+      onClick={open}
+      // Enter/Space activate the card like a button, but only when the card
+      // itself holds focus: a keypress on an inner control (Run/Stop) bubbles
+      // here too and must not also navigate.
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          open();
+        }
+      }}
     >
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "var(--space-3)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
