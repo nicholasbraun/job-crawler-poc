@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 )
@@ -89,6 +90,33 @@ func (r *CompanyRepository) MergeImport(ctx context.Context, m *crawler.CompanyM
 		return fmt.Errorf("postgres: error merging import company: %w", err)
 	}
 	return nil
+}
+
+// ListPagelessWebsites returns the Website of every Pageless Company: a company
+// row with a non-NULL website and no career_page. Ordered most-recently-seen
+// first to mirror ListURLs -- ordering is not load-bearing, since the Frontier
+// dedups and does not depend on seed order. Because the write path stores an
+// empty Website as SQL NULL (the ats_provider idiom), `website IS NOT NULL`
+// alone excludes the without-website case. Never returns nil; an empty result
+// yields an empty slice.
+func (r *CompanyRepository) ListPagelessWebsites(ctx context.Context) ([]string, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT website
+		FROM company c
+		WHERE c.website IS NOT NULL
+		  AND NOT EXISTS (SELECT 1 FROM career_page p WHERE p.company_id = c.id)
+		ORDER BY c.last_seen DESC
+		`)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: error listing pageless company websites: %w", err)
+	}
+
+	websites, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("postgres: error listing pageless company websites: %w", err)
+	}
+
+	return websites, nil
 }
 
 // Delete removes the Company with the given id. Deleting a row that does not

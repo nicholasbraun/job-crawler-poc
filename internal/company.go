@@ -78,4 +78,14 @@ type CompanyRepository interface {
 	// clears it to NULL). It writes the merged row's id into m.ID. Re-merging the
 	// same instruction changes no data.
 	MergeImport(ctx context.Context, m *CompanyMerge) error
+
+	// ListPagelessWebsites returns the Website of every Pageless Company -- a
+	// catalogued Company that declares a Website (non-NULL) and owns no Career
+	// Page. A Keyword Crawl unions these URLs with the Career Page URLs to seed
+	// its Frontier, so an imported prospect with no known page still contributes
+	// listings. The query is self-healing: a Company drops out the moment it
+	// gains a Career Page, so its homepage stops seeding once a real page is
+	// catalogued. It never returns nil; a Catalog with no Pageless Companies
+	// yields an empty slice.
+	ListPagelessWebsites(ctx context.Context) ([]string, error)
 }

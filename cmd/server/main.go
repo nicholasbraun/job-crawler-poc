@@ -410,13 +410,23 @@ func newFactory(
 			return nil, fmt.Errorf("unsupported crawl kind: %q", def.Kind)
 		}
 
-		// Seed a Keyword Crawl from the Catalog: every Career Page the Discovery
-		// Crawl catalogued. On re-adoption (Reconcile) re-seeding is a no-op --
-		// the per-run Redis visited set survived the restart and dedups.
-		seedURLs, err := careerPageRepository.ListURLs(ctx)
+		// Seed a Keyword Crawl from the Catalog: the union of every Career Page
+		// URL and each Pageless Company's Website (its seed of last resort).
+		// Composed here from two honest repository queries -- the career-page
+		// listing stays exactly what its name says, and the pageless query
+		// self-heals, dropping a Company's Website the moment it gains a Career
+		// Page. On re-adoption (Reconcile) re-seeding is a no-op: the per-run Redis
+		// visited set survived the restart and dedups (which also collapses any
+		// overlap between the two seed sources).
+		careerPageSeeds, err := careerPageRepository.ListURLs(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("resolving keyword crawl seeds from catalog: %w", err)
 		}
+		pagelessSeeds, err := companyRepository.ListPagelessWebsites(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("resolving keyword crawl pageless seeds from catalog: %w", err)
+		}
+		seedURLs := append(careerPageSeeds, pagelessSeeds...)
 
 		// Multi-keyword OR relevance filter built from the Definition: a page is
 		// relevant if its title OR main content contains any keyword. Prunes
