@@ -6,7 +6,7 @@ import { useDefinitions, useListings, useRuns } from "../hooks";
 import { fmt, hostOf } from "../lib/format";
 import { buildKeywordCrawls, type KeywordCrawl } from "../lib/model";
 import { PageShell } from "../components/PageShell";
-import { EmptyState, Icon, Loading, RunControls, StatusTag } from "../components/primitives";
+import { EmptyState, ErrorNote, Icon, Loading, RunControls, StatusTag } from "../components/primitives";
 
 export function CrawlDetailPage() {
   const { definitionId = "" } = useParams();
@@ -136,7 +136,9 @@ function ListingsCard({ definitionId }: { definitionId: string }) {
         </table>
       </div>
 
-      {listingsQ.isLoading ? (
+      {listingsQ.error ? (
+        <ErrorNote error={listingsQ.error} />
+      ) : listingsQ.isLoading ? (
         <Loading />
       ) : filtered.length === 0 ? (
         <div style={{ padding: "var(--space-8) 0", textAlign: "center", fontSize: 13, color: "var(--color-neutral-500)" }}>
