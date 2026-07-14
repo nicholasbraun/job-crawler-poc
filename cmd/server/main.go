@@ -65,13 +65,12 @@ const (
 	redisReadyTimeout      = 60 * time.Second
 	redisReadyPollInterval = 500 * time.Millisecond
 
-	// Crawl tuning defaults, previously sourced from config.json. maxDepth and
-	// maxDomains seed a new crawl definition's fields (overridable per
-	// definition via the API); maxWorkers sizes the per-run worker pools.
+	// Crawl tuning defaults, previously sourced from config.json. maxDepth seeds
+	// a new crawl definition's field (overridable per definition via the API);
+	// maxWorkers sizes the per-run worker pools.
 	defaultLogLevel   = "INFO"
 	defaultMaxDepth   = 4
 	defaultMaxWorkers = 50
-	defaultMaxDomains = 10000
 
 	// llmMaxBacklog is the high-water cap on a per-run LLM stream's outstanding
 	// entries. Past it, the crawl's Enqueue blocks until the classify/extract
@@ -209,9 +208,8 @@ func main() {
 			return redisfrontier.Len(ctx, redisClient, runID)
 		},
 		Defaults: api.Defaults{
-			MaxDepth:   defaultMaxDepth,
-			MaxDomains: defaultMaxDomains,
-			URLFilter:  crawler.DefaultURLFilterConfig(),
+			MaxDepth:  defaultMaxDepth,
+			URLFilter: crawler.DefaultURLFilterConfig(),
 		},
 	})
 
@@ -308,7 +306,6 @@ func newFactory(
 			// stop. The Catalog (company + career_page) is filled by the
 			// career-page pool.
 			discoveryFrontier := redisfrontier.New(redisClient, runID,
-				redisfrontier.WithMaxDomains(def.MaxDomains),
 				redisfrontier.WithMaxDepth(def.MaxDepth),
 				redisfrontier.WithMode(frontier.Perpetual),
 			)
@@ -419,7 +416,6 @@ func newFactory(
 		)
 
 		boundedFrontier := redisfrontier.New(redisClient, runID,
-			redisfrontier.WithMaxDomains(def.MaxDomains),
 			redisfrontier.WithMaxDepth(def.MaxDepth),
 		)
 

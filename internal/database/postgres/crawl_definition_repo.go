@@ -47,12 +47,12 @@ func (r *CrawlDefinitionRepository) Create(ctx context.Context, def *crawler.Cra
 
 	err = r.pool.QueryRow(ctx, `
 		INSERT INTO crawl_definition
-			(id, name, kind, seed_urls, keywords, max_depth, max_domains, url_filter)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			(id, name, kind, seed_urls, keywords, max_depth, url_filter)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING created_at
 		`,
 		def.ID, def.Name, string(def.Kind), seedURLs, keywords,
-		def.MaxDepth, def.MaxDomains, filterJSON,
+		def.MaxDepth, filterJSON,
 	).Scan(&def.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("postgres: error creating crawl definition: %w", err)
@@ -72,7 +72,7 @@ func (r *CrawlDefinitionRepository) Delete(ctx context.Context, id uuid.UUID) er
 
 func (r *CrawlDefinitionRepository) Get(ctx context.Context, id uuid.UUID) (*crawler.CrawlDefinition, error) {
 	row := r.pool.QueryRow(ctx, `
-		SELECT id, name, kind, seed_urls, keywords, max_depth, max_domains, url_filter, created_at
+		SELECT id, name, kind, seed_urls, keywords, max_depth, url_filter, created_at
 		FROM crawl_definition WHERE id = $1
 		`, id)
 
@@ -89,7 +89,7 @@ func (r *CrawlDefinitionRepository) Get(ctx context.Context, id uuid.UUID) (*cra
 
 func (r *CrawlDefinitionRepository) List(ctx context.Context) ([]*crawler.CrawlDefinition, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, name, kind, seed_urls, keywords, max_depth, max_domains, url_filter, created_at
+		SELECT id, name, kind, seed_urls, keywords, max_depth, url_filter, created_at
 		FROM crawl_definition ORDER BY created_at DESC
 		`)
 	if err != nil {
@@ -122,7 +122,7 @@ func scanDefinition(row scanRow) (*crawler.CrawlDefinition, error) {
 
 	if err := row.Scan(
 		&def.ID, &def.Name, &kind, &def.SeedURLs, &def.Keywords,
-		&def.MaxDepth, &def.MaxDomains, &filterJSON, &def.CreatedAt,
+		&def.MaxDepth, &filterJSON, &def.CreatedAt,
 	); err != nil {
 		return nil, err
 	}

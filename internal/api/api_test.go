@@ -148,9 +148,8 @@ func (f *fakeListingRepo) FindByDefinition(ctx context.Context, definitionID uui
 
 func defaults() api.Defaults {
 	return api.Defaults{
-		MaxDepth:   7,
-		MaxDomains: 42,
-		URLFilter:  crawler.URLFilterConfig{AllowedTLDs: []string{"com", "io"}},
+		MaxDepth:  7,
+		URLFilter: crawler.URLFilterConfig{AllowedTLDs: []string{"com", "io"}},
 	}
 }
 
@@ -197,8 +196,8 @@ func TestCreateCrawlFillsDefaults(t *testing.T) {
 	if defs.created == nil {
 		t.Fatal("expected a definition to be created")
 	}
-	if defs.created.MaxDepth != 7 || defs.created.MaxDomains != 42 {
-		t.Errorf("omitted fields not defaulted: depth=%d domains=%d", defs.created.MaxDepth, defs.created.MaxDomains)
+	if defs.created.MaxDepth != 7 {
+		t.Errorf("omitted fields not defaulted: depth=%d", defs.created.MaxDepth)
 	}
 	if defs.created.Kind != crawler.CrawlKindDiscovery {
 		t.Errorf("kind: got %q, want discovery", defs.created.Kind)

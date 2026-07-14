@@ -207,11 +207,10 @@ func createDefinition(t *testing.T, pool *pgxpool.Pool, name string) uuid.UUID {
 	t.Helper()
 	defRepo := postgres.NewCrawlDefinitionRepository(pool)
 	def := &crawler.CrawlDefinition{
-		Name:       name,
-		Kind:       crawler.CrawlKindDiscovery,
-		SeedURLs:   []string{"https://example.com"},
-		MaxDepth:   1,
-		MaxDomains: 1,
+		Name:     name,
+		Kind:     crawler.CrawlKindDiscovery,
+		SeedURLs: []string{"https://example.com"},
+		MaxDepth: 1,
 	}
 	if err := defRepo.Create(t.Context(), def); err != nil {
 		t.Fatalf("error creating crawl definition: %v", err)

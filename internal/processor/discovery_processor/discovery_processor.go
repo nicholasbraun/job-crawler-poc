@@ -7,7 +7,6 @@ package discoveryprocessor
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 
@@ -133,10 +132,6 @@ func (w *discoveryWorker) Process(ctx context.Context, nextURL *crawler.URL) err
 		// AddURL fuses dedup with enqueue: an already-seen URL is a silent
 		// no-op, so there is no separate visited check to race against.
 		err = w.frontier.AddURL(ctx, parsed)
-		if errors.Is(err, frontier.ErrMaxDomainLimit) {
-			slog.Info("discovery_worker: max domain limit reached, dropping new domains")
-			continue
-		}
 		if err != nil {
 			slog.Error("discovery_worker: error adding url", "err", err)
 			continue

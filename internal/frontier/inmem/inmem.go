@@ -30,7 +30,6 @@ type Frontier struct {
 	// signal wakes up goroutines blocked in Next when a URL is added or marked done.
 	// Buffered with capacity 1 to avoid blocking senders.
 	signal           chan struct{}
-	maxDomains       int
 	maxDepth         int
 	urlsGauge        metric.Int64UpDownCounter
 	hostnamesCounter metric.Int64UpDownCounter
@@ -46,12 +45,6 @@ var _ frontier.Frontier = &Frontier{}
 func WithCooldown(c time.Duration) FrontierOption {
 	return func(f *Frontier) {
 		f.cooldown = c
-	}
-}
-
-func WithMaxDomains(md int) FrontierOption {
-	return func(f *Frontier) {
-		f.maxDomains = md
 	}
 }
 
@@ -80,7 +73,6 @@ func NewFrontier(opts ...FrontierOption) *Frontier {
 		visited:                   map[string]struct{}{},
 		cooldown:                  time.Second,
 		mode:                      frontier.Bounded,
-		maxDomains:                50,
 		maxDepth:                  3,
 		mu:                        sync.Mutex{},
 		signal:                    make(chan struct{}, 1),
@@ -104,8 +96,7 @@ func NewFrontier(opts ...FrontierOption) *Frontier {
 // A URL already seen in this frontier is a silent no-op (returns nil without
 // enqueueing) — dedup lives here, so AddURL is the single enqueue+dedup entry
 // point.
-// Returns frontier.ErrMaxDepth if the URL exceeds the configured crawl depth,
-// or frontier.ErrMaxDomainLimit if the hostname would exceed the domain cap.
+// Returns frontier.ErrMaxDepth if the URL exceeds the configured crawl depth.
 func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 	f.mu.Lock()
 
@@ -118,15 +109,11 @@ func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 		f.mu.Unlock()
 		return nil
 	}
-	// Mark visited before the domain cap so a URL dropped for exceeding
-	// maxDomains is not retried later (matches the redis impl's ordering).
+	// Mark visited before enqueue so dedup is decided up front (matches the
+	// redis impl's ordering).
 	f.visited[url.RawURL] = struct{}{}
 
 	if _, ok := f.queues[url.Hostname]; !ok {
-		if len(f.queues) >= f.maxDomains {
-			f.mu.Unlock()
-			return frontier.ErrMaxDomainLimit
-		}
 		f.queues[url.Hostname] = newQueue()
 		f.hostnamesCounter.Add(ctx, 1)
 	}

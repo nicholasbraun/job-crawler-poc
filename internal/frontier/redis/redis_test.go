@@ -75,22 +75,6 @@ func TestRedisFrontier(t *testing.T) {
 		}
 	})
 
-	t.Run("maxDomains cap", func(t *testing.T) {
-		f := redisfrontier.New(client, uuid.New(), redisfrontier.WithMaxDomains(1))
-		if err := f.AddURL(t.Context(), url("a", "http://a/1", 0)); err != nil {
-			t.Fatalf("AddURL a/1: %v", err)
-		}
-		// Same domain, another URL: still within the cap.
-		if err := f.AddURL(t.Context(), url("a", "http://a/2", 0)); err != nil {
-			t.Fatalf("AddURL a/2: %v", err)
-		}
-		// A new domain past the cap is rejected.
-		err := f.AddURL(t.Context(), url("b", "http://b/1", 0))
-		if !errors.Is(err, frontier.ErrMaxDomainLimit) {
-			t.Errorf("AddURL b/1: got %v, want %v", err, frontier.ErrMaxDomainLimit)
-		}
-	})
-
 	t.Run("maxDepth reject", func(t *testing.T) {
 		f := redisfrontier.New(client, uuid.New(), redisfrontier.WithMaxDepth(2))
 		err := f.AddURL(t.Context(), url("a", "http://a/deep", 3))

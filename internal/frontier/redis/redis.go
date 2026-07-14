@@ -1,7 +1,7 @@
 // Package redis implements a crash-safe, resumable URL frontier backed by
 // Redis, keyed per crawl run. It preserves the semantics of the in-memory
-// reference frontier (per-domain FIFO queues with a cooldown, a maxDomains cap,
-// a maxDepth reject, and dedup) while surviving process restarts: queued URLs,
+// reference frontier (per-domain FIFO queues with a cooldown, a maxDepth reject,
+// and dedup) while surviving process restarts: queued URLs,
 // the visited set, and in-flight leases all live in Redis under a
 // frontier:{runID}: namespace.
 //
@@ -35,31 +35,20 @@ const memberSep = "\x1f"
 // sleep, spreading out workers that would otherwise wake on the same deadline.
 const maxJitter = 50 * time.Millisecond
 
-// addScript fuses dedup with enqueue. KEYS: visited, knowndomains, domains.
-// ARGV: queuePrefix, domain, member, url, maxDomains, now(ms). Returns one of
-// DUP (already visited), MAXDOMAINS (a new domain over the cap), or NEW.
+// addScript fuses dedup with enqueue. KEYS: visited, domains.
+// ARGV: queuePrefix, domain, member, url, now(ms). Returns DUP (already visited)
+// or NEW.
 var addScript = redis.NewScript(`
-local visited      = KEYS[1]
-local knowndomains = KEYS[2]
-local domains      = KEYS[3]
-local queuePrefix  = ARGV[1]
-local domain       = ARGV[2]
-local member       = ARGV[3]
-local url          = ARGV[4]
-local maxDomains   = tonumber(ARGV[5])
-local now          = tonumber(ARGV[6])
+local visited     = KEYS[1]
+local domains     = KEYS[2]
+local queuePrefix = ARGV[1]
+local domain      = ARGV[2]
+local member      = ARGV[3]
+local url         = ARGV[4]
+local now         = tonumber(ARGV[5])
 
 if redis.call('SADD', visited, url) == 0 then
   return 'DUP'
-end
-
--- A brand-new domain that would exceed the cap is rejected. The URL stays in
--- visited (marked seen) so it is not retried, matching the in-mem reference.
-if redis.call('SISMEMBER', knowndomains, domain) == 0 then
-  if redis.call('SCARD', knowndomains) >= maxDomains then
-    return 'MAXDOMAINS'
-  end
-  redis.call('SADD', knowndomains, domain)
 end
 
 -- Make the domain eligible immediately; NX so an active cooldown is not reset.
@@ -181,7 +170,6 @@ type Frontier struct {
 	cooldown     time.Duration
 	leaseTTL     time.Duration
 	pollInterval time.Duration
-	maxDomains   int
 	maxDepth     int
 	mode         frontier.Mode
 }
@@ -206,11 +194,6 @@ func WithPollInterval(p time.Duration) Option {
 	return func(f *Frontier) { f.pollInterval = p }
 }
 
-// WithMaxDomains caps the number of distinct domains the frontier will accept.
-func WithMaxDomains(md int) Option {
-	return func(f *Frontier) { f.maxDomains = md }
-}
-
 // WithMaxDepth sets the maximum crawl depth; deeper URLs are rejected.
 func WithMaxDepth(md int) Option {
 	return func(f *Frontier) { f.maxDepth = md }
@@ -233,7 +216,6 @@ func New(client *redis.Client, runID uuid.UUID, opts ...Option) *Frontier {
 		cooldown:     time.Second,
 		leaseTTL:     2 * time.Minute,
 		pollInterval: 250 * time.Millisecond,
-		maxDomains:   50,
 		maxDepth:     3,
 		mode:         frontier.Bounded,
 	}
@@ -313,25 +295,22 @@ func Len(ctx context.Context, client *redis.Client, runID uuid.UUID) (int64, err
 
 // AddURL dedups and enqueues a URL in a single atomic script. An already-seen
 // URL is a silent no-op (returns nil). Returns frontier.ErrMaxDepth if the URL
-// is too deep, or frontier.ErrMaxDomainLimit if it introduces a domain past the
-// cap.
+// is too deep.
 func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 	if url.Depth > f.maxDepth {
 		return frontier.ErrMaxDepth
 	}
 
-	keys := []string{f.key("visited"), f.key("knowndomains"), f.key("domains")}
+	keys := []string{f.key("visited"), f.key("domains")}
 	res, err := addScript.Run(ctx, f.client, keys,
 		f.queuePrefix, url.Hostname, encodeMember(url), url.RawURL,
-		f.maxDomains, time.Now().UnixMilli(),
+		time.Now().UnixMilli(),
 	).Result()
 	if err != nil {
 		return fmt.Errorf("frontier: add url: %w", err)
 	}
 
 	switch res {
-	case "MAXDOMAINS":
-		return frontier.ErrMaxDomainLimit
 	case "NEW", "DUP":
 		return nil
 	default:

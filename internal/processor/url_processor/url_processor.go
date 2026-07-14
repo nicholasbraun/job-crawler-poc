@@ -156,9 +156,6 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 		// no-op, so there is no separate visited check to race against.
 		err = w.frontier.AddURL(ctx, parsed)
 		switch {
-		case errors.Is(err, frontier.ErrMaxDomainLimit):
-			slog.Debug("worker: max domain limit reached, dropping new domain", "url", parsed.RawURL)
-			continue
 		case errors.Is(err, frontier.ErrMaxDepth):
 			// Reaching maxDepth is an expected client-side rejection during
 			// normal crawling, not an error worth flagging per URL.

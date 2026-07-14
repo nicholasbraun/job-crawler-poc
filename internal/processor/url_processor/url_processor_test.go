@@ -97,7 +97,6 @@ func TestProcessAddURLRejections(t *testing.T) {
 		wantErrorLog bool
 	}{
 		{name: "max depth is not an error", addErr: frontier.ErrMaxDepth, wantErrorLog: false},
-		{name: "max domain limit is not an error", addErr: frontier.ErrMaxDomainLimit, wantErrorLog: false},
 		{name: "unexpected error is logged at error", addErr: errors.New("boom"), wantErrorLog: true},
 	}
 

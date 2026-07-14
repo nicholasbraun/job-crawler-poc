@@ -34,9 +34,8 @@ type FrontierSizer func(ctx context.Context, runID uuid.UUID) (int64, error)
 // {name, seedUrls} request yields a working crawl. Sourced from the built-in
 // defaults wired in cmd/server (see crawler.DefaultURLFilterConfig).
 type Defaults struct {
-	MaxDepth   int
-	MaxDomains int
-	URLFilter  crawler.URLFilterConfig
+	MaxDepth  int
+	URLFilter crawler.URLFilterConfig
 }
 
 // Config groups the Handler's dependencies. Every repository the read endpoints
@@ -91,13 +90,12 @@ func (h *Handler) Routes() http.Handler {
 // --- Requests + DTOs ---
 
 type createCrawlRequest struct {
-	Name       string                   `json:"name"`
-	SeedURLs   []string                 `json:"seedUrls"`
-	Kind       string                   `json:"kind"`
-	Keywords   []string                 `json:"keywords"`
-	MaxDepth   *int                     `json:"maxDepth"`
-	MaxDomains *int                     `json:"maxDomains"`
-	URLFilter  *crawler.URLFilterConfig `json:"urlFilter"`
+	Name      string                   `json:"name"`
+	SeedURLs  []string                 `json:"seedUrls"`
+	Kind      string                   `json:"kind"`
+	Keywords  []string                 `json:"keywords"`
+	MaxDepth  *int                     `json:"maxDepth"`
+	URLFilter *crawler.URLFilterConfig `json:"urlFilter"`
 }
 
 type runDTO struct {
@@ -125,15 +123,14 @@ func toRunDTO(run *crawler.CrawlRun) runDTO {
 }
 
 type definitionDTO struct {
-	ID         string                  `json:"id"`
-	Name       string                  `json:"name"`
-	Kind       string                  `json:"kind"`
-	SeedURLs   []string                `json:"seedUrls"`
-	Keywords   []string                `json:"keywords"`
-	MaxDepth   int                     `json:"maxDepth"`
-	MaxDomains int                     `json:"maxDomains"`
-	URLFilter  crawler.URLFilterConfig `json:"urlFilter"`
-	CreatedAt  time.Time               `json:"createdAt"`
+	ID        string                  `json:"id"`
+	Name      string                  `json:"name"`
+	Kind      string                  `json:"kind"`
+	SeedURLs  []string                `json:"seedUrls"`
+	Keywords  []string                `json:"keywords"`
+	MaxDepth  int                     `json:"maxDepth"`
+	URLFilter crawler.URLFilterConfig `json:"urlFilter"`
+	CreatedAt time.Time               `json:"createdAt"`
 }
 
 func toDefinitionDTO(def *crawler.CrawlDefinition) definitionDTO {
@@ -148,15 +145,14 @@ func toDefinitionDTO(def *crawler.CrawlDefinition) definitionDTO {
 		keywords = []string{}
 	}
 	return definitionDTO{
-		ID:         def.ID.String(),
-		Name:       def.Name,
-		Kind:       string(def.Kind),
-		SeedURLs:   seedURLs,
-		Keywords:   keywords,
-		MaxDepth:   def.MaxDepth,
-		MaxDomains: def.MaxDomains,
-		URLFilter:  def.URLFilter,
-		CreatedAt:  def.CreatedAt,
+		ID:        def.ID.String(),
+		Name:      def.Name,
+		Kind:      string(def.Kind),
+		SeedURLs:  seedURLs,
+		Keywords:  keywords,
+		MaxDepth:  def.MaxDepth,
+		URLFilter: def.URLFilter,
+		CreatedAt: def.CreatedAt,
 	}
 }
 
@@ -586,13 +582,12 @@ func (h *Handler) decodeDefinition(r *http.Request) (*crawler.CrawlDefinition, s
 	}
 
 	def := &crawler.CrawlDefinition{
-		Name:       req.Name,
-		Kind:       kind,
-		SeedURLs:   req.SeedURLs,
-		Keywords:   req.Keywords,
-		MaxDepth:   valueOr(req.MaxDepth, h.cfg.Defaults.MaxDepth),
-		MaxDomains: valueOr(req.MaxDomains, h.cfg.Defaults.MaxDomains),
-		URLFilter:  h.cfg.Defaults.URLFilter,
+		Name:      req.Name,
+		Kind:      kind,
+		SeedURLs:  req.SeedURLs,
+		Keywords:  req.Keywords,
+		MaxDepth:  valueOr(req.MaxDepth, h.cfg.Defaults.MaxDepth),
+		URLFilter: h.cfg.Defaults.URLFilter,
 	}
 	if req.URLFilter != nil {
 		def.URLFilter = *req.URLFilter

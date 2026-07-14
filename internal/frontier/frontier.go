@@ -15,9 +15,6 @@ import (
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 )
 
-// ErrMaxDomainLimit signals that the frontier has reached its max domains limit.
-var ErrMaxDomainLimit = errors.New("frontier: max domains limit reached")
-
 // ErrDone signals that the work is done.
 var ErrDone = errors.New("frontier: no urls left to crawl. work is done")
 
