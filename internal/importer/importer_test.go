@@ -22,9 +22,10 @@ import (
 // (Create + every Update), so a test can assert the pending->running->terminal
 // lifecycle without timing.
 type fakeImportJobRepo struct {
-	mu   sync.Mutex
-	jobs map[uuid.UUID]*crawler.ImportJob
-	seq  map[uuid.UUID][]crawler.ImportJobStatus
+	mu    sync.Mutex
+	jobs  map[uuid.UUID]*crawler.ImportJob
+	seq   map[uuid.UUID][]crawler.ImportJobStatus
+	byKey map[string]uuid.UUID // idempotency key -> job id, for replay arbitration
 
 	createErr error
 	updateErr error
@@ -34,8 +35,9 @@ type fakeImportJobRepo struct {
 
 func newFakeImportJobRepo() *fakeImportJobRepo {
 	return &fakeImportJobRepo{
-		jobs: map[uuid.UUID]*crawler.ImportJob{},
-		seq:  map[uuid.UUID][]crawler.ImportJobStatus{},
+		jobs:  map[uuid.UUID]*crawler.ImportJob{},
+		seq:   map[uuid.UUID][]crawler.ImportJobStatus{},
+		byKey: map[string]uuid.UUID{},
 	}
 }
 
@@ -52,6 +54,30 @@ func (f *fakeImportJobRepo) Create(ctx context.Context, job *crawler.ImportJob) 
 	f.jobs[job.ID] = &stored
 	f.seq[job.ID] = append(f.seq[job.ID], job.Status)
 	return nil
+}
+
+func (f *fakeImportJobRepo) CreateWithKey(ctx context.Context, job *crawler.ImportJob) (*crawler.ImportJob, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.createErr != nil {
+		return nil, false, f.createErr
+	}
+	if id, ok := f.byKey[job.IdempotencyKey]; ok {
+		existing := f.jobs[id]
+		if existing.RequestFingerprint != job.RequestFingerprint {
+			return nil, false, crawler.ErrIdempotencyKeyConflict
+		}
+		copied := *existing // reflect any background Update the original job saw
+		return &copied, true, nil
+	}
+	if job.ID == uuid.Nil {
+		job.ID = uuid.New()
+	}
+	stored := *job
+	f.jobs[job.ID] = &stored
+	f.byKey[job.IdempotencyKey] = job.ID
+	f.seq[job.ID] = append(f.seq[job.ID], job.Status)
+	return job, false, nil
 }
 
 func (f *fakeImportJobRepo) Get(ctx context.Context, id uuid.UUID) (*crawler.ImportJob, error) {
@@ -110,7 +136,7 @@ func (f *fakeImportJobRepo) statusSeq(id uuid.UUID) []crawler.ImportJobStatus {
 // the completed job's Result. It must be called inside a synctest bubble.
 func runImport(t *testing.T, im *importer.Importer, repo *fakeImportJobRepo, payload string) *crawler.ImportJob {
 	t.Helper()
-	job, err := im.Submit(t.Context(), "catalog.ndjson", []byte(payload), false)
+	job, _, err := im.Submit(t.Context(), "catalog.ndjson", []byte(payload), false, "")
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
@@ -229,7 +255,7 @@ func TestSubmitRunsPendingToCompletion(t *testing.T) {
 		repo := newFakeImportJobRepo()
 		im := importer.New(repo)
 
-		job, err := im.Submit(t.Context(), "catalog.ndjson", []byte(validKeyedOnePage), false)
+		job, _, err := im.Submit(t.Context(), "catalog.ndjson", []byte(validKeyedOnePage), false, "")
 		if err != nil {
 			t.Fatalf("Submit: %v", err)
 		}
@@ -270,7 +296,7 @@ func TestSubmitFailsJobOnInfrastructureError(t *testing.T) {
 				return crawler.ImportResult{}, errors.New("boom")
 			}))
 
-		job, err := im.Submit(t.Context(), "catalog.ndjson", []byte(validKeyedOnePage), false)
+		job, _, err := im.Submit(t.Context(), "catalog.ndjson", []byte(validKeyedOnePage), false, "")
 		if err != nil {
 			t.Fatalf("Submit: %v", err)
 		}
@@ -349,10 +375,10 @@ func TestExecutionIsSerialized(t *testing.T) {
 		}
 		im := importer.New(repo, importer.WithExecutor(exec))
 
-		if _, err := im.Submit(t.Context(), "a.ndjson", []byte(validKeyedOnePage), false); err != nil {
+		if _, _, err := im.Submit(t.Context(), "a.ndjson", []byte(validKeyedOnePage), false, ""); err != nil {
 			t.Fatalf("Submit a: %v", err)
 		}
-		if _, err := im.Submit(t.Context(), "b.ndjson", []byte(validKeyedOnePage), false); err != nil {
+		if _, _, err := im.Submit(t.Context(), "b.ndjson", []byte(validKeyedOnePage), false, ""); err != nil {
 			t.Fatalf("Submit b: %v", err)
 		}
 

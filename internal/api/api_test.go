@@ -174,15 +174,19 @@ func (f *fakeListingRepo) FindByDefinition(ctx context.Context, definitionID uui
 // nil-defaults. The mutex matters: a real importer.Importer wired over it runs
 // jobs on background goroutines, so Create/Update race handler reads under -race.
 type fakeImportJobRepo struct {
-	mu   sync.Mutex
-	jobs map[uuid.UUID]*crawler.ImportJob
+	mu    sync.Mutex
+	jobs  map[uuid.UUID]*crawler.ImportJob
+	byKey map[string]uuid.UUID // idempotency key -> job id, for replay arbitration
 
 	listErr error
 	getErr  error
 }
 
 func newFakeImportJobRepo() *fakeImportJobRepo {
-	return &fakeImportJobRepo{jobs: map[uuid.UUID]*crawler.ImportJob{}}
+	return &fakeImportJobRepo{
+		jobs:  map[uuid.UUID]*crawler.ImportJob{},
+		byKey: map[string]uuid.UUID{},
+	}
 }
 
 func (f *fakeImportJobRepo) Create(ctx context.Context, job *crawler.ImportJob) error {
@@ -194,6 +198,26 @@ func (f *fakeImportJobRepo) Create(ctx context.Context, job *crawler.ImportJob) 
 	stored := *job
 	f.jobs[job.ID] = &stored
 	return nil
+}
+
+func (f *fakeImportJobRepo) CreateWithKey(ctx context.Context, job *crawler.ImportJob) (*crawler.ImportJob, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if id, ok := f.byKey[job.IdempotencyKey]; ok {
+		existing := f.jobs[id]
+		if existing.RequestFingerprint != job.RequestFingerprint {
+			return nil, false, crawler.ErrIdempotencyKeyConflict
+		}
+		copied := *existing // reflect any background Update the original job saw
+		return &copied, true, nil
+	}
+	if job.ID == uuid.Nil {
+		job.ID = uuid.New()
+	}
+	stored := *job
+	f.jobs[job.ID] = &stored
+	f.byKey[job.IdempotencyKey] = job.ID
+	return job, false, nil
 }
 
 func (f *fakeImportJobRepo) Get(ctx context.Context, id uuid.UUID) (*crawler.ImportJob, error) {

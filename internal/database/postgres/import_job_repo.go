@@ -23,9 +23,9 @@ func NewImportJobRepository(pool *pgxpool.Pool) *ImportJobRepository {
 	return &ImportJobRepository{pool: pool}
 }
 
-// Create inserts job, assigning a fresh ID when job.ID is nil. The
+// Create inserts a keyless job, assigning a fresh ID when job.ID is nil. The
 // idempotency-key and request-fingerprint columns are deliberately omitted so
-// they default to SQL NULL (populated by the idempotent-submission work, #87).
+// they default to SQL NULL (keyed submission uses CreateWithKey).
 func (r *ImportJobRepository) Create(ctx context.Context, job *crawler.ImportJob) error {
 	if job.ID == uuid.Nil {
 		job.ID = uuid.New()
@@ -51,9 +51,73 @@ func (r *ImportJobRepository) Create(ctx context.Context, job *crawler.ImportJob
 	return nil
 }
 
+// CreateWithKey inserts job keyed by its Idempotency-Key, arbitrating key reuse
+// atomically via ON CONFLICT DO NOTHING (ADR-0014). Under concurrent same-key
+// submissions exactly one INSERT lands (RowsAffected 1); the losers observe the
+// conflict, load the winner, and return it as a replay when the fingerprints
+// match or ErrIdempotencyKeyConflict when they differ. job.IdempotencyKey must
+// be non-empty — the keyless path uses Create.
+func (r *ImportJobRepository) CreateWithKey(ctx context.Context, job *crawler.ImportJob) (*crawler.ImportJob, bool, error) {
+	if job.ID == uuid.Nil {
+		job.ID = uuid.New()
+	}
+
+	resultJSON, err := marshalResult(job.Result)
+	if err != nil {
+		return nil, false, err
+	}
+
+	tag, err := r.pool.Exec(ctx, `
+		INSERT INTO import_job
+			(id, status, dry_run, filename, file_size, result, error,
+			 idempotency_key, request_fingerprint, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (idempotency_key) DO NOTHING
+		`,
+		job.ID, string(job.Status), job.DryRun, job.Filename, job.FileSize,
+		resultJSON, job.Error, job.IdempotencyKey, job.RequestFingerprint,
+		job.CreatedAt, job.UpdatedAt,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("postgres: error creating import job with key: %w", err)
+	}
+	if tag.RowsAffected() == 1 {
+		return job, false, nil // this INSERT won: a fresh job
+	}
+
+	// The key already exists. Load the winner to tell a safe replay (same request
+	// fingerprint) from a dangerous key reuse (different fingerprint).
+	existing, err := r.getByKey(ctx, job.IdempotencyKey)
+	if err != nil {
+		return nil, false, err
+	}
+	if existing.RequestFingerprint != job.RequestFingerprint {
+		return nil, false, crawler.ErrIdempotencyKeyConflict
+	}
+	return existing, true, nil
+}
+
+// getByKey loads the job carrying idempotencyKey (with its stored fingerprint),
+// for CreateWithKey's conflict arbitration.
+func (r *ImportJobRepository) getByKey(ctx context.Context, key string) (*crawler.ImportJob, error) {
+	row := r.pool.QueryRow(ctx, `
+		SELECT id, status, dry_run, filename, file_size, result, error,
+		       COALESCE(idempotency_key, ''), COALESCE(request_fingerprint, ''),
+		       created_at, updated_at
+		FROM import_job WHERE idempotency_key = $1
+		`, key)
+	job, err := scanImportJob(row)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: error loading import job by key: %w", err)
+	}
+	return job, nil
+}
+
 func (r *ImportJobRepository) Get(ctx context.Context, id uuid.UUID) (*crawler.ImportJob, error) {
 	row := r.pool.QueryRow(ctx, `
-		SELECT id, status, dry_run, filename, file_size, result, error, created_at, updated_at
+		SELECT id, status, dry_run, filename, file_size, result, error,
+		       COALESCE(idempotency_key, ''), COALESCE(request_fingerprint, ''),
+		       created_at, updated_at
 		FROM import_job WHERE id = $1
 		`, id)
 
@@ -70,7 +134,9 @@ func (r *ImportJobRepository) Get(ctx context.Context, id uuid.UUID) (*crawler.I
 
 func (r *ImportJobRepository) List(ctx context.Context) ([]*crawler.ImportJob, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, status, dry_run, filename, file_size, result, error, created_at, updated_at
+		SELECT id, status, dry_run, filename, file_size, result, error,
+		       COALESCE(idempotency_key, ''), COALESCE(request_fingerprint, ''),
+		       created_at, updated_at
 		FROM import_job ORDER BY created_at DESC
 		`)
 	if err != nil {
@@ -142,7 +208,8 @@ func scanImportJob(row scanRow) (*crawler.ImportJob, error) {
 
 	if err := row.Scan(
 		&job.ID, &status, &job.DryRun, &job.Filename, &job.FileSize,
-		&resultJSON, &job.Error, &job.CreatedAt, &job.UpdatedAt,
+		&resultJSON, &job.Error, &job.IdempotencyKey, &job.RequestFingerprint,
+		&job.CreatedAt, &job.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}

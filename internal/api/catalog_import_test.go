@@ -74,6 +74,14 @@ func newImportRequest(t *testing.T, filename, body, query string) *http.Request 
 	return req
 }
 
+// newImportRequestWithKey is newImportRequest plus an Idempotency-Key header.
+func newImportRequestWithKey(t *testing.T, filename, body, query, key string) *http.Request {
+	t.Helper()
+	req := newImportRequest(t, filename, body, query)
+	req.Header.Set("Idempotency-Key", key)
+	return req
+}
+
 func decodeImportJob(t *testing.T, body *bytes.Buffer) importJobResponse {
 	t.Helper()
 	var got importJobResponse
@@ -237,6 +245,144 @@ func TestImportErrorReportCappedAt100(t *testing.T) {
 		}
 		if len(got.Result.Errors) != 100 {
 			t.Errorf("reported errors: got %d, want 100 (capped)", len(got.Result.Errors))
+		}
+	})
+}
+
+// TestImportReplaySameKeyReturns200SameJob covers the idempotent-replay contract:
+// resubmitting an identical request under the same Idempotency-Key returns the
+// original job (now finished) with 200 instead of forking a duplicate.
+func TestImportReplaySameKeyReturns200SameJob(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, repo := newImportHandler(t)
+
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, newImportRequestWithKey(t, "catalog.ndjson", validImportLine, "dryRun=true", "key-abc"))
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("first submit status: got %d, want 202; body=%s", rec.Code, rec.Body)
+		}
+		first := decodeImportJob(t, rec.Body)
+
+		// Let the background job finish so the replay observes a terminal job.
+		synctest.Wait()
+
+		rec = httptest.NewRecorder()
+		srv.ServeHTTP(rec, newImportRequestWithKey(t, "catalog.ndjson", validImportLine, "dryRun=true", "key-abc"))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("replay status: got %d, want 200; body=%s", rec.Code, rec.Body)
+		}
+		replayed := decodeImportJob(t, rec.Body)
+		if replayed.ID != first.ID {
+			t.Errorf("replay must return the original job: got %s, want %s", replayed.ID, first.ID)
+		}
+		if replayed.Result == nil {
+			t.Error("replay of a finished job must carry its result report")
+		}
+
+		jobs, err := repo.List(t.Context())
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(jobs) != 1 {
+			t.Errorf("a same-key replay must not create a duplicate: got %d jobs, want 1", len(jobs))
+		}
+	})
+}
+
+// TestImportSameKeyDifferentRequestIs422 covers the dangerous-reuse contract: a
+// key already bound to one request may not be reused for a different file or
+// dry-run flag; either is a 422 and never a second job (ADR-0014).
+func TestImportSameKeyDifferentRequestIs422(t *testing.T) {
+	t.Run("same key, different file body", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			srv, repo := newImportHandler(t)
+
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, newImportRequestWithKey(t, "catalog.ndjson", validImportLine, "", "key-x"))
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("first submit status: got %d, want 202; body=%s", rec.Code, rec.Body)
+			}
+			synctest.Wait()
+
+			other := `{"companyKey":"globex.com","careerPages":[{"url":"https://globex.com/jobs"}]}`
+			rec = httptest.NewRecorder()
+			srv.ServeHTTP(rec, newImportRequestWithKey(t, "catalog.ndjson", other, "", "key-x"))
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("reuse status: got %d, want 422; body=%s", rec.Code, rec.Body)
+			}
+
+			jobs, err := repo.List(t.Context())
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if len(jobs) != 1 {
+				t.Errorf("a conflicting reuse must not create a job: got %d jobs, want 1", len(jobs))
+			}
+		})
+	})
+
+	t.Run("same file, different dry-run flag", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			srv, repo := newImportHandler(t)
+
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, newImportRequestWithKey(t, "catalog.ndjson", validImportLine, "dryRun=true", "key-y"))
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("first submit status: got %d, want 202; body=%s", rec.Code, rec.Body)
+			}
+			synctest.Wait()
+
+			// Same bytes, but dryRun flips false -> a different fingerprint.
+			rec = httptest.NewRecorder()
+			srv.ServeHTTP(rec, newImportRequestWithKey(t, "catalog.ndjson", validImportLine, "", "key-y"))
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("flag-changed reuse status: got %d, want 422; body=%s", rec.Code, rec.Body)
+			}
+
+			jobs, err := repo.List(t.Context())
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if len(jobs) != 1 {
+				t.Errorf("a flag-changed reuse must not create a job: got %d jobs, want 1", len(jobs))
+			}
+		})
+	})
+}
+
+// TestImportWithoutKeyAlwaysCreatesFreshJob covers the keyless contract: with no
+// Idempotency-Key header every submit is a distinct 202 job, even byte-identical
+// uploads.
+func TestImportWithoutKeyAlwaysCreatesFreshJob(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, repo := newImportHandler(t)
+
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, newImportRequest(t, "catalog.ndjson", validImportLine, ""))
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("first submit status: got %d, want 202; body=%s", rec.Code, rec.Body)
+		}
+		first := decodeImportJob(t, rec.Body)
+
+		rec = httptest.NewRecorder()
+		srv.ServeHTTP(rec, newImportRequest(t, "catalog.ndjson", validImportLine, ""))
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("second submit status: got %d, want 202; body=%s", rec.Code, rec.Body)
+		}
+		second := decodeImportJob(t, rec.Body)
+
+		if first.ID == second.ID {
+			t.Errorf("keyless submits must be distinct jobs, got the same id %s", first.ID)
+		}
+
+		synctest.Wait()
+
+		jobs, err := repo.List(t.Context())
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(jobs) != 2 {
+			t.Errorf("two keyless submits must create two jobs: got %d, want 2", len(jobs))
 		}
 	})
 }

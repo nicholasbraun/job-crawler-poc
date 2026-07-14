@@ -11,6 +11,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -62,13 +65,35 @@ func New(jobs crawler.ImportJobRepository, opts ...Option) *Importer {
 	return im
 }
 
+// fingerprintRequest is the SHA-256 (hex) of a submission's dry-run flag and
+// payload — the "same request" identity an Idempotency-Key replay is checked
+// against (ADR-0014). The flag is mixed in as a leading byte so a dry run and a
+// real run of the same file fingerprint differently, forcing a fresh key for the
+// "import for real" step after a dry run. Filename is deliberately excluded: a
+// retry may re-pick the same bytes under a different local name.
+func fingerprintRequest(payload []byte, dryRun bool) string {
+	h := sha256.New()
+	var flag byte
+	if dryRun {
+		flag = 1
+	}
+	h.Write([]byte{flag})
+	h.Write(payload)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // Submit creates a pending Import Job for the buffered payload and starts
-// processing it asynchronously, returning the job in its initial pending state.
-// The returned pointer is a snapshot the caller owns; the background goroutine
-// mutates its own copy, so the two never race. Submit uses the request ctx only
-// for the initial Create — a cancelled request before creation aborts; once
-// launched, the job detaches and outlives the request.
-func (im *Importer) Submit(ctx context.Context, filename string, payload []byte, dryRun bool) (*crawler.ImportJob, error) {
+// processing it asynchronously, returning the job in its initial pending state
+// and whether it was an idempotent replay of a prior submission (replay=true
+// means the caller should answer 200 instead of 202). A non-empty
+// idempotencyKey makes the submission retriable: a later submission with the
+// same key returns the original job (replay), unless the request fingerprint
+// differs, which yields crawler.ErrIdempotencyKeyConflict. The returned pointer
+// is a snapshot the caller owns; the background goroutine mutates its own copy,
+// so the two never race. Submit uses the request ctx only for the initial
+// create — a cancelled request before creation aborts; once launched, the job
+// detaches and outlives the request.
+func (im *Importer) Submit(ctx context.Context, filename string, payload []byte, dryRun bool, idempotencyKey string) (*crawler.ImportJob, bool, error) {
 	now := time.Now().UTC()
 	job := &crawler.ImportJob{
 		ID:        uuid.New(),
@@ -79,14 +104,44 @@ func (im *Importer) Submit(ctx context.Context, filename string, payload []byte,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if err := im.jobs.Create(ctx, job); err != nil {
-		return nil, fmt.Errorf("importer: creating import job: %w", err)
+
+	// Keyless submission: always a fresh job. No fingerprint is stored — a keyless
+	// job can never be replayed, so it has nothing to be checked against.
+	if idempotencyKey == "" {
+		if err := im.jobs.Create(ctx, job); err != nil {
+			return nil, false, fmt.Errorf("importer: creating import job: %w", err)
+		}
+		im.launch(*job, payload)
+		return job, false, nil
 	}
 
-	im.wg.Add(1)
-	go im.run(*job, payload) // pass by value: the goroutine owns its copy
+	// Keyed submission: the fingerprint lets the repository tell a safe retry
+	// (same key + same request -> replay) from a dangerous key reuse (same key,
+	// different request -> conflict).
+	job.IdempotencyKey = idempotencyKey
+	job.RequestFingerprint = fingerprintRequest(payload, dryRun)
+	stored, replay, err := im.jobs.CreateWithKey(ctx, job)
+	if err != nil {
+		if errors.Is(err, crawler.ErrIdempotencyKeyConflict) {
+			return nil, false, err // surfaced verbatim so the API answers 422
+		}
+		return nil, false, fmt.Errorf("importer: creating import job with key: %w", err)
+	}
+	if replay {
+		// The original submission already owns this job's execution; do not launch
+		// a second run. Return the stored job so the API answers 200.
+		return stored, true, nil
+	}
+	im.launch(*stored, payload)
+	return stored, false, nil
+}
 
-	return job, nil
+// launch starts the async execution of a freshly-created job, pairing the
+// wait-group increment with the goroutine so Shutdown can drain it. The job is
+// passed by value: the goroutine owns its copy and never races the caller's.
+func (im *Importer) launch(job crawler.ImportJob, payload []byte) {
+	im.wg.Add(1)
+	go im.run(job, payload)
 }
 
 // run drives one job through running -> completed/failed. It acquires the single

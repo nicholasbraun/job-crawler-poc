@@ -2,10 +2,18 @@ package crawler
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// ErrIdempotencyKeyConflict is returned when a Catalog Import is submitted with
+// an Idempotency-Key already used by a job whose request fingerprint differs (a
+// different file or dry-run flag). The submission is rejected rather than
+// silently returning a job that imported different bytes (ADR-0014); the API
+// surfaces it as 422.
+var ErrIdempotencyKeyConflict = errors.New("crawler: idempotency key reused with a different request")
 
 // ImportJobStatus is the lifecycle state of an Import Job.
 //
@@ -56,19 +64,41 @@ type ImportJob struct {
 	// for a pending, running, or failed job).
 	Result *ImportResult
 	// Error is the infrastructure-failure detail for a failed job; empty otherwise.
-	Error     string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Error string
+	// IdempotencyKey is the optional client-supplied key that makes a submission
+	// safely retriable (ADR-0014): a later submission with the same key returns
+	// this job instead of creating a duplicate. Empty when the request carried no
+	// Idempotency-Key header — a keyless job can never be replayed.
+	IdempotencyKey string
+	// RequestFingerprint is the SHA-256 (hex) of the dry-run flag and the uploaded
+	// payload. It is stored so a key reuse with a different request is rejected
+	// (ErrIdempotencyKeyConflict) instead of aliasing a job that imported
+	// different bytes. Empty for a keyless job.
+	RequestFingerprint string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // ImportJobRepository persists Import Job records (ADR-0014). The uploaded file
 // is deliberately not stored — a job interrupted by a restart is swept to failed
 // and the operator re-uploads (idempotent merges make that a complete recovery).
 type ImportJobRepository interface {
-	// Create inserts job. If job.ID is nil a fresh ID is assigned. The
-	// idempotency-key and request-fingerprint columns are left NULL in this
-	// milestone (populated by the idempotent-submission work, #87).
+	// Create inserts a keyless job, leaving idempotency_key and
+	// request_fingerprint NULL. If job.ID is nil a fresh ID is assigned. Keyed,
+	// idempotent submission uses CreateWithKey.
 	Create(ctx context.Context, job *ImportJob) error
+
+	// CreateWithKey inserts job as an idempotent submission identified by its
+	// non-empty IdempotencyKey and RequestFingerprint (ADR-0014). The
+	// insert-or-arbitrate is atomic, so concurrent same-key submissions create
+	// exactly one job:
+	//   - no existing job for the key: inserts job, returns (job, false, nil).
+	//   - existing job, matching RequestFingerprint: inserts nothing and returns
+	//     that job with replay=true — the caller answers 200, not 202.
+	//   - existing job, differing RequestFingerprint: returns
+	//     (nil, false, ErrIdempotencyKeyConflict).
+	// The keyless path uses Create.
+	CreateWithKey(ctx context.Context, job *ImportJob) (stored *ImportJob, replay bool, err error)
 
 	// Get returns the job with id, or ErrNotFound if none exists.
 	Get(ctx context.Context, id uuid.UUID) (*ImportJob, error)
