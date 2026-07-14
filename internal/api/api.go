@@ -85,6 +85,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /api/companies", h.listCompanies)
 	mux.HandleFunc("GET /api/career-pages", h.listCareerPages)
 	mux.HandleFunc("GET /api/catalog-history", h.catalogHistory)
+	mux.HandleFunc("GET /api/catalog/export", h.exportCatalog)
 	mux.HandleFunc("GET /api/listings", h.listListings)
 
 	return mux

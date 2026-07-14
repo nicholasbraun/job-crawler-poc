@@ -56,6 +56,13 @@ export function CatalogPage() {
       title="Catalog"
       subtitle="Companies and career pages the discovery run has catalogued"
       back={{ to: "/", label: "Overview" }}
+      actions={
+        // A plain anchor, not a fetch: the browser follows the server's
+        // Content-Disposition and saves the Catalog Export directly.
+        <a className="btn btn-secondary" href="/api/catalog/export" download>
+          <Icon name="ph-download-simple" size={14} /> Export
+        </a>
+      }
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "var(--space-4)" }}>
