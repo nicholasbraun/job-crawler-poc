@@ -229,7 +229,7 @@ function RecentlyCatalogued({ pages, companies }: { pages: CareerPage[]; compani
                   {prettyUrl(p.url)}
                 </div>
               </div>
-              <span style={{ fontSize: 11, color: "var(--color-neutral-500)", flex: "none" }}>{relativeTime(p.lastSeen)}</span>
+              <span style={{ fontSize: 11, color: "var(--color-neutral-500)", flex: "none" }}>{relativeTime(p.firstSeen)}</span>
             </div>
           ))}
         </div>

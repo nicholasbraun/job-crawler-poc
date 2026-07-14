@@ -144,20 +144,22 @@ export type RecentPage = {
   id: string;
   company: string;
   url: string;
-  lastSeen: string;
+  firstSeen: string;
   isAts: boolean;
 };
 
-// recentlyCatalogued returns the most-recently-seen career pages (joined to
-// their company), newest first, capped at `limit`. Career pages whose company
-// is missing from the catalog are skipped rather than shown headless.
+// recentlyCatalogued returns the most-recently-catalogued career pages (joined
+// to their company), newest first, capped at `limit`. "Catalogued" is when a
+// page was first added, so it orders by firstSeen — matching the ADR-0012
+// growth curve — not lastSeen, which a re-crawl bumps. Career pages whose
+// company is missing from the catalog are skipped rather than shown headless.
 export function recentlyCatalogued(
   pages: CareerPage[],
   companiesById: Map<string, Company>,
   limit: number,
 ): RecentPage[] {
   return [...pages]
-    .sort((a, b) => b.lastSeen.localeCompare(a.lastSeen))
+    .sort((a, b) => b.firstSeen.localeCompare(a.firstSeen))
     .map((p) => {
       const company = companiesById.get(p.companyId);
       if (!company) return null;
@@ -165,7 +167,7 @@ export function recentlyCatalogued(
         id: p.id,
         company: company.name || company.displayDomain,
         url: p.url,
-        lastSeen: p.lastSeen,
+        firstSeen: p.firstSeen,
         isAts: company.atsProvider !== "",
       };
     })
