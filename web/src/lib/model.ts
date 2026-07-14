@@ -178,3 +178,17 @@ export function recentlyCatalogued(
 export function companySource(company: Company): string {
   return company.atsProvider || "Self-hosted";
 }
+
+// companyInitial buckets a company by the first character of its display name
+// (name || displayDomain) for the /catalog A–Z index: an uppercase A–Z letter,
+// or "0-9" for digits, symbols, empty names, and non-Latin initials. Diacritics
+// are stripped first so "Étude" buckets under "E".
+export function companyInitial(company: Company): string {
+  const name = (company.name || company.displayDomain).trim();
+  const first = name
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .charAt(0)
+    .toUpperCase();
+  return first >= "A" && first <= "Z" ? first : "0-9";
+}

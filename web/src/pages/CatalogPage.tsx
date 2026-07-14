@@ -3,7 +3,7 @@ import { useState } from "react";
 import type { CareerPage, Company } from "../api";
 import { useCareerPages, useCompanies } from "../hooks";
 import { fmt, prettyUrl, relativeTime } from "../lib/format";
-import { atsSplit, careerPagesByCompany, companySource } from "../lib/model";
+import { atsSplit, careerPagesByCompany, companyInitial, companySource } from "../lib/model";
 import { PageShell } from "../components/PageShell";
 import { EmptyState, ErrorNote, Icon, Loading, StatCard } from "../components/primitives";
 
@@ -14,8 +14,13 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: "self", label: "Self-hosted" },
 ];
 
+// LETTERS drives the A–Z index; the "0-9" bucket (rendered "0–9") and the "all"
+// reset sentinel are handled separately from this list.
+const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+
 export function CatalogPage() {
   const [filter, setFilter] = useState<Filter>("all");
+  const [letter, setLetter] = useState<string>("all");
   const companiesQ = useCompanies();
   const pagesQ = useCareerPages();
 
@@ -26,8 +31,17 @@ export function CatalogPage() {
   const atsProviders = new Set(companies.filter((c) => c.atsProvider).map((c) => c.atsProvider)).size;
   const avgPerCompany = companies.length ? (pages.length / companies.length).toFixed(1) : "0.0";
 
-  const filtered = companies.filter((c) =>
+  // The ATS/self source filter and the A–Z letter filter AND together: the
+  // source filter narrows first (bySource), then the letter filter. `available`
+  // is the set of initials present after the source filter, so the index dims
+  // buckets that have no rows under the current source selection.
+  const bySource = companies.filter((c) =>
     filter === "all" ? true : filter === "ats" ? c.atsProvider !== "" : c.atsProvider === "",
+  );
+  const available = new Set(bySource.map(companyInitial));
+  const byLetter = letter === "all" ? bySource : bySource.filter((c) => companyInitial(c) === letter);
+  const filtered = [...byLetter].sort((a, b) =>
+    (a.name || a.displayDomain).localeCompare(b.name || b.displayDomain, undefined, { sensitivity: "base" }),
   );
 
   const error = companiesQ.error ?? pagesQ.error;
@@ -65,6 +79,25 @@ export function CatalogPage() {
             </div>
           </div>
 
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-2)" }}>
+            <AlphaButton label="All" active={letter === "all"} enabled onClick={() => setLetter("all")} />
+            {LETTERS.map((l) => (
+              <AlphaButton
+                key={l}
+                label={l}
+                active={letter === l}
+                enabled={available.has(l)}
+                onClick={() => setLetter(l)}
+              />
+            ))}
+            <AlphaButton
+              label="0–9"
+              active={letter === "0-9"}
+              enabled={available.has("0-9")}
+              onClick={() => setLetter("0-9")}
+            />
+          </div>
+
           {error ? (
             <ErrorNote error={error} />
           ) : loading ? (
@@ -98,6 +131,45 @@ export function CatalogPage() {
         </div>
       </div>
     </PageShell>
+  );
+}
+
+// AlphaButton is one toggle in the A–Z index. Disabled (no companies under the
+// current source filter) buttons dim and stop responding; the active bucket
+// picks up accent styling.
+function AlphaButton({
+  label,
+  active,
+  enabled,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  enabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={!enabled}
+      onClick={enabled ? onClick : undefined}
+      style={{
+        padding: "4px 8px",
+        fontSize: 12,
+        minWidth: 26,
+        textAlign: "center",
+        borderRadius: "var(--radius-sm)",
+        border: `1px solid ${active ? "var(--color-accent)" : "var(--color-divider)"}`,
+        background: "transparent",
+        color: active ? "var(--color-accent)" : "var(--color-neutral-400)",
+        boxShadow: active ? "inset 0 0 0 1px var(--color-accent)" : undefined,
+        cursor: enabled ? "pointer" : "default",
+        opacity: enabled ? 1 : 0.35,
+        fontVariantNumeric: "tabular-nums",
+      }}
+    >
+      {label}
+    </button>
   );
 }
 
