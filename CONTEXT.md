@@ -120,8 +120,20 @@ The deterministic, pre-LLM pass over a candidate page that returns one of three 
 _Avoid_: filter, pre-check, heuristic
 
 **Certain / Uncertain**:
-The Gate's confidence in an accept. A *certain* accept is structurally definitive (an ATS board root, a career-path URL) and is catalogued with no LLM call; an *uncertain* accept is forwarded to the LLM to confirm.
+The Gate's Confidence Score band for an accept. A *certain* accept — structurally definitive (an ATS board root, a career-path URL) or carrying Structural Signals that clear the upper threshold — is catalogued with no LLM call; an *uncertain* accept is forwarded to the LLM to confirm.
 _Avoid_: sure/maybe, confident, definite
+
+**Confidence Score**:
+The Gate's graded measure of how strongly a candidate page reads as a Career Page hub, which its thresholds collapse into the three verdicts — reject, uncertain, or certain-accept.
+_Avoid_: gate score, hub score, confidence (bare)
+
+**Structural Signal**:
+A content-derived mark that a page is a Career Page hub — an ATS Embed, a structured-data openings index, or a dense set of same-host Job Listing links — weighing more in the Confidence Score than a bare career keyword in the URL or title.
+_Avoid_: feature, heuristic, hint
+
+**ATS Embed**:
+A Company's own page that renders a third-party ATS board inline, via an iframe or a provider script. Structurally a Career Page even though its host is the Company's domain rather than the ATS, so identity still attributes it to the Company by that domain.
+_Avoid_: iframe, widget, integration
 
 **Terminal-Hub Word**:
 The last path segment of a deep career URL that keeps it a Career Page rather than a Job Listing — an openings-index token (`open-positions`, `opportunities`, `vacancies`) as opposed to a role slug. It is what separates `/careers/open-positions` (a hub) from `/careers/senior-engineer` (a single posting) when the Gate would otherwise reject both as postings.
