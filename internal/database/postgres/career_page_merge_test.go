@@ -60,6 +60,21 @@ func TestCareerPageMergeImport(t *testing.T) {
 		}
 	})
 
+	t.Run("insert with only a past lastSeen clamps first_seen to it (no inverted interval)", func(t *testing.T) {
+		const url = "https://acme.com/clamp"
+		m := &crawler.CareerPageMerge{CompanyID: companyID, URL: url, PolitenessDomain: "acme.com", LastSeen: &early}
+		if err := repo.MergeImport(t.Context(), m); err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		firstSeen, lastSeen := careerPageTimestamps(t, pool, companyID, url)
+		if !lastSeen.Equal(early) {
+			t.Errorf("last_seen: got %v, want the file value %v", lastSeen, early)
+		}
+		if !firstSeen.Equal(early) {
+			t.Errorf("first_seen should clamp to last_seen %v (not default to now()), got %v", early, firstSeen)
+		}
+	})
+
 	t.Run("first_seen = LEAST, last_seen = GREATEST", func(t *testing.T) {
 		const url = "https://acme.com/monotone"
 		seed := &crawler.CareerPageMerge{CompanyID: companyID, URL: url, PolitenessDomain: "acme.com", FirstSeen: &mid, LastSeen: &mid}

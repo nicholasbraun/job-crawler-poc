@@ -73,7 +73,9 @@ type CompanyRepository interface {
 	// Upsert does. Timestamps merge monotonically (first_seen = LEAST(existing,
 	// file), last_seen = GREATEST(existing, file), each honoring an absent file
 	// value as "leave unchanged"); on first insert an absent timestamp defaults to
-	// now(). Each mutable field is written only when its Present flag is set (an
+	// now(), with first_seen clamped to last_seen so a record carrying only a past
+	// lastSeen cannot create an inverted interval.
+	// Each mutable field is written only when its Present flag is set (an
 	// explicit empty ATSProvider sets self-hosted; an explicit empty Website
 	// clears it to NULL). It writes the merged row's id into m.ID. Re-merging the
 	// same instruction changes no data.

@@ -88,6 +88,20 @@ func TestCompanyMergeImport(t *testing.T) {
 		}
 	})
 
+	t.Run("insert with only a past lastSeen clamps first_seen to it (no inverted interval)", func(t *testing.T) {
+		m := &crawler.CompanyMerge{CompanyKey: "clamp.com", Name: "Clamp", NamePresent: true, LastSeen: &early}
+		if err := repo.MergeImport(t.Context(), m); err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		firstSeen, lastSeen := companyTimestamps(t, pool, "clamp.com")
+		if !lastSeen.Equal(early) {
+			t.Errorf("last_seen: got %v, want the file value %v", lastSeen, early)
+		}
+		if !firstSeen.Equal(early) {
+			t.Errorf("first_seen should clamp to last_seen %v (not default to now()), got %v", early, firstSeen)
+		}
+	})
+
 	t.Run("first_seen = LEAST(existing, file)", func(t *testing.T) {
 		key := "least.com"
 		seed := &crawler.CompanyMerge{CompanyKey: key, Name: "L", NamePresent: true, FirstSeen: &mid, LastSeen: &mid}

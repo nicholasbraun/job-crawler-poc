@@ -57,8 +57,10 @@ func (r *CompanyRepository) Upsert(ctx context.Context, c *crawler.Company) erro
 // stamp), so an import with an absent or older lastSeen never advances it. now()
 // is the first-insert default only. Mutable fields update only when the caller
 // marks them present; an explicit empty ats_provider is stored as NULL
-// (self-hosted), and an explicit empty website is stored as NULL. Writes the
-// merged row's id back into m.ID.
+// (self-hosted), and an explicit empty website is stored as NULL. On first
+// insert first_seen is clamped to last_seen, so a record carrying only a past
+// lastSeen (first_seen would default to now()) cannot create an inverted
+// first_seen > last_seen interval. Writes the merged row's id back into m.ID.
 func (r *CompanyRepository) MergeImport(ctx context.Context, m *crawler.CompanyMerge) error {
 	var atsProvider *string
 	if m.ATSProvider != "" {
@@ -73,7 +75,7 @@ func (r *CompanyRepository) MergeImport(ctx context.Context, m *crawler.CompanyM
 		INSERT INTO company
 			(company_key, ats_provider, display_domain, name, website, first_seen, last_seen)
 		VALUES
-			($1, $2, $3, $4, $5, COALESCE($6, now()), COALESCE($7, now()))
+			($1, $2, $3, $4, $5, LEAST(COALESCE($6, now()), COALESCE($7, now())), COALESCE($7, now()))
 		ON CONFLICT (company_key) DO UPDATE SET
 			ats_provider   = CASE WHEN $8  THEN EXCLUDED.ats_provider   ELSE company.ats_provider   END,
 			display_domain = CASE WHEN $9  THEN EXCLUDED.display_domain ELSE company.display_domain END,

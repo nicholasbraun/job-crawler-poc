@@ -53,7 +53,9 @@ type CareerPageRepository interface {
 	// MergeImport lands an imported Career Page keyed on (CompanyID, URL)
 	// (ADR-0013). Like the Company merge it is not a Sighting: last_seen never
 	// advances to now on update; timestamps merge monotonically (LEAST/GREATEST)
-	// and default to now() on first insert only. politeness_domain (always
+	// and default to now() on first insert only, with first_seen clamped to
+	// last_seen so a record carrying only a past lastSeen cannot create an
+	// inverted interval. politeness_domain (always
 	// present, derived from the URL host) is refreshed. Re-merging changes no data.
 	MergeImport(ctx context.Context, m *CareerPageMerge) error
 
