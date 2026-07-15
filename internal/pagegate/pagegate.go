@@ -62,9 +62,14 @@ var terminalHubWords = []string{
 // posting that links sibling postings can no longer re-admit itself; a URL whose
 // final path segment is a Terminal-Hub Word (a real deep hub such as
 // /careers/open-positions) is exempted from the veto. A bare career-hub root path
-// (the career signal is the last path segment) then accepts as certain; any other
-// career-signalled page (or a page that links to postings) is accepted but left
-// to the LLM to confirm.
+// (the career signal is the last path segment) then accepts as certain; otherwise
+// the final rung computes an additive Confidence Score (ADR-0016) over the
+// remaining cheap signals — a career keyword in the URL/title and the presence of
+// a same-host Job Listing link — and maps it to a verdict via the config's
+// CertainThreshold/RejectThreshold: at or above certain it accepts as certain
+// (skips the LLM), at or below reject it rejects, and the band between is accepted
+// but left to the LLM to confirm. With DefaultLLMGateConfig's behavior-neutral
+// seeds nothing certain-accepts from this rung and reject means no signal at all.
 func CareerPage(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConfig) (accept, certain bool) {
 	// Multi-company aggregators, VC-portfolio boards, and professional networks
 	// are never a single company's hub. Reject them before any accept path so
@@ -93,10 +98,37 @@ func CareerPage(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConf
 		if careerHubRoot(u.RawURL, cfg.CareerPathSignals) {
 			return true, true
 		}
-		careerish := containsAny(u.RawURL, careerKeywords) || containsAny(content.Title, careerKeywords)
-		listsJobs := countJobPostingLinks(u, content) > 0
-		return careerish || listsJobs, false
+		// Final rung (ADR-0016): an additive Confidence Score over the cheap
+		// final-rung signals, mapped to the Gate's three verdicts by the two
+		// thresholds. With DefaultLLMGateConfig's seeds this reproduces the old
+		// `careerish || listsJobs, false` rung exactly (see confidenceScore).
+		score := confidenceScore(u, content, cfg)
+		switch {
+		case score >= cfg.CertainThreshold:
+			return true, true
+		case score <= cfg.RejectThreshold:
+			return false, false
+		default:
+			return true, false
+		}
 	}
+}
+
+// confidenceScore sums the weight of each fired final-rung signal into the
+// Gate's additive Confidence Score (ADR-0016). Accumulation is pure: weak
+// signals may sum toward certain, and the config's thresholds — not this
+// function — decide the verdict band. Today two signals contribute: a career
+// keyword in the URL or title, and the presence of at least one same-host Job
+// Listing link. Signal tickets add stronger structural signals here.
+func confidenceScore(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConfig) float64 {
+	var score float64
+	if containsAny(u.RawURL, careerKeywords) || containsAny(content.Title, careerKeywords) {
+		score += cfg.CareerKeywordWeight
+	}
+	if countJobPostingLinks(u, content) > 0 {
+		score += cfg.JobLinkWeight
+	}
+	return score
 }
 
 // ShouldExtract reports whether a keyword-relevant page should reach the LLM

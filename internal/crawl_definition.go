@@ -45,9 +45,29 @@ type URLFilterConfig struct {
 // Unlike URLFilterConfig, this is not (yet) a per-definition, persisted field: the
 // factory applies the process-wide DefaultLLMGateConfig to every run, so the type
 // carries no json tags. Add them when it becomes a persisted definition field.
+// As of ADR-0016 it also carries the final-rung Confidence Score weights and
+// thresholds -- this is the shift from curated string lists to curated lists plus
+// tunable floats -- but it stays in-memory and process-wide, still with no json
+// tags.
 type LLMGateConfig struct {
 	CareerPathSignals []string
 	RejectPathSignals []string
+
+	// Confidence Score weights and thresholds for the Gate's final rung
+	// (ADR-0016). The final rung sums the weight of each fired signal into an
+	// additive Confidence Score, then maps it to the Gate's three verdicts:
+	// score >= CertainThreshold certain-accepts (skips the LLM), score <=
+	// RejectThreshold rejects, and the band between stays uncertain (the LLM
+	// confirms). Weights are hand-set and coarse; only the two thresholds are
+	// tuned against the Gold Set. Signal tickets add further weights.
+	//
+	// CareerKeywordWeight scores a career keyword found in the URL or title (the
+	// weakest signal). JobLinkWeight scores the presence of at least one
+	// same-host Job Listing link.
+	CareerKeywordWeight float64
+	JobLinkWeight       float64
+	CertainThreshold    float64
+	RejectThreshold     float64
 }
 
 // DefaultLLMGateConfig returns the built-in pre-LLM gate signals. CareerPathSignals
@@ -57,6 +77,11 @@ type LLMGateConfig struct {
 // here. Weaker, ambiguous tokens (e.g. "join", which is as often a newsletter or
 // community signup) are deliberately left out; the pagegate content heuristic still
 // accepts them, but as uncertain — the LLM confirms before cataloging.
+//
+// It also seeds the final-rung Confidence Score floats (ADR-0016). The seeds are
+// deliberately behavior-neutral: with these values nothing certain-accepts from the
+// final rung, and reject means no signal fired at all — reproducing the pre-score
+// `careerish || listsJobs` rung exactly for every page. Signal tickets tune them.
 func DefaultLLMGateConfig() LLMGateConfig {
 	return LLMGateConfig{
 		CareerPathSignals: []string{
@@ -84,6 +109,17 @@ func DefaultLLMGateConfig() LLMGateConfig {
 			// certain-accepted (#62 catalog audit false positives).
 			"docs", "tag", "category",
 		},
+
+		// Behavior-neutral scaffold seeds (ADR-0016): the two existing final-rung
+		// signals each contribute 0.5, so the score is 0, 0.5, or 1.0.
+		// RejectThreshold 0 rejects only a no-signal page (score 0); CertainThreshold
+		// 1.5 is above the 1.0 maximum, so NOTHING certain-accepts from this rung yet
+		// — reproducing the old `careerish || listsJobs, false` verdict exactly.
+		// Signal tickets add stronger weights and lower CertainThreshold into reach.
+		CareerKeywordWeight: 0.5,
+		JobLinkWeight:       0.5,
+		CertainThreshold:    1.5,
+		RejectThreshold:     0.0,
 	}
 }
 

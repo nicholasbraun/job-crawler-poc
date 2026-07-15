@@ -16,6 +16,26 @@ func newURL(t *testing.T, raw string) crawler.URL {
 	return u
 }
 
+// withThresholds returns cfg with its final-rung thresholds overridden, so a
+// band case can place certainθ/rejectθ where the seeded signals cross them —
+// DefaultLLMGateConfig's CertainThreshold is deliberately unreachable from the
+// final rung.
+func withThresholds(cfg crawler.LLMGateConfig, certain, reject float64) crawler.LLMGateConfig {
+	cfg.CertainThreshold = certain
+	cfg.RejectThreshold = reject
+	return cfg
+}
+
+// finalRungConfig is DefaultLLMGateConfig's Confidence Score floats with the
+// path-signal lists cleared, so a case exercises the final-rung score bands in
+// isolation from the earlier career-hub-root and reject-path rungs.
+func finalRungConfig() crawler.LLMGateConfig {
+	cfg := crawler.DefaultLLMGateConfig()
+	cfg.CareerPathSignals = nil
+	cfg.RejectPathSignals = nil
+	return cfg
+}
+
 func TestCareerPage(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -286,9 +306,60 @@ func TestCareerPage(t *testing.T) {
 			wantAccept:  false,
 			wantCertain: false,
 		},
-		// Zero-value config reproduces the legacy behavior: no URL-path signals,
-		// so a career-hub path is only accepted via the careerish/listsJobs
-		// heuristic and is never certain.
+		// Final-rung Confidence Score band mapping (ADR-0016). All four use the
+		// neutral path /team so no earlier rung fires (not an aggregator/ATS host,
+		// not a reject/posting/career-signal segment); signals are driven purely by
+		// title/links, and the verdict comes from the final rung's score bands.
+		{
+			name: "final rung: no signal lands in reject",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title: "Team",
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
+			name: "final rung: one signal stays uncertain (accept)",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title: "Careers",
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// Behavior-neutrality guard: even both signals firing (score 1.0) does
+			// NOT certain-accept under the seeded default (CertainThreshold 1.5).
+			name: "final rung: both signals stay uncertain under the seeded certainθ",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title: "Careers",
+				URLs:  []string{"/jobs/eng-1"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// The certain band maps correctly (score 1.0 >= placed certainθ 1.0) —
+			// the one path DefaultLLMGateConfig never reaches.
+			name: "final rung: score crossing a placed certainθ certain-accepts",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title: "Careers",
+				URLs:  []string{"/jobs/eng-1"},
+			},
+			cfg:         withThresholds(crawler.DefaultLLMGateConfig(), 1.0, 0.0),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		// Cleared path signals with the seeded floats: these exercise the final-rung
+		// score in isolation from the career-hub-root and reject-path rungs (which
+		// don't fire without configured path signals). A zero-value config can no
+		// longer stand in — its zeroed thresholds would certain-accept every page.
 		{
 			name: "legacy: career-hub index with job links is accepted but uncertain",
 			url:  "https://acme.com/careers",
@@ -296,7 +367,7 @@ func TestCareerPage(t *testing.T) {
 				Title: "Careers",
 				URLs:  []string{"/careers/eng-1", "/careers/eng-2"},
 			},
-			cfg:         crawler.LLMGateConfig{},
+			cfg:         finalRungConfig(),
 			wantAccept:  true,
 			wantCertain: false,
 		},
@@ -307,7 +378,7 @@ func TestCareerPage(t *testing.T) {
 				Title: "Join our team",
 				URLs:  []string{"/about", "/contact"},
 			},
-			cfg:         crawler.LLMGateConfig{},
+			cfg:         finalRungConfig(),
 			wantAccept:  true,
 			wantCertain: false,
 		},
@@ -318,7 +389,7 @@ func TestCareerPage(t *testing.T) {
 				Title: "Hello World",
 				URLs:  []string{"/blog/other", "/about"},
 			},
-			cfg:         crawler.LLMGateConfig{},
+			cfg:         finalRungConfig(),
 			wantAccept:  false,
 			wantCertain: false,
 		},
