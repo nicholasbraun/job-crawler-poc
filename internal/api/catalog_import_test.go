@@ -424,6 +424,30 @@ func TestImportMalformedUploadIs400(t *testing.T) {
 	})
 }
 
+func TestImportOversizeUploadIs413(t *testing.T) {
+	srv, repo := newImportHandler(t)
+
+	// A file field one byte over the cap; with multipart framing the body
+	// exceeds MaxBytesReader's limit mid-parse.
+	oversize := strings.Repeat("x", 32<<20+1)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, newImportRequest(t, "huge.ndjson", oversize, ""))
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status: got %d, want 413; body=%s", rec.Code, rec.Body)
+	}
+	var got struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode error body %s: %v", rec.Body, err)
+	}
+	if !strings.Contains(got.Error, "32 MB") {
+		t.Errorf("error message should name the limit, got %q", got.Error)
+	}
+	assertNoJobsCreated(t, repo)
+}
+
 func TestListImportJobsNewestFirst(t *testing.T) {
 	repo := newFakeImportJobRepo()
 	base := time.Now().UTC()

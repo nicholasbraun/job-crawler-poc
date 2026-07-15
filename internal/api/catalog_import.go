@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -86,10 +87,19 @@ func toImportJobDTO(job *crawler.ImportJob) importJobDTO {
 // Idempotency-Key header makes submission retriable: a replay of the same key and
 // request returns the original job with 200, while reusing a key with a different
 // file or flag is a 422 (ADR-0014). A malformed upload (not multipart, no file
-// field, or over the size cap) is a 400.
+// field) is a 400; a body over the size cap is a 413 naming the limit.
 func (h *Handler) importCatalog(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxImportBytes)
 	if err := r.ParseMultipartForm(maxImportBytes); err != nil {
+		// MaxBytesReader signals the cap via *http.MaxBytesError; surface it as
+		// 413 with the limit named, so an operator with a too-big export learns
+		// the actual problem instead of "invalid multipart upload".
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("upload exceeds the %d MB limit", maxImportBytes>>20))
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid multipart upload")
 		return
 	}
