@@ -2,8 +2,9 @@ import { useState } from "react";
 
 import type { CareerPage, Company } from "../api";
 import { useCareerPages, useCompanies } from "../hooks";
-import { fmt, prettyUrl, relativeTime } from "../lib/format";
+import { fmt, hostOf, prettyUrl, relativeTime } from "../lib/format";
 import { atsSplit, careerPagesByCompany, companyInitial, companySource } from "../lib/model";
+import { ImportModal } from "../components/ImportModal";
 import { PageShell } from "../components/PageShell";
 import { EmptyState, ErrorNote, Icon, Loading, StatCard } from "../components/primitives";
 
@@ -21,6 +22,7 @@ const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 export function CatalogPage() {
   const [filter, setFilter] = useState<Filter>("all");
   const [letter, setLetter] = useState<string>("all");
+  const [importOpen, setImportOpen] = useState(false);
   const companiesQ = useCompanies();
   const pagesQ = useCareerPages();
 
@@ -56,6 +58,21 @@ export function CatalogPage() {
       title="Catalog"
       subtitle="Companies and career pages the discovery run has catalogued"
       back={{ to: "/", label: "Overview" }}
+      actions={
+        <>
+          {/* Icon convention: import brings data INTO the app (arrow down into
+              the tray), export sends it OUT (arrow up) — not the raw
+              upload/download transport direction. */}
+          <button className="btn btn-secondary" onClick={() => setImportOpen(true)}>
+            <Icon name="ph-download-simple" size={14} /> Import
+          </button>
+          {/* A plain anchor, not a fetch: the browser follows the server's
+              Content-Disposition and saves the Catalog Export directly. */}
+          <a className="btn btn-secondary" href="/api/catalog/export" download>
+            <Icon name="ph-upload-simple" size={14} /> Export
+          </a>
+        </>
+      }
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "var(--space-4)" }}>
@@ -134,6 +151,9 @@ export function CatalogPage() {
           )}
         </div>
       </div>
+      {/* Sibling of the content, not a child of the table: the modal is
+          position:fixed, so its place in the tree does not affect layout. */}
+      <ImportModal open={importOpen} onClose={() => setImportOpen(false)} />
     </PageShell>
   );
 }
@@ -210,7 +230,31 @@ function CompanyRow({ company, pages }: { company: Company; pages: CareerPage[] 
             />
             <div>
               <div style={{ fontSize: 14 }}>{company.name || company.displayDomain}</div>
-              <div style={{ fontSize: 11, color: "var(--color-neutral-500)" }}>{company.displayDomain}</div>
+              {company.website ? (
+                // Imported companies carry a homepage; link the domain to it. The
+                // row toggles its career-page list on click, so following the link
+                // must not also toggle the row (stopPropagation).
+                <a
+                  href={company.website}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    fontSize: 11,
+                    color: "var(--color-neutral-500)",
+                    textDecoration: "none",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    width: "fit-content",
+                  }}
+                >
+                  {company.displayDomain || hostOf(company.website)}
+                  <Icon name="ph-arrow-square-out" size={10} />
+                </a>
+              ) : (
+                <div style={{ fontSize: 11, color: "var(--color-neutral-500)" }}>{company.displayDomain}</div>
+              )}
             </div>
           </div>
         </td>

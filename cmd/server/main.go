@@ -30,6 +30,7 @@ import (
 	urlfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/url"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 	redisfrontier "github.com/nicholasbraun/job-crawler-poc/internal/frontier/redis"
+	"github.com/nicholasbraun/job-crawler-poc/internal/importer"
 	"github.com/nicholasbraun/job-crawler-poc/internal/llmobs"
 	"github.com/nicholasbraun/job-crawler-poc/internal/llmstream"
 	"github.com/nicholasbraun/job-crawler-poc/internal/openrouter"
@@ -172,6 +173,7 @@ func main() {
 	careerPageRepository := postgres.NewCareerPageRepository(pgPool)
 	defRepository := postgres.NewCrawlDefinitionRepository(pgPool)
 	runRepository := postgres.NewCrawlRunRepository(pgPool)
+	importJobRepository := postgres.NewImportJobRepository(pgPool)
 
 	factory := newFactory(defaultMaxWorkers, llmMaxWorkers, llmConfig, redisClient,
 		jobListingRepository, companyRepository, careerPageRepository)
@@ -195,6 +197,14 @@ func main() {
 		slog.Error("error reconciling interrupted runs", "err", err)
 	}
 
+	catalogImporter := importer.New(importJobRepository,
+		importer.WithExecutor(importer.NewMergeExecutor(companyRepository, careerPageRepository)))
+	// Fail any import a previous process left mid-flight; recovery is a re-upload
+	// (ADR-0014). Best-effort — a sweep failure must not stop the server.
+	if err := catalogImporter.Sweep(ctx); err != nil {
+		slog.Error("error sweeping interrupted import jobs", "err", err)
+	}
+
 	apiHandler := api.New(api.Config{
 		Runner:      crawlRunner,
 		Runs:        runRepository,
@@ -202,6 +212,8 @@ func main() {
 		Companies:   companyRepository,
 		CareerPages: careerPageRepository,
 		Listings:    jobListingRepository,
+		Importer:    catalogImporter,
+		ImportJobs:  importJobRepository,
 		// Frontier size is a live Redis read, kept out of the api package so it
 		// stays decoupled from Redis (mirrors runner.WithFrontierCleaner).
 		FrontierSizer: func(ctx context.Context, runID uuid.UUID) (int64, error) {
@@ -242,6 +254,8 @@ func main() {
 		slog.Error("error shutting down http server", "err", err)
 	}
 	crawlRunner.Shutdown(shutdownCtx)
+	// Drain any in-flight import before the pool it writes to closes.
+	catalogImporter.Shutdown(shutdownCtx)
 	otelShutdown(shutdownCtx)
 	pgPool.Close()
 	if err := redisClient.Close(); err != nil {
@@ -396,13 +410,23 @@ func newFactory(
 			return nil, fmt.Errorf("unsupported crawl kind: %q", def.Kind)
 		}
 
-		// Seed a Keyword Crawl from the Catalog: every Career Page the Discovery
-		// Crawl catalogued. On re-adoption (Reconcile) re-seeding is a no-op --
-		// the per-run Redis visited set survived the restart and dedups.
-		seedURLs, err := careerPageRepository.ListURLs(ctx)
+		// Seed a Keyword Crawl from the Catalog: the union of every Career Page
+		// URL and each Pageless Company's Website (its seed of last resort).
+		// Composed here from two honest repository queries -- the career-page
+		// listing stays exactly what its name says, and the pageless query
+		// self-heals, dropping a Company's Website the moment it gains a Career
+		// Page. On re-adoption (Reconcile) re-seeding is a no-op: the per-run Redis
+		// visited set survived the restart and dedups (which also collapses any
+		// overlap between the two seed sources).
+		careerPageSeeds, err := careerPageRepository.ListURLs(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("resolving keyword crawl seeds from catalog: %w", err)
 		}
+		pagelessSeeds, err := companyRepository.ListPagelessWebsites(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("resolving keyword crawl pageless seeds from catalog: %w", err)
+		}
+		seedURLs := append(careerPageSeeds, pagelessSeeds...)
 
 		// Multi-keyword OR relevance filter built from the Definition: a page is
 		// relevant if its title OR main content contains any keyword. Prunes

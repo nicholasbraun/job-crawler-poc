@@ -379,6 +379,13 @@ a:hover {
   margin-top: var(--space-2);
 }
 
+/* — spinner (live Import Job progress; applied inline via `animation: spin …`) — */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* — app chrome — */
 html,
 body,

@@ -30,6 +30,14 @@ func (r *spyCompanyRepo) List(ctx context.Context) ([]*crawler.Company, error) {
 	return r.upserted, nil
 }
 
+func (r *spyCompanyRepo) MergeImport(ctx context.Context, m *crawler.CompanyMerge) error {
+	return nil // career-page processor never imports; unused
+}
+
+func (r *spyCompanyRepo) ListPagelessWebsites(ctx context.Context) ([]string, error) {
+	return nil, nil // career-page processor never seeds; unused
+}
+
 type spyCareerPageRepo struct {
 	upserted []*crawler.CareerPage
 }
@@ -54,6 +62,10 @@ func (r *spyCareerPageRepo) List(ctx context.Context) ([]*crawler.CareerPage, er
 
 func (r *spyCareerPageRepo) FirstSeenByDay(ctx context.Context) ([]crawler.DayCount, error) {
 	return nil, nil
+}
+
+func (r *spyCareerPageRepo) MergeImport(ctx context.Context, m *crawler.CareerPageMerge) error {
+	return nil // career-page processor never imports; unused
 }
 
 type spyConfirmer struct {

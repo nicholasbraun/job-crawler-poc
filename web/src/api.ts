@@ -85,6 +85,9 @@ export type Company = {
   companyKey: string;
   atsProvider: string;
   displayDomain: string;
+  // Website is the Company's declared homepage, or "" when unknown (Discovery
+  // never learns it; only a Catalog Import sets it). See internal/company.go.
+  website: string;
   name: string;
   firstSeen: string;
   lastSeen: string;
@@ -106,6 +109,50 @@ export type CareerPage = {
 export type CatalogHistory = {
   careerPages: number[];
 };
+
+export type ImportJobStatus = "pending" | "running" | "completed" | "failed";
+
+export type ImportLineError = { line: number; message: string };
+
+// ImportResult is the terminal report of a completed Import Job. For a dry run
+// the counters are "would upsert"; for a real import they are what landed.
+// `errors` is capped server-side (first ~100); `errorCount` is the true total,
+// so the modal shows "…and N more" when errorCount > errors.length.
+export type ImportResult = {
+  companiesUpserted: number;
+  pagesUpserted: number;
+  errors: ImportLineError[];
+  errorCount: number;
+};
+
+// ImportJob mirrors the server's importJobDTO. `result` is null until the job
+// completes; `error` holds infrastructure-failure text only for a failed job.
+export type ImportJob = {
+  id: string;
+  status: ImportJobStatus;
+  dryRun: boolean;
+  filename: string;
+  fileSize: number;
+  result: ImportResult | null;
+  error: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+// isImportTerminal reports whether an Import Job has stopped: polling ends and
+// the result/error view is final.
+export function isImportTerminal(status: ImportJobStatus): boolean {
+  return status === "completed" || status === "failed";
+}
+
+// mintIdempotencyKey returns a fresh key for one import action (ADR-0014: one key
+// per user action). crypto.randomUUID needs a secure context (https or
+// localhost); the fallback keeps a plain-http LAN deployment working, since the
+// key only has to be unique per action.
+export function mintIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return `imp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 export type Listing = {
   url: string;
@@ -214,4 +261,39 @@ export function listListings(params: {
   const q = new URLSearchParams({ definitionId: params.definitionId });
   if (params.keyword) q.set("keyword", params.keyword);
   return request<Listing[]>(`/listings?${q.toString()}`);
+}
+
+// submitImport posts a catalog file as multipart and starts an asynchronous
+// Import Job. The Idempotency-Key makes a network retry return the original job
+// instead of duplicating it (ADR-0014). Both a fresh 202 and an idempotent 200
+// replay carry the job DTO in the body; a 422 (key reused with a different file
+// or dry-run flag) and any other non-2xx surface as a thrown Error. This bypasses
+// the shared `request` helper because it needs multipart (no JSON content-type),
+// a custom header, and the 202/200 body.
+export async function submitImport(params: {
+  file: File;
+  dryRun: boolean;
+  idempotencyKey: string;
+}): Promise<ImportJob> {
+  const form = new FormData();
+  form.append("file", params.file);
+  const q = params.dryRun ? "?dryRun=true" : "";
+  const res = await fetch(`${BASE}/catalog/import${q}`, {
+    method: "POST",
+    headers: { "Idempotency-Key": params.idempotencyKey },
+    body: form,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error ?? `request failed: ${res.status}`);
+  }
+  return res.json() as Promise<ImportJob>;
+}
+
+export function getImportJob(id: string): Promise<ImportJob> {
+  return request<ImportJob>(`/catalog/import-jobs/${id}`);
+}
+
+export function listImportJobs(): Promise<ImportJob[]> {
+  return request<ImportJob[]>("/catalog/import-jobs");
 }

@@ -6,13 +6,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/api"
+	"github.com/nicholasbraun/job-crawler-poc/internal/importer"
 	"github.com/nicholasbraun/job-crawler-poc/internal/runner"
 )
 
@@ -112,27 +115,162 @@ func (f *fakeRunRepo) UpdateCounters(ctx context.Context, id uuid.UUID, c crawle
 	return nil
 }
 
+// fakeCompanyRepo is a mutex-guarded in-memory CompanyRepository. The mutex
+// matters when a real importer.Importer is wired over it: it merges on a
+// background goroutine while handlers read List, so the two race under -race.
+// MergeImport is a faithful port of the Postgres merge (presence-wins fields,
+// monotone LEAST/GREATEST timestamps, not-a-Sighting) so the API-seam
+// idempotency test is meaningful.
 type fakeCompanyRepo struct {
+	mu        sync.Mutex
 	companies []*crawler.Company
+	listErr   error
 }
 
-func (f *fakeCompanyRepo) Upsert(ctx context.Context, c *crawler.Company) error { return nil }
+func (f *fakeCompanyRepo) Upsert(ctx context.Context, c *crawler.Company) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if c.ID == uuid.Nil {
+		c.ID = uuid.New()
+	}
+	saved := *c
+	f.companies = append(f.companies, &saved)
+	return nil
+}
 func (f *fakeCompanyRepo) List(ctx context.Context) ([]*crawler.Company, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return f.companies, nil
 }
-
-type fakeCareerPageRepo struct {
-	pages          []*crawler.CareerPage
-	firstSeenByDay []crawler.DayCount
+func (f *fakeCompanyRepo) MergeImport(ctx context.Context, m *crawler.CompanyMerge) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.companies {
+		if c.CompanyKey != m.CompanyKey {
+			continue
+		}
+		if m.ATSProviderPresent {
+			c.ATSProvider = m.ATSProvider
+		}
+		if m.DisplayDomainPresent {
+			c.DisplayDomain = m.DisplayDomain
+		}
+		if m.NamePresent {
+			c.Name = m.Name
+		}
+		if m.WebsitePresent {
+			c.Website = m.Website
+		}
+		if m.FirstSeen != nil && m.FirstSeen.Before(c.FirstSeen) {
+			c.FirstSeen = *m.FirstSeen
+		}
+		if m.LastSeen != nil && m.LastSeen.After(c.LastSeen) {
+			c.LastSeen = *m.LastSeen
+		}
+		m.ID = c.ID
+		return nil
+	}
+	now := time.Now().UTC()
+	firstSeen, lastSeen := now, now
+	if m.FirstSeen != nil {
+		firstSeen = *m.FirstSeen
+	}
+	if m.LastSeen != nil {
+		lastSeen = *m.LastSeen
+	}
+	c := &crawler.Company{
+		ID:            uuid.New(),
+		CompanyKey:    m.CompanyKey,
+		ATSProvider:   m.ATSProvider,
+		DisplayDomain: m.DisplayDomain,
+		Name:          m.Name,
+		Website:       m.Website,
+		FirstSeen:     firstSeen,
+		LastSeen:      lastSeen,
+	}
+	f.companies = append(f.companies, c)
+	m.ID = c.ID
+	return nil
+}
+func (f *fakeCompanyRepo) ListPagelessWebsites(ctx context.Context) ([]string, error) {
+	return nil, nil
 }
 
-func (f *fakeCareerPageRepo) Upsert(ctx context.Context, p *crawler.CareerPage) error { return nil }
-func (f *fakeCareerPageRepo) ListURLs(ctx context.Context) ([]string, error)          { return nil, nil }
+// fakeCareerPageRepo is a mutex-guarded in-memory CareerPageRepository. Like
+// fakeCompanyRepo it is guarded so the importer's background merges never race
+// handler reads under -race, and its MergeImport faithfully ports the Postgres
+// merge (monotone timestamps, refreshed politeness domain, not-a-Sighting).
+type fakeCareerPageRepo struct {
+	mu             sync.Mutex
+	pages          []*crawler.CareerPage
+	firstSeenByDay []crawler.DayCount
+	listErr        error
+	// onList runs before List returns, letting a test mutate the catalog
+	// between the export handler's two reads to simulate the
+	// unsynchronised-snapshot race (ADR-0015).
+	onList func()
+}
+
+func (f *fakeCareerPageRepo) Upsert(ctx context.Context, p *crawler.CareerPage) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	saved := *p
+	f.pages = append(f.pages, &saved)
+	return nil
+}
+func (f *fakeCareerPageRepo) ListURLs(ctx context.Context) ([]string, error) { return nil, nil }
 func (f *fakeCareerPageRepo) List(ctx context.Context) ([]*crawler.CareerPage, error) {
+	if f.onList != nil {
+		f.onList()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return f.pages, nil
 }
 func (f *fakeCareerPageRepo) FirstSeenByDay(ctx context.Context) ([]crawler.DayCount, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.firstSeenByDay, nil
+}
+func (f *fakeCareerPageRepo) MergeImport(ctx context.Context, m *crawler.CareerPageMerge) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.pages {
+		if p.CompanyID != m.CompanyID || p.URL != m.URL {
+			continue
+		}
+		p.PolitenessDomain = m.PolitenessDomain
+		if m.FirstSeen != nil && m.FirstSeen.Before(p.FirstSeen) {
+			p.FirstSeen = *m.FirstSeen
+		}
+		if m.LastSeen != nil && m.LastSeen.After(p.LastSeen) {
+			p.LastSeen = *m.LastSeen
+		}
+		return nil
+	}
+	now := time.Now().UTC()
+	firstSeen, lastSeen := now, now
+	if m.FirstSeen != nil {
+		firstSeen = *m.FirstSeen
+	}
+	if m.LastSeen != nil {
+		lastSeen = *m.LastSeen
+	}
+	f.pages = append(f.pages, &crawler.CareerPage{
+		ID:               uuid.New(),
+		CompanyID:        m.CompanyID,
+		URL:              m.URL,
+		PolitenessDomain: m.PolitenessDomain,
+		FirstSeen:        firstSeen,
+		LastSeen:         lastSeen,
+	})
+	return nil
 }
 
 type fakeListingRepo struct {
@@ -149,6 +287,98 @@ func (f *fakeListingRepo) FindByDefinition(ctx context.Context, definitionID uui
 	f.gotDefinition = definitionID
 	f.gotKeyword = keyword
 	return f.byDefinition, nil
+}
+
+// fakeImportJobRepo is a mutex-guarded in-memory ImportJobRepository shared by
+// the import handler tests (in catalog_import_test.go) and newHandler's
+// nil-defaults. The mutex matters: a real importer.Importer wired over it runs
+// jobs on background goroutines, so Create/Update race handler reads under -race.
+type fakeImportJobRepo struct {
+	mu    sync.Mutex
+	jobs  map[uuid.UUID]*crawler.ImportJob
+	byKey map[string]uuid.UUID // idempotency key -> job id, for replay arbitration
+
+	listErr error
+	getErr  error
+}
+
+func newFakeImportJobRepo() *fakeImportJobRepo {
+	return &fakeImportJobRepo{
+		jobs:  map[uuid.UUID]*crawler.ImportJob{},
+		byKey: map[string]uuid.UUID{},
+	}
+}
+
+func (f *fakeImportJobRepo) Create(ctx context.Context, job *crawler.ImportJob) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if job.ID == uuid.Nil {
+		job.ID = uuid.New()
+	}
+	stored := *job
+	f.jobs[job.ID] = &stored
+	return nil
+}
+
+func (f *fakeImportJobRepo) CreateWithKey(ctx context.Context, job *crawler.ImportJob) (*crawler.ImportJob, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if id, ok := f.byKey[job.IdempotencyKey]; ok {
+		existing := f.jobs[id]
+		if existing.RequestFingerprint != job.RequestFingerprint {
+			return nil, false, crawler.ErrIdempotencyKeyConflict
+		}
+		copied := *existing // reflect any background Update the original job saw
+		return &copied, true, nil
+	}
+	if job.ID == uuid.Nil {
+		job.ID = uuid.New()
+	}
+	stored := *job
+	f.jobs[job.ID] = &stored
+	f.byKey[job.IdempotencyKey] = job.ID
+	return job, false, nil
+}
+
+func (f *fakeImportJobRepo) Get(ctx context.Context, id uuid.UUID) (*crawler.ImportJob, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	job, ok := f.jobs[id]
+	if !ok {
+		return nil, crawler.ErrNotFound
+	}
+	copied := *job
+	return &copied, nil
+}
+
+func (f *fakeImportJobRepo) List(ctx context.Context) ([]*crawler.ImportJob, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	jobs := make([]*crawler.ImportJob, 0, len(f.jobs))
+	for _, j := range f.jobs {
+		copied := *j
+		jobs = append(jobs, &copied)
+	}
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].CreatedAt.After(jobs[j].CreatedAt) })
+	return jobs, nil
+}
+
+func (f *fakeImportJobRepo) Update(ctx context.Context, job *crawler.ImportJob) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	stored := *job
+	f.jobs[job.ID] = &stored
+	return nil
+}
+
+func (f *fakeImportJobRepo) SweepInterrupted(ctx context.Context, msg string, at time.Time) (int64, error) {
+	return 0, nil
 }
 
 func defaults() api.Defaults {
@@ -178,6 +408,14 @@ func newHandler(cfg api.Config) http.Handler {
 	}
 	if cfg.Listings == nil {
 		cfg.Listings = &fakeListingRepo{}
+	}
+	if cfg.ImportJobs == nil {
+		cfg.ImportJobs = newFakeImportJobRepo()
+	}
+	if cfg.Importer == nil {
+		// A real importer over the fake repo, so submit->poll->result exercises
+		// the executor end-to-end in the import handler tests.
+		cfg.Importer = importer.New(cfg.ImportJobs)
 	}
 	cfg.Defaults = defaults()
 	return api.New(cfg).Routes()
@@ -672,7 +910,7 @@ func TestStartRunOfExistingDefinition(t *testing.T) {
 
 func TestListCompanies(t *testing.T) {
 	companies := &fakeCompanyRepo{companies: []*crawler.Company{
-		{ID: uuid.New(), CompanyKey: "greenhouse:acme", ATSProvider: "greenhouse", Name: "Acme"},
+		{ID: uuid.New(), CompanyKey: "greenhouse:acme", ATSProvider: "greenhouse", Name: "Acme", Website: "https://acme.io"},
 	}}
 	srv := newHandler(api.Config{Companies: companies})
 
@@ -687,6 +925,9 @@ func TestListCompanies(t *testing.T) {
 	}
 	if len(got) != 1 || got[0]["companyKey"] != "greenhouse:acme" {
 		t.Errorf("unexpected companies body: %v", got)
+	}
+	if got[0]["website"] != "https://acme.io" {
+		t.Errorf("website not carried by the DTO: got %v, want https://acme.io", got[0]["website"])
 	}
 }
 

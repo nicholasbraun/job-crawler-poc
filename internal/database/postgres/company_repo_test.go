@@ -208,6 +208,145 @@ func TestCompanyRepositoryDelete(t *testing.T) {
 	})
 }
 
+// TestCompanyUpsertWebsite proves Upsert never touches the website column
+// (ADR-0013): a Discovery-created row leaves it NULL, and a Discovery re-sight of
+// an imported company must not blank the website the import wrote.
+func TestCompanyUpsertWebsite(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCompanyRepository(pool)
+
+	t.Run("discovery Upsert leaves website NULL", func(t *testing.T) {
+		c := &crawler.Company{CompanyKey: "discovered.com", DisplayDomain: "discovered.com", Name: "Discovered"}
+		if err := repo.Upsert(t.Context(), c); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+		if got := companyWebsite(t, pool, "discovered.com"); got != nil {
+			t.Errorf("discovery-created website should be NULL, got %q", *got)
+		}
+	})
+
+	t.Run("Upsert preserves an imported website", func(t *testing.T) {
+		key := "imported.com"
+		if err := repo.MergeImport(t.Context(), &crawler.CompanyMerge{CompanyKey: key, Website: "https://imported.com", WebsitePresent: true}); err != nil {
+			t.Fatalf("import: %v", err)
+		}
+		// Discovery re-sights the company later; its Upsert carries no website ("").
+		if err := repo.Upsert(t.Context(), &crawler.Company{CompanyKey: key, DisplayDomain: "imported.com", Name: "Imported"}); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+		if got := companyWebsite(t, pool, key); got == nil || *got != "https://imported.com" {
+			t.Errorf("Upsert must not blank the imported website, got %v", got)
+		}
+	})
+}
+
+// TestCompanyRepositoryListPagelessWebsites pins the pageless-websites query
+// that seeds Keyword Crawls from imported prospects with no known Career Page.
+// It seeds four companies exercising every branch: two Pageless-with-Website
+// (returned), one with a Website but an owned Career Page (excluded), and one
+// Pageless-without-Website (excluded). The self-heal subtest then gives one of
+// the returned companies a Career Page and proves its Website stops seeding.
+func TestCompanyRepositoryListPagelessWebsites(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCompanyRepository(pool)
+	pageRepo := postgres.NewCareerPageRepository(pool)
+
+	// A, D: Pageless with a Website -- expected in the result set. MergeImport is
+	// the only write path that stores a Website (Upsert never touches the column).
+	a := &crawler.CompanyMerge{CompanyKey: "pageless.io", Website: "https://pageless.io", WebsitePresent: true}
+	if err := repo.MergeImport(t.Context(), a); err != nil {
+		t.Fatalf("error importing pageless company A: %v", err)
+	}
+	d := &crawler.CompanyMerge{CompanyKey: "second.io", Website: "https://second.io", WebsitePresent: true}
+	if err := repo.MergeImport(t.Context(), d); err != nil {
+		t.Fatalf("error importing pageless company D: %v", err)
+	}
+
+	// B: has a Website AND an owned Career Page -- excluded (with-pages exclusion).
+	b := &crawler.CompanyMerge{CompanyKey: "greenhouse:acme", Website: "https://acme.com", WebsitePresent: true}
+	if err := repo.MergeImport(t.Context(), b); err != nil {
+		t.Fatalf("error importing company B: %v", err)
+	}
+	if err := pageRepo.Upsert(t.Context(), &crawler.CareerPage{
+		CompanyID:        b.ID,
+		URL:              "https://boards.greenhouse.io/acme",
+		PolitenessDomain: "boards.greenhouse.io",
+	}); err != nil {
+		t.Fatalf("error seeding company B career page: %v", err)
+	}
+
+	// C: Pageless but without a Website (Upsert leaves website NULL) -- excluded
+	// (without-website exclusion).
+	if err := repo.Upsert(t.Context(), &crawler.Company{
+		CompanyKey:    "nowebsite.com",
+		DisplayDomain: "nowebsite.com",
+		Name:          "NoWeb",
+	}); err != nil {
+		t.Fatalf("error upserting company C: %v", err)
+	}
+
+	t.Run("returns only pageless companies that declare a website", func(t *testing.T) {
+		websites, err := repo.ListPagelessWebsites(t.Context())
+		if err != nil {
+			t.Fatalf("error listing pageless company websites: %v", err)
+		}
+		want := map[string]bool{
+			"https://pageless.io": true,
+			"https://second.io":   true,
+		}
+		if len(websites) != len(want) {
+			t.Fatalf("want %d websites, got %d: %v", len(want), len(websites), websites)
+		}
+		for _, w := range websites {
+			if !want[w] {
+				t.Errorf("unexpected website in result: %q", w)
+			}
+		}
+	})
+
+	// Runs after the assertion above: give A a Career Page so it is no longer
+	// Pageless. Its Website must drop out; D (still pageless) must remain.
+	t.Run("self-heals: a company that gains a career page stops seeding", func(t *testing.T) {
+		if err := pageRepo.Upsert(t.Context(), &crawler.CareerPage{
+			CompanyID:        a.ID,
+			URL:              "https://pageless.io/careers",
+			PolitenessDomain: "pageless.io",
+		}); err != nil {
+			t.Fatalf("error attaching career page to company A: %v", err)
+		}
+
+		websites, err := repo.ListPagelessWebsites(t.Context())
+		if err != nil {
+			t.Fatalf("error listing pageless company websites: %v", err)
+		}
+		want := map[string]bool{"https://second.io": true}
+		if len(websites) != len(want) {
+			t.Fatalf("after self-heal want %d websites, got %d: %v", len(want), len(websites), websites)
+		}
+		for _, w := range websites {
+			if !want[w] {
+				t.Errorf("unexpected website after self-heal: %q", w)
+			}
+		}
+	})
+}
+
+func TestCompanyRepositoryListPagelessWebsitesEmpty(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCompanyRepository(pool)
+
+	got, err := repo.ListPagelessWebsites(t.Context())
+	if err != nil {
+		t.Fatalf("error listing pageless company websites: %v", err)
+	}
+	if got == nil {
+		t.Fatal("ListPagelessWebsites must return a non-nil slice, got nil")
+	}
+	if len(got) != 0 {
+		t.Errorf("empty catalog should yield no websites, got %v", got)
+	}
+}
+
 func companyTimestamps(t *testing.T, pool *pgxpool.Pool, companyKey string) (firstSeen, lastSeen time.Time) {
 	t.Helper()
 	err := pool.QueryRow(context.Background(),
