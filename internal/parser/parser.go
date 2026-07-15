@@ -31,6 +31,8 @@ func (p *HTMLParser) Parse(b []byte) (*crawler.Content, error) {
 		MainContent: getMainContent(doc),
 		URLs:        getUrls(doc),
 		JSONLD:      getJSONLD(doc),
+		Embeds:      getEmbeds(doc),
+		ElementIDs:  getElementIDs(doc),
 	}
 	return content, nil
 }
@@ -80,6 +82,39 @@ func getUrls(doc *goquery.Document) []string {
 	})
 
 	return urls
+}
+
+// getEmbeds returns every <iframe> and <script> that carries a src, tagged by
+// element kind — all iframes first, then all scripts. These are the page's
+// third-party board embed candidates; the Gate filters them to known ATS hosts.
+// Kept out of getUrls (the frontier link set) so an embed/tracker/CDN src is
+// never enqueued.
+func getEmbeds(doc *goquery.Document) []crawler.Embed {
+	embeds := []crawler.Embed{}
+	doc.Find("iframe[src]").Each(func(i int, s *goquery.Selection) {
+		if src, ok := s.Attr("src"); ok {
+			embeds = append(embeds, crawler.Embed{Src: src, IsFrame: true})
+		}
+	})
+	doc.Find("script[src]").Each(func(i int, s *goquery.Selection) {
+		if src, ok := s.Attr("src"); ok {
+			embeds = append(embeds, crawler.Embed{Src: src, IsFrame: false})
+		}
+	})
+	return embeds
+}
+
+// getElementIDs returns the id attribute of every element that has one, in
+// document order. The Gate's ATS-embed signal checks these for a provider's
+// board-container marker (e.g. Greenhouse "grnhse_app").
+func getElementIDs(doc *goquery.Document) []string {
+	ids := []string{}
+	doc.Find("[id]").Each(func(i int, s *goquery.Selection) {
+		if id, ok := s.Attr("id"); ok && id != "" {
+			ids = append(ids, id)
+		}
+	})
+	return ids
 }
 
 // getJSONLD returns the raw text of every <script type="application/ld+json">

@@ -37,6 +37,11 @@ func TestDefaultLLMGateConfig(t *testing.T) {
 		if cfg.RejectThreshold != 0 {
 			t.Errorf("RejectThreshold = %v, want 0 (reject only a no-signal page)", cfg.RejectThreshold)
 		}
+		// An ATS Embed (ADR-0016, #100) is the strongest Structural Signal: it must
+		// reach CertainThreshold so an embedded ATS board certain-accepts on its own.
+		if cfg.ATSEmbedWeight < cfg.CertainThreshold {
+			t.Errorf("ATSEmbedWeight %v must reach CertainThreshold %v so an ATS embed alone certain-accepts", cfg.ATSEmbedWeight, cfg.CertainThreshold)
+		}
 	})
 }
 

@@ -64,14 +64,15 @@ var terminalHubWords = []string{
 // /careers/open-positions) is exempted from the veto. A bare career-hub root path
 // (the career signal is the last path segment) then accepts as certain; otherwise
 // the final rung computes an additive Confidence Score (ADR-0016) over the
-// remaining cheap signals — a career keyword in the URL/title, the distinct
+// remaining cheap signals — an ATS Embed (an iframe or provider-script board on
+// the Company's own page), a career keyword in the URL/title, the distinct
 // same-host Job Listing link count folded in as min(count/K, 1), and a JSON-LD hub
 // (a structured-data openings index) — and maps it to a verdict via the config's
 // CertainThreshold/RejectThreshold: at or above certain it accepts as certain
 // (skips the LLM), at or below reject it rejects, and the band between is accepted
 // but left to the LLM to confirm. With DefaultLLMGateConfig a career keyword plus a
 // saturated same-host openings index certain-accepts from this rung, as does a
-// JSON-LD hub on its own; reject still means no signal at all.
+// JSON-LD hub or an ATS Embed on its own; reject still means no signal at all.
 func CareerPage(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConfig) (accept, certain bool) {
 	// Multi-company aggregators, VC-portfolio boards, and professional networks
 	// are never a single company's hub. Reject them before any accept path so
@@ -119,14 +120,25 @@ func CareerPage(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConf
 // confidenceScore sums the weight of each fired final-rung signal into the
 // Gate's additive Confidence Score (ADR-0016). Accumulation is pure: weak
 // signals may sum toward certain, and the config's thresholds — not this
-// function — decide the verdict band. Today three signals contribute: a career
-// keyword in the URL or title; the distinct same-host Job Listing link count,
-// folded in continuously as min(count/K, 1) (K = cfg.JobLinkSaturationCount);
-// and a JSON-LD hub — a structured-data openings index (an ItemList of
-// JobPosting or two or more JobPosting nodes), which a lone JobPosting does not
-// trip. Signal tickets add stronger structural signals here.
+// function — decide the verdict band. Today four signals contribute: an ATS
+// embed (the strongest — a Company page rendering a third-party ATS board inline,
+// via an iframe to a known ATS host or a script to one with the provider's
+// board-container marker present); a career keyword in the URL or title; the
+// distinct same-host Job Listing link count, folded in continuously as
+// min(count/K, 1) (K = cfg.JobLinkSaturationCount); and a JSON-LD hub — a
+// structured-data openings index (an ItemList of JobPosting or two or more
+// JobPosting nodes), which a lone JobPosting does not trip. Signal tickets add
+// stronger structural signals here.
 func confidenceScore(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConfig) float64 {
 	var score float64
+	// ATS embed (strongest, ADR-0016): a Company page rendering a third-party ATS
+	// board inline. An iframe to a known ATS host, or a script to one with the
+	// provider's board-container marker present, clears certainθ on its own; a
+	// site-wide script with no marker, an unknown host, or a wrong marker fires
+	// nothing (fail-safe), so it never certain-accepts a non-hub.
+	if atsEmbed(content) {
+		score += cfg.ATSEmbedWeight
+	}
 	if containsAny(u.RawURL, careerKeywords) || containsAny(content.Title, careerKeywords) {
 		score += cfg.CareerKeywordWeight
 	}

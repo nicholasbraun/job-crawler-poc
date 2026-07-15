@@ -1,9 +1,11 @@
 package parser_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
+	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
 )
 
@@ -139,6 +141,50 @@ Engineer</h1>
 		}
 		if !strings.Contains(content.JSONLD[0], "JobPosting") {
 			t.Errorf("expected JobPosting ld+json, got: %s", content.JSONLD[0])
+		}
+	})
+
+	t.Run("extracts iframe/script embeds and element ids, keeps them out of URLs", func(t *testing.T) {
+		html := `
+<html><body>
+	<header><nav><a href="/careers">Careers</a></nav></header>
+	<main>
+		<a href="https://acme.com/team">Team</a>
+		<div id="grnhse_app"></div>
+		<script src="https://boards.greenhouse.io/embed/job_board/js?for=acme"></script>
+		<iframe src="https://acme.jobs.personio.de/search"></iframe>
+	</main>
+</body></html>`
+		content, err := parser.NewHTMLParser().Parse([]byte(html))
+		if err != nil {
+			t.Fatalf("error parsing content: %v", err)
+		}
+
+		const (
+			greenhouseSrc = "https://boards.greenhouse.io/embed/job_board/js?for=acme"
+			personioSrc   = "https://acme.jobs.personio.de/search"
+		)
+
+		// The anchor hrefs remain in URLs (the frontier link set)...
+		if !slices.Contains(content.URLs, "/careers") || !slices.Contains(content.URLs, "https://acme.com/team") {
+			t.Errorf("anchor hrefs missing from URLs: %v", content.URLs)
+		}
+		// ...but neither embed src leaks into the frontier link set.
+		if slices.Contains(content.URLs, greenhouseSrc) || slices.Contains(content.URLs, personioSrc) {
+			t.Errorf("embed src leaked into URLs (would be enqueued): %v", content.URLs)
+		}
+
+		// Both embeds are captured, tagged by kind (iframes first, then scripts).
+		wantEmbeds := []crawler.Embed{
+			{Src: personioSrc, IsFrame: true},
+			{Src: greenhouseSrc, IsFrame: false},
+		}
+		if !slices.Equal(content.Embeds, wantEmbeds) {
+			t.Errorf("Embeds = %v, want %v", content.Embeds, wantEmbeds)
+		}
+
+		if !slices.Contains(content.ElementIDs, "grnhse_app") {
+			t.Errorf("ElementIDs missing the board container id: %v", content.ElementIDs)
 		}
 	})
 

@@ -81,7 +81,15 @@ type LLMGateConfig struct {
 	// Listing, not a hub) contributes nothing, so this signal never turns a single
 	// posting into a False-Certain. A zero value (an override that omits it)
 	// leaves the signal silent, the same fail-safe as JobLinkSaturationCount <= 0.
-	JSONLDHubWeight  float64
+	JSONLDHubWeight float64
+	// ATSEmbedWeight scores an ATS Embed (ADR-0016): a Company page that renders a
+	// third-party ATS board inline — an <iframe> pointing at a known ATS host, or a
+	// <script> pointing at a known ATS host together with that provider's
+	// board-container marker. It is the strongest Structural Signal — seeded at or
+	// above CertainThreshold so it certain-accepts on its own — because an embedded
+	// ATS board is definitive of a Career Page hub. A zero value (an override that
+	// omits it) leaves the signal silent, the same fail-safe as JobLinkSaturationCount <= 0.
+	ATSEmbedWeight   float64
 	CertainThreshold float64
 	RejectThreshold  float64
 }
@@ -102,7 +110,10 @@ type LLMGateConfig struct {
 // still reaches the LLM, and a page with no signal at all rejects. A structured-data
 // openings index (JSON-LD ItemList of JobPosting, or >=2 JobPosting nodes)
 // contributes 1.5, certain-accepting on its own; a lone JobPosting contributes
-// nothing.
+// nothing. An ATS Embed (1.5) certain-accepts on its own too, like the JSON-LD
+// hub: a Company page rendering a third-party ATS board inline (an iframe to a
+// known ATS host, or a script to one with the provider's board-container marker
+// present).
 func DefaultLLMGateConfig() LLMGateConfig {
 	return LLMGateConfig{
 		CareerPathSignals: []string{
@@ -142,6 +153,7 @@ func DefaultLLMGateConfig() LLMGateConfig {
 		JobLinkWeight:          1.0,
 		JobLinkSaturationCount: 5,
 		JSONLDHubWeight:        1.5,
+		ATSEmbedWeight:         1.5,
 		CertainThreshold:       1.4,
 		RejectThreshold:        0.0,
 	}

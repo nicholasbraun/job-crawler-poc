@@ -477,6 +477,143 @@ func TestCareerPage(t *testing.T) {
 			wantAccept:  true,
 			wantCertain: false,
 		},
+		// ATS Embed final-rung signal (ADR-0016, #100). All use the neutral path
+		// /team so no earlier rung fires; the verdict comes purely from the embed
+		// term (weight 1.5 >= certainθ 1.4). Embeds/ElementIDs are set directly —
+		// the Gate seam, testing interpretation independent of the parser.
+		{
+			// An iframe to a known ATS host is a page-specific board, so it fires
+			// with no marker (Personio embeds via {tenant}.jobs.personio.de).
+			name: "iframe to an ATS host alone certain-accepts",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:  "Team",
+				Embeds: []crawler.Embed{{Src: "https://acme.jobs.personio.de/search", IsFrame: true}},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		{
+			name: "greenhouse script with its board container certain-accepts",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:      "Team",
+				Embeds:     []crawler.Embed{{Src: "https://boards.greenhouse.io/embed/job_board/js?for=acme"}},
+				ElementIDs: []string{"grnhse_app"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		{
+			name: "ashby script with ashby_embed container certain-accepts",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:      "Team",
+				Embeds:     []crawler.Embed{{Src: "https://jobs.ashbyhq.com/acme/embed"}},
+				ElementIDs: []string{"ashby_embed"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		{
+			// The BambooHR marker is literally "BambooHR": element ids are
+			// case-sensitive, so hasElementID matches it exactly.
+			name: "bamboohr script with BambooHR container certain-accepts",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:      "Team",
+				Embeds:     []crawler.Embed{{Src: "https://acme.bamboohr.com/js/embed.js"}},
+				ElementIDs: []string{"BambooHR"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		{
+			// False-Certain guard: a site-wide embed script with no rendered board
+			// container fires nothing, so the page rides only its career keyword
+			// (0.5) — uncertain, never certain-accepted.
+			name: "site-wide embed script with no board container stays out of certain",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:  "Careers",
+				Embeds: []crawler.Embed{{Src: "https://boards.greenhouse.io/embed/job_board/js?for=acme"}},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// The same site-wide script with no other signal contributes 0 -> reject.
+			name: "site-wide embed script with no other signal rejects",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:  "Team",
+				Embeds: []crawler.Embed{{Src: "https://boards.greenhouse.io/embed/job_board/js?for=acme"}},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
+			// The marker must match the script's OWN provider: a Greenhouse script
+			// with only Ashby's container present fires nothing.
+			name: "script to an ATS host with the wrong provider's marker stays out of certain",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:      "Careers",
+				Embeds:     []crawler.Embed{{Src: "https://boards.greenhouse.io/embed/job_board/js?for=acme"}},
+				ElementIDs: []string{"ashby_embed"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// Fail-safe: an unrecognized embed host earns no credit even when a
+			// real provider marker happens to be present.
+			name: "unrecognized embed host earns no credit even with a marker present",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:      "Careers",
+				Embeds:     []crawler.Embed{{Src: "https://cdn.example.com/widget.js"}},
+				ElementIDs: []string{"grnhse_app"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// An iframe to an unrecognized host (a YouTube embed) is not an ATS
+			// board: 0 credit -> reject.
+			name: "iframe to an unrecognized host earns no credit",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:  "Team",
+				Embeds: []crawler.Embed{{Src: "https://www.youtube.com/embed/xyz", IsFrame: true}},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
+			// Lever has no curated embed marker (it is handled by the hosted-board
+			// Classify, not the embed detector), so a Lever script fires nothing
+			// even with an unrelated provider's marker present.
+			name: "lever script earns no embed credit (no curated marker)",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:      "Careers",
+				Embeds:     []crawler.Embed{{Src: "https://jobs.lever.co/acme"}},
+				ElementIDs: []string{"grnhse_app"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
 		// Cleared path signals with the seeded floats: these exercise the final-rung
 		// score in isolation from the career-hub-root and reject-path rungs (which
 		// don't fire without configured path signals). A zero-value config can no
