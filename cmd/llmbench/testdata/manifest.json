@@ -746,5 +746,23 @@
     "verified": true,
     "fetched_at": "2026-07-12T21:24:01Z",
     "note": "#64 aggregator: eu-startups.com added to the denylist, rejected on eTLD+1"
+  },
+  {
+    "file": "0081-novaharbor-example-company-open-roles.html",
+    "url": "https://www.novaharbor.example/company/open-roles",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": true,
+    "fetched_at": "2026-07-15T00:00:00Z",
+    "note": "hand-authored fixture (#99): self-hosted hub on a non-/careers path annotated with a JSON-LD ItemList of JobPosting; certain-accepts via the structured-data hub signal (synthetic .example domain)"
+  },
+  {
+    "file": "0082-clarafields-example-o-studio-assistant.html",
+    "url": "https://www.clarafields.example/o/studio-assistant",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": true,
+    "fetched_at": "2026-07-15T00:00:00Z",
+    "note": "hand-authored trap (#99): a single Job Listing that escapes the posting-path veto and carries a lone JobPosting JSON-LD; must earn zero hub credit and reject, never certain-accept (synthetic .example domain)"
   }
 ]

@@ -391,6 +391,92 @@ func TestCareerPage(t *testing.T) {
 			wantAccept:  true,
 			wantCertain: true,
 		},
+		{
+			// A structured-data openings index (ItemList wrapping JobPostings)
+			// alone clears certainθ (1.5 >= 1.4), so a hub annotated only by JSON-LD
+			// certain-accepts with no LLM call (ADR-0016, #99).
+			name: "final rung: JSON-LD ItemList of JobPosting alone certain-accepts",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title: "Team",
+				JSONLD: []string{`{"@context":"https://schema.org","@type":"ItemList","itemListElement":[
+					{"@type":"ListItem","position":1,"item":{"@type":"JobPosting","title":"Engineer"}},
+					{"@type":"ListItem","position":2,"item":{"@type":"JobPosting","title":"Designer"}}]}`},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		{
+			// Two standalone JobPosting nodes (no ItemList) are a structured-data
+			// openings index too: postings >= 2 fires the signal.
+			name: "final rung: two standalone JobPosting nodes certain-accept",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:  "Team",
+				JSONLD: []string{`{"@type":"JobPosting","title":"Engineer"}`, `{"@type":"JobPosting","title":"Designer"}`},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		{
+			// The load-bearing guard (ADR-0016, #99): a LONE JobPosting earns no hub
+			// credit, so a keyword page carrying one stays at 0.5 -- uncertain, never
+			// a False-Certain. A single Job Listing must never certain-accept.
+			name: "final rung: lone JobPosting earns no hub credit, keyword page stays uncertain",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:  "Careers",
+				JSONLD: []string{`{"@type":"JobPosting","title":"Engineer"}`},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// A lone JobPosting with no other signal scores 0 -> reject: it adds zero,
+			// not negative, and does not sneak the page into the uncertain band.
+			name: "final rung: lone JobPosting with no other signal rejects",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:  "Team",
+				JSONLD: []string{`{"@type":"JobPosting","title":"Engineer"}`},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
+			// An ItemList of NON-JobPosting items (site-nav links) fires nothing --
+			// the guard against a generic ItemList (e.g. a SiteNavigationElement menu)
+			// certain-accepting a non-hub. Mirrors the basecamp/about Gold-Set page.
+			name: "final rung: ItemList of non-JobPosting items earns no credit",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title: "Team",
+				JSONLD: []string{`{"@type":"ItemList","itemListElement":[
+					{"@type":"SiteNavigationElement","name":"Pricing"},
+					{"@type":"SiteNavigationElement","name":"Features"}]}`},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
+			// Fail-safe (ADR-0016, #99): unparseable JSON-LD is skipped, leaving the
+			// page in exactly the band it would reach without it -- here a lone career
+			// keyword (0.5), still uncertain. Never a new Leak or False-Certain.
+			name: "final rung: unparseable JSON-LD leaves the band unchanged",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:  "Careers",
+				JSONLD: []string{`{"@type":"ItemList", broken`},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
 		// Cleared path signals with the seeded floats: these exercise the final-rung
 		// score in isolation from the career-hub-root and reject-path rungs (which
 		// don't fire without configured path signals). A zero-value config can no

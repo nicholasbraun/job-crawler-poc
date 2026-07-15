@@ -73,8 +73,17 @@ type LLMGateConfig struct {
 	// not bench-tuned. A value <= 0 leaves the signal silent (fail-safe), so a
 	// zero-value config never divides by zero or over-weights.
 	JobLinkSaturationCount int
-	CertainThreshold       float64
-	RejectThreshold        float64
+	// JSONLDHubWeight scores a structured-data openings index (ADR-0016): the
+	// page's JSON-LD is an ItemList containing a JobPosting, or carries two or
+	// more JobPosting nodes. It is a strong Structural Signal -- seeded at or
+	// above CertainThreshold so it certain-accepts on its own -- because such
+	// markup is definitive of a Career Page hub. A lone JobPosting node (one Job
+	// Listing, not a hub) contributes nothing, so this signal never turns a single
+	// posting into a False-Certain. A zero value (an override that omits it)
+	// leaves the signal silent, the same fail-safe as JobLinkSaturationCount <= 0.
+	JSONLDHubWeight  float64
+	CertainThreshold float64
+	RejectThreshold  float64
 }
 
 // DefaultLLMGateConfig returns the built-in pre-LLM gate signals. CareerPathSignals
@@ -90,7 +99,10 @@ type LLMGateConfig struct {
 // final rung (career keyword 0.5 + a saturated same-host Job Listing set 1.0 =
 // 1.5 >= CertainThreshold 1.4); every weaker combination — saturated links alone,
 // a keyword alone, or a keyword plus a thin set of links — stays uncertain and
-// still reaches the LLM, and a page with no signal at all rejects.
+// still reaches the LLM, and a page with no signal at all rejects. A structured-data
+// openings index (JSON-LD ItemList of JobPosting, or >=2 JobPosting nodes)
+// contributes 1.5, certain-accepting on its own; a lone JobPosting contributes
+// nothing.
 func DefaultLLMGateConfig() LLMGateConfig {
 	return LLMGateConfig{
 		CareerPathSignals: []string{
@@ -129,6 +141,7 @@ func DefaultLLMGateConfig() LLMGateConfig {
 		CareerKeywordWeight:    0.5,
 		JobLinkWeight:          1.0,
 		JobLinkSaturationCount: 5,
+		JSONLDHubWeight:        1.5,
 		CertainThreshold:       1.4,
 		RejectThreshold:        0.0,
 	}
