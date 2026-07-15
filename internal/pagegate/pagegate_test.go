@@ -331,9 +331,10 @@ func TestCareerPage(t *testing.T) {
 			wantCertain: false,
 		},
 		{
-			// A single stray same-host posting never certain-accepts: keyword (0.5) plus one
-			// same-host Job Listing link (1.0·min(1/5,1)=0.2) = 0.7, below certainθ 1.4, so
-			// it stays uncertain and still reaches the LLM (ADR-0016, #98).
+			// A single stray same-host posting never certain-accepts: keyword (0.5) plus a
+			// strong "Careers" title (0.5) plus one same-host Job Listing link
+			// (1.0·min(1/5,1)=0.2) = 1.2, below certainθ 1.25, so it stays uncertain and
+			// still reaches the LLM (ADR-0016, #98).
 			name: "final rung: keyword + a single same-host job link stays uncertain",
 			url:  "https://acme.com/team",
 			content: &crawler.Content{
@@ -345,9 +346,10 @@ func TestCareerPage(t *testing.T) {
 			wantCertain: false,
 		},
 		{
-			// Dense same-host openings index: a career keyword (0.5) plus a saturated
-			// same-host Job Listing set (1.0) reaches 1.5 >= certainθ 1.4, so the default
-			// config certain-accepts it with no LLM call (ADR-0016, #98).
+			// Dense same-host openings index: a career keyword (0.5), a strong "Careers"
+			// title (0.5), and a saturated same-host Job Listing set (1.0) reach 2.0 >=
+			// certainθ 1.25, so the default config certain-accepts it with no LLM call
+			// (ADR-0016, #98).
 			name: "final rung: keyword + dense same-host index certain-accepts under the default",
 			url:  "https://acme.com/team",
 			content: &crawler.Content{
@@ -360,9 +362,10 @@ func TestCareerPage(t *testing.T) {
 		},
 		{
 			// The load-bearing invariant (ADR-0016): saturated same-host links alone (1.0)
-			// do NOT reach certainθ 1.4 without a career keyword, so a culture/about page
+			// do NOT reach certainθ 1.25 without a career keyword, so a culture/about page
 			// that densely links same-host /careers/* siblings but carries no career keyword
-			// (e.g. an "About Us" page) stays uncertain, never a False-Certain.
+			// (an "About Us" page — no keyword, no strong title) stays uncertain, never a
+			// False-Certain.
 			name: "final rung: dense same-host index without a career keyword stays uncertain",
 			url:  "https://acme.com/company",
 			content: &crawler.Content{
@@ -372,6 +375,65 @@ func TestCareerPage(t *testing.T) {
 			cfg:         crawler.DefaultLLMGateConfig(),
 			wantAccept:  true,
 			wantCertain: false,
+		},
+		// Lever D + title-strength final-rung signal (ADR-0016, #101). Neutral/compound
+		// paths so no earlier rung fires; signals are driven by Title/URLs and the
+		// verdict comes from the raised rejectθ 0.75 / lowered certainθ 1.25 bands.
+		{
+			// Lever D headline: a weak-keyword-only page auto-rejects. The URL substring
+			// "karriere" scores the weak keyword (0.5), but "karriere-bei-acme" is a
+			// compound slug (not an exact segment) and "Arbeiten bei Acme" is no strong
+			// title, so title strength stays silent → 0.5 <= rejectθ 0.75 → reject.
+			name: "final rung: weak-keyword-only page auto-rejects (Lever D)",
+			url:  "https://acme.com/karriere-bei-acme/team",
+			content: &crawler.Content{
+				Title: "Arbeiten bei Acme",
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
+			// Zero-Leak & no-False-Certain guard: a career keyword (0.5) plus a strong
+			// careers title ("Jobs & Karriere" leads with "jobs", 0.5) = 1.0 clears
+			// rejectθ 0.75 but stays below certainθ 1.25 → uncertain. Lexical evidence
+			// alone never certain-accepts (certain still needs a Structural Signal).
+			name: "final rung: keyword + strong careers title stays uncertain",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title: "Jobs & Karriere",
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// The URL-segment lift (kfw shape): a career token as an exact NON-terminal
+			// path segment scores title strength even with a plain title. Keyword (0.5,
+			// "karriere" substring) + segment strength (0.5) = 1.0 → uncertain. Proves
+			// the raised rejectθ does not leak a real career sub-page.
+			name: "final rung: keyword + exact non-terminal career segment stays uncertain",
+			url:  "https://acme.com/karriere/studierende",
+			content: &crawler.Content{
+				Title: "Praktikum",
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// Accumulation past the lowered certainθ: a career keyword ("Careers" title,
+			// 0.5) + title strength (0.5) + a dense same-host index (1.0) = 2.0 >=
+			// certainθ 1.25 → certain, no LLM call.
+			name: "final rung: keyword + strong title + dense same-host index certain-accepts",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title: "Careers",
+				URLs:  []string{"/jobs/1", "/jobs/2", "/jobs/3", "/jobs/4", "/jobs/5", "/jobs/6"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
 		},
 		{
 			// A Terminal-Hub-Word deep hub (exempt from the posting-path veto) that links a
@@ -393,7 +455,7 @@ func TestCareerPage(t *testing.T) {
 		},
 		{
 			// A structured-data openings index (ItemList wrapping JobPostings)
-			// alone clears certainθ (1.5 >= 1.4), so a hub annotated only by JSON-LD
+			// alone clears certainθ (1.5 >= 1.25), so a hub annotated only by JSON-LD
 			// certain-accepts with no LLM call (ADR-0016, #99).
 			name: "final rung: JSON-LD ItemList of JobPosting alone certain-accepts",
 			url:  "https://acme.com/team",
@@ -422,8 +484,9 @@ func TestCareerPage(t *testing.T) {
 		},
 		{
 			// The load-bearing guard (ADR-0016, #99): a LONE JobPosting earns no hub
-			// credit, so a keyword page carrying one stays at 0.5 -- uncertain, never
-			// a False-Certain. A single Job Listing must never certain-accept.
+			// credit, so a keyword page carrying one rides only its lexical evidence
+			// (keyword 0.5 + strong "Careers" title 0.5 = 1.0) -- uncertain, never a
+			// False-Certain. A single Job Listing must never certain-accept.
 			name: "final rung: lone JobPosting earns no hub credit, keyword page stays uncertain",
 			url:  "https://acme.com/team",
 			content: &crawler.Content{
@@ -465,8 +528,9 @@ func TestCareerPage(t *testing.T) {
 		},
 		{
 			// Fail-safe (ADR-0016, #99): unparseable JSON-LD is skipped, leaving the
-			// page in exactly the band it would reach without it -- here a lone career
-			// keyword (0.5), still uncertain. Never a new Leak or False-Certain.
+			// page in exactly the band it would reach without it -- here lexical evidence
+			// (keyword 0.5 + strong "Careers" title 0.5 = 1.0), still uncertain. Never a
+			// new Leak or False-Certain.
 			name: "final rung: unparseable JSON-LD leaves the band unchanged",
 			url:  "https://acme.com/team",
 			content: &crawler.Content{
@@ -479,7 +543,7 @@ func TestCareerPage(t *testing.T) {
 		},
 		// ATS Embed final-rung signal (ADR-0016, #100). All use the neutral path
 		// /team so no earlier rung fires; the verdict comes purely from the embed
-		// term (weight 1.5 >= certainθ 1.4). Embeds/ElementIDs are set directly —
+		// term (weight 1.5 >= certainθ 1.25). Embeds/ElementIDs are set directly —
 		// the Gate seam, testing interpretation independent of the parser.
 		{
 			// An iframe to a known ATS host is a page-specific board, so it fires
@@ -534,8 +598,9 @@ func TestCareerPage(t *testing.T) {
 		},
 		{
 			// False-Certain guard: a site-wide embed script with no rendered board
-			// container fires nothing, so the page rides only its career keyword
-			// (0.5) — uncertain, never certain-accepted.
+			// container fires nothing, so the page rides only its lexical evidence
+			// (keyword 0.5 + strong "Careers" title 0.5 = 1.0) — uncertain, never
+			// certain-accepted.
 			name: "site-wide embed script with no board container stays out of certain",
 			url:  "https://acme.com/team",
 			content: &crawler.Content{
@@ -619,7 +684,12 @@ func TestCareerPage(t *testing.T) {
 		// don't fire without configured path signals). A zero-value config can no
 		// longer stand in — its zeroed thresholds would certain-accept every page.
 		{
-			name: "legacy: career-hub index with job links is accepted but uncertain",
+			// With the path signals cleared this reaches the final rung and now scores
+			// a career keyword (0.5) + title strength ("Careers" leads, 0.5) + a thin
+			// same-host index (1.0·min(2/5,1)=0.4) = 1.4 >= certainθ 1.25 → certain. In
+			// production /careers never reaches the final rung (careerHubRoot certain-
+			// accepts it first), so this only re-characterizes the synthetic isolation.
+			name: "legacy: career-hub index with job links now certain-accepts",
 			url:  "https://acme.com/careers",
 			content: &crawler.Content{
 				Title: "Careers",
@@ -627,17 +697,21 @@ func TestCareerPage(t *testing.T) {
 			},
 			cfg:         finalRungConfig(),
 			wantAccept:  true,
-			wantCertain: false,
+			wantCertain: true,
 		},
 		{
-			name: "legacy: career-hub with no job links is accepted but uncertain",
+			// Lever D (#101): a weak-keyword-only page auto-rejects. With signals
+			// cleared the URL substring "careers" scores the weak keyword (0.5) but
+			// "Join our team" is no strong title (leads with "join", excluded) and the
+			// cleared segments add nothing → 0.5 <= rejectθ 0.75 → reject.
+			name: "legacy: weak-keyword-only page auto-rejects (Lever D)",
 			url:  "https://acme.com/careers",
 			content: &crawler.Content{
 				Title: "Join our team",
 				URLs:  []string{"/about", "/contact"},
 			},
 			cfg:         finalRungConfig(),
-			wantAccept:  true,
+			wantAccept:  false,
 			wantCertain: false,
 		},
 		{

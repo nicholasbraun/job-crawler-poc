@@ -89,9 +89,16 @@ type LLMGateConfig struct {
 	// above CertainThreshold so it certain-accepts on its own — because an embedded
 	// ATS board is definitive of a Career Page hub. A zero value (an override that
 	// omits it) leaves the signal silent, the same fail-safe as JobLinkSaturationCount <= 0.
-	ATSEmbedWeight   float64
-	CertainThreshold float64
-	RejectThreshold  float64
+	ATSEmbedWeight float64
+	// TitleStrengthWeight scores the title-strength / strong-careers signal
+	// (ADR-0016): the page's Title leads with a careers-hub word, or the URL
+	// carries a career token as a distinct exact path segment. It is weighted
+	// ABOVE the weakest career-keyword substring so a page that reads as a careers
+	// hub outweighs one that merely contains a career keyword. A zero value leaves
+	// the signal silent, the same fail-safe as the other weights.
+	TitleStrengthWeight float64
+	CertainThreshold    float64
+	RejectThreshold     float64
 }
 
 // DefaultLLMGateConfig returns the built-in pre-LLM gate signals. CareerPathSignals
@@ -105,15 +112,26 @@ type LLMGateConfig struct {
 // It also seeds the final-rung Confidence Score floats (ADR-0016). A dense
 // same-host openings index carrying a career keyword now certain-accepts from the
 // final rung (career keyword 0.5 + a saturated same-host Job Listing set 1.0 =
-// 1.5 >= CertainThreshold 1.4); every weaker combination — saturated links alone,
+// 1.5 >= CertainThreshold 1.25); every weaker combination — saturated links alone,
 // a keyword alone, or a keyword plus a thin set of links — stays uncertain and
-// still reaches the LLM, and a page with no signal at all rejects. A structured-data
-// openings index (JSON-LD ItemList of JobPosting, or >=2 JobPosting nodes)
-// contributes 1.5, certain-accepting on its own; a lone JobPosting contributes
-// nothing. An ATS Embed (1.5) certain-accepts on its own too, like the JSON-LD
-// hub: a Company page rendering a third-party ATS board inline (an iframe to a
-// known ATS host, or a script to one with the provider's board-container marker
-// present).
+// still reaches the LLM. A structured-data openings index (JSON-LD ItemList of
+// JobPosting, or >=2 JobPosting nodes) contributes 1.5, certain-accepting on its
+// own; a lone JobPosting contributes nothing. An ATS Embed (1.5) certain-accepts
+// on its own too, like the JSON-LD hub: a Company page rendering a third-party ATS
+// board inline (an iframe to a known ATS host, or a script to one with the
+// provider's board-container marker present).
+//
+// The title-strength signal (0.5) fires when the page reads as a careers hub — its
+// Title leads with a careers-hub word, or the URL carries a career token as a
+// distinct exact path segment — lifting a page above the weakest career keyword.
+// The two thresholds sit at the midpoints of the widest failure-free score gaps,
+// placed for margin rather than at the call-rate minimum: RejectThreshold 0.75
+// auto-rejects a page whose only signal is the weak career keyword (0.5 <= 0.75),
+// while a keyword page that ALSO reads as a careers hub (0.5 + 0.5 = 1.0) clears
+// reject and stays uncertain — never leaking a real career sub-page. And lexical
+// evidence alone (career keyword + title strength = 1.0 < CertainThreshold 1.25)
+// never certain-accepts, so certain still requires a Structural Signal (an ATS
+// embed, a JSON-LD hub, or a career keyword plus a dense same-host index).
 func DefaultLLMGateConfig() LLMGateConfig {
 	return LLMGateConfig{
 		CareerPathSignals: []string{
@@ -143,19 +161,25 @@ func DefaultLLMGateConfig() LLMGateConfig {
 		},
 
 		// Confidence Score seeds (ADR-0016). The career keyword (weak) contributes
-		// 0.5; the same-host Job Listing signal contributes up to 1.0, folding the
-		// distinct same-host link count in as min(count/5, 1). CertainThreshold 1.4
-		// certain-accepts only a page that BOTH carries a career keyword AND
-		// saturates the same-host index (0.5 + 1.0 = 1.5) — a dense openings index
-		// — while saturated links alone (1.0) stay uncertain, which holds
-		// False-Certains at zero. RejectThreshold 0 rejects only a no-signal page.
+		// 0.5; title strength (a careers-hub title or an exact career path segment)
+		// another 0.5; the same-host Job Listing signal up to 1.0, folding the
+		// distinct same-host link count in as min(count/5, 1). CertainThreshold 1.25
+		// certain-accepts a career keyword plus a saturated same-host index (0.5 +
+		// 1.0 = 1.5), while saturated links alone (1.0) and lexical evidence alone
+		// (career keyword + title strength = 1.0) stay uncertain, holding
+		// False-Certains at zero. RejectThreshold 0.75 rejects a no-signal page and a
+		// weak-keyword-only page (0.5), while a keyword page that also reads as a
+		// careers hub (1.0) clears reject. Both thresholds land at the midpoints of
+		// empty score gaps (0.25 margin each side) — placed for margin, not the
+		// call-rate minimum.
 		CareerKeywordWeight:    0.5,
 		JobLinkWeight:          1.0,
 		JobLinkSaturationCount: 5,
 		JSONLDHubWeight:        1.5,
 		ATSEmbedWeight:         1.5,
-		CertainThreshold:       1.4,
-		RejectThreshold:        0.0,
+		TitleStrengthWeight:    0.5,
+		CertainThreshold:       1.25,
+		RejectThreshold:        0.75,
 	}
 }
 

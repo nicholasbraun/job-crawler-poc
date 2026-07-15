@@ -51,6 +51,20 @@ var terminalHubWords = []string{
 	"offene-stellen",
 }
 
+// strongTitleRoots are the careers-hub word stems that, as the LEADING token of a
+// page Title, mark it a careers hub for the title-strength signal (ADR-0016). They
+// are prefix-matched against that leading token, so one stem covers a family
+// ("career"->"careers", "vacan"->"vacancy"/"vacancies", "position"->"positions").
+// This is a STRONGER lexical signal than careerKeywords: it fires only when a hub
+// word LEADS the title, not merely appears somewhere in the URL or title.
+// Deliberate exclusions: "join" and "hiring" stay only in careerKeywords — a title
+// leading "Join our newsletter" or "Hiring freeze" is not a careers hub; and
+// "intern"/"praktikum" are left out because they would fire on an internships
+// editorial page (the National Geographic internships negative).
+var strongTitleRoots = []string{
+	"job", "career", "karriere", "stellen", "vacan", "position", "opening", "recruit",
+}
+
 // CareerPage decides whether a discovery candidate is a Career Page (accept)
 // and whether that decision is structurally definitive (certain), letting the
 // career-page pool skip the LLM classifier. A known aggregator/board host is
@@ -65,14 +79,18 @@ var terminalHubWords = []string{
 // (the career signal is the last path segment) then accepts as certain; otherwise
 // the final rung computes an additive Confidence Score (ADR-0016) over the
 // remaining cheap signals — an ATS Embed (an iframe or provider-script board on
-// the Company's own page), a career keyword in the URL/title, the distinct
-// same-host Job Listing link count folded in as min(count/K, 1), and a JSON-LD hub
-// (a structured-data openings index) — and maps it to a verdict via the config's
-// CertainThreshold/RejectThreshold: at or above certain it accepts as certain
-// (skips the LLM), at or below reject it rejects, and the band between is accepted
-// but left to the LLM to confirm. With DefaultLLMGateConfig a career keyword plus a
-// saturated same-host openings index certain-accepts from this rung, as does a
-// JSON-LD hub or an ATS Embed on its own; reject still means no signal at all.
+// the Company's own page), a career keyword in the URL/title, title strength (the
+// Title leads with a careers-hub word, or the URL carries a career token as an
+// exact path segment), the distinct same-host Job Listing link count folded in as
+// min(count/K, 1), and a JSON-LD hub (a structured-data openings index) — and maps
+// it to a verdict via the config's CertainThreshold/RejectThreshold: at or above
+// certain it accepts as certain (skips the LLM), at or below reject it rejects, and
+// the band between is accepted but left to the LLM to confirm. With
+// DefaultLLMGateConfig a career keyword plus a saturated same-host openings index
+// certain-accepts from this rung, as does a JSON-LD hub or an ATS Embed on its own;
+// a page whose only signal is the weakest career keyword now rejects, and lexical
+// evidence alone (career keyword + title strength) stays uncertain — certain still
+// requires a Structural Signal.
 func CareerPage(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConfig) (accept, certain bool) {
 	// Multi-company aggregators, VC-portfolio boards, and professional networks
 	// are never a single company's hub. Reject them before any accept path so
@@ -120,15 +138,17 @@ func CareerPage(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConf
 // confidenceScore sums the weight of each fired final-rung signal into the
 // Gate's additive Confidence Score (ADR-0016). Accumulation is pure: weak
 // signals may sum toward certain, and the config's thresholds — not this
-// function — decide the verdict band. Today four signals contribute: an ATS
+// function — decide the verdict band. Today five signals contribute: an ATS
 // embed (the strongest — a Company page rendering a third-party ATS board inline,
 // via an iframe to a known ATS host or a script to one with the provider's
-// board-container marker present); a career keyword in the URL or title; the
-// distinct same-host Job Listing link count, folded in continuously as
-// min(count/K, 1) (K = cfg.JobLinkSaturationCount); and a JSON-LD hub — a
-// structured-data openings index (an ItemList of JobPosting or two or more
-// JobPosting nodes), which a lone JobPosting does not trip. Signal tickets add
-// stronger structural signals here.
+// board-container marker present); a career keyword in the URL or title (the
+// weakest); title strength, a stronger lexical signal that fires when the page
+// reads as a careers hub — its Title leads with a careers-hub word, or the URL
+// carries a career token as a distinct exact path segment; the distinct same-host
+// Job Listing link count, folded in continuously as min(count/K, 1) (K =
+// cfg.JobLinkSaturationCount); and a JSON-LD hub — a structured-data openings index
+// (an ItemList of JobPosting or two or more JobPosting nodes), which a lone
+// JobPosting does not trip. Signal tickets add stronger structural signals here.
 func confidenceScore(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConfig) float64 {
 	var score float64
 	// ATS embed (strongest, ADR-0016): a Company page rendering a third-party ATS
@@ -141,6 +161,17 @@ func confidenceScore(u crawler.URL, content *crawler.Content, cfg crawler.LLMGat
 	}
 	if containsAny(u.RawURL, careerKeywords) || containsAny(content.Title, careerKeywords) {
 		score += cfg.CareerKeywordWeight
+	}
+	// Title strength (ADR-0016): the page reads as a careers hub — its Title leads
+	// with a careers-hub word, or the URL carries a career token as a distinct exact
+	// path segment. Weighted above the weakest keyword substring so a page that reads
+	// as a careers hub outweighs one that merely mentions a career keyword. This is
+	// the term that lifts a real career sub-page (kfw's /karriere/studierende) out of
+	// the reject band, while a career keyword buried in a compound slug
+	// (/karriere-bei-bitsea) — matched only as a substring, never an exact segment —
+	// is not lifted, so it still auto-rejects.
+	if strongCareerSignal(u, content.Title, cfg.CareerPathSignals) {
+		score += cfg.TitleStrengthWeight
 	}
 	// Distinct same-host Job Listing links fold in continuously (ADR-0016): a dense
 	// openings index saturates the signal at full JobLinkWeight, while a page linking
@@ -156,6 +187,45 @@ func confidenceScore(u crawler.URL, content *crawler.Content, cfg crawler.LLMGat
 		score += cfg.JSONLDHubWeight
 	}
 	return score
+}
+
+// strongCareerSignal reports the title-strength / strong-careers signal
+// (ADR-0016): the page's Title leads with a careers-hub word, OR the URL carries a
+// career token as a distinct exact path segment. The segment test reuses
+// careerSegments (cfg.CareerPathSignals) so the career-token set keeps ONE source
+// of truth (and the isolated finalRungConfig tests, which clear CareerPathSignals,
+// stay coherent). In the final rung the segment component fires only on a
+// NON-terminal career segment: a terminal career segment (e.g. /karriere) already
+// certain-accepts at careerHubRoot before this rung, so here it distinguishes a
+// real career sub-page (kfw's /karriere/studierende) — an exact segment — from a
+// career keyword inside a compound slug (/karriere-bei-bitsea), which is not a
+// segment and so never trips this signal.
+func strongCareerSignal(u crawler.URL, title string, careerSegments []string) bool {
+	return titleLeadsWithCareerWord(title) || pathHasSegment(u.RawURL, careerSegments)
+}
+
+// titleLeadsWithCareerWord reports whether title's LEADING run of ASCII letters is
+// (prefix-matched) a strongTitleRoots word — i.e. the title reads as a careers hub
+// from its first word ("Careers", "Jobs & Karriere"), not merely mentions one
+// later. The leading token is the letters before the first non-letter; a title
+// that opens with a non-ASCII letter (e.g. "Über uns") yields an empty token and
+// false, which is acceptable — such titles are not careers hubs.
+func titleLeadsWithCareerWord(title string) bool {
+	lower := strings.ToLower(strings.TrimSpace(title))
+	end := 0
+	for end < len(lower) && lower[end] >= 'a' && lower[end] <= 'z' {
+		end++
+	}
+	lead := lower[:end]
+	if lead == "" {
+		return false
+	}
+	for _, root := range strongTitleRoots {
+		if strings.HasPrefix(lead, root) {
+			return true
+		}
+	}
+	return false
 }
 
 // jobLinkSaturation maps a distinct same-host Job Listing link count to the
