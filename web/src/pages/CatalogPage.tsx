@@ -60,13 +60,16 @@ export function CatalogPage() {
       back={{ to: "/", label: "Overview" }}
       actions={
         <>
+          {/* Icon convention: import brings data INTO the app (arrow down into
+              the tray), export sends it OUT (arrow up) — not the raw
+              upload/download transport direction. */}
           <button className="btn btn-secondary" onClick={() => setImportOpen(true)}>
-            <Icon name="ph-upload-simple" size={14} /> Import
+            <Icon name="ph-download-simple" size={14} /> Import
           </button>
           {/* A plain anchor, not a fetch: the browser follows the server's
               Content-Disposition and saves the Catalog Export directly. */}
           <a className="btn btn-secondary" href="/api/catalog/export" download>
-            <Icon name="ph-download-simple" size={14} /> Export
+            <Icon name="ph-upload-simple" size={14} /> Export
           </a>
         </>
       }

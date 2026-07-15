@@ -33,16 +33,23 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
   // that would silently post a different file than the one whose results are on
   // screen. Cleared whenever the held file changes.
   const heldFileJobIdsRef = useRef<Set<string>>(new Set());
+  // Ids of every job this session started, never cleared while mounted. The
+  // terminal-invalidation effect fires only for these: merely *viewing* an
+  // already-finished job from recent imports must not refetch the whole catalog
+  // (the refetch visibly flickered the page behind the dialog).
+  const startedJobIdsRef = useRef<Set<string>>(new Set());
 
   const job = jobQ.data;
 
-  // When a real (non-dry-run) import reaches a terminal state, refresh the
-  // catalog views so the effect is visible immediately; every terminal job also
-  // refreshes the recent-imports list. Fires once per job id. A failed real
-  // import also refreshes, because best-effort per-line merges may have written
-  // some rows before an infrastructure error aborted the job.
+  // When a real (non-dry-run) import this session started reaches a terminal
+  // state, refresh the catalog views so the effect is visible immediately; its
+  // terminal transition also refreshes the recent-imports list. Fires once per
+  // job id. A failed real import also refreshes, because best-effort per-line
+  // merges may have written some rows before an infrastructure error aborted
+  // the job.
   useEffect(() => {
     if (!job || !isImportTerminal(job.status)) return;
+    if (!startedJobIdsRef.current.has(job.id)) return;
     if (invalidatedRef.current.has(job.id)) return;
     invalidatedRef.current.add(job.id);
     qc.invalidateQueries({ queryKey: keys.importJobs });
@@ -83,6 +90,14 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
     return () => document.removeEventListener("keydown", onEsc);
   }, [open]);
 
+  // Return focus to whatever opened the modal (the Import button) when it
+  // closes, so a keyboard user is not dropped back at the top of the page.
+  useEffect(() => {
+    if (!open) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    return () => opener?.focus();
+  }, [open]);
+
   if (!open) return null;
 
   // Picking a file clears any shown job so the result pane resets to the new file.
@@ -104,6 +119,7 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
       {
         onSuccess: (started) => {
           heldFileJobIdsRef.current.add(started.id);
+          startedJobIdsRef.current.add(started.id);
           qc.setQueryData(keys.importJob(started.id), started);
           setJobId(started.id);
         },
@@ -209,7 +225,7 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
               disabled={!file || submit.isPending}
               onClick={() => runImport(dryRun)}
             >
-              <Icon name="ph-upload-simple" size={14} />{" "}
+              <Icon name="ph-download-simple" size={14} />{" "}
               {submit.isPending ? "Starting…" : dryRun ? "Dry run" : "Import"}
             </button>
           </div>
@@ -232,7 +248,19 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 180, overflowY: "auto" }}>
                 {jobs.map((j) => (
-                  <RecentRow key={j.id} job={j} active={j.id === jobId} onClick={() => setJobId(j.id)} />
+                  <RecentRow
+                    key={j.id}
+                    job={j}
+                    active={j.id === jobId}
+                    onClick={() => {
+                      // Seed the detail cache from the row so ActiveJob renders
+                      // instantly instead of unmounting for the fetch round trip
+                      // (the height jump read as a flicker). Never overwrite
+                      // fresher polled data with the list's snapshot.
+                      if (!qc.getQueryData(keys.importJob(j.id))) qc.setQueryData(keys.importJob(j.id), j);
+                      setJobId(j.id);
+                    }}
+                  />
                 ))}
               </div>
             </div>
@@ -346,7 +374,7 @@ function ActiveJob({
 
       {terminal && canResubmit && job.status === "completed" && job.dryRun && (
         <button type="button" className="btn btn-primary" onClick={onRunReal} style={{ alignSelf: "flex-start" }}>
-          <Icon name="ph-upload-simple" size={14} /> Import for real
+          <Icon name="ph-download-simple" size={14} /> Import for real
         </button>
       )}
       {terminal && canResubmit && job.status === "failed" && (
@@ -379,6 +407,9 @@ function RecentRow({ job, active, onClick }: { job: ImportJob; active: boolean; 
         borderRadius: "var(--radius-sm)",
         border: `1px solid ${active ? "var(--color-accent)" : "transparent"}`,
         background: "transparent",
+        // An unstyled <button> falls back to the UA's buttontext color (black),
+        // unreadable on the dark dialog; inherit the dialog's text color.
+        color: "inherit",
         cursor: "pointer",
         textAlign: "left",
         width: "100%",
