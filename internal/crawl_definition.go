@@ -62,12 +62,19 @@ type LLMGateConfig struct {
 	// tuned against the Gold Set. Signal tickets add further weights.
 	//
 	// CareerKeywordWeight scores a career keyword found in the URL or title (the
-	// weakest signal). JobLinkWeight scores the presence of at least one
-	// same-host Job Listing link.
+	// weakest signal). JobLinkWeight scores a saturated set of same-host Job
+	// Listing links; JobLinkSaturationCount (K) sets how many distinct links
+	// saturate it, the count folding in continuously as min(count/K, 1).
 	CareerKeywordWeight float64
 	JobLinkWeight       float64
-	CertainThreshold    float64
-	RejectThreshold     float64
+	// JobLinkSaturationCount is K in the same-host Job Listing signal's
+	// min(count/K, 1) saturation: the distinct same-host Job Listing link count
+	// at which that signal contributes its full JobLinkWeight (ADR-0016). Hand-set,
+	// not bench-tuned. A value <= 0 leaves the signal silent (fail-safe), so a
+	// zero-value config never divides by zero or over-weights.
+	JobLinkSaturationCount int
+	CertainThreshold       float64
+	RejectThreshold        float64
 }
 
 // DefaultLLMGateConfig returns the built-in pre-LLM gate signals. CareerPathSignals
@@ -78,10 +85,12 @@ type LLMGateConfig struct {
 // community signup) are deliberately left out; the pagegate content heuristic still
 // accepts them, but as uncertain — the LLM confirms before cataloging.
 //
-// It also seeds the final-rung Confidence Score floats (ADR-0016). The seeds are
-// deliberately behavior-neutral: with these values nothing certain-accepts from the
-// final rung, and reject means no signal fired at all — reproducing the pre-score
-// `careerish || listsJobs` rung exactly for every page. Signal tickets tune them.
+// It also seeds the final-rung Confidence Score floats (ADR-0016). A dense
+// same-host openings index carrying a career keyword now certain-accepts from the
+// final rung (career keyword 0.5 + a saturated same-host Job Listing set 1.0 =
+// 1.5 >= CertainThreshold 1.4); every weaker combination — saturated links alone,
+// a keyword alone, or a keyword plus a thin set of links — stays uncertain and
+// still reaches the LLM, and a page with no signal at all rejects.
 func DefaultLLMGateConfig() LLMGateConfig {
 	return LLMGateConfig{
 		CareerPathSignals: []string{
@@ -110,16 +119,18 @@ func DefaultLLMGateConfig() LLMGateConfig {
 			"docs", "tag", "category",
 		},
 
-		// Behavior-neutral scaffold seeds (ADR-0016): the two existing final-rung
-		// signals each contribute 0.5, so the score is 0, 0.5, or 1.0.
-		// RejectThreshold 0 rejects only a no-signal page (score 0); CertainThreshold
-		// 1.5 is above the 1.0 maximum, so NOTHING certain-accepts from this rung yet
-		// — reproducing the old `careerish || listsJobs, false` verdict exactly.
-		// Signal tickets add stronger weights and lower CertainThreshold into reach.
-		CareerKeywordWeight: 0.5,
-		JobLinkWeight:       0.5,
-		CertainThreshold:    1.5,
-		RejectThreshold:     0.0,
+		// Confidence Score seeds (ADR-0016). The career keyword (weak) contributes
+		// 0.5; the same-host Job Listing signal contributes up to 1.0, folding the
+		// distinct same-host link count in as min(count/5, 1). CertainThreshold 1.4
+		// certain-accepts only a page that BOTH carries a career keyword AND
+		// saturates the same-host index (0.5 + 1.0 = 1.5) — a dense openings index
+		// — while saturated links alone (1.0) stay uncertain, which holds
+		// False-Certains at zero. RejectThreshold 0 rejects only a no-signal page.
+		CareerKeywordWeight:    0.5,
+		JobLinkWeight:          1.0,
+		JobLinkSaturationCount: 5,
+		CertainThreshold:       1.4,
+		RejectThreshold:        0.0,
 	}
 }
 

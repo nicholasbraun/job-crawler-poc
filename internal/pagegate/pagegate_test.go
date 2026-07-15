@@ -331,9 +331,10 @@ func TestCareerPage(t *testing.T) {
 			wantCertain: false,
 		},
 		{
-			// Behavior-neutrality guard: even both signals firing (score 1.0) does
-			// NOT certain-accept under the seeded default (CertainThreshold 1.5).
-			name: "final rung: both signals stay uncertain under the seeded certainθ",
+			// A single stray same-host posting never certain-accepts: keyword (0.5) plus one
+			// same-host Job Listing link (1.0·min(1/5,1)=0.2) = 0.7, below certainθ 1.4, so
+			// it stays uncertain and still reaches the LLM (ADR-0016, #98).
+			name: "final rung: keyword + a single same-host job link stays uncertain",
 			url:  "https://acme.com/team",
 			content: &crawler.Content{
 				Title: "Careers",
@@ -344,15 +345,49 @@ func TestCareerPage(t *testing.T) {
 			wantCertain: false,
 		},
 		{
-			// The certain band maps correctly (score 1.0 >= placed certainθ 1.0) —
-			// the one path DefaultLLMGateConfig never reaches.
-			name: "final rung: score crossing a placed certainθ certain-accepts",
+			// Dense same-host openings index: a career keyword (0.5) plus a saturated
+			// same-host Job Listing set (1.0) reaches 1.5 >= certainθ 1.4, so the default
+			// config certain-accepts it with no LLM call (ADR-0016, #98).
+			name: "final rung: keyword + dense same-host index certain-accepts under the default",
 			url:  "https://acme.com/team",
 			content: &crawler.Content{
 				Title: "Careers",
-				URLs:  []string{"/jobs/eng-1"},
+				URLs:  []string{"/jobs/1", "/jobs/2", "/jobs/3", "/jobs/4", "/jobs/5", "/jobs/6"},
 			},
-			cfg:         withThresholds(crawler.DefaultLLMGateConfig(), 1.0, 0.0),
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		{
+			// The load-bearing invariant (ADR-0016): saturated same-host links alone (1.0)
+			// do NOT reach certainθ 1.4 without a career keyword, so a culture/about page
+			// that densely links same-host /careers/* siblings but carries no career keyword
+			// (e.g. an "About Us" page) stays uncertain, never a False-Certain.
+			name: "final rung: dense same-host index without a career keyword stays uncertain",
+			url:  "https://acme.com/company",
+			content: &crawler.Content{
+				Title: "About Us",
+				URLs:  []string{"/careers/1", "/careers/2", "/careers/3", "/careers/4", "/careers/5", "/careers/6"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// A Terminal-Hub-Word deep hub (exempt from the posting-path veto) that links a
+			// dense set of same-host postings now certain-accepts from the final rung -- the
+			// openings-index flip this ticket buys (mirrors the datarobot/playlist fixtures).
+			name: "dense same-host openings index on a terminal-hub-word deep path is certain",
+			url:  "https://acme.com/careers/open-positions",
+			content: &crawler.Content{
+				Title: "Open Positions",
+				URLs: []string{
+					"/careers/open-positions/job/1", "/careers/open-positions/job/2",
+					"/careers/open-positions/job/3", "/careers/open-positions/job/4",
+					"/careers/open-positions/job/5", "/careers/open-positions/job/6",
+				},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
 			wantAccept:  true,
 			wantCertain: true,
 		},

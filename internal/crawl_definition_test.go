@@ -15,17 +15,24 @@ func TestDefaultLLMGateConfig(t *testing.T) {
 			}
 		}
 	})
-	t.Run("final-rung score floats are seeded behavior-neutral", func(t *testing.T) {
-		// Both weak signals present sum to CareerKeywordWeight+JobLinkWeight; a
-		// CertainThreshold strictly above that sum means nothing certain-accepts
-		// from the final rung, and a zero RejectThreshold means only a no-signal
-		// page (score 0) rejects — reproducing the pre-score `careerish || listsJobs`.
-		maxScore := cfg.CareerKeywordWeight + cfg.JobLinkWeight
+	t.Run("final-rung score floats seed the same-host job-link invariant", func(t *testing.T) {
+		// The #98 seeding (ADR-0016) certain-accepts a dense same-host openings index
+		// carrying a career keyword, while every weaker combination stays uncertain.
+		// The load-bearing invariant that holds False-Certains at zero is
+		// JobLinkWeight < CertainThreshold (saturated links ALONE stay uncertain);
+		// certain requires the keyword too (CareerKeywordWeight+JobLinkWeight reaches
+		// it). A zero RejectThreshold rejects only a no-signal page (score 0).
 		if cfg.CareerKeywordWeight <= 0 || cfg.JobLinkWeight <= 0 {
 			t.Errorf("weights must be positive, got career=%v joblink=%v", cfg.CareerKeywordWeight, cfg.JobLinkWeight)
 		}
-		if cfg.CertainThreshold <= maxScore {
-			t.Errorf("CertainThreshold %v must exceed max final-rung score %v (nothing certain-accepts)", cfg.CertainThreshold, maxScore)
+		if cfg.JobLinkSaturationCount <= 0 {
+			t.Errorf("JobLinkSaturationCount = %v, want > 0 (a positive saturation count)", cfg.JobLinkSaturationCount)
+		}
+		if cfg.JobLinkWeight >= cfg.CertainThreshold {
+			t.Errorf("JobLinkWeight %v must stay below CertainThreshold %v so saturated links alone stay uncertain", cfg.JobLinkWeight, cfg.CertainThreshold)
+		}
+		if cfg.CareerKeywordWeight+cfg.JobLinkWeight < cfg.CertainThreshold {
+			t.Errorf("CareerKeywordWeight+JobLinkWeight %v must reach CertainThreshold %v so a keyword + dense index certain-accepts", cfg.CareerKeywordWeight+cfg.JobLinkWeight, cfg.CertainThreshold)
 		}
 		if cfg.RejectThreshold != 0 {
 			t.Errorf("RejectThreshold = %v, want 0 (reject only a no-signal page)", cfg.RejectThreshold)

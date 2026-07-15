@@ -64,12 +64,13 @@ var terminalHubWords = []string{
 // /careers/open-positions) is exempted from the veto. A bare career-hub root path
 // (the career signal is the last path segment) then accepts as certain; otherwise
 // the final rung computes an additive Confidence Score (ADR-0016) over the
-// remaining cheap signals — a career keyword in the URL/title and the presence of
-// a same-host Job Listing link — and maps it to a verdict via the config's
-// CertainThreshold/RejectThreshold: at or above certain it accepts as certain
-// (skips the LLM), at or below reject it rejects, and the band between is accepted
-// but left to the LLM to confirm. With DefaultLLMGateConfig's behavior-neutral
-// seeds nothing certain-accepts from this rung and reject means no signal at all.
+// remaining cheap signals — a career keyword in the URL/title and the distinct
+// same-host Job Listing link count folded in as min(count/K, 1) — and maps it to a
+// verdict via the config's CertainThreshold/RejectThreshold: at or above certain it
+// accepts as certain (skips the LLM), at or below reject it rejects, and the band
+// between is accepted but left to the LLM to confirm. With DefaultLLMGateConfig a
+// career keyword plus a saturated same-host openings index certain-accepts from
+// this rung; reject still means no signal at all.
 func CareerPage(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConfig) (accept, certain bool) {
 	// Multi-company aggregators, VC-portfolio boards, and professional networks
 	// are never a single company's hub. Reject them before any accept path so
@@ -100,8 +101,8 @@ func CareerPage(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConf
 		}
 		// Final rung (ADR-0016): an additive Confidence Score over the cheap
 		// final-rung signals, mapped to the Gate's three verdicts by the two
-		// thresholds. With DefaultLLMGateConfig's seeds this reproduces the old
-		// `careerish || listsJobs, false` rung exactly (see confidenceScore).
+		// thresholds. Under DefaultLLMGateConfig a career keyword plus a saturated
+		// same-host openings index certain-accepts here (see confidenceScore).
 		score := confidenceScore(u, content, cfg)
 		switch {
 		case score >= cfg.CertainThreshold:
@@ -118,17 +119,34 @@ func CareerPage(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConf
 // Gate's additive Confidence Score (ADR-0016). Accumulation is pure: weak
 // signals may sum toward certain, and the config's thresholds — not this
 // function — decide the verdict band. Today two signals contribute: a career
-// keyword in the URL or title, and the presence of at least one same-host Job
-// Listing link. Signal tickets add stronger structural signals here.
+// keyword in the URL or title, and the distinct same-host Job Listing link
+// count, folded in continuously as min(count/K, 1) (K = cfg.JobLinkSaturationCount).
+// Signal tickets add stronger structural signals here.
 func confidenceScore(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConfig) float64 {
 	var score float64
 	if containsAny(u.RawURL, careerKeywords) || containsAny(content.Title, careerKeywords) {
 		score += cfg.CareerKeywordWeight
 	}
-	if countJobPostingLinks(u, content) > 0 {
-		score += cfg.JobLinkWeight
-	}
+	// Distinct same-host Job Listing links fold in continuously (ADR-0016): a dense
+	// openings index saturates the signal at full JobLinkWeight, while a page linking
+	// a single stray posting earns only a fraction and stays uncertain. Cross-host
+	// postings are intentionally not counted -- the ATS-embed signal covers those.
+	score += cfg.JobLinkWeight * jobLinkSaturation(countJobPostingLinks(u, content), cfg.JobLinkSaturationCount)
 	return score
+}
+
+// jobLinkSaturation maps a distinct same-host Job Listing link count to the
+// saturating fraction min(count/k, 1) in [0,1]. A non-positive k or count
+// contributes nothing -- the fail-safe (ADR-0016) that keeps an unset saturation
+// count from dividing by zero or over-weighting the signal.
+func jobLinkSaturation(count, k int) float64 {
+	if k <= 0 || count <= 0 {
+		return 0
+	}
+	if count >= k {
+		return 1
+	}
+	return float64(count) / float64(k)
 }
 
 // ShouldExtract reports whether a keyword-relevant page should reach the LLM
