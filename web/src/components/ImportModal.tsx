@@ -11,8 +11,10 @@ import { Icon } from "./primitives";
 // .ndjson/.jsonl file, optionally dry-run it, watch the Import Job live, read the
 // per-line error report, promote a dry run to a real import (reusing the held
 // file with a fresh idempotency key), and see recent imports. It is a sibling of
-// NewCrawlModal and follows its focus-trap/Escape conventions. Closing mid-job
-// leaves the job running server-side; it reappears under recent imports.
+// NewCrawlModal and follows its focus-trap conventions; Escape is handled at the
+// document level so it closes the modal even when focus has fallen back to the
+// body. Closing mid-job leaves the job running server-side; it reappears under
+// recent imports.
 export function ImportModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const qc = useQueryClient();
   const [file, setFile] = useState<File | null>(null);
@@ -25,6 +27,12 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
   // Ids whose terminal effect (query invalidation) has already fired, so
   // reopening the modal or a late re-render never re-invalidates a finished job.
   const invalidatedRef = useRef<Set<string>>(new Set());
+  // Ids of jobs this session started from the currently-held file. "Import for
+  // real" and "Try again" resubmit that file, so they are offered only for these
+  // jobs — selecting a historical job from recent imports must not show a button
+  // that would silently post a different file than the one whose results are on
+  // screen. Cleared whenever the held file changes.
+  const heldFileJobIdsRef = useRef<Set<string>>(new Set());
 
   const job = jobQ.data;
 
@@ -45,12 +53,11 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
     }
   }, [job, qc]);
 
-  if (!open) return null;
-
   const reset = () => {
     setFile(null);
     setDryRun(true);
     setJobId(null);
+    heldFileJobIdsRef.current.clear();
     submit.reset();
   };
   const close = () => {
@@ -58,10 +65,31 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
     onClose();
   };
 
+  // Close on Escape at the document level: focus can fall back to <body> (e.g.
+  // the submit button disables while a request is in flight, blurring it), where
+  // the dialog's own onKeyDown never fires. Keydowns from inside the dialog
+  // bubble here too, so this is the single Escape path. closeRef keeps the
+  // listener on the latest close without re-subscribing every render.
+  const closeRef = useRef(close);
+  closeRef.current = close;
+  useEffect(() => {
+    if (!open) return;
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      closeRef.current();
+    };
+    document.addEventListener("keydown", onEsc);
+    return () => document.removeEventListener("keydown", onEsc);
+  }, [open]);
+
+  if (!open) return null;
+
   // Picking a file clears any shown job so the result pane resets to the new file.
   const onPickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFile(e.target.files?.[0] ?? null);
     setJobId(null);
+    heldFileJobIdsRef.current.clear();
     submit.reset();
   };
 
@@ -75,6 +103,7 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
       { file, dryRun: dry, idempotencyKey: mintIdempotencyKey() },
       {
         onSuccess: (started) => {
+          heldFileJobIdsRef.current.add(started.id);
           qc.setQueryData(keys.importJob(started.id), started);
           setJobId(started.id);
         },
@@ -83,11 +112,6 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      close();
-      return;
-    }
     if (e.key !== "Tab") return;
     const focusables = dialogRef.current?.querySelectorAll<HTMLElement>(
       'button:not([disabled]), input, [href], [tabindex]:not([tabindex="-1"])',
@@ -191,7 +215,14 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
           </div>
 
           {/* — active job — */}
-          {jobId && <ActiveJob job={job} file={file} onRunReal={() => runImport(false)} onRetry={(d) => runImport(d)} />}
+          {jobId && (
+            <ActiveJob
+              job={job}
+              canResubmit={!!file && !!job && heldFileJobIdsRef.current.has(job.id)}
+              onRunReal={() => runImport(false)}
+              onRetry={(d) => runImport(d)}
+            />
+          )}
 
           {/* — recent imports — */}
           {jobs.length > 0 && (
@@ -230,15 +261,16 @@ function StatusTag({ status }: { status: ImportJobStatus }) {
 // ActiveJob shows the selected job: a live spinner while pending/running, then a
 // result (counters + capped, line-tagged error list) or the failure text. A
 // completed dry run offers "Import for real"; a failed job offers a retry — both
-// only when the file is still held this session.
+// only when canResubmit says this job was started from the file still held this
+// session, so the buttons can never post a different file than the results shown.
 function ActiveJob({
   job,
-  file,
+  canResubmit,
   onRunReal,
   onRetry,
 }: {
   job: ImportJob | undefined;
-  file: File | null;
+  canResubmit: boolean;
   onRunReal: () => void;
   onRetry: (dryRun: boolean) => void;
 }) {
@@ -312,12 +344,12 @@ function ActiveJob({
         </>
       )}
 
-      {terminal && file && job.status === "completed" && job.dryRun && (
+      {terminal && canResubmit && job.status === "completed" && job.dryRun && (
         <button type="button" className="btn btn-primary" onClick={onRunReal} style={{ alignSelf: "flex-start" }}>
           <Icon name="ph-upload-simple" size={14} /> Import for real
         </button>
       )}
-      {terminal && file && job.status === "failed" && (
+      {terminal && canResubmit && job.status === "failed" && (
         <button
           type="button"
           className="btn btn-secondary"
