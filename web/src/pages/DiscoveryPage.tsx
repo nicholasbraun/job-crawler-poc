@@ -1,4 +1,6 @@
-import { useCareerPages, useCompanies, useDefinitions, useRuns } from "../hooks";
+import { useState } from "react";
+
+import { useAddSeed, useCareerPages, useCompanies, useDefinitions, useRuns } from "../hooks";
 import { fmt, prettyUrl, relativeTime } from "../lib/format";
 import { buildDiscovery, type Discovery } from "../lib/model";
 import { useLayout } from "../components/Layout";
@@ -68,6 +70,22 @@ export function DiscoveryPage() {
 
 function SeedDomains({ discovery }: { discovery: Discovery }) {
   const seeds = discovery.definition.seedUrls;
+  const add = useAddSeed();
+  const [url, setUrl] = useState("");
+
+  // Append a Seed to the running Discovery Crawl: it is stored on the Definition
+  // and injected into the live frontier at depth 0 (ADR-0018). Clear the input
+  // only on success so a rejected URL stays editable.
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = url.trim();
+    if (!trimmed) return;
+    add.mutate(
+      { definitionId: discovery.definition.id, url: trimmed },
+      { onSuccess: () => setUrl("") },
+    );
+  };
+
   return (
     <div className="card elev-sm" style={{ gap: "var(--space-4)", padding: "var(--space-6)" }}>
       <h4 style={{ margin: 0, fontSize: 17 }}>Seed domains</h4>
@@ -98,6 +116,24 @@ function SeedDomains({ discovery }: { discovery: Discovery }) {
           </tbody>
         </table>
       </div>
+      <form onSubmit={submit} style={{ display: "flex", gap: "var(--space-3)", alignItems: "center" }}>
+        <input
+          className="input"
+          style={{ flex: 1 }}
+          type="url"
+          placeholder="https://…"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+        />
+        <button className="btn btn-primary" type="submit" disabled={add.isPending || !url.trim()}>
+          <Icon name="ph-plus" size={14} /> {add.isPending ? "Adding…" : "Add seed"}
+        </button>
+      </form>
+      {add.isError && (
+        <div style={{ color: "var(--color-accent-300)", fontSize: 12 }}>
+          {add.error instanceof Error ? add.error.message : "Could not add seed."}
+        </div>
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11, color: "var(--color-neutral-500)" }}>
         <Icon name="ph-info" size={12} color="var(--color-neutral-500)" />
         Per-seed attribution isn't tracked yet — the totals above are run-level. (Deferred backend feature.)

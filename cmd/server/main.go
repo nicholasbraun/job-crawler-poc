@@ -222,6 +222,13 @@ func main() {
 		FrontierSizer: func(ctx context.Context, runID uuid.UUID) (int64, error) {
 			return redisfrontier.Len(ctx, redisClient, runID)
 		},
+		// Runtime Seed injection into a Discovery Crawl's live Frontier
+		// (ADR-0018). Mirrors FrontierSizer to keep the api package off Redis: a
+		// fresh redisfrontier for the run shares its Redis keys, so the depth-0
+		// add lands in the same Frontier the orchestrator pops from.
+		FrontierSeeder: func(ctx context.Context, runID uuid.UUID, u crawler.URL) error {
+			return redisfrontier.New(redisClient, runID).AddURL(ctx, u)
+		},
 		Defaults: api.Defaults{
 			KeywordMaxDepth:   defaultKeywordMaxDepth,
 			DiscoveryMaxDepth: defaultDiscoveryMaxDepth,

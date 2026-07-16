@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,6 +33,13 @@ type Runner interface {
 // both the live-status endpoint and the frontierSize field on the run read
 // endpoints (see h.frontierSize).
 type FrontierSizer func(ctx context.Context, runID uuid.UUID) (int64, error)
+
+// FrontierSeeder injects a URL into a run's live Frontier at depth 0 (the
+// ordinary depth-0 add). It is injected so the api package stays decoupled from
+// Redis, mirroring FrontierSizer; in the server it constructs a redisfrontier
+// for the run and calls AddURL. A nil seeder makes runtime Seed injection a
+// no-op — the Seed is still durably appended to the Definition (ADR-0018).
+type FrontierSeeder func(ctx context.Context, runID uuid.UUID, url crawler.URL) error
 
 // Defaults fill in the fields a create request omits, so a minimal
 // {name, seedUrls} request yields a working crawl, and back the
@@ -74,7 +82,10 @@ type Config struct {
 	// ImportJobs serves the Import Job read endpoints (list + get by id).
 	ImportJobs    crawler.ImportJobRepository
 	FrontierSizer FrontierSizer
-	Defaults      Defaults
+	// FrontierSeeder injects a runtime Seed into a Discovery Run's live Frontier;
+	// optional (nil → the Seed is still durably appended, injection is skipped).
+	FrontierSeeder FrontierSeeder
+	Defaults       Defaults
 }
 
 type Handler struct {
@@ -104,6 +115,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /api/definitions/{id}", h.getDefinition)
 	mux.HandleFunc("POST /api/definitions", h.createDefinition)
 	mux.HandleFunc("POST /api/definitions/{id}/runs", h.startRun)
+	mux.HandleFunc("POST /api/definitions/{id}/seeds", h.addSeed)
 
 	// Catalog + listings (read-only browse).
 	mux.HandleFunc("GET /api/companies", h.listCompanies)
@@ -667,6 +679,99 @@ func (h *Handler) startRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, toRunDTO(run))
+}
+
+type addSeedRequest struct {
+	URL string `json:"url"`
+}
+
+// addSeed appends a Seed to a Discovery Definition and injects it into the live
+// Run's Frontier at depth 0 (ADR-0018). Discovery-only: a Keyword Definition is
+// refused (keyword crawls seed from the Catalog, not by hand). The durable
+// append is idempotent; the live injection targets the ≤1 non-terminal Run of
+// the Definition (guaranteed by the one-active-run index) and is best-effort —
+// a failed injection leaves the Seed durably stored for the next restart, so it
+// does not fail the request. Returns the updated definition so the client
+// reflects the new Seed list.
+func (h *Handler) addSeed(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid definition id")
+		return
+	}
+
+	def, err := h.cfg.Definitions.Get(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, crawler.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "definition not found")
+			return
+		}
+		slog.Error("api: error getting definition before seed add", "err", err)
+		writeError(w, http.StatusInternalServerError, "could not add seed")
+		return
+	}
+	if def.Kind != crawler.CrawlKindDiscovery {
+		writeError(w, http.StatusBadRequest, "keyword crawls seed from the catalog, not manually")
+		return
+	}
+
+	var req addSeedRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	// NewURL rejects an empty or malformed URL and normalizes the rest, so the
+	// Seed stored and injected is canonical (matches the Frontier's dedup key).
+	seed, err := crawler.NewURL(req.URL)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid seed url")
+		return
+	}
+
+	if err := h.cfg.Definitions.AppendSeedURL(r.Context(), id, seed.RawURL); err != nil {
+		if errors.Is(err, crawler.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "definition not found")
+			return
+		}
+		slog.Error("api: error appending seed url", "err", err)
+		writeError(w, http.StatusInternalServerError, "could not add seed")
+		return
+	}
+
+	// Best-effort live injection; the Seed is already durable (ADR-0018).
+	if err := h.injectSeed(r.Context(), id, seed); err != nil {
+		slog.Error("api: error injecting seed into live frontier", "err", err, "definitionId", id)
+	}
+
+	// Reflect the append locally, mirroring the repo's idempotent semantics,
+	// rather than issuing a second Get.
+	if !slices.Contains(def.SeedURLs, seed.RawURL) {
+		def.SeedURLs = append(def.SeedURLs, seed.RawURL)
+	}
+	writeJSON(w, http.StatusOK, toDefinitionDTO(def))
+}
+
+// injectSeed adds seed at depth 0 to the live Frontier of the Definition's
+// non-terminal Run, if one exists. The one-active-run index (ADR-0017) bounds
+// this to at most one Run, so it injects into at most one Frontier. A nil
+// FrontierSeeder or no non-terminal Run makes it a no-op.
+func (h *Handler) injectSeed(ctx context.Context, definitionID uuid.UUID, seed crawler.URL) error {
+	if h.cfg.FrontierSeeder == nil {
+		return nil
+	}
+	runs, err := h.cfg.Runs.ListByStatus(ctx,
+		crawler.RunStatusRunning, crawler.RunStatusStopping,
+		crawler.RunStatusPausing, crawler.RunStatusPaused,
+	)
+	if err != nil {
+		return fmt.Errorf("listing non-terminal runs: %w", err)
+	}
+	for _, run := range runs {
+		if run.DefinitionID == definitionID {
+			return h.cfg.FrontierSeeder(ctx, run.ID, seed)
+		}
+	}
+	return nil
 }
 
 // minCrawlDepth and maxCrawlDepth bound a definition's editable crawl depth. A

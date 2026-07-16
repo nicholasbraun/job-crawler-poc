@@ -255,6 +255,17 @@ export function startRun(definitionId: string): Promise<Run> {
   return request<Run>(`/definitions/${definitionId}/runs`, { method: "POST" });
 }
 
+// addSeed appends a Seed to the Discovery Definition and injects it into the
+// live Frontier at depth 0 (ADR-0018). Discovery-only: the server refuses a
+// keyword definition or an invalid/empty URL with a 4xx. Returns the updated
+// definition so the caller can reflect the new Seed list.
+export function addSeed(definitionId: string, url: string): Promise<Definition> {
+  return request<Definition>(`/definitions/${definitionId}/seeds`, {
+    method: "POST",
+    body: JSON.stringify({ url }),
+  });
+}
+
 // --- Catalog + listings ---
 
 export function listCompanies(): Promise<Company[]> {

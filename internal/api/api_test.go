@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -64,6 +65,8 @@ type fakeDefRepo struct {
 	get       *crawler.CrawlDefinition
 	deleted   uuid.UUID
 	deleteErr error
+	appended  []string
+	appendErr error
 }
 
 func (f *fakeDefRepo) Create(ctx context.Context, def *crawler.CrawlDefinition) error {
@@ -87,6 +90,18 @@ func (f *fakeDefRepo) Get(ctx context.Context, id uuid.UUID) (*crawler.CrawlDefi
 func (f *fakeDefRepo) List(ctx context.Context) ([]*crawler.CrawlDefinition, error) {
 	return f.list, nil
 }
+func (f *fakeDefRepo) AppendSeedURL(ctx context.Context, id uuid.UUID, url string) error {
+	if f.appendErr != nil {
+		return f.appendErr
+	}
+	f.appended = append(f.appended, url)
+	// Mirror the DB's idempotent append onto `get` so the handler's response
+	// (built from the in-memory def) reflects the new Seed exactly once.
+	if f.get != nil && f.get.ID == id && !slices.Contains(f.get.SeedURLs, url) {
+		f.get.SeedURLs = append(f.get.SeedURLs, url)
+	}
+	return nil
+}
 
 type fakeRunRepo struct {
 	runs   []*crawler.CrawlRun
@@ -107,7 +122,16 @@ func (f *fakeRunRepo) Get(ctx context.Context, id uuid.UUID) (*crawler.CrawlRun,
 }
 func (f *fakeRunRepo) List(ctx context.Context) ([]*crawler.CrawlRun, error) { return f.runs, nil }
 func (f *fakeRunRepo) ListByStatus(ctx context.Context, statuses ...crawler.RunStatus) ([]*crawler.CrawlRun, error) {
-	return nil, nil
+	var out []*crawler.CrawlRun
+	for _, r := range f.runs {
+		for _, s := range statuses {
+			if r.Status == s {
+				out = append(out, r)
+				break
+			}
+		}
+	}
+	return out, nil
 }
 func (f *fakeRunRepo) GetStatus(ctx context.Context, id uuid.UUID) (crawler.RunStatus, error) {
 	return "", nil
@@ -1152,6 +1176,181 @@ func TestStartRunActiveRunConflict(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status: got %d, want 409; body=%s", rec.Code, rec.Body)
 	}
+}
+
+// TestAddSeed drives POST /api/definitions/{id}/seeds (ADR-0018): a Seed added
+// to the Discovery Definition is durably appended and injected at depth 0 into
+// the Definition's live Run, while a Keyword Definition, an invalid URL, and an
+// unknown Definition are refused, and a Definition with no live Run still stores
+// the Seed.
+func TestAddSeed(t *testing.T) {
+	post := func(t *testing.T, srv http.Handler, defID uuid.UUID, url string) *httptest.ResponseRecorder {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{"url": url})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/definitions/"+defID.String()+"/seeds", bytes.NewReader(body)))
+		return rec
+	}
+
+	t.Run("appends and injects into the active run", func(t *testing.T) {
+		def := &crawler.CrawlDefinition{
+			ID:       uuid.New(),
+			Kind:     crawler.CrawlKindDiscovery,
+			SeedURLs: []string{"https://old.example.com"},
+		}
+		defs := &fakeDefRepo{get: def}
+		run := &crawler.CrawlRun{ID: uuid.New(), DefinitionID: def.ID, Status: crawler.RunStatusRunning}
+		runs := &fakeRunRepo{runs: []*crawler.CrawlRun{run}}
+
+		var seededRun []uuid.UUID
+		var seededURL []crawler.URL
+		seeder := func(ctx context.Context, runID uuid.UUID, u crawler.URL) error {
+			seededRun = append(seededRun, runID)
+			seededURL = append(seededURL, u)
+			return nil
+		}
+		srv := newHandler(api.Config{Definitions: defs, Runs: runs, FrontierSeeder: seeder})
+
+		rec := post(t, srv, def.ID, "https://newdir.example.com/companies")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status: got %d, want 200; body=%s", rec.Code, rec.Body)
+		}
+		if !slices.Contains(defs.appended, "https://newdir.example.com/companies") {
+			t.Errorf("normalized seed not appended: %v", defs.appended)
+		}
+		if len(seededRun) != 1 || seededRun[0] != run.ID {
+			t.Errorf("seeder should be called once for the active run; got %v", seededRun)
+		}
+		if len(seededURL) != 1 || seededURL[0].Depth != 0 {
+			t.Errorf("injected seed should be depth 0; got %+v", seededURL)
+		}
+		if len(seededURL) == 1 && seededURL[0].RawURL != "https://newdir.example.com/companies" {
+			t.Errorf("injected seed url: got %q", seededURL[0].RawURL)
+		}
+		var got struct {
+			SeedURLs []string `json:"seedUrls"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if !slices.Contains(got.SeedURLs, "https://newdir.example.com/companies") {
+			t.Errorf("response seedUrls should include the new seed; got %v", got.SeedURLs)
+		}
+	})
+
+	t.Run("keyword definition is refused", func(t *testing.T) {
+		def := &crawler.CrawlDefinition{ID: uuid.New(), Kind: crawler.CrawlKindKeyword, Keywords: []string{"go"}}
+		defs := &fakeDefRepo{get: def}
+		var seededRun []uuid.UUID
+		seeder := func(ctx context.Context, runID uuid.UUID, u crawler.URL) error {
+			seededRun = append(seededRun, runID)
+			return nil
+		}
+		srv := newHandler(api.Config{Definitions: defs, FrontierSeeder: seeder})
+
+		rec := post(t, srv, def.ID, "https://newdir.example.com")
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status: got %d, want 400; body=%s", rec.Code, rec.Body)
+		}
+		if len(defs.appended) != 0 {
+			t.Errorf("keyword definition must not append a seed; got %v", defs.appended)
+		}
+		if len(seededRun) != 0 {
+			t.Errorf("keyword definition must not inject a seed; got %v", seededRun)
+		}
+	})
+
+	t.Run("invalid url is refused", func(t *testing.T) {
+		for _, url := range []string{"", "://bad"} {
+			def := &crawler.CrawlDefinition{ID: uuid.New(), Kind: crawler.CrawlKindDiscovery, SeedURLs: []string{}}
+			defs := &fakeDefRepo{get: def}
+			srv := newHandler(api.Config{Definitions: defs})
+
+			rec := post(t, srv, def.ID, url)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("url %q: status got %d, want 400; body=%s", url, rec.Code, rec.Body)
+			}
+			if len(defs.appended) != 0 {
+				t.Errorf("url %q: invalid url must not append; got %v", url, defs.appended)
+			}
+		}
+	})
+
+	t.Run("no active run still appends", func(t *testing.T) {
+		def := &crawler.CrawlDefinition{ID: uuid.New(), Kind: crawler.CrawlKindDiscovery, SeedURLs: []string{}}
+		defs := &fakeDefRepo{get: def}
+		// Only a terminal run for the def, so there is no live frontier to inject into.
+		run := &crawler.CrawlRun{ID: uuid.New(), DefinitionID: def.ID, Status: crawler.RunStatusCompleted}
+		runs := &fakeRunRepo{runs: []*crawler.CrawlRun{run}}
+		var seededRun []uuid.UUID
+		seeder := func(ctx context.Context, runID uuid.UUID, u crawler.URL) error {
+			seededRun = append(seededRun, runID)
+			return nil
+		}
+		srv := newHandler(api.Config{Definitions: defs, Runs: runs, FrontierSeeder: seeder})
+
+		rec := post(t, srv, def.ID, "https://newdir.example.com")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status: got %d, want 200; body=%s", rec.Code, rec.Body)
+		}
+		if !slices.Contains(defs.appended, "https://newdir.example.com") {
+			t.Errorf("seed should still be appended without a live run; got %v", defs.appended)
+		}
+		if len(seededRun) != 0 {
+			t.Errorf("no live run: injection must be skipped; got %v", seededRun)
+		}
+	})
+
+	t.Run("re-adding an existing seed returns 200", func(t *testing.T) {
+		def := &crawler.CrawlDefinition{
+			ID:       uuid.New(),
+			Kind:     crawler.CrawlKindDiscovery,
+			SeedURLs: []string{"https://dup.example.com"},
+		}
+		defs := &fakeDefRepo{get: def}
+		srv := newHandler(api.Config{Definitions: defs})
+
+		rec := post(t, srv, def.ID, "https://dup.example.com")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status: got %d, want 200; body=%s", rec.Code, rec.Body)
+		}
+		// The handler still delegates to AppendSeedURL — the DB enforces the real
+		// idempotency (proven in the postgres seam) — and the response reflects
+		// the seed exactly once.
+		if len(defs.appended) != 1 {
+			t.Errorf("append should still be delegated once; got %v", defs.appended)
+		}
+		var got struct {
+			SeedURLs []string `json:"seedUrls"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		count := 0
+		for _, s := range got.SeedURLs {
+			if s == "https://dup.example.com" {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("seed should appear exactly once, got %d in %v", count, got.SeedURLs)
+		}
+	})
+
+	t.Run("unknown definition is 404", func(t *testing.T) {
+		// Get matches only `other`'s id, so a POST to a different id is a 404.
+		other := &crawler.CrawlDefinition{ID: uuid.New(), Kind: crawler.CrawlKindDiscovery}
+		defs := &fakeDefRepo{get: other}
+		srv := newHandler(api.Config{Definitions: defs})
+
+		rec := post(t, srv, uuid.New(), "https://newdir.example.com")
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status: got %d, want 404; body=%s", rec.Code, rec.Body)
+		}
+		if len(defs.appended) != 0 {
+			t.Errorf("unknown definition must not append; got %v", defs.appended)
+		}
+	})
 }
 
 func TestListCompanies(t *testing.T) {

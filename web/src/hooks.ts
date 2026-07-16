@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  addSeed,
   createCrawl,
   getCatalogHistory,
   getDefinitionDefaults,
@@ -163,5 +164,16 @@ export function useCreateCrawl() {
       qc.invalidateQueries({ queryKey: keys.crawls });
       qc.invalidateQueries({ queryKey: keys.definitions });
     },
+  });
+}
+
+// useAddSeed appends a Seed to the running Discovery Crawl and invalidates the
+// definitions query so the Seed list re-renders with the new URL.
+export function useAddSeed() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ definitionId, url }: { definitionId: string; url: string }) =>
+      addSeed(definitionId, url),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.definitions }),
   });
 }

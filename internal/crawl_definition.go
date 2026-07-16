@@ -213,6 +213,11 @@ type CrawlDefinitionRepository interface {
 	// Delete removes a definition by ID. It is idempotent: deleting a
 	// nonexistent definition is not an error.
 	Delete(ctx context.Context, id uuid.UUID) error
+	// AppendSeedURL idempotently adds url to the definition's seed_urls:
+	// re-adding an existing Seed is a no-op. It is the one sanctioned mutation of
+	// an otherwise immutable definition (ADR-0018: additive runtime Seed injection
+	// into the Discovery Crawl). Returns ErrNotFound when no definition has the id.
+	AppendSeedURL(ctx context.Context, id uuid.UUID, url string) error
 }
 
 // DefaultURLFilterConfig returns the built-in URL filtering rules applied to a
