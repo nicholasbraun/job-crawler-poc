@@ -109,12 +109,14 @@ type LLMGateConfig struct {
 // community signup) are deliberately left out; the pagegate content heuristic still
 // accepts them, but as uncertain — the LLM confirms before cataloging.
 //
-// It also seeds the final-rung Confidence Score floats (ADR-0016). A dense
-// same-host openings index carrying a career keyword now certain-accepts from the
-// final rung (career keyword 0.5 + a saturated same-host Job Listing set 1.0 =
-// 1.5 >= CertainThreshold 1.25); every weaker combination — saturated links alone,
-// a keyword alone, or a keyword plus a thin set of links — stays uncertain and
-// still reaches the LLM. A structured-data openings index (JSON-LD ItemList of
+// It also seeds the final-rung Confidence Score floats (ADR-0016). A same-host
+// openings index carrying a career keyword certain-accepts from the final rung
+// once the index is dense enough: the career keyword (0.5) plus the same-host Job
+// Listing signal (up to 1.0, folding the distinct link count in as min(count/5, 1))
+// crosses CertainThreshold 1.25 at four same-host links (0.5 + 0.8 = 1.3), before
+// full saturation. Sparser lexical-only evidence never crosses (the reject and
+// structural-signal notes below cover the uncertain and reject bands). A
+// structured-data openings index (JSON-LD ItemList of
 // JobPosting, or >=2 JobPosting nodes) contributes 1.5, certain-accepting on its
 // own; a lone JobPosting contributes nothing. An ATS Embed (1.5) certain-accepts
 // on its own too, like the JSON-LD hub: a Company page rendering a third-party ATS
@@ -164,10 +166,10 @@ func DefaultLLMGateConfig() LLMGateConfig {
 		// 0.5; title strength (a careers-hub title or an exact career path segment)
 		// another 0.5; the same-host Job Listing signal up to 1.0, folding the
 		// distinct same-host link count in as min(count/5, 1). CertainThreshold 1.25
-		// certain-accepts a career keyword plus a saturated same-host index (0.5 +
-		// 1.0 = 1.5), while saturated links alone (1.0) and lexical evidence alone
-		// (career keyword + title strength = 1.0) stay uncertain, holding
-		// False-Certains at zero. RejectThreshold 0.75 rejects a no-signal page and a
+		// certain-accepts a career keyword plus a dense same-host index — from four
+		// same-host links up (0.5 + 0.8 = 1.3), before full saturation — while
+		// saturated links alone (1.0) and lexical evidence alone (career keyword +
+		// title strength = 1.0) stay uncertain, holding False-Certains at zero. RejectThreshold 0.75 rejects a no-signal page and a
 		// weak-keyword-only page (0.5), while a keyword page that also reads as a
 		// careers hub (1.0) clears reject. Both thresholds land at the midpoints of
 		// empty score gaps (0.25 margin each side) — placed for margin, not the
