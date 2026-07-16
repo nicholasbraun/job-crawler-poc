@@ -16,6 +16,16 @@ func newURL(t *testing.T, raw string) crawler.URL {
 	return u
 }
 
+// finalRungConfig is DefaultLLMGateConfig's Confidence Score floats with the
+// path-signal lists cleared, so a case exercises the final-rung score bands in
+// isolation from the earlier career-hub-root and reject-path rungs.
+func finalRungConfig() crawler.LLMGateConfig {
+	cfg := crawler.DefaultLLMGateConfig()
+	cfg.CareerPathSignals = nil
+	cfg.RejectPathSignals = nil
+	return cfg
+}
+
 func TestCareerPage(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -286,29 +296,412 @@ func TestCareerPage(t *testing.T) {
 			wantAccept:  false,
 			wantCertain: false,
 		},
-		// Zero-value config reproduces the legacy behavior: no URL-path signals,
-		// so a career-hub path is only accepted via the careerish/listsJobs
-		// heuristic and is never certain.
+		// Final-rung Confidence Score band mapping (ADR-0016). All four use the
+		// neutral path /team so no earlier rung fires (not an aggregator/ATS host,
+		// not a reject/posting/career-signal segment); signals are driven purely by
+		// title/links, and the verdict comes from the final rung's score bands.
 		{
-			name: "legacy: career-hub index with job links is accepted but uncertain",
+			name: "final rung: no signal lands in reject",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title: "Team",
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
+			name: "final rung: one signal stays uncertain (accept)",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title: "Careers",
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// A single stray same-host posting never certain-accepts: keyword (0.5) plus a
+			// strong "Careers" title (0.5) plus one same-host Job Listing link
+			// (1.0·min(1/5,1)=0.2) = 1.2, below certainθ 1.25, so it stays uncertain and
+			// still reaches the LLM (ADR-0016, #98).
+			name: "final rung: keyword + a single same-host job link stays uncertain",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title: "Careers",
+				URLs:  []string{"/jobs/eng-1"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// Dense same-host openings index: a career keyword (0.5), a strong "Careers"
+			// title (0.5), and a saturated same-host Job Listing set (1.0) reach 2.0 >=
+			// certainθ 1.25, so the default config certain-accepts it with no LLM call
+			// (ADR-0016, #98).
+			name: "final rung: keyword + dense same-host index certain-accepts under the default",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title: "Careers",
+				URLs:  []string{"/jobs/1", "/jobs/2", "/jobs/3", "/jobs/4", "/jobs/5", "/jobs/6"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		{
+			// The load-bearing invariant (ADR-0016): saturated same-host links alone (1.0)
+			// do NOT reach certainθ 1.25 without a career keyword, so a culture/about page
+			// that densely links same-host /careers/* siblings but carries no career keyword
+			// (an "About Us" page — no keyword, no strong title) stays uncertain, never a
+			// False-Certain.
+			name: "final rung: dense same-host index without a career keyword stays uncertain",
+			url:  "https://acme.com/company",
+			content: &crawler.Content{
+				Title: "About Us",
+				URLs:  []string{"/careers/1", "/careers/2", "/careers/3", "/careers/4", "/careers/5", "/careers/6"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		// Lever D + title-strength final-rung signal (ADR-0016, #101). Neutral/compound
+		// paths so no earlier rung fires; signals are driven by Title/URLs and the
+		// verdict comes from the raised rejectθ 0.75 / lowered certainθ 1.25 bands.
+		{
+			// Lever D headline: a weak-keyword-only page auto-rejects. The URL substring
+			// "karriere" scores the weak keyword (0.5), but "karriere-bei-acme" is a
+			// compound slug (not an exact segment) and "Arbeiten bei Acme" is no strong
+			// title, so title strength stays silent → 0.5 <= rejectθ 0.75 → reject.
+			name: "final rung: weak-keyword-only page auto-rejects (Lever D)",
+			url:  "https://acme.com/karriere-bei-acme/team",
+			content: &crawler.Content{
+				Title: "Arbeiten bei Acme",
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
+			// Zero-Leak & no-False-Certain guard: a career keyword (0.5) plus a strong
+			// careers title ("Jobs & Karriere" leads with "jobs", 0.5) = 1.0 clears
+			// rejectθ 0.75 but stays below certainθ 1.25 → uncertain. Lexical evidence
+			// alone never certain-accepts (certain still needs a Structural Signal).
+			name: "final rung: keyword + strong careers title stays uncertain",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title: "Jobs & Karriere",
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// The URL-segment lift (kfw shape): a career token as an exact NON-terminal
+			// path segment scores title strength even with a plain title. Keyword (0.5,
+			// "karriere" substring) + segment strength (0.5) = 1.0 → uncertain. Proves
+			// the raised rejectθ does not leak a real career sub-page.
+			name: "final rung: keyword + exact non-terminal career segment stays uncertain",
+			url:  "https://acme.com/karriere/studierende",
+			content: &crawler.Content{
+				Title: "Praktikum",
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// Accumulation past the lowered certainθ: a career keyword ("Careers" title,
+			// 0.5) + title strength (0.5) + a dense same-host index (1.0) = 2.0 >=
+			// certainθ 1.25 → certain, no LLM call.
+			name: "final rung: keyword + strong title + dense same-host index certain-accepts",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title: "Careers",
+				URLs:  []string{"/jobs/1", "/jobs/2", "/jobs/3", "/jobs/4", "/jobs/5", "/jobs/6"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		{
+			// A Terminal-Hub-Word deep hub (exempt from the posting-path veto) that links a
+			// dense set of same-host postings now certain-accepts from the final rung -- the
+			// openings-index flip this ticket buys (mirrors the datarobot/playlist fixtures).
+			name: "dense same-host openings index on a terminal-hub-word deep path is certain",
+			url:  "https://acme.com/careers/open-positions",
+			content: &crawler.Content{
+				Title: "Open Positions",
+				URLs: []string{
+					"/careers/open-positions/job/1", "/careers/open-positions/job/2",
+					"/careers/open-positions/job/3", "/careers/open-positions/job/4",
+					"/careers/open-positions/job/5", "/careers/open-positions/job/6",
+				},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		{
+			// A structured-data openings index (ItemList wrapping JobPostings)
+			// alone clears certainθ (1.5 >= 1.25), so a hub annotated only by JSON-LD
+			// certain-accepts with no LLM call (ADR-0016, #99).
+			name: "final rung: JSON-LD ItemList of JobPosting alone certain-accepts",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title: "Team",
+				JSONLD: []string{`{"@context":"https://schema.org","@type":"ItemList","itemListElement":[
+					{"@type":"ListItem","position":1,"item":{"@type":"JobPosting","title":"Engineer"}},
+					{"@type":"ListItem","position":2,"item":{"@type":"JobPosting","title":"Designer"}}]}`},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		{
+			// Two standalone JobPosting nodes (no ItemList) are a structured-data
+			// openings index too: postings >= 2 fires the signal.
+			name: "final rung: two standalone JobPosting nodes certain-accept",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:  "Team",
+				JSONLD: []string{`{"@type":"JobPosting","title":"Engineer"}`, `{"@type":"JobPosting","title":"Designer"}`},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		{
+			// The load-bearing guard (ADR-0016, #99): a LONE JobPosting earns no hub
+			// credit, so a keyword page carrying one rides only its lexical evidence
+			// (keyword 0.5 + strong "Careers" title 0.5 = 1.0) -- uncertain, never a
+			// False-Certain. A single Job Listing must never certain-accept.
+			name: "final rung: lone JobPosting earns no hub credit, keyword page stays uncertain",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:  "Careers",
+				JSONLD: []string{`{"@type":"JobPosting","title":"Engineer"}`},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// A lone JobPosting with no other signal scores 0 -> reject: it adds zero,
+			// not negative, and does not sneak the page into the uncertain band.
+			name: "final rung: lone JobPosting with no other signal rejects",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:  "Team",
+				JSONLD: []string{`{"@type":"JobPosting","title":"Engineer"}`},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
+			// An ItemList of NON-JobPosting items (site-nav links) fires nothing --
+			// the guard against a generic ItemList (e.g. a SiteNavigationElement menu)
+			// certain-accepting a non-hub. Mirrors the basecamp/about Gold-Set page.
+			name: "final rung: ItemList of non-JobPosting items earns no credit",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title: "Team",
+				JSONLD: []string{`{"@type":"ItemList","itemListElement":[
+					{"@type":"SiteNavigationElement","name":"Pricing"},
+					{"@type":"SiteNavigationElement","name":"Features"}]}`},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
+			// Fail-safe (ADR-0016, #99): unparseable JSON-LD is skipped, leaving the
+			// page in exactly the band it would reach without it -- here lexical evidence
+			// (keyword 0.5 + strong "Careers" title 0.5 = 1.0), still uncertain. Never a
+			// new Leak or False-Certain.
+			name: "final rung: unparseable JSON-LD leaves the band unchanged",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:  "Careers",
+				JSONLD: []string{`{"@type":"ItemList", broken`},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		// ATS Embed final-rung signal (ADR-0016, #100). All use the neutral path
+		// /team so no earlier rung fires; the verdict comes purely from the embed
+		// term (weight 1.5 >= certainθ 1.25). Embeds/ElementIDs are set directly —
+		// the Gate seam, testing interpretation independent of the parser.
+		{
+			// An iframe to a known ATS host is a page-specific board, so it fires
+			// with no marker (Personio embeds via {tenant}.jobs.personio.de).
+			name: "iframe to an ATS host alone certain-accepts",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:  "Team",
+				Embeds: []crawler.Embed{{Src: "https://acme.jobs.personio.de/search", IsFrame: true}},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		{
+			name: "greenhouse script with its board container certain-accepts",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:      "Team",
+				Embeds:     []crawler.Embed{{Src: "https://boards.greenhouse.io/embed/job_board/js?for=acme"}},
+				ElementIDs: []string{"grnhse_app"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		{
+			name: "ashby script with ashby_embed container certain-accepts",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:      "Team",
+				Embeds:     []crawler.Embed{{Src: "https://jobs.ashbyhq.com/acme/embed"}},
+				ElementIDs: []string{"ashby_embed"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		{
+			// The BambooHR marker is literally "BambooHR": element ids are
+			// case-sensitive, so hasElementID matches it exactly.
+			name: "bamboohr script with BambooHR container certain-accepts",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:      "Team",
+				Embeds:     []crawler.Embed{{Src: "https://acme.bamboohr.com/js/embed.js"}},
+				ElementIDs: []string{"BambooHR"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: true,
+		},
+		{
+			// False-Certain guard: a site-wide embed script with no rendered board
+			// container fires nothing, so the page rides only its lexical evidence
+			// (keyword 0.5 + strong "Careers" title 0.5 = 1.0) — uncertain, never
+			// certain-accepted.
+			name: "site-wide embed script with no board container stays out of certain",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:  "Careers",
+				Embeds: []crawler.Embed{{Src: "https://boards.greenhouse.io/embed/job_board/js?for=acme"}},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// The same site-wide script with no other signal contributes 0 -> reject.
+			name: "site-wide embed script with no other signal rejects",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:  "Team",
+				Embeds: []crawler.Embed{{Src: "https://boards.greenhouse.io/embed/job_board/js?for=acme"}},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
+			// The marker must match the script's OWN provider: a Greenhouse script
+			// with only Ashby's container present fires nothing.
+			name: "script to an ATS host with the wrong provider's marker stays out of certain",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:      "Careers",
+				Embeds:     []crawler.Embed{{Src: "https://boards.greenhouse.io/embed/job_board/js?for=acme"}},
+				ElementIDs: []string{"ashby_embed"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// Fail-safe: an unrecognized embed host earns no credit even when a
+			// real provider marker happens to be present.
+			name: "unrecognized embed host earns no credit even with a marker present",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:      "Careers",
+				Embeds:     []crawler.Embed{{Src: "https://cdn.example.com/widget.js"}},
+				ElementIDs: []string{"grnhse_app"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		{
+			// An iframe to an unrecognized host (a YouTube embed) is not an ATS
+			// board: 0 credit -> reject.
+			name: "iframe to an unrecognized host earns no credit",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:  "Team",
+				Embeds: []crawler.Embed{{Src: "https://www.youtube.com/embed/xyz", IsFrame: true}},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  false,
+			wantCertain: false,
+		},
+		{
+			// Lever has no curated embed marker (it is handled by the hosted-board
+			// Classify, not the embed detector), so a Lever script fires nothing
+			// even with an unrelated provider's marker present.
+			name: "lever script earns no embed credit (no curated marker)",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Title:      "Careers",
+				Embeds:     []crawler.Embed{{Src: "https://jobs.lever.co/acme"}},
+				ElementIDs: []string{"grnhse_app"},
+			},
+			cfg:         crawler.DefaultLLMGateConfig(),
+			wantAccept:  true,
+			wantCertain: false,
+		},
+		// Cleared path signals with the seeded floats: these exercise the final-rung
+		// score in isolation from the career-hub-root and reject-path rungs (which
+		// don't fire without configured path signals). A zero-value config can no
+		// longer stand in — its zeroed thresholds would certain-accept every page.
+		{
+			// With the path signals cleared this reaches the final rung and now scores
+			// a career keyword (0.5) + title strength ("Careers" leads, 0.5) + a thin
+			// same-host index (1.0·min(2/5,1)=0.4) = 1.4 >= certainθ 1.25 → certain. In
+			// production /careers never reaches the final rung (careerHubRoot certain-
+			// accepts it first), so this only re-characterizes the synthetic isolation.
+			name: "legacy: career-hub index with job links now certain-accepts",
 			url:  "https://acme.com/careers",
 			content: &crawler.Content{
 				Title: "Careers",
 				URLs:  []string{"/careers/eng-1", "/careers/eng-2"},
 			},
-			cfg:         crawler.LLMGateConfig{},
+			cfg:         finalRungConfig(),
 			wantAccept:  true,
-			wantCertain: false,
+			wantCertain: true,
 		},
 		{
-			name: "legacy: career-hub with no job links is accepted but uncertain",
+			// Lever D (#101): a weak-keyword-only page auto-rejects. With signals
+			// cleared the URL substring "careers" scores the weak keyword (0.5) but
+			// "Join our team" is no strong title (leads with "join", excluded) and the
+			// cleared segments add nothing → 0.5 <= rejectθ 0.75 → reject.
+			name: "legacy: weak-keyword-only page auto-rejects (Lever D)",
 			url:  "https://acme.com/careers",
 			content: &crawler.Content{
 				Title: "Join our team",
 				URLs:  []string{"/about", "/contact"},
 			},
-			cfg:         crawler.LLMGateConfig{},
-			wantAccept:  true,
+			cfg:         finalRungConfig(),
+			wantAccept:  false,
 			wantCertain: false,
 		},
 		{
@@ -318,7 +711,7 @@ func TestCareerPage(t *testing.T) {
 				Title: "Hello World",
 				URLs:  []string{"/blog/other", "/about"},
 			},
-			cfg:         crawler.LLMGateConfig{},
+			cfg:         finalRungConfig(),
 			wantAccept:  false,
 			wantCertain: false,
 		},

@@ -271,6 +271,65 @@ func TestIdentifyDistinctTenantsSameHost(t *testing.T) {
 	}
 }
 
+func TestATSProviderForHost(t *testing.T) {
+	tests := []struct {
+		name         string
+		host         string
+		wantProvider string
+		wantOK       bool
+	}{
+		{"greenhouse board host", "boards.greenhouse.io", "greenhouse", true},
+		{"greenhouse job-boards host", "job-boards.greenhouse.io", "greenhouse", true},
+		{"ashby board host", "jobs.ashbyhq.com", "ashby", true},
+		{"lever board host", "jobs.lever.co", "lever", true},
+		{"bamboohr tenant subdomain", "acme.bamboohr.com", "bamboohr", true},
+		{"personio tenant subdomain (.de)", "globex.jobs.personio.de", "personio", true},
+		{"personio tenant subdomain (.com)", "globex.jobs.personio.com", "personio", true},
+		{"recruitee tenant subdomain", "acme.recruitee.com", "recruitee", true},
+		{"match is case-insensitive", "BOARDS.GREENHOUSE.IO", "greenhouse", true},
+		{"a company's own host is not an ATS host", "www.acme.com", "", false},
+		{"empty host is not an ATS host", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, ok := catalog.ATSProviderForHost(tt.host)
+			if ok != tt.wantOK {
+				t.Fatalf("ATSProviderForHost(%q) ok = %v, want %v", tt.host, ok, tt.wantOK)
+			}
+			if provider != tt.wantProvider {
+				t.Errorf("ATSProviderForHost(%q) provider = %q, want %q", tt.host, provider, tt.wantProvider)
+			}
+		})
+	}
+}
+
+func TestATSBoardContainerMarker(t *testing.T) {
+	tests := []struct {
+		name       string
+		provider   string
+		wantMarker string
+		wantOK     bool
+	}{
+		{"greenhouse renders into grnhse_app", "greenhouse", "grnhse_app", true},
+		{"ashby renders into ashby_embed", "ashby", "ashby_embed", true},
+		{"bamboohr renders into BambooHR", "bamboohr", "BambooHR", true},
+		{"lever has no curated marker (hosted-board classify)", "lever", "", false},
+		{"personio has no marker (iframe-based)", "personio", "", false},
+		{"unknown provider has no marker", "unknown", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			marker, ok := catalog.ATSBoardContainerMarker(tt.provider)
+			if ok != tt.wantOK {
+				t.Fatalf("ATSBoardContainerMarker(%q) ok = %v, want %v", tt.provider, ok, tt.wantOK)
+			}
+			if marker != tt.wantMarker {
+				t.Errorf("ATSBoardContainerMarker(%q) marker = %q, want %q", tt.provider, marker, tt.wantMarker)
+			}
+		})
+	}
+}
+
 func TestIsAggregatorHost(t *testing.T) {
 	tests := []struct {
 		name string

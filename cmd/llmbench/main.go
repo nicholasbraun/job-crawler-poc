@@ -61,7 +61,7 @@ func parseVerb(args []string) (verb string, rest []string) {
 func runBench(args []string) int {
 	fs := flag.NewFlagSet("bench", flag.ExitOnError)
 	gold := fs.String("gold", "cmd/llmbench/testdata", "Gold-Set directory holding manifest.json and pages/*.html")
-	gateConfig := fs.String("gate-config", "", "path to a JSON LLMGateConfig override; keys are the Go field names CareerPathSignals/RejectPathSignals (the struct has no json tags); empty uses DefaultLLMGateConfig")
+	gateConfig := fs.String("gate-config", "", "path to a JSON LLMGateConfig override applied on top of DefaultLLMGateConfig; keys are the Go field names (the struct has no json tags), so a partial file overrides only the fields it names; empty uses DefaultLLMGateConfig unchanged")
 	llm := fs.Bool("llm", true, "confirm gate-uncertain fixtures with the real openrouter classifier (LLM_* env); -llm=false runs gate-only")
 	mode := fs.String("mode", "as-wired", "as-wired: classify only gate-uncertain fixtures (production wiring); isolated: classify every fixture, bypassing the gate for LLM scoring only")
 	repeats := fs.Int("n", 1, "repeat each LLM classification N times (same seed); the scored verdict is the majority vote and the LLM scorecard reports a by-URL flip-rate")
@@ -158,17 +158,21 @@ func runBench(args []string) int {
 }
 
 // loadGateConfig returns the gate config to benchmark with: the built-in default
-// for an empty path, otherwise a JSON LLMGateConfig read from path. LLMGateConfig
+// for an empty path, otherwise DefaultLLMGateConfig with a JSON override from path
+// unmarshaled on top. Starting from the default (not a zero value) means a partial
+// override changes only the fields it names and leaves the rest — critically the
+// scoring weights and thresholds — at their seeded values; a zero CertainThreshold
+// would otherwise make the final rung certain-accept every page. LLMGateConfig
 // carries no json tags, so the JSON keys are the Go field names.
 func loadGateConfig(path string) (crawler.LLMGateConfig, error) {
+	cfg := crawler.DefaultLLMGateConfig()
 	if path == "" {
-		return crawler.DefaultLLMGateConfig(), nil
+		return cfg, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return crawler.LLMGateConfig{}, fmt.Errorf("read gate config: %w", err)
 	}
-	cfg := crawler.LLMGateConfig{}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return crawler.LLMGateConfig{}, fmt.Errorf("parse gate config: %w", err)
 	}

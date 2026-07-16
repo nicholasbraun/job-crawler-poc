@@ -45,9 +45,60 @@ type URLFilterConfig struct {
 // Unlike URLFilterConfig, this is not (yet) a per-definition, persisted field: the
 // factory applies the process-wide DefaultLLMGateConfig to every run, so the type
 // carries no json tags. Add them when it becomes a persisted definition field.
+// As of ADR-0016 it also carries the final-rung Confidence Score weights and
+// thresholds -- this is the shift from curated string lists to curated lists plus
+// tunable floats -- but it stays in-memory and process-wide, still with no json
+// tags.
 type LLMGateConfig struct {
 	CareerPathSignals []string
 	RejectPathSignals []string
+
+	// Confidence Score weights and thresholds for the Gate's final rung
+	// (ADR-0016). The final rung sums the weight of each fired signal into an
+	// additive Confidence Score, then maps it to the Gate's three verdicts:
+	// score >= CertainThreshold certain-accepts (skips the LLM), score <=
+	// RejectThreshold rejects, and the band between stays uncertain (the LLM
+	// confirms). Weights are hand-set and coarse; only the two thresholds are
+	// tuned against the Gold Set. Signal tickets add further weights.
+	//
+	// CareerKeywordWeight scores a career keyword found in the URL or title (the
+	// weakest signal). JobLinkWeight scores a saturated set of same-host Job
+	// Listing links; JobLinkSaturationCount (K) sets how many distinct links
+	// saturate it, the count folding in continuously as min(count/K, 1).
+	CareerKeywordWeight float64
+	JobLinkWeight       float64
+	// JobLinkSaturationCount is K in the same-host Job Listing signal's
+	// min(count/K, 1) saturation: the distinct same-host Job Listing link count
+	// at which that signal contributes its full JobLinkWeight (ADR-0016). Hand-set,
+	// not bench-tuned. A value <= 0 leaves the signal silent (fail-safe), so a
+	// zero-value config never divides by zero or over-weights.
+	JobLinkSaturationCount int
+	// JSONLDHubWeight scores a structured-data openings index (ADR-0016): the
+	// page's JSON-LD is an ItemList containing a JobPosting, or carries two or
+	// more JobPosting nodes. It is a strong Structural Signal -- seeded at or
+	// above CertainThreshold so it certain-accepts on its own -- because such
+	// markup is definitive of a Career Page hub. A lone JobPosting node (one Job
+	// Listing, not a hub) contributes nothing, so this signal never turns a single
+	// posting into a False-Certain. A zero value (an override that omits it)
+	// leaves the signal silent, the same fail-safe as JobLinkSaturationCount <= 0.
+	JSONLDHubWeight float64
+	// ATSEmbedWeight scores an ATS Embed (ADR-0016): a Company page that renders a
+	// third-party ATS board inline — an <iframe> pointing at a known ATS host, or a
+	// <script> pointing at a known ATS host together with that provider's
+	// board-container marker. It is the strongest Structural Signal — seeded at or
+	// above CertainThreshold so it certain-accepts on its own — because an embedded
+	// ATS board is definitive of a Career Page hub. A zero value (an override that
+	// omits it) leaves the signal silent, the same fail-safe as JobLinkSaturationCount <= 0.
+	ATSEmbedWeight float64
+	// TitleStrengthWeight scores the title-strength / strong-careers signal
+	// (ADR-0016): the page's Title leads with a careers-hub word, or the URL
+	// carries a career token as a distinct exact path segment. It is weighted
+	// ABOVE the weakest career-keyword substring so a page that reads as a careers
+	// hub outweighs one that merely contains a career keyword. A zero value leaves
+	// the signal silent, the same fail-safe as the other weights.
+	TitleStrengthWeight float64
+	CertainThreshold    float64
+	RejectThreshold     float64
 }
 
 // DefaultLLMGateConfig returns the built-in pre-LLM gate signals. CareerPathSignals
@@ -57,6 +108,32 @@ type LLMGateConfig struct {
 // here. Weaker, ambiguous tokens (e.g. "join", which is as often a newsletter or
 // community signup) are deliberately left out; the pagegate content heuristic still
 // accepts them, but as uncertain — the LLM confirms before cataloging.
+//
+// It also seeds the final-rung Confidence Score floats (ADR-0016). A same-host
+// openings index carrying a career keyword certain-accepts from the final rung
+// once the index is dense enough: the career keyword (0.5) plus the same-host Job
+// Listing signal (up to 1.0, folding the distinct link count in as min(count/5, 1))
+// crosses CertainThreshold 1.25 at four same-host links (0.5 + 0.8 = 1.3), before
+// full saturation. Sparser lexical-only evidence never crosses (the reject and
+// structural-signal notes below cover the uncertain and reject bands). A
+// structured-data openings index (JSON-LD ItemList of
+// JobPosting, or >=2 JobPosting nodes) contributes 1.5, certain-accepting on its
+// own; a lone JobPosting contributes nothing. An ATS Embed (1.5) certain-accepts
+// on its own too, like the JSON-LD hub: a Company page rendering a third-party ATS
+// board inline (an iframe to a known ATS host, or a script to one with the
+// provider's board-container marker present).
+//
+// The title-strength signal (0.5) fires when the page reads as a careers hub — its
+// Title leads with a careers-hub word, or the URL carries a career token as a
+// distinct exact path segment — lifting a page above the weakest career keyword.
+// The two thresholds sit at the midpoints of the widest failure-free score gaps,
+// placed for margin rather than at the call-rate minimum: RejectThreshold 0.75
+// auto-rejects a page whose only signal is the weak career keyword (0.5 <= 0.75),
+// while a keyword page that ALSO reads as a careers hub (0.5 + 0.5 = 1.0) clears
+// reject and stays uncertain — never leaking a real career sub-page. And lexical
+// evidence alone (career keyword + title strength = 1.0 < CertainThreshold 1.25)
+// never certain-accepts, so certain still requires a Structural Signal (an ATS
+// embed, a JSON-LD hub, or a career keyword plus a dense same-host index).
 func DefaultLLMGateConfig() LLMGateConfig {
 	return LLMGateConfig{
 		CareerPathSignals: []string{
@@ -84,6 +161,27 @@ func DefaultLLMGateConfig() LLMGateConfig {
 			// certain-accepted (#62 catalog audit false positives).
 			"docs", "tag", "category",
 		},
+
+		// Confidence Score seeds (ADR-0016). The career keyword (weak) contributes
+		// 0.5; title strength (a careers-hub title or an exact career path segment)
+		// another 0.5; the same-host Job Listing signal up to 1.0, folding the
+		// distinct same-host link count in as min(count/5, 1). CertainThreshold 1.25
+		// certain-accepts a career keyword plus a dense same-host index — from four
+		// same-host links up (0.5 + 0.8 = 1.3), before full saturation — while
+		// saturated links alone (1.0) and lexical evidence alone (career keyword +
+		// title strength = 1.0) stay uncertain, holding False-Certains at zero. RejectThreshold 0.75 rejects a no-signal page and a
+		// weak-keyword-only page (0.5), while a keyword page that also reads as a
+		// careers hub (1.0) clears reject. Both thresholds land at the midpoints of
+		// empty score gaps (0.25 margin each side) — placed for margin, not the
+		// call-rate minimum.
+		CareerKeywordWeight:    0.5,
+		JobLinkWeight:          1.0,
+		JobLinkSaturationCount: 5,
+		JSONLDHubWeight:        1.5,
+		ATSEmbedWeight:         1.5,
+		TitleStrengthWeight:    0.5,
+		CertainThreshold:       1.25,
+		RejectThreshold:        0.75,
 	}
 }
 

@@ -115,6 +115,60 @@ var subdomainRules = []subdomainRule{
 	{provider: "haileyhr", suffix: "careers.haileyhr.app"},
 }
 
+// ATSProviderForHost reports the ATS provider family that operates host as a
+// board/embed host ("greenhouse", "ashby", "bamboohr", "personio", "lever", …),
+// or ok=false when host is not a recognized ATS host. It is the single source of
+// ATS host identity (ADR-0001): the Gate's ATS-embed signal (ADR-0016) uses it to
+// recognize a board embedded on a Company's own page by the host its iframe/script
+// src points at. It matches the SAME pathRule hosts and subdomainRule suffixes
+// that Identify/Classify use, so ATS host knowledge stays in one place. Unlike
+// matchHost it takes a bare host (an embed src carries no tenant path) and ignores
+// any path prefix, so a prefix board host (join.com) is recognized by host alone.
+func ATSProviderForHost(host string) (provider string, ok bool) {
+	host = strings.ToLower(host)
+	if host == "" {
+		return "", false
+	}
+	for _, r := range pathRules {
+		for _, h := range r.hosts {
+			if host == h {
+				return r.provider, true
+			}
+		}
+	}
+	for _, r := range subdomainRules {
+		if host == r.suffix || strings.HasSuffix(host, "."+r.suffix) {
+			return r.provider, true
+		}
+	}
+	return "", false
+}
+
+// atsBoardContainerMarkers maps an ATS provider to the element id its embed
+// script renders its board into (the board-container marker). A <script> embed
+// fires the Gate's ATS-embed signal (ADR-0016) only when its provider's marker is
+// present on the page, so a site-wide embed script in a shared template does not
+// make every page look like a hub. An <iframe> embed needs no marker — an iframed
+// board is page-specific by nature — so iframe-embedding providers (e.g. Personio,
+// whose board lives at {tenant}.jobs.personio.de) need no entry here. Lever is
+// deliberately absent: it has no canonical embed marker and is handled by the
+// existing hosted-board Classify, not the embed detector. Incompleteness costs a
+// missed LLM saving, never correctness (the ADR-0016 fail-safe).
+var atsBoardContainerMarkers = map[string]string{
+	"greenhouse": "grnhse_app",
+	"ashby":      "ashby_embed",
+	"bamboohr":   "BambooHR",
+}
+
+// ATSBoardContainerMarker returns the board-container marker (an element id) that
+// a provider's embed script renders its board into, or ok=false when the provider
+// has no curated marker (an iframe-embedding or hosted-board provider). See
+// atsBoardContainerMarkers.
+func ATSBoardContainerMarker(provider string) (marker string, ok bool) {
+	marker, ok = atsBoardContainerMarkers[provider]
+	return marker, ok
+}
+
 // atsMatch describes how a host maps to a known ATS tenant.
 type atsMatch struct {
 	provider string

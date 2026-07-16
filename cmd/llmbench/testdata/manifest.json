@@ -746,5 +746,68 @@
     "verified": true,
     "fetched_at": "2026-07-12T21:24:01Z",
     "note": "#64 aggregator: eu-startups.com added to the denylist, rejected on eTLD+1"
+  },
+  {
+    "file": "0081-novaharbor-example-company-open-roles.html",
+    "url": "https://www.novaharbor.example/company/open-roles",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": true,
+    "fetched_at": "2026-07-15T00:00:00Z",
+    "note": "hand-authored fixture (#99): self-hosted hub on a non-/careers path annotated with a JSON-LD ItemList of JobPosting; certain-accepts via the structured-data hub signal (synthetic .example domain)"
+  },
+  {
+    "file": "0082-clarafields-example-o-studio-assistant.html",
+    "url": "https://www.clarafields.example/o/studio-assistant",
+    "label": "not_career_page",
+    "category": "job_posting_single",
+    "verified": true,
+    "fetched_at": "2026-07-15T00:00:00Z",
+    "note": "hand-authored trap (#99): a single Job Listing that escapes the posting-path veto and carries a lone JobPosting JSON-LD; must earn zero hub credit and reject, never certain-accept (synthetic .example domain)"
+  },
+  {
+    "file": "0083-brightwave-example-work-with-us.html",
+    "url": "https://www.brightwave.example/work-with-us",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": true,
+    "fetched_at": "2026-07-15T00:00:00Z",
+    "note": "hand-authored fixture (#100): self-hosted hub on a neutral path embedding a Greenhouse board via <script> + the grnhse_app container; certain-accepts via the ATS-embed signal alone (synthetic .example domain)"
+  },
+  {
+    "file": "0084-lumenstack-example-company-roles.html",
+    "url": "https://www.lumenstack.example/company/roles",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": true,
+    "fetched_at": "2026-07-15T00:00:00Z",
+    "note": "hand-authored fixture (#100): self-hosted hub on a neutral path embedding an Ashby board via <script> + the ashby_embed container; certain-accepts via the ATS-embed signal alone (synthetic .example domain)"
+  },
+  {
+    "file": "0085-meridianlabs-example-team.html",
+    "url": "https://www.meridianlabs.example/team",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": true,
+    "fetched_at": "2026-07-15T00:00:00Z",
+    "note": "hand-authored fixture (#100): self-hosted hub on a neutral path embedding a BambooHR board via <script> + the case-sensitive BambooHR container; certain-accepts via the ATS-embed signal alone (synthetic .example domain)"
+  },
+  {
+    "file": "0086-auroria-example-company-people.html",
+    "url": "https://www.auroria.example/company/people",
+    "label": "career_page",
+    "category": "hub_self_hosted",
+    "verified": true,
+    "fetched_at": "2026-07-15T00:00:00Z",
+    "note": "hand-authored fixture (#100): self-hosted hub on a neutral path embedding a Personio board via <iframe> ({tenant}.jobs.personio.de, no marker needed); certain-accepts via the ATS-embed signal alone (synthetic .example domain)"
+  },
+  {
+    "file": "0087-vantafold-example-company.html",
+    "url": "https://www.vantafold.example/company",
+    "label": "not_career_page",
+    "category": "culture_about",
+    "verified": true,
+    "fetched_at": "2026-07-15T00:00:00Z",
+    "note": "hand-authored trap (#100): a company page whose shared template carries a site-wide Greenhouse embed <script> but renders no grnhse_app board container; must NOT fire the embed signal — rejects as a true negative, and certain-accepting it would be a False-Certain (synthetic .example domain)"
   }
 ]

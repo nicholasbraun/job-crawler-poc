@@ -67,6 +67,7 @@ func TestDiscoveryProcessorEmitsCareerPageAndDiscoversLinks(t *testing.T) {
 		ContentFilter:    filter.Chain[*crawler.Content](),
 		URLFilter:        filter.Chain[string](),
 		RobotsTxtChecker: allowAllRobots{},
+		GateConfig:       crawler.DefaultLLMGateConfig(),
 		OnCareerPage: func(ctx context.Context, page *crawler.RawCareerPage) error {
 			emitted = append(emitted, page)
 			return nil
@@ -113,6 +114,7 @@ func TestDiscoveryProcessorSkipsJobPosting(t *testing.T) {
 		ContentFilter:    filter.Chain[*crawler.Content](),
 		URLFilter:        filter.Chain[string](),
 		RobotsTxtChecker: allowAllRobots{},
+		GateConfig:       crawler.DefaultLLMGateConfig(),
 		OnCareerPage: func(ctx context.Context, page *crawler.RawCareerPage) error {
 			emitted++
 			return nil
@@ -148,6 +150,7 @@ func TestDiscoveryProcessorSkipsNonCareerPage(t *testing.T) {
 		ContentFilter:    filter.Chain[*crawler.Content](),
 		URLFilter:        filter.Chain[string](),
 		RobotsTxtChecker: allowAllRobots{},
+		GateConfig:       crawler.DefaultLLMGateConfig(),
 		OnCareerPage: func(ctx context.Context, page *crawler.RawCareerPage) error {
 			emitted++
 			return nil

@@ -35,9 +35,11 @@ type Config struct {
 	ContentFilter    filter.CheckFn[*crawler.Content]
 	URLFilter        filter.CheckFn[string]
 	RobotsTxtChecker RobotsTxtChecker
-	// GateConfig supplies the pre-LLM URL-path signals (ADR-0007 step 2) the
-	// career-page gate uses to accept a career-hub page without the LLM
-	// classifier. A zero value falls back to the legacy content heuristic.
+	// GateConfig supplies the pre-LLM URL-path signals and the final-rung
+	// Confidence Score floats (ADR-0007 step 2, ADR-0016) the career-page gate
+	// uses to accept a career-hub page without the LLM classifier. Wire
+	// crawler.DefaultLLMGateConfig; a zero value is not a meaningful config — its
+	// zero CertainThreshold certain-accepts every page that reaches the final rung.
 	GateConfig crawler.LLMGateConfig
 	// OnCareerPage is called for each page that passes the career-page gate,
 	// typically enqueuing the candidate into the career-page worker pool.
