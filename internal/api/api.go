@@ -273,6 +273,10 @@ func (h *Handler) createCrawl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.cfg.Definitions.Create(r.Context(), def); err != nil {
+		if errors.Is(err, crawler.ErrDiscoveryDefinitionExists) {
+			writeError(w, http.StatusConflict, "a discovery crawl already exists")
+			return
+		}
 		slog.Error("api: error creating crawl definition", "err", err)
 		writeError(w, http.StatusInternalServerError, "could not create crawl")
 		return
@@ -280,13 +284,17 @@ func (h *Handler) createCrawl(w http.ResponseWriter, r *http.Request) {
 
 	run, err := h.cfg.Runner.Start(r.Context(), def.ID)
 	if err != nil {
-		slog.Error("api: error starting crawl", "err", err)
 		// The definition was committed but its run never started, leaving an
 		// orphan. Best-effort roll it back so the fused endpoint stays atomic.
 		// The cleanup uses a context detached from the request's cancellation
 		// (a cancelled request context is itself a Start failure mode) and only
 		// logs if the rollback fails.
 		h.deleteOrphanDefinition(r.Context(), def.ID)
+		if errors.Is(err, crawler.ErrActiveRunExists) {
+			writeError(w, http.StatusConflict, "a run of this crawl is already active")
+			return
+		}
+		slog.Error("api: error starting crawl", "err", err)
 		writeError(w, http.StatusInternalServerError, "could not start crawl")
 		return
 	}
@@ -556,6 +564,10 @@ func (h *Handler) createDefinition(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.cfg.Definitions.Create(r.Context(), def); err != nil {
+		if errors.Is(err, crawler.ErrDiscoveryDefinitionExists) {
+			writeError(w, http.StatusConflict, "a discovery crawl already exists")
+			return
+		}
 		slog.Error("api: error creating definition", "err", err)
 		writeError(w, http.StatusInternalServerError, "could not create definition")
 		return
@@ -577,6 +589,10 @@ func (h *Handler) startRun(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, crawler.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "definition not found")
+			return
+		}
+		if errors.Is(err, crawler.ErrActiveRunExists) {
+			writeError(w, http.StatusConflict, "a run of this crawl is already active")
 			return
 		}
 		slog.Error("api: error starting run", "err", err)

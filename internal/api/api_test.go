@@ -59,6 +59,7 @@ func (f *fakeRunner) Resume(ctx context.Context, runID uuid.UUID) error {
 
 type fakeDefRepo struct {
 	created   *crawler.CrawlDefinition
+	createErr error
 	list      []*crawler.CrawlDefinition
 	get       *crawler.CrawlDefinition
 	deleted   uuid.UUID
@@ -66,6 +67,9 @@ type fakeDefRepo struct {
 }
 
 func (f *fakeDefRepo) Create(ctx context.Context, def *crawler.CrawlDefinition) error {
+	if f.createErr != nil {
+		return f.createErr
+	}
 	def.ID = uuid.New()
 	f.created = def
 	return nil
@@ -498,6 +502,57 @@ func TestCreateCrawlRollsBackDefinitionWhenStartFails(t *testing.T) {
 	})
 }
 
+// TestCreateCrawlDiscoveryConflict asserts the fused endpoint maps the
+// definition repository's ErrDiscoveryDefinitionExists to 409 (ADR-0017): a
+// second discovery definition is refused, not silently duplicated.
+func TestCreateCrawlDiscoveryConflict(t *testing.T) {
+	rnr := &fakeRunner{}
+	defs := &fakeDefRepo{createErr: crawler.ErrDiscoveryDefinitionExists}
+	srv := newHandler(api.Config{Runner: rnr, Definitions: defs})
+
+	body, _ := json.Marshal(map[string]any{
+		"name":     "discovery",
+		"kind":     "discovery",
+		"seedUrls": []string{"https://example.com"},
+	})
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409; body=%s", rec.Code, rec.Body)
+	}
+	if rnr.started != uuid.Nil {
+		t.Errorf("runner.Start must not be called when the definition create conflicts; got %v", rnr.started)
+	}
+}
+
+// TestCreateCrawlActiveRunConflict asserts the fused endpoint maps the runner's
+// ErrActiveRunExists to 409 and still rolls back the orphaned definition, so a
+// lost run-insert race is a clean conflict rather than a 500 plus an orphan.
+func TestCreateCrawlActiveRunConflict(t *testing.T) {
+	rnr := &fakeRunner{startErr: crawler.ErrActiveRunExists}
+	defs := &fakeDefRepo{}
+	srv := newHandler(api.Config{Runner: rnr, Definitions: defs})
+
+	body, _ := json.Marshal(map[string]any{
+		"name":     "discovery",
+		"kind":     "discovery",
+		"seedUrls": []string{"https://example.com"},
+	})
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409; body=%s", rec.Code, rec.Body)
+	}
+	if defs.created == nil {
+		t.Fatal("expected a definition to have been created")
+	}
+	if defs.deleted != defs.created.ID {
+		t.Errorf("orphaned definition not rolled back on the conflict path: deleted %v, want %v", defs.deleted, defs.created.ID)
+	}
+}
+
 func TestCreateCrawlRejectsMissingFields(t *testing.T) {
 	srv := newHandler(api.Config{})
 
@@ -832,6 +887,25 @@ func TestCreateDefinitionDoesNotStartRun(t *testing.T) {
 	}
 }
 
+// TestCreateDefinitionDiscoveryConflict asserts the create-only endpoint maps
+// ErrDiscoveryDefinitionExists to 409, mirroring the fused createCrawl path.
+func TestCreateDefinitionDiscoveryConflict(t *testing.T) {
+	defs := &fakeDefRepo{createErr: crawler.ErrDiscoveryDefinitionExists}
+	srv := newHandler(api.Config{Definitions: defs})
+
+	body, _ := json.Marshal(map[string]any{
+		"name":     "discovery",
+		"kind":     "discovery",
+		"seedUrls": []string{"https://example.com"},
+	})
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/definitions", bytes.NewReader(body)))
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409; body=%s", rec.Code, rec.Body)
+	}
+}
+
 func TestListAndGetDefinitions(t *testing.T) {
 	def := &crawler.CrawlDefinition{
 		ID:       uuid.New(),
@@ -906,6 +980,22 @@ func TestStartRunOfExistingDefinition(t *testing.T) {
 			t.Fatalf("status: got %d, want 404", rec.Code)
 		}
 	})
+}
+
+// TestStartRunActiveRunConflict asserts POST /api/definitions/{id}/runs maps the
+// runner's ErrActiveRunExists to 409: a keyword or discovery definition that
+// already has a non-terminal run refuses a second start (ADR-0017). startRun does
+// not read the definition repo, so no def setup is needed.
+func TestStartRunActiveRunConflict(t *testing.T) {
+	rnr := &fakeRunner{startErr: crawler.ErrActiveRunExists}
+	srv := newHandler(api.Config{Runner: rnr})
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/definitions/"+uuid.New().String()+"/runs", nil))
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409; body=%s", rec.Code, rec.Body)
+	}
 }
 
 func TestListCompanies(t *testing.T) {

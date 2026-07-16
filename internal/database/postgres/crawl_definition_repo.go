@@ -55,6 +55,9 @@ func (r *CrawlDefinitionRepository) Create(ctx context.Context, def *crawler.Cra
 		def.MaxDepth, filterJSON,
 	).Scan(&def.CreatedAt)
 	if err != nil {
+		if isUniqueViolation(err, "crawl_definition_single_discovery_idx") {
+			return crawler.ErrDiscoveryDefinitionExists
+		}
 		return fmt.Errorf("postgres: error creating crawl definition: %w", err)
 	}
 

@@ -12,6 +12,11 @@ import (
 // exist. Callers use errors.Is to map it to a 404.
 var ErrNotFound = errors.New("crawler: not found")
 
+// ErrDiscoveryDefinitionExists is returned by CrawlDefinitionRepository.Create
+// when a discovery definition already exists: the singleton Discovery Crawl
+// invariant (ADR-0017) permits only one. Callers map it to 409 Conflict.
+var ErrDiscoveryDefinitionExists = errors.New("crawler: discovery definition already exists")
+
 // CrawlKind distinguishes the crawl strategies. discovery walks a site
 // following the URL filters; keyword additionally gates pages by keywords.
 // Only discovery is exercised in Step 1; keyword is reserved for later steps.
