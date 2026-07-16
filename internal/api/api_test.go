@@ -387,8 +387,10 @@ func (f *fakeImportJobRepo) SweepInterrupted(ctx context.Context, msg string, at
 
 func defaults() api.Defaults {
 	return api.Defaults{
-		MaxDepth:  7,
-		URLFilter: crawler.URLFilterConfig{AllowedTLDs: []string{"com", "io"}},
+		KeywordMaxDepth:   4,
+		DiscoveryMaxDepth: 10,
+		DiscoverySeeds:    []string{"https://seed-a.example.com/", "https://seed-b.example.com/"},
+		URLFilter:         crawler.URLFilterConfig{AllowedTLDs: []string{"com", "io"}},
 	}
 }
 
@@ -443,8 +445,8 @@ func TestCreateCrawlFillsDefaults(t *testing.T) {
 	if defs.created == nil {
 		t.Fatal("expected a definition to be created")
 	}
-	if defs.created.MaxDepth != 7 {
-		t.Errorf("omitted fields not defaulted: depth=%d", defs.created.MaxDepth)
+	if defs.created.MaxDepth != 10 {
+		t.Errorf("omitted depth not defaulted to discovery default: depth=%d", defs.created.MaxDepth)
 	}
 	if defs.created.Kind != crawler.CrawlKindDiscovery {
 		t.Errorf("kind: got %q, want discovery", defs.created.Kind)
@@ -616,6 +618,160 @@ func TestCreateKeywordCrawl(t *testing.T) {
 			t.Fatalf("status: got %d, want 400", rec.Code)
 		}
 	})
+}
+
+func TestDefinitionDefaults(t *testing.T) {
+	srv := newHandler(api.Config{})
+
+	get := func(t *testing.T, kind string) (int, map[string]any) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/definitions/defaults?kind="+kind, nil))
+		var got map[string]any
+		if rec.Code == http.StatusOK {
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decoding body: %v; body=%s", err, rec.Body)
+			}
+		}
+		return rec.Code, got
+	}
+
+	t.Run("discovery template carries the baseline seeds and depth", func(t *testing.T) {
+		code, got := get(t, "discovery")
+		if code != http.StatusOK {
+			t.Fatalf("status: got %d, want 200", code)
+		}
+		if got["name"] != "discovery" {
+			t.Errorf("name: got %v, want discovery", got["name"])
+		}
+		if got["kind"] != "discovery" {
+			t.Errorf("kind: got %v, want discovery", got["kind"])
+		}
+		if got["maxDepth"] != float64(10) {
+			t.Errorf("maxDepth: got %v, want 10", got["maxDepth"])
+		}
+		seeds, ok := got["seedUrls"].([]any)
+		if !ok {
+			t.Fatalf("seedUrls should be an array, got %T", got["seedUrls"])
+		}
+		if len(seeds) != 2 {
+			t.Errorf("seedUrls: got %d, want 2 (the test defaults)", len(seeds))
+		}
+		if _, present := got["keywords"]; present {
+			t.Errorf("discovery template should not carry keywords, got %v", got["keywords"])
+		}
+	})
+
+	t.Run("keyword template has an empty keyword list and depth", func(t *testing.T) {
+		code, got := get(t, "keyword")
+		if code != http.StatusOK {
+			t.Fatalf("status: got %d, want 200", code)
+		}
+		if got["kind"] != "keyword" {
+			t.Errorf("kind: got %v, want keyword", got["kind"])
+		}
+		if got["maxDepth"] != float64(4) {
+			t.Errorf("maxDepth: got %v, want 4", got["maxDepth"])
+		}
+		keywords, ok := got["keywords"].([]any)
+		if !ok {
+			t.Fatalf("keywords should be an array (not null), got %T", got["keywords"])
+		}
+		if len(keywords) != 0 {
+			t.Errorf("keywords should be empty, got %v", keywords)
+		}
+		if got["name"] != nil {
+			t.Errorf("keyword template should not carry a name, got %v", got["name"])
+		}
+		if got["seedUrls"] != nil {
+			t.Errorf("keyword template should not carry seedUrls, got %v", got["seedUrls"])
+		}
+	})
+
+	t.Run("missing kind is rejected", func(t *testing.T) {
+		if code, _ := get(t, ""); code != http.StatusBadRequest {
+			t.Fatalf("status: got %d, want 400", code)
+		}
+	})
+
+	t.Run("unknown kind is rejected", func(t *testing.T) {
+		if code, _ := get(t, "sitemap"); code != http.StatusBadRequest {
+			t.Fatalf("status: got %d, want 400", code)
+		}
+	})
+}
+
+func TestCreateCrawlDepthDefaultingPerKind(t *testing.T) {
+	t.Run("keyword crawl defaults to the keyword depth", func(t *testing.T) {
+		defs := &fakeDefRepo{}
+		srv := newHandler(api.Config{Definitions: defs})
+
+		body, _ := json.Marshal(map[string]any{
+			"name":     "kw",
+			"kind":     "keyword",
+			"keywords": []string{"golang"},
+		})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status: got %d, want 201; body=%s", rec.Code, rec.Body)
+		}
+		if defs.created == nil || defs.created.MaxDepth != 4 {
+			t.Errorf("omitted depth not defaulted to keyword default: %+v", defs.created)
+		}
+	})
+
+	t.Run("discovery crawl defaults to the discovery depth", func(t *testing.T) {
+		defs := &fakeDefRepo{}
+		srv := newHandler(api.Config{Definitions: defs})
+
+		body, _ := json.Marshal(map[string]any{
+			"name":     "disc",
+			"kind":     "discovery",
+			"seedUrls": []string{"https://example.com"},
+		})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status: got %d, want 201; body=%s", rec.Code, rec.Body)
+		}
+		if defs.created == nil || defs.created.MaxDepth != 10 {
+			t.Errorf("omitted depth not defaulted to discovery default: %+v", defs.created)
+		}
+	})
+}
+
+func TestCreateCrawlRejectsOutOfBoundsDepth(t *testing.T) {
+	cases := []struct {
+		name     string
+		maxDepth int
+		want     int
+	}{
+		{"zero is rejected", 0, http.StatusBadRequest},
+		{"above the upper bound is rejected", 21, http.StatusBadRequest},
+		{"lower boundary is accepted", 1, http.StatusCreated},
+		{"upper boundary is accepted", 20, http.StatusCreated},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newHandler(api.Config{})
+
+			body, _ := json.Marshal(map[string]any{
+				"name":     "bounded",
+				"kind":     "discovery",
+				"seedUrls": []string{"https://example.com"},
+				"maxDepth": tc.maxDepth,
+			})
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
+
+			if rec.Code != tc.want {
+				t.Fatalf("status: got %d, want %d; body=%s", rec.Code, tc.want, rec.Body)
+			}
+		})
+	}
 }
 
 func TestGetCrawlNotFound(t *testing.T) {
