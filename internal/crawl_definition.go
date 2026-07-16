@@ -12,6 +12,11 @@ import (
 // exist. Callers use errors.Is to map it to a 404.
 var ErrNotFound = errors.New("crawler: not found")
 
+// ErrDiscoveryDefinitionExists is returned by CrawlDefinitionRepository.Create
+// when a discovery definition already exists: the singleton Discovery Crawl
+// invariant (ADR-0017) permits only one. Callers map it to 409 Conflict.
+var ErrDiscoveryDefinitionExists = errors.New("crawler: discovery definition already exists")
+
 // CrawlKind distinguishes the crawl strategies. discovery walks a site
 // following the URL filters; keyword additionally gates pages by keywords.
 // Only discovery is exercised in Step 1; keyword is reserved for later steps.
@@ -208,6 +213,11 @@ type CrawlDefinitionRepository interface {
 	// Delete removes a definition by ID. It is idempotent: deleting a
 	// nonexistent definition is not an error.
 	Delete(ctx context.Context, id uuid.UUID) error
+	// AppendSeedURL idempotently adds url to the definition's seed_urls:
+	// re-adding an existing Seed is a no-op. It is the one sanctioned mutation of
+	// an otherwise immutable definition (ADR-0018: additive runtime Seed injection
+	// into the Discovery Crawl). Returns ErrNotFound when no definition has the id.
+	AppendSeedURL(ctx context.Context, id uuid.UUID, url string) error
 }
 
 // DefaultURLFilterConfig returns the built-in URL filtering rules applied to a
@@ -274,5 +284,40 @@ func DefaultURLFilterConfig() URLFilterConfig {
 			"www.instagram.com", "google.com", "www.google.com", "bing.com",
 			"www.bing.com", "open.spotify",
 		},
+	}
+}
+
+// DefaultDiscoverySeeds returns the baseline Seed set for the singleton Discovery
+// Crawl: startup directories and VC portfolios (Germany / EU focus). It lives in
+// the domain rather than a docs file so a database reset can never lose it; the
+// Discovery start modal prefills its editable Seed list from here via the API
+// defaults endpoint. Previously frozen in docs/discovery-baseline-definition.json.
+func DefaultDiscoverySeeds() []string {
+	return []string{
+		"https://www.eu-startups.com/directory/",
+		"https://www.startupbrett.de/startups/",
+		"https://www.deutsche-startups.de/startup-datenbank/",
+		"https://startup-map.berlin/",
+		"https://www.gruenderszene.de/datenbank",
+		"https://dealroom.co/companies",
+		"https://www.crunchbase.com/hub/germany-startups",
+		"https://www.f6s.com/companies/germany",
+		"https://www.rocketinternet.com/companies",
+		"https://www.earlybird.com/portfolio",
+		"https://www.hv.capital/portfolio",
+		"https://www.pointnine.com/portfolio",
+		"https://cherry.vc/portfolio",
+		"https://www.projecta.com/portfolio",
+		"https://www.holtzbrinck-ventures.com/portfolio/",
+		"https://www.speedinvest.com/portfolio",
+		"https://www.lakestar.com/portfolio",
+		"https://www.techstars.com/portfolio",
+		"https://www.ycombinator.com/companies?regions=Europe",
+		"https://www.startupberlin.io/",
+		"https://www.germanaccelerator.com/portfolio/",
+		"https://www.bitkom.org/Mitglieder",
+		"https://www.startupverband.de/mitglieder/",
+		"https://www.wko.at/startups",
+		"https://www.swissstartupradar.ch/",
 	}
 }

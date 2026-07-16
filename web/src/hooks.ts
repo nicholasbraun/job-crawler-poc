@@ -1,8 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  addSeed,
   createCrawl,
   getCatalogHistory,
+  getDefinitionDefaults,
   getImportJob,
   isImportTerminal,
   listCareerPages,
@@ -17,7 +19,7 @@ import {
   stopCrawl,
   submitImport,
 } from "./api";
-import type { ImportJob } from "./api";
+import type { CrawlKind, ImportJob } from "./api";
 
 // Live-ish polling cadence for the run list; catalog/definition data changes
 // slowly, so it polls lazily. The run list now carries frontierSize inline
@@ -38,6 +40,7 @@ export const keys = {
   catalogHistory: ["catalog-history"] as const,
   importJobs: ["import-jobs"] as const,
   importJob: (id: string) => ["import-job", id] as const,
+  definitionDefaults: (kind: CrawlKind) => ["definition-defaults", kind] as const,
   listings: (definitionId: string, keyword: string) =>
     ["listings", definitionId, keyword] as const,
 };
@@ -48,6 +51,18 @@ export function useRuns() {
 
 export function useDefinitions() {
   return useQuery({ queryKey: keys.definitions, queryFn: listDefinitions, refetchInterval: CATALOG_POLL_MS });
+}
+
+// useDefinitionDefaults fetches a crawl modal's per-kind prefill template
+// (seeds/keywords + depth). Defaults are static config, so it never refetches;
+// `enabled` lets a modal fetch only while open.
+export function useDefinitionDefaults(kind: CrawlKind, enabled = true) {
+  return useQuery({
+    queryKey: keys.definitionDefaults(kind),
+    queryFn: () => getDefinitionDefaults(kind),
+    enabled,
+    staleTime: Infinity,
+  });
 }
 
 export function useCompanies() {
@@ -149,5 +164,16 @@ export function useCreateCrawl() {
       qc.invalidateQueries({ queryKey: keys.crawls });
       qc.invalidateQueries({ queryKey: keys.definitions });
     },
+  });
+}
+
+// useAddSeed appends a Seed to the running Discovery Crawl and invalidates the
+// definitions query so the Seed list re-renders with the new URL.
+export function useAddSeed() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ definitionId, url }: { definitionId: string; url: string }) =>
+      addSeed(definitionId, url),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.definitions }),
   });
 }

@@ -2,10 +2,17 @@ package crawler
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// ErrActiveRunExists is returned by CrawlRunRepository.Create when the target
+// definition already has a non-terminal run: the one-active-run invariant
+// (ADR-0017) forbids running the same definition twice concurrently. Callers map
+// it to 409 Conflict.
+var ErrActiveRunExists = errors.New("crawler: active run already exists for definition")
 
 // RunStatus is the lifecycle state of a CrawlRun.
 //

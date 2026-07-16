@@ -1,16 +1,18 @@
 import { useState } from "react";
-import { NavLink, Outlet, useOutletContext } from "react-router-dom";
+import { Link, NavLink, Outlet, useOutletContext } from "react-router-dom";
 
 import { useDefinitions, useRuns } from "../hooks";
 import { buildDiscovery, buildKeywordCrawls, crawlLabel } from "../lib/model";
 import { statusMeta } from "../lib/status";
 import { Dot, Icon } from "./primitives";
+import { DiscoveryStartModal } from "./DiscoveryStartModal";
 import { NewCrawlModal } from "./NewCrawlModal";
 
 // LayoutContext is threaded to every page via the router Outlet, exposing the
-// one globally-owned action: opening the "new keyword crawl" modal (the modal
-// itself lives in the Layout so it overlays the whole app).
-export type LayoutContext = { openNewCrawl: () => void };
+// globally-owned modal actions: opening the "new keyword crawl" modal and the
+// "start discovery" modal (both modals live in the Layout so they overlay the
+// whole app).
+export type LayoutContext = { openNewCrawl: () => void; openStartDiscovery: () => void };
 
 export function useLayout(): LayoutContext {
   return useOutletContext<LayoutContext>();
@@ -64,6 +66,7 @@ function NavItem({ item }: { item: NavDef }) {
 
 export function Layout() {
   const [modalOpen, setModalOpen] = useState(false);
+  const [discoveryOpen, setDiscoveryOpen] = useState(false);
 
   const runs = useRuns();
   const definitions = useDefinitions();
@@ -125,7 +128,8 @@ export function Layout() {
         </nav>
 
         <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-          <div
+          <Link
+            to="/discovery"
             style={{
               display: "flex",
               alignItems: "center",
@@ -133,13 +137,16 @@ export function Layout() {
               padding: "var(--space-2) var(--space-3)",
               borderRadius: "var(--radius-md)",
               background: "color-mix(in srgb, var(--color-accent) 10%, transparent)",
+              textDecoration: "none",
+              color: "inherit",
+              cursor: "pointer",
             }}
           >
             <Dot color={discoveryMeta ? discoveryMeta.dot : "var(--color-neutral-600)"} glow={!!discovery} size={8} />
             <span style={{ fontSize: 12, color: "var(--color-neutral-300)" }}>
               Discovery {discoveryMeta ? discoveryMeta.label : "not started"}
             </span>
-          </div>
+          </Link>
           <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 var(--space-2)" }}>
             <span
               style={{
@@ -165,10 +172,18 @@ export function Layout() {
       </aside>
 
       <main className="app-scroll" style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" }}>
-        <Outlet context={{ openNewCrawl: () => setModalOpen(true) } satisfies LayoutContext} />
+        <Outlet
+          context={
+            {
+              openNewCrawl: () => setModalOpen(true),
+              openStartDiscovery: () => setDiscoveryOpen(true),
+            } satisfies LayoutContext
+          }
+        />
       </main>
 
       <NewCrawlModal open={modalOpen} onClose={() => setModalOpen(false)} />
+      <DiscoveryStartModal open={discoveryOpen} onClose={() => setDiscoveryOpen(false)} />
     </div>
   );
 }

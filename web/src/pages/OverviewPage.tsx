@@ -11,6 +11,7 @@ import {
 } from "../lib/model";
 import type { Company, CareerPage } from "../api";
 import { CrawlCard } from "../components/CrawlCard";
+import { useLayout } from "../components/Layout";
 import { PageShell } from "../components/PageShell";
 import { EmptyState, Icon, RunControls, Sparkline, StatCard, StatusTag } from "../components/primitives";
 
@@ -88,6 +89,7 @@ function DiscoveryPanel({
   // even when there is no discovery run yet.
   const { data } = useCatalogHistory();
   const series = data?.careerPages ?? [];
+  const { openStartDiscovery } = useLayout();
 
   if (!discovery) {
     return (
@@ -95,6 +97,11 @@ function DiscoveryPanel({
         icon="ph-broadcast"
         title="Discovery hasn't started"
         hint="The perpetual discovery run walks the seed domains to build the catalog. Start one to populate companies and career pages."
+        action={
+          <button className="btn btn-primary" onClick={openStartDiscovery}>
+            <Icon name="ph-play" size={14} /> Start discovery
+          </button>
+        }
       />
     );
   }

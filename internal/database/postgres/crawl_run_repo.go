@@ -39,6 +39,9 @@ func (r *CrawlRunRepository) Create(ctx context.Context, run *crawler.CrawlRun) 
 		run.StartedAt, run.Error,
 	)
 	if err != nil {
+		if isUniqueViolation(err, "crawl_run_one_active_per_definition_idx") {
+			return crawler.ErrActiveRunExists
+		}
 		return fmt.Errorf("postgres: error creating crawl run: %w", err)
 	}
 

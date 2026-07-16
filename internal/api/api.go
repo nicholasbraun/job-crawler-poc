@@ -7,8 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,12 +34,37 @@ type Runner interface {
 // endpoints (see h.frontierSize).
 type FrontierSizer func(ctx context.Context, runID uuid.UUID) (int64, error)
 
+// FrontierSeeder injects a URL into a run's live Frontier at depth 0 (the
+// ordinary depth-0 add). It is injected so the api package stays decoupled from
+// Redis, mirroring FrontierSizer; in the server it constructs a redisfrontier
+// for the run and calls AddURL. A nil seeder makes runtime Seed injection a
+// no-op — the Seed is still durably appended to the Definition (ADR-0018).
+type FrontierSeeder func(ctx context.Context, runID uuid.UUID, url crawler.URL) error
+
 // Defaults fill in the fields a create request omits, so a minimal
-// {name, seedUrls} request yields a working crawl. Sourced from the built-in
-// defaults wired in cmd/server (see crawler.DefaultURLFilterConfig).
+// {name, seedUrls} request yields a working crawl, and back the
+// GET /api/definitions/defaults prefill endpoint. Sourced from the built-in
+// domain defaults wired in cmd/server (crawler.DefaultDiscoverySeeds,
+// crawler.DefaultURLFilterConfig).
 type Defaults struct {
-	MaxDepth  int
-	URLFilter crawler.URLFilterConfig
+	// KeywordMaxDepth and DiscoveryMaxDepth are the per-kind crawl-depth
+	// defaults applied when a create request omits maxDepth (keyword 4,
+	// discovery 10).
+	KeywordMaxDepth   int
+	DiscoveryMaxDepth int
+	// DiscoverySeeds is the baseline Seed set the Discovery start modal prefills.
+	DiscoverySeeds []string
+	URLFilter      crawler.URLFilterConfig
+}
+
+// maxDepthFor returns the default crawl depth for a kind. An unrecognized kind --
+// which decodeDefinition rejects before reaching here -- falls back to the
+// discovery default defensively.
+func (d Defaults) maxDepthFor(kind crawler.CrawlKind) int {
+	if kind == crawler.CrawlKindKeyword {
+		return d.KeywordMaxDepth
+	}
+	return d.DiscoveryMaxDepth
 }
 
 // Config groups the Handler's dependencies. Every repository the read endpoints
@@ -55,7 +82,10 @@ type Config struct {
 	// ImportJobs serves the Import Job read endpoints (list + get by id).
 	ImportJobs    crawler.ImportJobRepository
 	FrontierSizer FrontierSizer
-	Defaults      Defaults
+	// FrontierSeeder injects a runtime Seed into a Discovery Run's live Frontier;
+	// optional (nil → the Seed is still durably appended, injection is skipped).
+	FrontierSeeder FrontierSeeder
+	Defaults       Defaults
 }
 
 type Handler struct {
@@ -81,9 +111,11 @@ func (h *Handler) Routes() http.Handler {
 
 	// Definitions: a re-runnable library (create is split from start, ADR-0005).
 	mux.HandleFunc("GET /api/definitions", h.listDefinitions)
+	mux.HandleFunc("GET /api/definitions/defaults", h.getDefinitionDefaults)
 	mux.HandleFunc("GET /api/definitions/{id}", h.getDefinition)
 	mux.HandleFunc("POST /api/definitions", h.createDefinition)
 	mux.HandleFunc("POST /api/definitions/{id}/runs", h.startRun)
+	mux.HandleFunc("POST /api/definitions/{id}/seeds", h.addSeed)
 
 	// Catalog + listings (read-only browse).
 	mux.HandleFunc("GET /api/companies", h.listCompanies)
@@ -273,6 +305,10 @@ func (h *Handler) createCrawl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.cfg.Definitions.Create(r.Context(), def); err != nil {
+		if errors.Is(err, crawler.ErrDiscoveryDefinitionExists) {
+			writeError(w, http.StatusConflict, "a discovery crawl already exists")
+			return
+		}
 		slog.Error("api: error creating crawl definition", "err", err)
 		writeError(w, http.StatusInternalServerError, "could not create crawl")
 		return
@@ -280,13 +316,17 @@ func (h *Handler) createCrawl(w http.ResponseWriter, r *http.Request) {
 
 	run, err := h.cfg.Runner.Start(r.Context(), def.ID)
 	if err != nil {
-		slog.Error("api: error starting crawl", "err", err)
 		// The definition was committed but its run never started, leaving an
 		// orphan. Best-effort roll it back so the fused endpoint stays atomic.
 		// The cleanup uses a context detached from the request's cancellation
 		// (a cancelled request context is itself a Start failure mode) and only
 		// logs if the rollback fails.
 		h.deleteOrphanDefinition(r.Context(), def.ID)
+		if errors.Is(err, crawler.ErrActiveRunExists) {
+			writeError(w, http.StatusConflict, "a run of this crawl is already active")
+			return
+		}
+		slog.Error("api: error starting crawl", "err", err)
 		writeError(w, http.StatusInternalServerError, "could not start crawl")
 		return
 	}
@@ -546,6 +586,52 @@ func (h *Handler) getDefinition(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toDefinitionDTO(def))
 }
 
+// discoveryDefaultsDTO and keywordDefaultsDTO are the per-kind prefill templates
+// returned by GET /api/definitions/defaults, each matching its crawl modal's
+// editable fields: the Discovery modal edits an auto-named ("discovery") Seed list
+// and depth; the Keyword modal edits keywords and depth.
+type discoveryDefaultsDTO struct {
+	Name     string   `json:"name"`
+	Kind     string   `json:"kind"`
+	SeedURLs []string `json:"seedUrls"`
+	MaxDepth int      `json:"maxDepth"`
+}
+
+type keywordDefaultsDTO struct {
+	Kind     string   `json:"kind"`
+	Keywords []string `json:"keywords"`
+	MaxDepth int      `json:"maxDepth"`
+}
+
+// getDefinitionDefaults returns the modal prefill template for
+// ?kind=discovery|keyword. An unknown or missing kind is a 400: the client must
+// ask for a concrete kind.
+func (h *Handler) getDefinitionDefaults(w http.ResponseWriter, r *http.Request) {
+	switch crawler.CrawlKind(r.URL.Query().Get("kind")) {
+	case crawler.CrawlKindDiscovery:
+		// Coalesce nil so seedUrls is [] rather than null, matching the rest of
+		// the API's array handling.
+		seeds := h.cfg.Defaults.DiscoverySeeds
+		if seeds == nil {
+			seeds = []string{}
+		}
+		writeJSON(w, http.StatusOK, discoveryDefaultsDTO{
+			Name:     "discovery",
+			Kind:     string(crawler.CrawlKindDiscovery),
+			SeedURLs: seeds,
+			MaxDepth: h.cfg.Defaults.DiscoveryMaxDepth,
+		})
+	case crawler.CrawlKindKeyword:
+		writeJSON(w, http.StatusOK, keywordDefaultsDTO{
+			Kind:     string(crawler.CrawlKindKeyword),
+			Keywords: []string{},
+			MaxDepth: h.cfg.Defaults.KeywordMaxDepth,
+		})
+	default:
+		writeError(w, http.StatusBadRequest, "unknown or missing kind")
+	}
+}
+
 // createDefinition persists a definition without starting a run. The definition
 // becomes a re-runnable library entry started via POST /api/definitions/{id}/runs.
 func (h *Handler) createDefinition(w http.ResponseWriter, r *http.Request) {
@@ -556,6 +642,10 @@ func (h *Handler) createDefinition(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.cfg.Definitions.Create(r.Context(), def); err != nil {
+		if errors.Is(err, crawler.ErrDiscoveryDefinitionExists) {
+			writeError(w, http.StatusConflict, "a discovery crawl already exists")
+			return
+		}
 		slog.Error("api: error creating definition", "err", err)
 		writeError(w, http.StatusInternalServerError, "could not create definition")
 		return
@@ -579,6 +669,10 @@ func (h *Handler) startRun(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "definition not found")
 			return
 		}
+		if errors.Is(err, crawler.ErrActiveRunExists) {
+			writeError(w, http.StatusConflict, "a run of this crawl is already active")
+			return
+		}
 		slog.Error("api: error starting run", "err", err)
 		writeError(w, http.StatusInternalServerError, "could not start run")
 		return
@@ -586,6 +680,107 @@ func (h *Handler) startRun(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusCreated, toRunDTO(run))
 }
+
+type addSeedRequest struct {
+	URL string `json:"url"`
+}
+
+// addSeed appends a Seed to a Discovery Definition and injects it into the live
+// Run's Frontier at depth 0 (ADR-0018). Discovery-only: a Keyword Definition is
+// refused (keyword crawls seed from the Catalog, not by hand). The durable
+// append is idempotent; the live injection targets the ≤1 non-terminal Run of
+// the Definition (guaranteed by the one-active-run index) and is best-effort —
+// a failed injection leaves the Seed durably stored for the next restart, so it
+// does not fail the request. Returns the updated definition so the client
+// reflects the new Seed list.
+func (h *Handler) addSeed(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid definition id")
+		return
+	}
+
+	def, err := h.cfg.Definitions.Get(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, crawler.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "definition not found")
+			return
+		}
+		slog.Error("api: error getting definition before seed add", "err", err)
+		writeError(w, http.StatusInternalServerError, "could not add seed")
+		return
+	}
+	if def.Kind != crawler.CrawlKindDiscovery {
+		writeError(w, http.StatusBadRequest, "keyword crawls seed from the catalog, not manually")
+		return
+	}
+
+	var req addSeedRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	// NewURL rejects an empty or malformed URL and normalizes the rest, so the
+	// Seed stored and injected is canonical (matches the Frontier's dedup key).
+	seed, err := crawler.NewURL(req.URL)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid seed url")
+		return
+	}
+
+	if err := h.cfg.Definitions.AppendSeedURL(r.Context(), id, seed.RawURL); err != nil {
+		if errors.Is(err, crawler.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "definition not found")
+			return
+		}
+		slog.Error("api: error appending seed url", "err", err)
+		writeError(w, http.StatusInternalServerError, "could not add seed")
+		return
+	}
+
+	// Best-effort live injection; the Seed is already durable (ADR-0018).
+	if err := h.injectSeed(r.Context(), id, seed); err != nil {
+		slog.Error("api: error injecting seed into live frontier", "err", err, "definitionId", id)
+	}
+
+	// Reflect the append locally, mirroring the repo's idempotent semantics,
+	// rather than issuing a second Get.
+	if !slices.Contains(def.SeedURLs, seed.RawURL) {
+		def.SeedURLs = append(def.SeedURLs, seed.RawURL)
+	}
+	writeJSON(w, http.StatusOK, toDefinitionDTO(def))
+}
+
+// injectSeed adds seed at depth 0 to the live Frontier of the Definition's
+// non-terminal Run, if one exists. The one-active-run index (ADR-0017) bounds
+// this to at most one Run, so it injects into at most one Frontier. A nil
+// FrontierSeeder or Runs repo, or no non-terminal Run, makes it a no-op.
+func (h *Handler) injectSeed(ctx context.Context, definitionID uuid.UUID, seed crawler.URL) error {
+	if h.cfg.FrontierSeeder == nil || h.cfg.Runs == nil {
+		return nil
+	}
+	runs, err := h.cfg.Runs.ListByStatus(ctx,
+		crawler.RunStatusRunning, crawler.RunStatusStopping,
+		crawler.RunStatusPausing, crawler.RunStatusPaused,
+	)
+	if err != nil {
+		return fmt.Errorf("listing non-terminal runs: %w", err)
+	}
+	for _, run := range runs {
+		if run.DefinitionID == definitionID {
+			return h.cfg.FrontierSeeder(ctx, run.ID, seed)
+		}
+	}
+	return nil
+}
+
+// minCrawlDepth and maxCrawlDepth bound a definition's editable crawl depth. A
+// request outside this range is rejected; an omitted depth falls back to the
+// per-kind default (Defaults.maxDepthFor), which always sits inside the range.
+const (
+	minCrawlDepth = 1
+	maxCrawlDepth = 20
+)
 
 // decodeDefinition parses and validates a create request into a CrawlDefinition,
 // filling omitted fields from the configured defaults. It returns a non-empty
@@ -605,6 +800,7 @@ func (h *Handler) decodeDefinition(r *http.Request) (*crawler.CrawlDefinition, s
 	if kind == "" {
 		kind = crawler.CrawlKindDiscovery
 	}
+	seedURLs := req.SeedURLs
 	switch kind {
 	case crawler.CrawlKindKeyword:
 		// Seeds come from the Catalog, not the request; keywords drive the
@@ -616,16 +812,34 @@ func (h *Handler) decodeDefinition(r *http.Request) (*crawler.CrawlDefinition, s
 		if len(req.SeedURLs) == 0 {
 			return nil, "seedUrls are required for a discovery crawl"
 		}
+		// Normalize each Seed to the same canonical form the add-seed path uses
+		// (crawler.NewURL), so a Seed stored at creation and the same Seed
+		// re-added later via /seeds dedupe against each other instead of
+		// accumulating a near-duplicate (e.g. a stored trailing slash). This
+		// also validates the Seeds up front.
+		seedURLs = make([]string, 0, len(req.SeedURLs))
+		for _, raw := range req.SeedURLs {
+			u, err := crawler.NewURL(raw)
+			if err != nil {
+				return nil, fmt.Sprintf("invalid seed url: %q", raw)
+			}
+			seedURLs = append(seedURLs, u.RawURL)
+		}
 	default:
 		return nil, "unknown crawl kind"
+	}
+
+	maxDepth := valueOr(req.MaxDepth, h.cfg.Defaults.maxDepthFor(kind))
+	if maxDepth < minCrawlDepth || maxDepth > maxCrawlDepth {
+		return nil, fmt.Sprintf("maxDepth must be between %d and %d", minCrawlDepth, maxCrawlDepth)
 	}
 
 	def := &crawler.CrawlDefinition{
 		Name:      req.Name,
 		Kind:      kind,
-		SeedURLs:  req.SeedURLs,
+		SeedURLs:  seedURLs,
 		Keywords:  req.Keywords,
-		MaxDepth:  valueOr(req.MaxDepth, h.cfg.Defaults.MaxDepth),
+		MaxDepth:  maxDepth,
 		URLFilter: h.cfg.Defaults.URLFilter,
 	}
 	if req.URLFilter != nil {

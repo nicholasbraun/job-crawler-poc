@@ -66,12 +66,15 @@ const (
 	redisReadyTimeout      = 60 * time.Second
 	redisReadyPollInterval = 500 * time.Millisecond
 
-	// Crawl tuning defaults, previously sourced from config.json. maxDepth seeds
-	// a new crawl definition's field (overridable per definition via the API);
-	// maxWorkers sizes the per-run worker pools.
-	defaultLogLevel   = "INFO"
-	defaultMaxDepth   = 4
-	defaultMaxWorkers = 50
+	// Crawl tuning defaults, previously sourced from config.json. The per-kind
+	// maxDepth constants seed a new crawl definition's field when the request
+	// omits maxDepth (overridable per definition via the API); Discovery reaches
+	// deeper because it is the perpetual catalog-building crawl. maxWorkers sizes
+	// the per-run worker pools.
+	defaultLogLevel          = "INFO"
+	defaultKeywordMaxDepth   = 4
+	defaultDiscoveryMaxDepth = 10
+	defaultMaxWorkers        = 50
 
 	// llmMaxBacklog is the high-water cap on a per-run LLM stream's outstanding
 	// entries. Past it, the crawl's Enqueue blocks until the classify/extract
@@ -219,9 +222,18 @@ func main() {
 		FrontierSizer: func(ctx context.Context, runID uuid.UUID) (int64, error) {
 			return redisfrontier.Len(ctx, redisClient, runID)
 		},
+		// Runtime Seed injection into a Discovery Crawl's live Frontier
+		// (ADR-0018). Mirrors FrontierSizer to keep the api package off Redis: a
+		// fresh redisfrontier for the run shares its Redis keys, so the depth-0
+		// add lands in the same Frontier the orchestrator pops from.
+		FrontierSeeder: func(ctx context.Context, runID uuid.UUID, u crawler.URL) error {
+			return redisfrontier.New(redisClient, runID).AddURL(ctx, u)
+		},
 		Defaults: api.Defaults{
-			MaxDepth:  defaultMaxDepth,
-			URLFilter: crawler.DefaultURLFilterConfig(),
+			KeywordMaxDepth:   defaultKeywordMaxDepth,
+			DiscoveryMaxDepth: defaultDiscoveryMaxDepth,
+			DiscoverySeeds:    crawler.DefaultDiscoverySeeds(),
+			URLFilter:         crawler.DefaultURLFilterConfig(),
 		},
 	})
 

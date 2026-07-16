@@ -124,6 +124,9 @@ func (f *fakeDefRepo) Get(ctx context.Context, id uuid.UUID) (*crawler.CrawlDefi
 }
 func (f *fakeDefRepo) List(ctx context.Context) ([]*crawler.CrawlDefinition, error) { return nil, nil }
 func (f *fakeDefRepo) Delete(ctx context.Context, id uuid.UUID) error               { return nil }
+func (f *fakeDefRepo) AppendSeedURL(ctx context.Context, id uuid.UUID, url string) error {
+	return nil
+}
 
 // doneFrontier hands out no URLs and immediately reports the work complete.
 type doneFrontier struct{}

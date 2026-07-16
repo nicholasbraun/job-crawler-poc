@@ -202,14 +202,17 @@ func TestFindByDefinitionEscapesLikeMetacharacters(t *testing.T) {
 }
 
 // createDefinition inserts a minimal crawl definition (job_listing.definition_id
-// is an FK to it) and returns its generated ID.
+// is an FK to it) and returns its generated ID. It is keyword-kind, not
+// discovery, so repeated calls within one test do not trip the singleton
+// discovery index (migration 0010); kind is immaterial to the listing/run tests
+// that use this helper.
 func createDefinition(t *testing.T, pool *pgxpool.Pool, name string) uuid.UUID {
 	t.Helper()
 	defRepo := postgres.NewCrawlDefinitionRepository(pool)
 	def := &crawler.CrawlDefinition{
 		Name:     name,
-		Kind:     crawler.CrawlKindDiscovery,
-		SeedURLs: []string{"https://example.com"},
+		Kind:     crawler.CrawlKindKeyword,
+		Keywords: []string{"go"},
 		MaxDepth: 1,
 	}
 	if err := defRepo.Create(t.Context(), def); err != nil {

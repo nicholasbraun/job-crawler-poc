@@ -55,6 +55,9 @@ func (r *CrawlDefinitionRepository) Create(ctx context.Context, def *crawler.Cra
 		def.MaxDepth, filterJSON,
 	).Scan(&def.CreatedAt)
 	if err != nil {
+		if isUniqueViolation(err, "crawl_definition_single_discovery_idx") {
+			return crawler.ErrDiscoveryDefinitionExists
+		}
 		return fmt.Errorf("postgres: error creating crawl definition: %w", err)
 	}
 
@@ -66,6 +69,29 @@ func (r *CrawlDefinitionRepository) Create(ctx context.Context, def *crawler.Cra
 func (r *CrawlDefinitionRepository) Delete(ctx context.Context, id uuid.UUID) error {
 	if _, err := r.pool.Exec(ctx, `DELETE FROM crawl_definition WHERE id = $1`, id); err != nil {
 		return fmt.Errorf("postgres: error deleting crawl definition: %w", err)
+	}
+	return nil
+}
+
+// AppendSeedURL idempotently adds url to the definition's seed_urls (ADR-0018).
+// The CASE keeps it a single statement: a url already present leaves the array
+// unchanged, so the row is still matched (RowsAffected == 1) and a missing
+// definition (RowsAffected == 0) maps to ErrNotFound — distinguishing "already
+// present" from "no such definition", which a bare WHERE-guarded append cannot.
+func (r *CrawlDefinitionRepository) AppendSeedURL(ctx context.Context, id uuid.UUID, url string) error {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE crawl_definition
+		SET seed_urls = CASE
+			WHEN $2 = ANY(seed_urls) THEN seed_urls
+			ELSE array_append(seed_urls, $2)
+		END
+		WHERE id = $1
+		`, id, url)
+	if err != nil {
+		return fmt.Errorf("postgres: error appending seed url: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return crawler.ErrNotFound
 	}
 	return nil
 }
