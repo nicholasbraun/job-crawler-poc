@@ -10,7 +10,7 @@ job listings from that Catalog.
 ### Crawls
 
 **Crawl Definition**:
-A durable, editable, re-runnable configuration for a crawl. Has a *kind* — Discovery or Keyword.
+A durable, re-runnable configuration for a crawl, of a *kind* — Discovery or Keyword. Immutable once created, except that Seeds may be appended to the Discovery Definition.
 _Avoid_: crawl (bare), job, config
 
 **Crawl Run**:
@@ -18,7 +18,7 @@ One execution of a Crawl Definition, with a status and live counters.
 _Avoid_: crawl (bare), session, task
 
 **Discovery Crawl**:
-A Crawl Definition kind: perpetual and bounded-broad, it finds Career Pages and attributes them to Companies, filling the Catalog.
+The single, perpetual Crawl Definition of kind Discovery: bounded-broad, it finds Career Pages and attributes them to Companies, filling the Catalog. Exactly one exists, and it runs continuously until a human Stops it.
 _Avoid_: spider, broad crawl
 
 **Keyword Crawl**:
@@ -110,7 +110,7 @@ The set of URLs a Crawl Run still has to fetch, scheduled per Politeness Domain 
 _Avoid_: queue, backlog
 
 **Seed**:
-A Run's starting URLs. Configured for a Discovery Crawl; for a Keyword Crawl, resolved from the Catalog at run start — every Career Page, plus each Pageless Company's Website.
+A crawl's starting URLs. For a Discovery Crawl they are configured, and may also be added while it runs — appended to the Definition and injected into the live Frontier; for a Keyword Crawl they are resolved from the Catalog at run start — every Career Page, plus each Pageless Company's Website.
 _Avoid_: entry point, root URL
 
 ### Classification
