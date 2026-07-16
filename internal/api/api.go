@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -33,11 +34,29 @@ type Runner interface {
 type FrontierSizer func(ctx context.Context, runID uuid.UUID) (int64, error)
 
 // Defaults fill in the fields a create request omits, so a minimal
-// {name, seedUrls} request yields a working crawl. Sourced from the built-in
-// defaults wired in cmd/server (see crawler.DefaultURLFilterConfig).
+// {name, seedUrls} request yields a working crawl, and back the
+// GET /api/definitions/defaults prefill endpoint. Sourced from the built-in
+// domain defaults wired in cmd/server (crawler.DefaultDiscoverySeeds,
+// crawler.DefaultURLFilterConfig).
 type Defaults struct {
-	MaxDepth  int
-	URLFilter crawler.URLFilterConfig
+	// KeywordMaxDepth and DiscoveryMaxDepth are the per-kind crawl-depth
+	// defaults applied when a create request omits maxDepth (keyword 4,
+	// discovery 10).
+	KeywordMaxDepth   int
+	DiscoveryMaxDepth int
+	// DiscoverySeeds is the baseline Seed set the Discovery start modal prefills.
+	DiscoverySeeds []string
+	URLFilter      crawler.URLFilterConfig
+}
+
+// maxDepthFor returns the default crawl depth for a kind. An unrecognized kind --
+// which decodeDefinition rejects before reaching here -- falls back to the
+// discovery default defensively.
+func (d Defaults) maxDepthFor(kind crawler.CrawlKind) int {
+	if kind == crawler.CrawlKindKeyword {
+		return d.KeywordMaxDepth
+	}
+	return d.DiscoveryMaxDepth
 }
 
 // Config groups the Handler's dependencies. Every repository the read endpoints
@@ -81,6 +100,7 @@ func (h *Handler) Routes() http.Handler {
 
 	// Definitions: a re-runnable library (create is split from start, ADR-0005).
 	mux.HandleFunc("GET /api/definitions", h.listDefinitions)
+	mux.HandleFunc("GET /api/definitions/defaults", h.getDefinitionDefaults)
 	mux.HandleFunc("GET /api/definitions/{id}", h.getDefinition)
 	mux.HandleFunc("POST /api/definitions", h.createDefinition)
 	mux.HandleFunc("POST /api/definitions/{id}/runs", h.startRun)
@@ -546,6 +566,52 @@ func (h *Handler) getDefinition(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toDefinitionDTO(def))
 }
 
+// discoveryDefaultsDTO and keywordDefaultsDTO are the per-kind prefill templates
+// returned by GET /api/definitions/defaults, each matching its crawl modal's
+// editable fields: the Discovery modal edits an auto-named ("discovery") Seed list
+// and depth; the Keyword modal edits keywords and depth.
+type discoveryDefaultsDTO struct {
+	Name     string   `json:"name"`
+	Kind     string   `json:"kind"`
+	SeedURLs []string `json:"seedUrls"`
+	MaxDepth int      `json:"maxDepth"`
+}
+
+type keywordDefaultsDTO struct {
+	Kind     string   `json:"kind"`
+	Keywords []string `json:"keywords"`
+	MaxDepth int      `json:"maxDepth"`
+}
+
+// getDefinitionDefaults returns the modal prefill template for
+// ?kind=discovery|keyword. An unknown or missing kind is a 400: the client must
+// ask for a concrete kind.
+func (h *Handler) getDefinitionDefaults(w http.ResponseWriter, r *http.Request) {
+	switch crawler.CrawlKind(r.URL.Query().Get("kind")) {
+	case crawler.CrawlKindDiscovery:
+		// Coalesce nil so seedUrls is [] rather than null, matching the rest of
+		// the API's array handling.
+		seeds := h.cfg.Defaults.DiscoverySeeds
+		if seeds == nil {
+			seeds = []string{}
+		}
+		writeJSON(w, http.StatusOK, discoveryDefaultsDTO{
+			Name:     "discovery",
+			Kind:     string(crawler.CrawlKindDiscovery),
+			SeedURLs: seeds,
+			MaxDepth: h.cfg.Defaults.DiscoveryMaxDepth,
+		})
+	case crawler.CrawlKindKeyword:
+		writeJSON(w, http.StatusOK, keywordDefaultsDTO{
+			Kind:     string(crawler.CrawlKindKeyword),
+			Keywords: []string{},
+			MaxDepth: h.cfg.Defaults.KeywordMaxDepth,
+		})
+	default:
+		writeError(w, http.StatusBadRequest, "unknown or missing kind")
+	}
+}
+
 // createDefinition persists a definition without starting a run. The definition
 // becomes a re-runnable library entry started via POST /api/definitions/{id}/runs.
 func (h *Handler) createDefinition(w http.ResponseWriter, r *http.Request) {
@@ -587,6 +653,14 @@ func (h *Handler) startRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toRunDTO(run))
 }
 
+// minCrawlDepth and maxCrawlDepth bound a definition's editable crawl depth. A
+// request outside this range is rejected; an omitted depth falls back to the
+// per-kind default (Defaults.maxDepthFor), which always sits inside the range.
+const (
+	minCrawlDepth = 1
+	maxCrawlDepth = 20
+)
+
 // decodeDefinition parses and validates a create request into a CrawlDefinition,
 // filling omitted fields from the configured defaults. It returns a non-empty
 // message describing the first validation failure; "" means the definition is
@@ -620,12 +694,17 @@ func (h *Handler) decodeDefinition(r *http.Request) (*crawler.CrawlDefinition, s
 		return nil, "unknown crawl kind"
 	}
 
+	maxDepth := valueOr(req.MaxDepth, h.cfg.Defaults.maxDepthFor(kind))
+	if maxDepth < minCrawlDepth || maxDepth > maxCrawlDepth {
+		return nil, fmt.Sprintf("maxDepth must be between %d and %d", minCrawlDepth, maxCrawlDepth)
+	}
+
 	def := &crawler.CrawlDefinition{
 		Name:      req.Name,
 		Kind:      kind,
 		SeedURLs:  req.SeedURLs,
 		Keywords:  req.Keywords,
-		MaxDepth:  valueOr(req.MaxDepth, h.cfg.Defaults.MaxDepth),
+		MaxDepth:  maxDepth,
 		URLFilter: h.cfg.Defaults.URLFilter,
 	}
 	if req.URLFilter != nil {
