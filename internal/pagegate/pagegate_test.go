@@ -895,6 +895,27 @@ func TestShouldExtract(t *testing.T) {
 			want: true,
 		},
 		{
+			// The k-1 saturation boundary (K=5): a real self-hosted posting whose "more
+			// openings" sidebar links FOUR distinct same-host siblings is the LAST count
+			// that must still extract -- jobLinkSaturation(4, 5) = 0.8 < 1, so rung 7
+			// stays silent. This pins the "up to 4 sibling links of headroom" that the
+			// ExtractJobLinkSaturationCount comment and ADR-0019 promise: without it the
+			// gold set draws the saturation line only from the hub side (5, test 11) and
+			// a degenerate posting side (2, above), never the headroom between -- so
+			// lowering the count below 5 would false-drop this posting with the whole
+			// suite staying green.
+			name: "self-hosted posting with a four-link sidebar still extracts (k-1 boundary)",
+			url:  "https://acme.com/careers/senior-engineer",
+			content: &crawler.Content{
+				JSONLD: []string{`{"@type":"JobPosting","title":"Senior Engineer"}`},
+				URLs: []string{
+					"/careers/role-1", "/careers/role-2",
+					"/careers/role-3", "/careers/role-4",
+				},
+			},
+			want: true,
+		},
+		{
 			// Saturation fail-safe: zeroing ExtractJobLinkSaturationCount silences
 			// rung 7, so the same saturated page falls through to the extractor.
 			name: "saturation fail-safe: a zero extract count silences rung 7",
