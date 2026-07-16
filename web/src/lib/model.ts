@@ -83,34 +83,20 @@ export type Discovery = {
   startedAt: string | null;
 };
 
-// buildDiscovery picks the most-recently-started discovery run. The design
-// assumes one perpetual discovery crawl; if several definitions exist we take
-// the one with the newest run (falling back to the newest definition).
+// buildDiscovery fuses the single discovery definition with its latest run.
+// ADR-0017 guarantees at most one discovery definition, so no tie-break over
+// several is needed. Null when no discovery crawl exists.
 export function buildDiscovery(defs: Definition[], runs: Run[]): Discovery | null {
-  const discoveryDefs = defs.filter((d) => d.kind === "discovery");
-  if (discoveryDefs.length === 0) return null;
-  const latest = latestRunByDefinition(runs);
-
-  let best: { def: Definition; run: Run | undefined } | null = null;
-  for (const def of discoveryDefs) {
-    const run = latest.get(def.id);
-    if (!best) {
-      best = { def, run };
-      continue;
-    }
-    const bestStart = best.run?.startedAt ?? best.def.createdAt;
-    const thisStart = run?.startedAt ?? def.createdAt;
-    if (isoAfter(thisStart, bestStart)) best = { def, run };
-  }
-  if (!best) return null;
-
+  const definition = defs.find((d) => d.kind === "discovery");
+  if (!definition) return null;
+  const run = latestRunByDefinition(runs).get(definition.id);
   return {
-    definition: best.def,
-    runId: best.run?.id ?? null,
-    status: best.run ? best.run.status : "idle",
-    pagesCrawled: best.run?.pagesCrawled ?? 0,
-    frontierSize: best.run?.frontierSize ?? 0,
-    startedAt: best.run?.startedAt ?? null,
+    definition,
+    runId: run?.id ?? null,
+    status: run ? run.status : "idle",
+    pagesCrawled: run?.pagesCrawled ?? 0,
+    frontierSize: run?.frontierSize ?? 0,
+    startedAt: run?.startedAt ?? null,
   };
 }
 

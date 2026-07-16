@@ -1,6 +1,7 @@
 import { useCareerPages, useCompanies, useDefinitions, useRuns } from "../hooks";
 import { fmt, prettyUrl, relativeTime } from "../lib/format";
 import { buildDiscovery, type Discovery } from "../lib/model";
+import { useLayout } from "../components/Layout";
 import { PageShell } from "../components/PageShell";
 import { Dot, EmptyState, Icon, Loading, RunControls, StatCard } from "../components/primitives";
 import { statusMeta } from "../lib/status";
@@ -10,6 +11,7 @@ export function DiscoveryPage() {
   const definitions = useDefinitions();
   const companiesQ = useCompanies();
   const pagesQ = useCareerPages();
+  const { openStartDiscovery } = useLayout();
 
   const discovery = buildDiscovery(definitions.data ?? [], runs.data ?? []);
 
@@ -28,6 +30,11 @@ export function DiscoveryPage() {
           icon="ph-broadcast"
           title="No discovery run"
           hint="The perpetual discovery crawl walks the seed domains to build the catalog. Start one to begin cataloguing companies and career pages."
+          action={
+            <button className="btn btn-primary" onClick={openStartDiscovery}>
+              <Icon name="ph-play" size={14} /> Start discovery
+            </button>
+          }
         />
       </PageShell>
     );

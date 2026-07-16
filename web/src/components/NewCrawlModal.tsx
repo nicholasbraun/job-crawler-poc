@@ -1,14 +1,16 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { useCareerPages, useCreateCrawl } from "../hooks";
 import { fmt } from "../lib/format";
+import { Dialog } from "./Dialog";
 import { Icon } from "./primitives";
 
 // NewCrawlModal collects a name + keywords and fires the fused create-and-start
 // endpoint. A keyword crawl seeds from the catalog (no seed URLs), so the copy
 // reflects the current catalogued career-page count. On success it navigates to
-// the new crawl's detail view.
+// the new crawl's detail view. The backdrop/focus-trap/Escape scaffolding lives
+// in the shared Dialog.
 export function NewCrawlModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [name, setName] = useState("");
   const [keywords, setKeywords] = useState("");
@@ -16,7 +18,6 @@ export function NewCrawlModal({ open, onClose }: { open: boolean; onClose: () =>
   const navigate = useNavigate();
   const careerPages = useCareerPages();
   const careerPageCount = careerPages.data?.length ?? 0;
-  const dialogRef = useRef<HTMLFormElement>(null);
 
   if (!open) return null;
 
@@ -51,103 +52,64 @@ export function NewCrawlModal({ open, onClose }: { open: boolean; onClose: () =>
     );
   };
 
-  // Escape closes the dialog; Tab cycles focus within it so keyboard focus never
-  // slips to the page behind the backdrop.
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      close();
-      return;
-    }
-    if (e.key !== "Tab") return;
-    const focusables = dialogRef.current?.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), input, [href], [tabindex]:not([tabindex="-1"])',
-    );
-    if (!focusables || focusables.length === 0) return;
-    const first = focusables[0];
-    const last = focusables[focusables.length - 1];
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  };
-
   return (
-    <div className="dialog-backdrop" onClick={close}>
-      <form
-        ref={dialogRef}
-        className="dialog"
-        onClick={(e) => e.stopPropagation()}
-        onSubmit={submit}
-        onKeyDown={onKeyDown}
-      >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div className="dialog-title">New keyword crawl</div>
-          <button type="button" className="btn btn-icon btn-secondary" onClick={close} aria-label="Close">
-            <Icon name="ph-x" size={16} />
-          </button>
+    <Dialog title="New keyword crawl" onClose={close} onSubmit={submit}>
+      <div className="dialog-body" style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+        <div className="field">
+          <label>Name</label>
+          <input
+            className="input"
+            placeholder="e.g. Senior Frontend Engineer"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            autoFocus
+          />
+        </div>
+        <div className="field">
+          <label>
+            Keywords <span style={{ color: "var(--color-neutral-500)" }}>— comma separated, required</span>
+          </label>
+          <input
+            className="input"
+            placeholder="React, TypeScript, Senior, Remote"
+            value={keywords}
+            onChange={(e) => setKeywords(e.target.value)}
+          />
+        </div>
+        <div
+          style={{
+            display: "flex",
+            gap: 9,
+            alignItems: "flex-start",
+            fontSize: 12,
+            color: "var(--color-neutral-400)",
+            background: "color-mix(in srgb, var(--color-accent) 8%, transparent)",
+            padding: "var(--space-3)",
+            borderRadius: "var(--radius-md)",
+          }}
+        >
+          <Icon name="ph-info" size={15} color="var(--color-accent-300)" style={{ flex: "none", marginTop: 1 }} />
+          <span>
+            A keyword crawl seeds from the catalog — it searches all {fmt(careerPageCount)} catalogued career pages and
+            gates pages by these keywords. It runs bounded and completes when the frontier drains.
+          </span>
         </div>
 
-        <div className="dialog-body" style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
-          <div className="field">
-            <label>Name</label>
-            <input
-              className="input"
-              placeholder="e.g. Senior Frontend Engineer"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              autoFocus
-            />
+        {create.isError && (
+          <div style={{ fontSize: 12, color: "var(--color-accent-300)" }}>
+            {create.error instanceof Error ? create.error.message : "Could not create the crawl."}
           </div>
-          <div className="field">
-            <label>
-              Keywords <span style={{ color: "var(--color-neutral-500)" }}>— comma separated, required</span>
-            </label>
-            <input
-              className="input"
-              placeholder="React, TypeScript, Senior, Remote"
-              value={keywords}
-              onChange={(e) => setKeywords(e.target.value)}
-            />
-          </div>
-          <div
-            style={{
-              display: "flex",
-              gap: 9,
-              alignItems: "flex-start",
-              fontSize: 12,
-              color: "var(--color-neutral-400)",
-              background: "color-mix(in srgb, var(--color-accent) 8%, transparent)",
-              padding: "var(--space-3)",
-              borderRadius: "var(--radius-md)",
-            }}
-          >
-            <Icon name="ph-info" size={15} color="var(--color-accent-300)" style={{ flex: "none", marginTop: 1 }} />
-            <span>
-              A keyword crawl seeds from the catalog — it searches all {fmt(careerPageCount)} catalogued career pages and
-              gates pages by these keywords. It runs bounded and completes when the frontier drains.
-            </span>
-          </div>
+        )}
+      </div>
 
-          {create.isError && (
-            <div style={{ fontSize: 12, color: "var(--color-accent-300)" }}>
-              {create.error instanceof Error ? create.error.message : "Could not create the crawl."}
-            </div>
-          )}
-        </div>
-
-        <div className="dialog-actions">
-          <button type="button" className="btn btn-secondary" onClick={close}>
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={!canSubmit}>
-            <Icon name="ph-play" size={14} /> {create.isPending ? "Starting…" : "Create & start"}
-          </button>
-        </div>
-      </form>
-    </div>
+      <div className="dialog-actions">
+        <button type="button" className="btn btn-secondary" onClick={close}>
+          Cancel
+        </button>
+        <button type="submit" className="btn btn-primary" disabled={!canSubmit}>
+          <Icon name="ph-play" size={14} /> {create.isPending ? "Starting…" : "Create & start"}
+        </button>
+      </div>
+    </Dialog>
   );
 }

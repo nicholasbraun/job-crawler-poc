@@ -72,12 +72,25 @@ export type Definition = {
 };
 
 // Only the fields a user supplies; the server fills depth/urlFilter from
-// its configured defaults when omitted.
+// its configured defaults when omitted. An omitted maxDepth lets the server
+// apply the per-kind default (discovery 10 / keyword 4).
 export type CreateDefinitionRequest = {
   name: string;
   kind: CrawlKind;
   seedUrls?: string[];
   keywords?: string[];
+  maxDepth?: number;
+};
+
+// DefinitionDefaults is the per-kind crawl-modal prefill template from
+// GET /api/definitions/defaults. Discovery carries name + seedUrls; keyword
+// carries keywords. maxDepth is always present (discovery 10 / keyword 4).
+export type DefinitionDefaults = {
+  kind: CrawlKind;
+  name?: string;
+  seedUrls?: string[];
+  keywords?: string[];
+  maxDepth: number;
 };
 
 export type Company = {
@@ -216,6 +229,12 @@ export function resumeCrawl(id: string): Promise<void> {
 
 export function listDefinitions(): Promise<Definition[]> {
   return request<Definition[]>("/definitions");
+}
+
+// getDefinitionDefaults fetches a crawl modal's per-kind prefill template
+// (baseline seeds/keywords + depth) from the server's configured defaults.
+export function getDefinitionDefaults(kind: CrawlKind): Promise<DefinitionDefaults> {
+  return request<DefinitionDefaults>(`/definitions/defaults?kind=${encodeURIComponent(kind)}`);
 }
 
 export function getDefinition(id: string): Promise<Definition> {
