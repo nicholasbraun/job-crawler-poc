@@ -35,6 +35,11 @@ const (
 	OutcomeOK      Outcome = "ok"
 	OutcomeError   Outcome = "error"
 	OutcomeTimeout Outcome = "timeout"
+	// OutcomeAbstain is an extract call the extractor completed but disavowed: the
+	// page was not a single job posting. It is distinct from OutcomeOK so the
+	// Empty-Extraction Rate (abstain / sent) is derivable from the call counter and
+	// no abstain is counted as "ok". Extract-only; the classifier never abstains.
+	OutcomeAbstain Outcome = "abstain"
 )
 
 // Reason is why a page skipped the LLM: a structurally-certain ATS board root or

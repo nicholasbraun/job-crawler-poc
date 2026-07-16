@@ -62,3 +62,29 @@ func TestStatsSummary(t *testing.T) {
 		}
 	}
 }
+
+// TestStatsAbstainOutcome checks that an abstain counts toward the extract call
+// total ("sent"), is tallied separately, and drives the Empty-Extraction Rate.
+func TestStatsAbstainOutcome(t *testing.T) {
+	stats := &llmobs.Stats{}
+	rec := llmobs.NewRecorder(nil, nil, stats, "")
+	ctx := t.Context()
+	rec.Call(ctx, llmobs.KindExtract, llmobs.OutcomeOK, 0)
+	rec.Call(ctx, llmobs.KindExtract, llmobs.OutcomeAbstain, 0)
+
+	m := toMap(stats.Summary())
+
+	wantInt := map[string]int64{
+		"extract_calls":    2,
+		"extract_abstains": 1,
+	}
+	for key, want := range wantInt {
+		if got, ok := m[key].(int64); !ok || got != want {
+			t.Errorf("%s = %v, want %d", key, m[key], want)
+		}
+	}
+
+	if got, ok := m["extract_empty_extraction_rate"].(float64); !ok || got != 0.5 {
+		t.Errorf("extract_empty_extraction_rate = %v, want 0.5", m["extract_empty_extraction_rate"])
+	}
+}

@@ -29,6 +29,16 @@ type RawJobListing struct {
 	Content Content
 }
 
+// Extraction is the transient result of one extractor call: the structured
+// JobListing plus the extractor's verdict on whether the page it was handed is a
+// single job posting. IsJobPosting is NEVER persisted (ADR-0019) -- it drives the
+// save decision and the Empty-Extraction Rate metric only. A false verdict is an
+// Extractor Abstain: the Listing is discarded, not saved.
+type Extraction struct {
+	Listing      JobListing
+	IsJobPosting bool
+}
+
 type JobListingRepository interface {
 	// Save persists jobListing under the crawl definition identified by
 	// definitionID. Listings are keyed (definitionID, URL) and upserted:

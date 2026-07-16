@@ -28,11 +28,12 @@ func (r *spyJobListingRepo) FindByDefinition(ctx context.Context, definitionID u
 }
 
 type stubExtractor struct {
-	result crawler.JobListing
+	result    crawler.JobListing
+	isPosting bool
 }
 
-func (e *stubExtractor) Extract(ctx context.Context, raw crawler.RawJobListing) (crawler.JobListing, error) {
-	return e.result, nil
+func (e *stubExtractor) Extract(ctx context.Context, raw crawler.RawJobListing) (crawler.Extraction, error) {
+	return crawler.Extraction{Listing: e.result, IsJobPosting: e.isPosting}, nil
 }
 
 type recordedCall struct {
@@ -69,7 +70,7 @@ func TestJobListingProcessorRecordsExtractCall(t *testing.T) {
 	rec := &spyRecorder{}
 	proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
 		JobListingRepository: repo,
-		JobListingExtractor:  &stubExtractor{result: crawler.JobListing{Title: "Engineer"}},
+		JobListingExtractor:  &stubExtractor{result: crawler.JobListing{Title: "Engineer"}, isPosting: true},
 		DefinitionID:         uuid.New(),
 		Recorder:             rec,
 	})
@@ -89,6 +90,39 @@ func TestJobListingProcessorRecordsExtractCall(t *testing.T) {
 		t.Errorf("content probes = %d, want 1 (content is fed to the extractor)", rec.content)
 	}
 	want := recordedCall{llmobs.KindExtract, llmobs.OutcomeOK}
+	if len(rec.calls) != 1 || rec.calls[0] != want {
+		t.Errorf("recorded calls = %v, want [%v]", rec.calls, want)
+	}
+}
+
+// TestJobListingProcessorAbstainSuppressesSave asserts the Extractor Abstain path:
+// a false is-job-posting verdict discards the extraction (no Save), records the
+// call as OutcomeAbstain, and still returns nil so the durable stream acks it.
+func TestJobListingProcessorAbstainSuppressesSave(t *testing.T) {
+	repo := &spyJobListingRepo{}
+	rec := &spyRecorder{}
+	proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
+		JobListingRepository: repo,
+		JobListingExtractor:  &stubExtractor{result: crawler.JobListing{Title: "Careers"}, isPosting: false},
+		DefinitionID:         uuid.New(),
+		Recorder:             rec,
+	})
+
+	raw := &crawler.RawJobListing{
+		URL:     newURL(t, "https://careers.acme.com/jobs"),
+		Content: crawler.Content{MainContent: "browse our open roles"},
+	}
+	if err := proc.Process(t.Context(), raw); err != nil {
+		t.Fatalf("Process returned error: %v", err)
+	}
+
+	if len(repo.saved) != 0 {
+		t.Fatalf("want 0 listings saved on abstain, got %d", len(repo.saved))
+	}
+	if rec.content != 1 {
+		t.Errorf("content probes = %d, want 1 (content is still fed to the extractor)", rec.content)
+	}
+	want := recordedCall{llmobs.KindExtract, llmobs.OutcomeAbstain}
 	if len(rec.calls) != 1 || rec.calls[0] != want {
 		t.Errorf("recorded calls = %v, want [%v]", rec.calls, want)
 	}

@@ -18,6 +18,10 @@ type kindStats struct {
 	calls    atomic.Int64
 	errors   atomic.Int64
 	timeouts atomic.Int64
+	// abstains is the number of calls the extractor completed but disavowed (the
+	// page was not a single job posting); extract-only. It still counts toward
+	// calls ("sent"), so the Empty-Extraction Rate is abstains / calls.
+	abstains atomic.Int64
 	gated    atomic.Int64
 	// seen is the number of page contents fed to this LLM kind; dup is how many
 	// of those hashes had been seen before (this run or a prior one).
@@ -45,6 +49,8 @@ func (s *Stats) recordCall(kind Kind, outcome Outcome) {
 		ks.errors.Add(1)
 	case OutcomeTimeout:
 		ks.timeouts.Add(1)
+	case OutcomeAbstain:
+		ks.abstains.Add(1)
 	}
 }
 
@@ -74,6 +80,7 @@ func (ks *kindStats) summary(prefix string) []any {
 	calls := ks.calls.Load()
 	errs := ks.errors.Load()
 	timeouts := ks.timeouts.Load()
+	abstains := ks.abstains.Load()
 	gated := ks.gated.Load()
 	seen := ks.seen.Load()
 	dup := ks.dup.Load()
@@ -83,12 +90,14 @@ func (ks *kindStats) summary(prefix string) []any {
 		prefix + "_calls", calls,
 		prefix + "_errors", errs,
 		prefix + "_timeouts", timeouts,
+		prefix + "_abstains", abstains,
 		prefix + "_gated", gated,
 		prefix + "_retries", retries,
 		prefix + "_deadletter", deadletter,
 		prefix + "_gate_hit_rate", ratio(gated, gated+calls),
 		prefix + "_error_rate", ratio(errs, calls),
 		prefix + "_timeout_rate", ratio(timeouts, calls),
+		prefix + "_empty_extraction_rate", ratio(abstains, calls),
 		prefix + "_dup_ratio", ratio(dup, seen),
 	}
 }
