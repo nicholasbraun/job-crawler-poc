@@ -61,6 +61,14 @@ func TestStatsSummary(t *testing.T) {
 			t.Errorf("%s = %v, want %v", key, m[key], want)
 		}
 	}
+
+	// Abstain is extract-only, so the classifier's summary must not carry the
+	// (always-zero, misleading) abstain fields.
+	for _, key := range []string{"classify_abstains", "classify_empty_extraction_rate"} {
+		if _, present := m[key]; present {
+			t.Errorf("%s should not be emitted for the classify kind", key)
+		}
+	}
 }
 
 // TestStatsAbstainOutcome checks that an abstain counts toward the extract call

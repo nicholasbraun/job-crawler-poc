@@ -67,39 +67,54 @@ func (s *Stats) recordContent(kind Kind, duplicate bool) {
 	}
 }
 
+// Summary key prefixes, one per LLM kind, disambiguating the two kinds' tallies
+// on the shared end-of-run log line.
+const (
+	classifyPrefix = "classify"
+	extractPrefix  = "extract"
+)
+
 // Summary returns the run's LLM-stage tallies as slog key/value pairs for a
 // single end-of-run log line: the raw counts plus the derived rates the ADR-0007
 // measurement cares about (gate hit rate, error/timeout rate, duplicate-content
 // ratio), per kind.
 func (s *Stats) Summary() []any {
-	kv := s.classify.summary("classify")
-	return append(kv, s.extract.summary("extract")...)
+	kv := s.classify.summary(classifyPrefix)
+	return append(kv, s.extract.summary(extractPrefix)...)
 }
 
 func (ks *kindStats) summary(prefix string) []any {
 	calls := ks.calls.Load()
 	errs := ks.errors.Load()
 	timeouts := ks.timeouts.Load()
-	abstains := ks.abstains.Load()
 	gated := ks.gated.Load()
 	seen := ks.seen.Load()
 	dup := ks.dup.Load()
 	retries := ks.retries.Load()
 	deadletter := ks.deadletter.Load()
-	return []any{
+	kv := []any{
 		prefix + "_calls", calls,
 		prefix + "_errors", errs,
 		prefix + "_timeouts", timeouts,
-		prefix + "_abstains", abstains,
 		prefix + "_gated", gated,
 		prefix + "_retries", retries,
 		prefix + "_deadletter", deadletter,
 		prefix + "_gate_hit_rate", ratio(gated, gated+calls),
 		prefix + "_error_rate", ratio(errs, calls),
 		prefix + "_timeout_rate", ratio(timeouts, calls),
-		prefix + "_empty_extraction_rate", ratio(abstains, calls),
 		prefix + "_dup_ratio", ratio(dup, seen),
 	}
+	// Abstain is extract-only (the classifier never abstains), so the abstain
+	// count and the Empty-Extraction Rate are emitted only for the extract kind --
+	// under classify they would always report zero and mislead.
+	if prefix == extractPrefix {
+		abstains := ks.abstains.Load()
+		kv = append(kv,
+			prefix+"_abstains", abstains,
+			prefix+"_empty_extraction_rate", ratio(abstains, calls),
+		)
+	}
+	return kv
 }
 
 // ratio is n/d rounded to four decimals, or 0 when d is 0.

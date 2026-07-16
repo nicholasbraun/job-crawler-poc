@@ -49,8 +49,10 @@ type Reason string
 const (
 	ReasonCertain    Reason = "certain"
 	ReasonIrrelevant Reason = "irrelevant"
-	// ReasonURLStructure marks a page a URL-structure signal resolved (a Career
-	// Page index or a reject path) rather than keyword relevance.
+	// ReasonURLStructure marks a page the Extract Gate resolved without the LLM
+	// extractor -- from a URL signal (a Career Page index or a reject path) or a
+	// page-structure signal (an ATS embed, a JSON-LD openings index, or job-link
+	// saturation) -- rather than from keyword relevance.
 	ReasonURLStructure Reason = "url_structure"
 )
 
