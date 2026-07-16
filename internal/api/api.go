@@ -754,9 +754,9 @@ func (h *Handler) addSeed(w http.ResponseWriter, r *http.Request) {
 // injectSeed adds seed at depth 0 to the live Frontier of the Definition's
 // non-terminal Run, if one exists. The one-active-run index (ADR-0017) bounds
 // this to at most one Run, so it injects into at most one Frontier. A nil
-// FrontierSeeder or no non-terminal Run makes it a no-op.
+// FrontierSeeder or Runs repo, or no non-terminal Run, makes it a no-op.
 func (h *Handler) injectSeed(ctx context.Context, definitionID uuid.UUID, seed crawler.URL) error {
-	if h.cfg.FrontierSeeder == nil {
+	if h.cfg.FrontierSeeder == nil || h.cfg.Runs == nil {
 		return nil
 	}
 	runs, err := h.cfg.Runs.ListByStatus(ctx,
@@ -800,6 +800,7 @@ func (h *Handler) decodeDefinition(r *http.Request) (*crawler.CrawlDefinition, s
 	if kind == "" {
 		kind = crawler.CrawlKindDiscovery
 	}
+	seedURLs := req.SeedURLs
 	switch kind {
 	case crawler.CrawlKindKeyword:
 		// Seeds come from the Catalog, not the request; keywords drive the
@@ -810,6 +811,19 @@ func (h *Handler) decodeDefinition(r *http.Request) (*crawler.CrawlDefinition, s
 	case crawler.CrawlKindDiscovery:
 		if len(req.SeedURLs) == 0 {
 			return nil, "seedUrls are required for a discovery crawl"
+		}
+		// Normalize each Seed to the same canonical form the add-seed path uses
+		// (crawler.NewURL), so a Seed stored at creation and the same Seed
+		// re-added later via /seeds dedupe against each other instead of
+		// accumulating a near-duplicate (e.g. a stored trailing slash). This
+		// also validates the Seeds up front.
+		seedURLs = make([]string, 0, len(req.SeedURLs))
+		for _, raw := range req.SeedURLs {
+			u, err := crawler.NewURL(raw)
+			if err != nil {
+				return nil, fmt.Sprintf("invalid seed url: %q", raw)
+			}
+			seedURLs = append(seedURLs, u.RawURL)
 		}
 	default:
 		return nil, "unknown crawl kind"
@@ -823,7 +837,7 @@ func (h *Handler) decodeDefinition(r *http.Request) (*crawler.CrawlDefinition, s
 	def := &crawler.CrawlDefinition{
 		Name:      req.Name,
 		Kind:      kind,
-		SeedURLs:  req.SeedURLs,
+		SeedURLs:  seedURLs,
 		Keywords:  req.Keywords,
 		MaxDepth:  maxDepth,
 		URLFilter: h.cfg.Defaults.URLFilter,

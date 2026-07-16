@@ -1,4 +1,12 @@
 -- +goose Up
+-- Precondition: these are plain (non-CONCURRENT) unique index builds with no
+-- dedup/backfill, so they assume a database that does not already violate the
+-- invariants below. On a fresh or reset database that holds by construction
+-- (ADR-0017's reset posture); a build over pre-existing duplicates fails and,
+-- since migrations run at startup, blocks boot. Productionizing against live
+-- data needs a dedup step first and a CONCURRENTLY build -- tracked as a
+-- follow-up, not required for the POC.
+--
 -- Singleton Discovery Crawl (ADR-0017): at most one crawl_definition of kind
 -- 'discovery'. A partial unique index on kind over the discovery predicate lets
 -- keyword definitions accumulate freely while rejecting a second discovery

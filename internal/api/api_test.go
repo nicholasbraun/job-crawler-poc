@@ -483,6 +483,54 @@ func TestCreateCrawlFillsDefaults(t *testing.T) {
 	}
 }
 
+// TestCreateCrawlNormalizesSeedURLs asserts the create path stores Seeds in the
+// same canonical form the add-seed path uses (crawler.NewURL). Without this, a
+// Seed created with a trailing slash and the same Seed re-added later via
+// /seeds would not dedupe, appending a near-duplicate (PR #109 review).
+func TestCreateCrawlNormalizesSeedURLs(t *testing.T) {
+	t.Run("stores the canonical form", func(t *testing.T) {
+		rnr := &fakeRunner{}
+		defs := &fakeDefRepo{}
+		srv := newHandler(api.Config{Runner: rnr, Definitions: defs})
+
+		body, _ := json.Marshal(map[string]any{
+			"name":     "discovery",
+			"kind":     "discovery",
+			"seedUrls": []string{"https://www.eu-startups.com/directory/"},
+		})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status: got %d, want 201; body=%s", rec.Code, rec.Body)
+		}
+		want := "https://www.eu-startups.com/directory"
+		if got := defs.created.SeedURLs; len(got) != 1 || got[0] != want {
+			t.Errorf("seed not normalized on create: got %v, want [%q]", got, want)
+		}
+	})
+
+	t.Run("rejects a malformed seed", func(t *testing.T) {
+		defs := &fakeDefRepo{}
+		srv := newHandler(api.Config{Runner: &fakeRunner{}, Definitions: defs})
+
+		body, _ := json.Marshal(map[string]any{
+			"name":     "discovery",
+			"kind":     "discovery",
+			"seedUrls": []string{"https://ok.example.com", ""},
+		})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status: got %d, want 400; body=%s", rec.Code, rec.Body)
+		}
+		if defs.created != nil {
+			t.Error("no definition should be created when a seed is invalid")
+		}
+	})
+}
+
 func TestCreateCrawlRollsBackDefinitionWhenStartFails(t *testing.T) {
 	t.Run("deletes the orphaned definition and still 500s", func(t *testing.T) {
 		rnr := &fakeRunner{startErr: crawler.ErrNotFound}

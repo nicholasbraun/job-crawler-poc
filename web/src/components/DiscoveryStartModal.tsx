@@ -48,9 +48,11 @@ export function DiscoveryStartModal({ open, onClose }: { open: boolean; onClose:
     .filter(Boolean);
   const depthNum = Number(depth);
   const depthValid = Number.isInteger(depthNum) && depthNum >= 1 && depthNum <= 20;
-  // `prefilled` blocks submitting before defaults load (the textarea would be
-  // empty); combined with the empty-seed guard it never posts an empty seed set.
-  const canSubmit = parsedSeeds.length > 0 && depthValid && !create.isPending && prefilled;
+  // The empty-seed and depth guards are the real gate — we intentionally do NOT
+  // also require the defaults fetch to have loaded, so the operator can still
+  // start discovery by typing seeds if GET /definitions/defaults fails (matches
+  // the keyword modal, which likewise never blocks on its defaults load).
+  const canSubmit = parsedSeeds.length > 0 && depthValid && !create.isPending;
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();

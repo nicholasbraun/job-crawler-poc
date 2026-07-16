@@ -120,8 +120,8 @@ function SeedDomains({ discovery }: { discovery: Discovery }) {
         <input
           className="input"
           style={{ flex: 1 }}
-          type="url"
-          placeholder="https://…"
+          type="text"
+          placeholder="www.example.com/careers or https://…"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
         />
