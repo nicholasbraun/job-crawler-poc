@@ -29,6 +29,11 @@ func TestDefaultLLMGateConfig(t *testing.T) {
 		if cfg.JobLinkSaturationCount <= 0 {
 			t.Errorf("JobLinkSaturationCount = %v, want > 0 (a positive saturation count)", cfg.JobLinkSaturationCount)
 		}
+		// Extract Gate's own saturation count (ADR-0019, #115): a zero would make its
+		// reject rung fire on nothing, silently reopening the extract-call rate.
+		if cfg.ExtractJobLinkSaturationCount <= 0 {
+			t.Errorf("ExtractJobLinkSaturationCount = %v, want > 0 (the extract-path saturation count)", cfg.ExtractJobLinkSaturationCount)
+		}
 		if !(cfg.RejectThreshold > 0 && cfg.RejectThreshold < cfg.CertainThreshold) {
 			t.Errorf("want 0 < RejectThreshold < CertainThreshold, got reject=%v certain=%v", cfg.RejectThreshold, cfg.CertainThreshold)
 		}

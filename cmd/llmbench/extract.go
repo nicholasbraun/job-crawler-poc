@@ -92,14 +92,12 @@ func replayExtractGate(fsys fs.FS, cfg crawler.LLMGateConfig) ([]bench.ExtractVe
 	return rows, nil
 }
 
-// gateDecision runs the current Extract Gate for one fixture. content is parsed
-// and threaded here so #115 can flip the call to pagegate.ShouldExtract(u,
-// content, cfg) -- adding the content reject rungs -- without touching this
-// harness. Until then the parsed content only validates the frozen bytes; the
-// scored decision is purely URL-driven.
+// gateDecision runs the full content-aware Extract Gate (ADR-0019) for one
+// fixture: it feeds the parsed page structure into pagegate.ShouldExtract so the
+// content reject rungs (ATS-embed / JSON-LD-hub / posting-saturation) score
+// alongside the URL rungs, exactly as the live url_processor call site does.
 func gateDecision(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConfig) bool {
-	_ = content
-	return pagegate.ShouldExtract(u, cfg)
+	return pagegate.ShouldExtract(u, content, cfg)
 }
 
 // printExtractReport writes the extract scorecard: the descriptive summary (total,

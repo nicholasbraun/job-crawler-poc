@@ -104,6 +104,22 @@ type LLMGateConfig struct {
 	TitleStrengthWeight float64
 	CertainThreshold    float64
 	RejectThreshold     float64
+
+	// ExtractJobLinkSaturationCount is the Extract Gate's OWN job-link saturation
+	// count (ADR-0019, #115): the number of distinct same-host Job Listing links at
+	// which ShouldExtract rejects a page as a jobs index rather than send it to the
+	// extractor. It is deliberately SEPARATE from JobLinkSaturationCount (the
+	// Discovery Gate's K) so calibrating the extract path against the Extract Gold
+	// Set (ADR-0020) can never shift the Discovery Gate — the config coupling hazard
+	// ADR-0019 calls out. The value is drawn from the Extract Gold Set: openings-index
+	// hubs there carry 5 distinct same-host job links while single postings carry <=1,
+	// so 5 rejects every gold hub while giving a real self-hosted posting's
+	// "more openings" sidebar up to 4 sibling links of headroom (ATS postings, which
+	// carry the largest sidebars, are exempt one rung earlier). It is the FIRST reject
+	// signal to raise or cut if production shows over-drops. A value <= 0 leaves the
+	// signal silent (jobLinkSaturation returns 0), the same fail-safe as the Discovery
+	// count — the escape hatch for dropping saturation entirely.
+	ExtractJobLinkSaturationCount int
 }
 
 // DefaultLLMGateConfig returns the built-in pre-LLM gate signals. CareerPathSignals
@@ -187,6 +203,12 @@ func DefaultLLMGateConfig() LLMGateConfig {
 		TitleStrengthWeight:    0.5,
 		CertainThreshold:       1.25,
 		RejectThreshold:        0.75,
+
+		// Extract Gate saturation count (ADR-0019, #115), separate from the
+		// Discovery Gate's JobLinkSaturationCount above. Drawn from the Extract Gold
+		// Set: openings-index hubs carry 5 distinct same-host job links, single
+		// postings carry <=1, so 5 rejects every gold hub with zero false-drops.
+		ExtractJobLinkSaturationCount: 5,
 	}
 }
 

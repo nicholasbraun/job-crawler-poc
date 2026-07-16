@@ -118,7 +118,7 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 		return fmt.Errorf("worker: content filtered out %w", err)
 	}
 
-	if !pagegate.ShouldExtract(*nextURL, w.gateConfig) {
+	if !pagegate.ShouldExtract(*nextURL, content, w.gateConfig) {
 		// A Career Page index or a reject path — resolved without the LLM extractor.
 		w.recorder.Gated(ctx, llmobs.KindExtract, llmobs.ReasonURLStructure)
 	} else if err := w.relevanceFilter(content); err == nil {

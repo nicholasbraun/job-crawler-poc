@@ -23,16 +23,17 @@ decision into an extract scorecard:
 - The **extract-call rate** (share of fixtures the gate would send to the LLM
   extractor) is a **soft** measurement with **no** pass threshold.
 - **Leaks** — non-posting pages (`hub-index` / `residue`) the gate extracts — are
-  listed descriptively. They document where today's gate leaks; they never fail
-  the run. The reject signals in the next ticket (#115) are calibrated to shed
-  them without introducing a false-drop.
+  listed descriptively; they never fail the run. Since #115 added the content reject
+  rungs, the posting-saturation rung sheds the openings-index `hub-index` leaks; the
+  leaks that remain are the structurally-silent `residue` pages (the deferred-L2
+  population, ADR-0020).
 
 The LLM extractor stage is deliberately **not** invoked: every scored artifact is
-produced by the URL-only `ShouldExtract` decision, and the descriptive
-Empty-Extraction layer is owned by #113. The harness still parses every fixture
-(validating the frozen bytes) and threads the parsed `*Content` into the gate
-decision, so #115 can add the content reject rungs by flipping one call site
-(`gateDecision`) rather than the harness.
+produced by the `ShouldExtract` decision alone — the URL rungs plus, since #115, the
+content reject rungs — and the descriptive Empty-Extraction layer is owned by #113.
+The harness parses every fixture (validating the frozen bytes) and threads the
+parsed `*Content` into `gateDecision`, which the gate reads for its ATS-embed,
+JSON-LD-hub, and posting-saturation rungs.
 
 ## Labels and the binary collapse
 
@@ -84,16 +85,20 @@ this).
 ## The false-drop hard guard
 
 The false-drop guard fails the whole run if any committed `detail` fixture is one
-the current gate skips. The current `ShouldExtract(u, cfg)` skips a URL when
-(1) `catalog.Classify(u) == RoleCareerPage` (an ATS **board root**), (2) a path
-segment is a strong-negative reject signal, or (3) the path is **not** a
-job-posting path **and** a career path signal is present. So the safe `detail`
-shapes are ATS **posting** URLs (`RoleJobListing`, e.g.
+the gate skips. `ShouldExtract(u, content, cfg)` skips a page when a URL rung
+resolves it — (1) `catalog.Classify(u) == RoleCareerPage` (an ATS **board root**),
+(2) a path segment is a strong-negative reject signal, or (3) the path is **not** a
+job-posting path **and** a career path signal is present — or when a content reject
+rung fires: an ATS embed, a JSON-LD openings index (an ItemList of `JobPosting` or
+>=2 `JobPosting` nodes), or a saturated set of distinct same-host job links. An ATS
+**posting** (`RoleJobListing`) is **exempt** from every content rung, so the safe
+`detail` shapes are ATS posting URLs (e.g.
 `job-boards.greenhouse.io/{tenant}/jobs/{id}`) and self-hosted postings on an
 English job-segment posting path that `isJobPostingPath` recognizes
 (`/jobs/<slug>`, `/careers/<slug>`, `/positions/<slug>`, `/vacancies/<slug>`,
 `/openings/<slug>`, `/stellenangebote/<slug>`, …), plus postings on a generic path
-with no career/reject segment (`/roles/<slug>`).
+with no career/reject segment (`/roles/<slug>`) — each carrying a lone `JobPosting`
+and a sparse sidebar that trips none of the content rungs.
 
 ### Known blind spot — not a red fixture
 
@@ -109,27 +114,28 @@ shape.
 
 ## Baseline findings (current gate)
 
-`cmd/llmbench/results/extract-baseline-20260717.json` is the committed baseline
-scorecard (`extract -json` against the current gate). It confirms the guard is
-green and documents the leaks the next ticket targets:
+Since #115 landed the content reject rungs, the live gate holds the false-drop
+guard green while shedding the openings-index leaks. `go run ./cmd/llmbench extract`
+reports:
 
 - **0 false-drops** — `detail` recall 1.0; every committed single posting is
   extracted.
-- **7 leaks** — non-postings today's URL-only gate extracts:
-  - 3 `hub-index`: `jobs.brightwave.io/open-roles`,
-    `careers.greenharvest.co/all-openings`, `www.pixelforge.studio/job-listings`
-    (generic openings indexes whose URL carries no job/career path segment).
-  - 4 `residue`: `www.acme-robotics.com/about/our-culture`,
-    `www.brightwave.io/life`, `www.pixelforge.studio/work-with-us`,
-    `www.greenharvest.co/culture/values` (career-landing / culture pages on generic
-    paths).
-- **extract-call rate 0.6538** (17 of 26) — soft, descriptive.
+- **4 leaks** — non-postings the gate still extracts, all `residue`:
+  `www.acme-robotics.com/about/our-culture`, `www.brightwave.io/life`,
+  `www.pixelforge.studio/work-with-us`, `www.greenharvest.co/culture/values`
+  (structurally-silent career-landing / culture pages — no job links, no JSON-LD, no
+  embed — so no content rung fires). They are the deferred-L2 population the ADR-0020
+  content confirm would target.
+- **extract-call rate 0.5385** (14 of 26) — soft, descriptive.
 - **residue: 8 total, 4 extracted** — the population the ADR-0020 L2 content
   confirm is measured against.
 
-These leaks are exactly the pages #115's content reject rungs (JSON-LD-hub /
-ATS-embed / posting-saturation) will shed. This benchmark is the guard proving
-#115 does so without dropping any real posting.
+#115's posting-saturation rung (K=5) sheds the three former `hub-index` leaks
+(`jobs.brightwave.io/open-roles`, `careers.greenharvest.co/all-openings`,
+`www.pixelforge.studio/job-listings`) — generic openings indexes each carrying five
+same-host job links — cutting the extract-call rate from the pre-#115 URL-only
+baseline (17 of 26, 7 leaks) without dropping any real posting. This benchmark is
+the guard proving it.
 
 ## Growing the set
 

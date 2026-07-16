@@ -12,13 +12,18 @@ import (
 // parser -> ShouldExtract pipeline over cmd/llmbench/extract-testdata with the
 // default gate config (see the extract-testdata README and #114). The false-drop
 // count is the AC-critical hard guard; the leak count and extract-call rate are
-// the soft baseline the reject rungs (#115) are calibrated against and will
-// deliberately move.
+// the soft baseline the reject rungs (#115) are calibrated against.
+//
+// #115 landed the content reject rungs: the saturation rung (K=5) now rejects the
+// three hub-index openings-index leaks (each carrying 5 same-host job links),
+// cutting extract-calls 17->14 and leaks 7->4 while holding false-drop = 0. The
+// four remaining leaks are the structurally-silent residue pages -- the
+// deferred-L2 population the ADR-0020 content confirm would target.
 const (
-	baselineExtractCalls    = 17
-	baselineExtractCallRate = 0.6538
-	baselineLeaks           = 7
-	baselineDetailFixtures  = 10
+	baselineExtractCalls    = 14     // was 17: the 3 hub-index openings-index leaks now reject via saturation
+	baselineExtractCallRate = 0.5385 // was 0.6538 = round(14/26)
+	baselineLeaks           = 4      // was 7: only the 4 structurally-silent residue pages still leak
+	baselineDetailFixtures  = 10     // unchanged -- every detail still extracts (false-drop = 0)
 )
 
 // TestExtractGate_CommittedSetNoFalseDrop is the automated counterpart to the
@@ -60,9 +65,10 @@ func TestExtractGate_CommittedSetNoFalseDrop(t *testing.T) {
 		t.Errorf("detail fixtures = %d, want %d", detail.Total, baselineDetailFixtures)
 	}
 
-	// The soft baseline snapshot: locks where today's gate leaks non-postings so
-	// accidental gate or fixture drift is caught. #115 tightens the gate and will
-	// update these numbers on purpose; a mismatch here is a signal to re-baseline,
+	// The soft baseline snapshot: locks where the gate still leaks non-postings so
+	// accidental gate or fixture drift is caught. Since #115 landed the content
+	// reject rungs, the four remaining leaks are the structurally-silent residue
+	// pages (the deferred-L2 population); a mismatch here is a signal to re-baseline,
 	// never a false-drop failure.
 	if len(e.Leaks) != baselineLeaks {
 		t.Errorf("leaks = %d %v, want baseline %d (re-baseline if the gate changed under #115)", len(e.Leaks), e.Leaks, baselineLeaks)

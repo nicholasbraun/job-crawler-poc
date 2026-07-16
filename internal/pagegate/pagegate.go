@@ -3,10 +3,11 @@
 // extractor verdict without a model call. CareerPage serves the discovery path
 // (accept a Career Page hub, and report whether that decision is certain enough
 // to skip the LLM classifier); ShouldExtract serves the keyword path (skip the
-// LLM extractor for pages a URL signal already resolves). The same career-hub
-// path signal reads oppositely on the two paths: on discovery it accepts a hub
-// as a Career Page, on extract it marks a hub an index to crawl rather than
-// extract.
+// LLM extractor for a page that is not a single posting), reading both the URL
+// and the parsed page structure (ADR-0019). The same career-hub path signal and
+// the same Structural Signals read oppositely on the two paths: on discovery they
+// accept a hub as a Career Page, on extract they REJECT a hub as an index to
+// crawl rather than extract — with the ATS posting deterministically exempt.
 package pagegate
 
 import (
@@ -243,20 +244,56 @@ func jobLinkSaturation(count, k int) float64 {
 }
 
 // ShouldExtract reports whether a keyword-relevant page should reach the LLM
-// extractor. It is false when a cheap URL signal already resolves it: an ATS
-// board root or a career-hub index (crawled for its individual postings, not
-// itself a single posting) and strong-negative reject paths.
-func ShouldExtract(u crawler.URL, cfg crawler.LLMGateConfig) bool {
-	if catalog.Classify(u) == catalog.RoleCareerPage {
-		return false
+// extractor (ADR-0019). It rejects (returns false) the page shapes that are not a
+// single posting, reading two verdict families in sequence, first match wins. The
+// URL rungs come first: an ATS board root (RoleCareerPage) is an index to crawl;
+// an ATS posting (RoleJobListing) is deterministically a posting and is EXEMPT —
+// its "more openings" sidebar can never drop it, so this exemption precedes every
+// content rung; a strong-negative reject path, or a bare career-section index
+// (a career segment on a non-posting path), rejects. These read the same
+// career-hub path signal that CareerPage accepts, here with reject polarity. The
+// content reject rungs then read the parsed page structure — the SAME Structural
+// Signals CareerPage's Confidence Score sums, but with reject polarity: an ATS
+// Embed, a JSON-LD openings index (an ItemList of JobPosting or >=2 JobPosting
+// nodes), or a page saturated with distinct same-host Job Listing links marks a
+// jobs index, not a posting, and rejects. A self-hosted posting is NOT exempt — it
+// reaches the content rungs and relies on calibration (its lone JobPosting and
+// sparse sidebar trip none of them), so a /jobs/all-style hub carrying structured
+// openings data still rejects. Any page that clears every rung reaches the
+// extractor.
+func ShouldExtract(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConfig) bool {
+	switch catalog.Classify(u) {
+	case catalog.RoleCareerPage:
+		return false // rung 1: an ATS board root is an index to crawl, not a posting.
+	case catalog.RoleJobListing:
+		// rung 2: an ATS posting is deterministically a posting, so its "more
+		// openings" sidebar cannot drop it. This exemption precedes every content
+		// reject rung below.
+		return true
 	}
 	if pathHasSegment(u.RawURL, cfg.RejectPathSignals) {
-		return false
+		return false // rung 3: a strong-negative reject path.
 	}
 	if !isJobPostingPath(u.RawURL) && pathHasSegment(u.RawURL, cfg.CareerPathSignals) {
-		return false
+		return false // rung 4: a bare career-section index, not a posting.
 	}
-	return true
+	// Content reject rungs (ADR-0019). Self-hosted postings on a job-posting path
+	// reach here (only ATS RoleJobListing is exempt), so a /jobs/all-style hub
+	// carrying structured openings data still rejects.
+	if atsEmbed(content) {
+		return false // rung 5: a page embedding a whole ATS board is a hub.
+	}
+	if jsonLDHub(content) {
+		return false // rung 6: a JSON-LD ItemList / >=2 JobPosting nodes is an
+		// openings index; a lone JobPosting does not fire it.
+	}
+	if jobLinkSaturation(countJobPostingLinks(u, content), cfg.ExtractJobLinkSaturationCount) >= 1 {
+		return false // rung 7: a page saturated with distinct same-host job links is
+		// a jobs index. Reuses both pure detectors with reject polarity; an
+		// ExtractJobLinkSaturationCount <= 0 makes jobLinkSaturation return 0, so
+		// this rung then never fires.
+	}
+	return true // rung 8: nothing resolved it — send to the extractor.
 }
 
 // containsAny reports whether s contains any of keywords, case-insensitively.
