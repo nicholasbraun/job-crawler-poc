@@ -1,0 +1,76 @@
+package main
+
+import (
+	"os"
+	"testing"
+
+	"github.com/nicholasbraun/job-crawler-poc/cmd/llmbench/bench"
+	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
+)
+
+// The committed Extract Gold Set baseline, produced by running the real
+// parser -> ShouldExtract pipeline over cmd/llmbench/extract-testdata with the
+// default gate config (see the extract-testdata README and #114). The false-drop
+// count is the AC-critical hard guard; the leak count and extract-call rate are
+// the soft baseline the reject rungs (#115) are calibrated against and will
+// deliberately move.
+const (
+	baselineExtractCalls    = 17
+	baselineExtractCallRate = 0.6538
+	baselineLeaks           = 7
+	baselineDetailFixtures  = 10
+)
+
+// TestExtractGate_CommittedSetNoFalseDrop is the automated counterpart to the
+// manual `go run ./cmd/llmbench extract`: it drives the SAME live pipeline
+// (replayExtractGate: parser.Parse -> pagegate.ShouldExtract) over the committed
+// Extract Gold Set so the false-drop hard guard the ticket exists to protect
+// (#114 AC7) runs in `go test`, not only by hand. Without it, adding a `detail`
+// fixture the gate skips -- e.g. a German /karriere/<slug> posting -- or changing
+// jobPathSegments/CareerPathSignals would silently redden the baseline while the
+// normal suite stayed green (there is no CI to run the verb).
+func TestExtractGate_CommittedSetNoFalseDrop(t *testing.T) {
+	rows, err := replayExtractGate(os.DirFS("extract-testdata"), crawler.DefaultLLMGateConfig())
+	if err != nil {
+		t.Fatalf("replayExtractGate(extract-testdata): %v", err)
+	}
+	if len(rows) == 0 {
+		t.Fatal("replayExtractGate produced no rows over the committed Extract Gold Set")
+	}
+
+	report := bench.ScoreExtract(rows)
+	e := report.Extract
+
+	// The hard guard: not a single detail-labelled fixture may be skipped. A
+	// false-drop is a real single posting the extractor never sees.
+	if report.Failed() {
+		t.Errorf("Failed() = true, want false; false-drops: %v", e.FalseDrops)
+	}
+	if len(e.FalseDrops) != 0 {
+		t.Errorf("FalseDrops = %v, want none (a detail-labelled page the gate rejected)", e.FalseDrops)
+	}
+	detail := e.ByClass[bench.ExtractDetail]
+	if detail.FN != 0 {
+		t.Errorf("detail false-negatives = %d, want 0 (every detail fixture must extract)", detail.FN)
+	}
+	if detail.Recall != 1 {
+		t.Errorf("detail recall = %v, want 1 (the recall-safety number the guard protects)", detail.Recall)
+	}
+	if detail.Total != baselineDetailFixtures {
+		t.Errorf("detail fixtures = %d, want %d", detail.Total, baselineDetailFixtures)
+	}
+
+	// The soft baseline snapshot: locks where today's gate leaks non-postings so
+	// accidental gate or fixture drift is caught. #115 tightens the gate and will
+	// update these numbers on purpose; a mismatch here is a signal to re-baseline,
+	// never a false-drop failure.
+	if len(e.Leaks) != baselineLeaks {
+		t.Errorf("leaks = %d %v, want baseline %d (re-baseline if the gate changed under #115)", len(e.Leaks), e.Leaks, baselineLeaks)
+	}
+	if e.ExtractCalls != baselineExtractCalls {
+		t.Errorf("extract-calls = %d, want baseline %d", e.ExtractCalls, baselineExtractCalls)
+	}
+	if e.ExtractCallRate != baselineExtractCallRate {
+		t.Errorf("extract-call-rate = %v, want baseline %v", e.ExtractCallRate, baselineExtractCallRate)
+	}
+}

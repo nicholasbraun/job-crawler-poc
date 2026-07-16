@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 
 	"github.com/nicholasbraun/job-crawler-poc/cmd/llmbench/bench"
@@ -34,36 +35,10 @@ func runExtract(args []string) int {
 		return 2
 	}
 
-	fsys := os.DirFS(*gold)
-	m, err := bench.LoadExtractManifest(fsys)
+	rows, err := replayExtractGate(os.DirFS(*gold), cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench extract: %v\n", err)
 		return 2
-	}
-
-	p := parser.NewHTMLParser()
-	rows := []bench.ExtractVerdictRow{}
-	for _, e := range m.Entries {
-		html, err := e.ReadHTML(fsys)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "llmbench extract: %v\n", err)
-			return 2
-		}
-		content, err := p.Parse(html)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "llmbench extract: parse %q: %v\n", e.File, err)
-			return 2
-		}
-		u, err := crawler.NewURL(e.URL)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "llmbench extract: url %q: %v\n", e.URL, err)
-			return 2
-		}
-		rows = append(rows, bench.ExtractVerdictRow{
-			URL:     e.URL,
-			Label:   e.Label,
-			Extract: gateDecision(u, content, cfg),
-		})
 	}
 
 	report := bench.ScoreExtract(rows)
@@ -79,6 +54,42 @@ func runExtract(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// replayExtractGate loads the Extract Gold Set from fsys and replays every
+// fixture through the real parser and Extract Gate (parser.Parse -> gateDecision)
+// into binary extract-vs-skip verdict rows. It is the shared body of the extract
+// verb and its committed-set regression test, so both drive the identical live
+// pipeline. Any wiring fault (bad manifest, unparseable HTML, invalid URL) is
+// wrapped and returned rather than exiting, so the test can assert on it.
+func replayExtractGate(fsys fs.FS, cfg crawler.LLMGateConfig) ([]bench.ExtractVerdictRow, error) {
+	m, err := bench.LoadExtractManifest(fsys)
+	if err != nil {
+		return nil, err
+	}
+
+	p := parser.NewHTMLParser()
+	rows := []bench.ExtractVerdictRow{}
+	for _, e := range m.Entries {
+		html, err := e.ReadHTML(fsys)
+		if err != nil {
+			return nil, err
+		}
+		content, err := p.Parse(html)
+		if err != nil {
+			return nil, fmt.Errorf("parse %q: %w", e.File, err)
+		}
+		u, err := crawler.NewURL(e.URL)
+		if err != nil {
+			return nil, fmt.Errorf("url %q: %w", e.URL, err)
+		}
+		rows = append(rows, bench.ExtractVerdictRow{
+			URL:     e.URL,
+			Label:   e.Label,
+			Extract: gateDecision(u, content, cfg),
+		})
+	}
+	return rows, nil
 }
 
 // gateDecision runs the current Extract Gate for one fixture. content is parsed
