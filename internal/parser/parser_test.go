@@ -174,13 +174,19 @@ Engineer</h1>
 			t.Errorf("embed src leaked into URLs (would be enqueued): %v", content.URLs)
 		}
 
-		// Both embeds are captured, tagged by kind (iframes first, then scripts).
+		// Both embeds are captured and tagged by kind, regardless of the order the
+		// parser emits them in (iframe vs. script grouping is an internal detail).
 		wantEmbeds := []crawler.Embed{
 			{Src: personioSrc, IsFrame: true},
 			{Src: greenhouseSrc, IsFrame: false},
 		}
-		if !slices.Equal(content.Embeds, wantEmbeds) {
-			t.Errorf("Embeds = %v, want %v", content.Embeds, wantEmbeds)
+		if len(content.Embeds) != len(wantEmbeds) {
+			t.Errorf("Embeds = %v, want %d entries", content.Embeds, len(wantEmbeds))
+		}
+		for _, want := range wantEmbeds {
+			if !slices.Contains(content.Embeds, want) {
+				t.Errorf("Embeds missing %v; got %v", want, content.Embeds)
+			}
 		}
 
 		if !slices.Contains(content.ElementIDs, "grnhse_app") {

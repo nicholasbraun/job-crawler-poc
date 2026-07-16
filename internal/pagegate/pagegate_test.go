@@ -16,16 +16,6 @@ func newURL(t *testing.T, raw string) crawler.URL {
 	return u
 }
 
-// withThresholds returns cfg with its final-rung thresholds overridden, so a
-// band case can place certainθ/rejectθ where the seeded signals cross them —
-// DefaultLLMGateConfig's CertainThreshold is deliberately unreachable from the
-// final rung.
-func withThresholds(cfg crawler.LLMGateConfig, certain, reject float64) crawler.LLMGateConfig {
-	cfg.CertainThreshold = certain
-	cfg.RejectThreshold = reject
-	return cfg
-}
-
 // finalRungConfig is DefaultLLMGateConfig's Confidence Score floats with the
 // path-signal lists cleared, so a case exercises the final-rung score bands in
 // isolation from the earlier career-hub-root and reject-path rungs.
