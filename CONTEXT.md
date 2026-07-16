@@ -139,6 +139,18 @@ _Avoid_: iframe, widget, integration
 The last path segment of a deep career URL that keeps it a Career Page rather than a Job Listing — an openings-index token (`open-positions`, `opportunities`, `vacancies`) as opposed to a role slug. It is what separates `/careers/open-positions` (a hub) from `/careers/senior-engineer` (a single posting) when the Gate would otherwise reject both as postings.
 _Avoid_: listing keyword, hub keyword
 
+**Extract Gate**:
+The Keyword Crawl's counterpart to the Gate: a deterministic, pre-LLM pass that decides whether a keyword-relevant page reaches the LLM extractor. It *rejects* the page shapes the Gate accepts as hubs — an ATS Embed, a structured-data openings index, a link-saturated page — reading the same Structural Signals with opposite polarity. Verdict is binary (extract or skip), not the Gate's three-way band, and it is tuned separately so its calibration never shifts the Gate.
+_Avoid_: extract filter, relevance gate, ShouldExtract (in prose)
+
+**Extractor Abstain**:
+The LLM extractor's self-report that a page it was handed is not a single Job Listing — a hub, index, or career-landing page — so the extraction is discarded rather than saved. The extract path's last-resort net for a non-posting the Extract Gate let through.
+_Avoid_: skip, empty extraction, reject
+
+**Empty-Extraction Rate**:
+The share of extractor calls that end in an Extractor Abstain (`abstain / sent`) — the live measure of wasted extract calls the Extract Gate exists to drive down.
+_Avoid_: waste rate, abstain rate (bare), miss rate
+
 **Leak**:
 A real Career Page the Gate rejects. Irrecoverable — the LLM never gets to save it — so it is a hard failure the benchmark targets at zero.
 _Avoid_: false negative, miss
@@ -147,8 +159,16 @@ _Avoid_: false negative, miss
 A non–Career-Page the Gate certain-accepts. Irrecoverable — catalogued with no LLM veto — so it is a hard failure the benchmark targets at zero.
 _Avoid_: false positive
 
+**false-drop**:
+A real single Job Listing the Extract Gate rejects. The extract-path analog of a Leak — irrecoverable, since the page is never extracted — so the Extract Gold Set targets it at zero.
+_Avoid_: false negative, miss, dropped posting
+
 ### Benchmark
 
 **Gold Set**:
 The curated collection of real HTML pages, each stored with its true URL, a human-owned ground-truth label (Career Page or not), and a category, that the classifier benchmark scores against.
 _Avoid_: test set, fixtures (bare), corpus, sample
+
+**Extract Gold Set**:
+The Extract Gate's counterpart to the Gold Set: keyword-relevant real pages, each labelled single-posting **detail**, **hub/index**, or structurally-silent **residue**, scored on the binary extract-or-skip decision (a false-drop is the hard failure). Distinct from the Gold Set, which labels Career-Page-vs-not over a discovery sample.
+_Avoid_: extract test set, second gold set
