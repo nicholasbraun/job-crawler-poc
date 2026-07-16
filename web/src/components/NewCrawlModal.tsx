@@ -1,23 +1,39 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { useCareerPages, useCreateCrawl } from "../hooks";
+import { useCareerPages, useCreateCrawl, useDefinitionDefaults } from "../hooks";
 import { fmt } from "../lib/format";
 import { Dialog } from "./Dialog";
 import { Icon } from "./primitives";
 
-// NewCrawlModal collects a name + keywords and fires the fused create-and-start
-// endpoint. A keyword crawl seeds from the catalog (no seed URLs), so the copy
-// reflects the current catalogued career-page count. On success it navigates to
-// the new crawl's detail view. The backdrop/focus-trap/Escape scaffolding lives
-// in the shared Dialog.
+// NewCrawlModal collects a name + keywords + editable crawl depth and fires the
+// fused create-and-start endpoint. Depth is prefilled from GET
+// /api/definitions/defaults?kind=keyword (default 4). A keyword crawl seeds from
+// the catalog (no seed URLs), so the copy reflects the current catalogued
+// career-page count. On success it navigates to the new crawl's detail view. The
+// backdrop/focus-trap/Escape scaffolding lives in the shared Dialog.
 export function NewCrawlModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [name, setName] = useState("");
   const [keywords, setKeywords] = useState("");
+  const [depth, setDepth] = useState("4");
+  const [prefilled, setPrefilled] = useState(false);
   const create = useCreateCrawl();
   const navigate = useNavigate();
   const careerPages = useCareerPages();
   const careerPageCount = careerPages.data?.length ?? 0;
+  const defaults = useDefinitionDefaults("keyword", open);
+
+  // Prefill the depth once from the keyword defaults endpoint (default 4) after
+  // it loads; keep any edit the user has since made. Unlike DiscoveryStartModal
+  // this never gates submit — `depth` inits to a valid "4", so the keyword modal
+  // stays usable even if the defaults fetch is slow or fails. reset() clears
+  // `prefilled` so a reopen refills.
+  useEffect(() => {
+    if (open && defaults.data && !prefilled) {
+      setDepth(String(defaults.data.maxDepth));
+      setPrefilled(true);
+    }
+  }, [open, defaults.data, prefilled]);
 
   if (!open) return null;
 
@@ -25,11 +41,15 @@ export function NewCrawlModal({ open, onClose }: { open: boolean; onClose: () =>
     .split(",")
     .map((k) => k.trim())
     .filter(Boolean);
-  const canSubmit = parsedKeywords.length > 0 && !create.isPending;
+  const depthNum = Number(depth);
+  const depthValid = Number.isInteger(depthNum) && depthNum >= 1 && depthNum <= 20;
+  const canSubmit = parsedKeywords.length > 0 && depthValid && !create.isPending;
 
   const reset = () => {
     setName("");
     setKeywords("");
+    setDepth("4");
+    setPrefilled(false);
     create.reset();
   };
   const close = () => {
@@ -41,7 +61,7 @@ export function NewCrawlModal({ open, onClose }: { open: boolean; onClose: () =>
     e.preventDefault();
     if (!canSubmit) return;
     create.mutate(
-      { name: name.trim() || parsedKeywords[0], kind: "keyword", keywords: parsedKeywords },
+      { name: name.trim() || parsedKeywords[0], kind: "keyword", keywords: parsedKeywords, maxDepth: depthNum },
       {
         onSuccess: (run) => {
           reset();
@@ -75,6 +95,24 @@ export function NewCrawlModal({ open, onClose }: { open: boolean; onClose: () =>
             value={keywords}
             onChange={(e) => setKeywords(e.target.value)}
           />
+        </div>
+        <div className="field">
+          <label>
+            Crawl depth <span style={{ color: "var(--color-neutral-500)" }}>— 1–20</span>
+          </label>
+          <input
+            className="input"
+            type="number"
+            min={1}
+            max={20}
+            value={depth}
+            onChange={(e) => setDepth(e.target.value)}
+          />
+          {!depthValid && (
+            <div style={{ fontSize: 12, color: "var(--color-accent-300)", marginTop: 5 }}>
+              Depth must be a whole number between 1 and 20.
+            </div>
+          )}
         </div>
         <div
           style={{
