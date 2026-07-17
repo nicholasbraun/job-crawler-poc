@@ -33,6 +33,11 @@ type Config struct {
 	// Recorder instruments the LLM extractor (calls, content dedup) for the
 	// ADR-0007 measurement. Optional: a nil Recorder records nothing.
 	Recorder llmobs.Recorder
+	// CompanyNames is the per-run CompanyKey → Company-name snapshot (ADR-0021),
+	// resolved at run start. A saved Job Listing's Company is taken from here via the
+	// source URL's Owner, discarding the extractor's own company. A nil map or a
+	// missing Owner leaves Company empty.
+	CompanyNames map[string]string
 }
 
 // JobListingProcessor extracts structured job data from raw crawled pages
@@ -43,6 +48,7 @@ type JobListingProcessor struct {
 	jobListingExtractor         JobListingExtractor
 	recorder                    llmobs.Recorder
 	definitionID                uuid.UUID
+	companyNames                map[string]string
 }
 
 func NewProcessor(cfg *Config) *JobListingProcessor {
@@ -64,6 +70,7 @@ func NewProcessor(cfg *Config) *JobListingProcessor {
 		jobListingExtractor:         cfg.JobListingExtractor,
 		recorder:                    recorder,
 		definitionID:                cfg.DefinitionID,
+		companyNames:                cfg.CompanyNames,
 	}
 }
 
@@ -95,6 +102,14 @@ func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.Raw
 		slog.Info("extractor abstained: page is not a single job posting", "url", workload.URL.RawURL)
 		return nil // an abstain is a completed decision -- ack, do not retry or dead-letter
 	}
+
+	// Attribute the listing to its Owner Company (ADR-0021): overwrite the
+	// extractor's company guess with the Catalog name looked up via the source
+	// URL's Owner, and persist the Owner as the durable CompanyKey. A nil snapshot
+	// or a missing Owner yields "" -- the extractor's guess is discarded either way.
+	owner := workload.URL.Owner
+	extraction.Listing.CompanyKey = owner
+	extraction.Listing.Company = w.companyNames[owner]
 
 	if err := w.jobListingRepository.Save(ctx, w.definitionID, &extraction.Listing); err != nil {
 		return fmt.Errorf("job_listing_processor: error saving processed job listing %v: %w", *workload, err)
