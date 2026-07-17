@@ -27,7 +27,6 @@ func TestJobListingRepository(t *testing.T) {
 		CompanyKey:  "netflix.com",
 		Location:    "Germany",
 		Remote:      true,
-		TechStack:   []string{"golang", "postgres"},
 	}
 
 	t.Run("Save inserts a row keyed by definition_id and url", func(t *testing.T) {
@@ -50,14 +49,17 @@ func TestJobListingRepository(t *testing.T) {
 		if got.Company != listing.Company {
 			t.Errorf("want company %q, got %q", listing.Company, got.Company)
 		}
+		if got.Description != listing.Description {
+			t.Errorf("want description %q, got %q", listing.Description, got.Description)
+		}
+		if got.Location != listing.Location {
+			t.Errorf("want location %q, got %q", listing.Location, got.Location)
+		}
 		if got.CompanyKey != listing.CompanyKey {
 			t.Errorf("want company_key %q, got %q", listing.CompanyKey, got.CompanyKey)
 		}
 		if !got.Remote {
 			t.Error("want remote true, got false")
-		}
-		if len(got.TechStack) != 2 {
-			t.Fatalf("want 2 tech stack items, got %v", got.TechStack)
 		}
 	})
 

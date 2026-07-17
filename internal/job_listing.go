@@ -24,12 +24,11 @@ type JobListing struct {
 	CompanyKey string `json:"-"`
 	Location   string `json:"location"`
 	// Remote indicates whether the position is available for remote work.
-	Remote    bool     `json:"remote"`
-	TechStack []string `json:"tech_stack"`
+	Remote bool `json:"remote"`
 }
 
 // RawJobListing pairs a crawled URL with its parsed page content before
-// any structured extraction (company, location, tech stack) has occurred.
+// any structured extraction (company, location) has occurred.
 type RawJobListing struct {
 	URL     URL
 	Content Content

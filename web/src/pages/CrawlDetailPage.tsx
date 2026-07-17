@@ -91,7 +91,7 @@ function CrawlHeaderCard({ crawl }: { crawl: KeywordCrawl }) {
 function ListingsCard({ definitionId }: { definitionId: string }) {
   const [filter, setFilter] = useState("");
   // Fetch the crawl's full listing set once, then filter client-side across all
-  // visible columns (title, company, location, tech) — broader and snappier than
+  // visible columns (title, company, location) — broader and snappier than
   // round-tripping the server's title/description keyword match per keystroke.
   const listingsQ = useListings(definitionId, "");
   const all = listingsQ.data ?? [];
@@ -100,7 +100,7 @@ function ListingsCard({ definitionId }: { definitionId: string }) {
     const q = filter.trim().toLowerCase();
     if (!q) return all;
     return all.filter((l) =>
-      `${l.title} ${l.company} ${l.location} ${l.techStack.join(" ")}`.toLowerCase().includes(q),
+      `${l.title} ${l.company} ${l.location}`.toLowerCase().includes(q),
     );
   }, [all, filter]);
 
@@ -125,7 +125,6 @@ function ListingsCard({ definitionId }: { definitionId: string }) {
               <th>Role</th>
               <th>Company</th>
               <th>Location</th>
-              <th>Tech stack</th>
             </tr>
           </thead>
           <tbody>
@@ -177,15 +176,6 @@ function ListingRow({ listing }: { listing: Listing }) {
             Remote
           </span>
         )}
-      </td>
-      <td>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-          {listing.techStack.map((t, i) => (
-            <span key={`${t}-${i}`} className="tag tag-neutral" style={{ fontSize: 10, padding: "2px 7px" }}>
-              {t}
-            </span>
-          ))}
-        </div>
       </td>
     </tr>
   );

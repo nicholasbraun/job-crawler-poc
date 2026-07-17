@@ -2,8 +2,10 @@ package openrouter_test
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
@@ -79,6 +81,14 @@ func TestExtractParsesVerdict(t *testing.T) {
 			wantPosting: true,
 			wantTitle:   "X",
 		},
+		{
+			// tech_stack was dropped from the struct (ADR-0023); a stray key the
+			// model still emits must be ignored, not error the decode.
+			name:        "stray tech_stack key is ignored",
+			content:     `{"title":"Backend Engineer","tech_stack":["Go"],"is_job_posting":true}`,
+			wantPosting: true,
+			wantTitle:   "Backend Engineer",
+		},
 	}
 
 	for _, tc := range tests {
@@ -104,10 +114,54 @@ func TestExtractParsesVerdict(t *testing.T) {
 				t.Errorf("Listing.URL = %q, want %q", got.Listing.URL, raw.URL.RawURL)
 			}
 			if tc.wantEmptyish {
-				if got.Listing.Company != "" || got.Listing.Location != "" || got.Listing.Remote || len(got.Listing.TechStack) != 0 {
+				if got.Listing.Company != "" || got.Listing.Location != "" || got.Listing.Remote {
 					t.Errorf("want empty listing fields on abstain, got %+v", got.Listing)
 				}
 			}
 		})
+	}
+}
+
+// TestExtractPromptOmitsTechStack asserts the request the extractor sends the LLM
+// no longer mentions tech_stack anywhere -- neither the system-prompt field list
+// nor the closing "leave every other field empty" instruction (ADR-0023). The
+// shared newExtractorServer discards the request, so this uses a local server
+// that records the raw request body.
+func TestExtractPromptOmitsTechStack(t *testing.T) {
+	var captured string
+
+	var env chatEnvelope
+	env.Choices = make([]struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}, 1)
+	env.Choices[0].Message.Content = `{"title":"X","is_job_posting":true}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		captured = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(env); err != nil {
+			t.Errorf("encode envelope: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	ext := openrouter.NewJobListingExtractor(openrouter.Config{BaseURL: srv.URL, APIKey: "test"})
+	raw := crawler.RawJobListing{
+		URL:     newURL(t, "https://careers.acme.com/jobs/1"),
+		Content: crawler.Content{MainContent: "some page text"},
+	}
+
+	if _, err := ext.Extract(t.Context(), raw); err != nil {
+		t.Fatalf("Extract returned error: %v", err)
+	}
+
+	if strings.Contains(captured, "tech_stack") {
+		t.Errorf("extractor request should not mention tech_stack, got:\n%s", captured)
 	}
 }

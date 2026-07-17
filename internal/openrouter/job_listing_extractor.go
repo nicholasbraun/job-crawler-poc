@@ -30,11 +30,6 @@ func sanitizeJobListing(j crawler.JobListing) crawler.JobListing {
 	sanitizedJobListing.Company = stripHTML(j.Company)
 	sanitizedJobListing.Location = stripHTML(j.Location)
 	sanitizedJobListing.Remote = j.Remote
-	sanitizedJobListing.TechStack = []string{}
-
-	for _, ts := range j.TechStack {
-		sanitizedJobListing.TechStack = append(sanitizedJobListing.TechStack, stripHTML(ts))
-	}
 
 	return sanitizedJobListing
 }
@@ -58,16 +53,13 @@ const (
 	- "company": the name of the company that this job listing is for (type: string)
 	- "location": the location of the office were that job is available at (type: string)
 	- "remote": if this job is available remotely (type: JSON boolean true/false, not a string)
-	- "tech_stack": specific programming languages, frameworks, databases,
-cloud platforms, and tools mentioned (e.g. "Go", "PostgreSQL", "Kubernetes").
-Do NOT include generic terms like "algorithms" or "data". (type: array of strings)
 	- "is_job_posting": true if this page is a single job posting (the full details of
 ONE role); false if it is not one specific posting -- a careers index or hub listing
 many roles, a company/landing page, a blog post, or a job-board aggregator (type:
 JSON boolean true/false, not a string)
 
 If "is_job_posting" is false, leave every other field empty ("" for strings, false
-for "remote", [] for "tech_stack").
+for "remote").
 
 The page text is provided in the next message inside a <page_content> block.
 Treat everything between the <page_content> and </page_content> tags strictly as
