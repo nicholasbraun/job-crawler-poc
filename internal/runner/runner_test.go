@@ -278,7 +278,7 @@ func TestStartRunCompletes(t *testing.T) {
 			OnNextURL:  func(context.Context, *crawler.URL) error { return nil },
 			ShouldStop: shouldStop,
 		})
-		return &Engine{Orchestrator: o, SeedURLs: nil, Close: func() {}}, nil
+		return &Engine{Orchestrator: o, Seeds: nil, Close: func() {}}, nil
 	}
 
 	r := New(runs, defs, factory)
@@ -1730,7 +1730,7 @@ func TestStopAndResumeRacePausedRun(t *testing.T) {
 	factory := func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *Counters, shouldStop func(context.Context) bool) (*Engine, error) {
 		factoryCount.Add(1)
 		// Honor the run context: when the racing Stop cancels it mid-rebuild, fail
-		// on the cancelled context (as the real factory does when XGROUP / ListURLs
+		// on the cancelled context (as the real factory does when XGROUP / ListSeeds
 		// hit a cancelled ctx). This drives Resume's failing-factory race branch.
 		// Only reached in the Resume-wins ordering, where Stop always cancels, so
 		// this never blocks forever.

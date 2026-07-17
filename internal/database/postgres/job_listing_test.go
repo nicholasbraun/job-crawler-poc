@@ -24,6 +24,7 @@ func TestJobListingRepository(t *testing.T) {
 		Title:       "Senior Software Engineer",
 		Description: "At Netflix you will be doing cool stuff",
 		Company:     "netflix",
+		CompanyKey:  "netflix.com",
 		Location:    "Germany",
 		Remote:      true,
 		TechStack:   []string{"golang", "postgres"},
@@ -48,6 +49,9 @@ func TestJobListingRepository(t *testing.T) {
 		}
 		if got.Company != listing.Company {
 			t.Errorf("want company %q, got %q", listing.Company, got.Company)
+		}
+		if got.CompanyKey != listing.CompanyKey {
+			t.Errorf("want company_key %q, got %q", listing.CompanyKey, got.CompanyKey)
 		}
 		if !got.Remote {
 			t.Error("want remote true, got false")
@@ -117,6 +121,9 @@ func TestJobListingRepository(t *testing.T) {
 		}
 		if got[0].URL != listing.URL {
 			t.Errorf("want url %q, got %q", listing.URL, got[0].URL)
+		}
+		if got[0].CompanyKey != listing.CompanyKey {
+			t.Errorf("company_key should round-trip via FindByDefinition: want %q, got %q", listing.CompanyKey, got[0].CompanyKey)
 		}
 	})
 

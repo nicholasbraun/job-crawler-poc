@@ -223,7 +223,7 @@ func (f *fakeCompanyRepo) MergeImport(ctx context.Context, m *crawler.CompanyMer
 	m.ID = c.ID
 	return nil
 }
-func (f *fakeCompanyRepo) ListPagelessWebsites(ctx context.Context) ([]string, error) {
+func (f *fakeCompanyRepo) ListPagelessSeeds(ctx context.Context) ([]crawler.CatalogSeed, error) {
 	return nil, nil
 }
 
@@ -249,7 +249,9 @@ func (f *fakeCareerPageRepo) Upsert(ctx context.Context, p *crawler.CareerPage) 
 	f.pages = append(f.pages, &saved)
 	return nil
 }
-func (f *fakeCareerPageRepo) ListURLs(ctx context.Context) ([]string, error) { return nil, nil }
+func (f *fakeCareerPageRepo) ListSeeds(ctx context.Context) ([]crawler.CatalogSeed, error) {
+	return nil, nil
+}
 func (f *fakeCareerPageRepo) List(ctx context.Context) ([]*crawler.CareerPage, error) {
 	if f.onList != nil {
 		f.onList()

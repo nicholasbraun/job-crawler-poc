@@ -133,6 +133,69 @@ func TestJobListingProcessorAbstainSuppressesSave(t *testing.T) {
 	}
 }
 
+// TestJobListingProcessorAttributesOwnerFromSnapshot asserts the ADR-0021
+// attribution override: at save time the processor discards the extractor's own
+// company guess and instead sets the saved listing's Company from the per-run
+// CompanyKey → name snapshot, keyed by the source URL's Owner, and persists that
+// Owner as the durable CompanyKey.
+func TestJobListingProcessorAttributesOwnerFromSnapshot(t *testing.T) {
+	t.Run("snapshot hit: catalog name wins over the extractor guess", func(t *testing.T) {
+		repo := &spyJobListingRepo{}
+		proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
+			JobListingRepository: repo,
+			JobListingExtractor:  &stubExtractor{result: crawler.JobListing{Title: "Engineer", Company: "WrongGuess"}, isPosting: true},
+			DefinitionID:         uuid.New(),
+			CompanyNames:         map[string]string{"acme.com": "Acme Inc"},
+		})
+
+		u := newURL(t, "https://acme.com/jobs/1")
+		u.Owner = "acme.com"
+		raw := &crawler.RawJobListing{URL: u, Content: crawler.Content{MainContent: "we are hiring"}}
+		if err := proc.Process(t.Context(), raw); err != nil {
+			t.Fatalf("Process returned error: %v", err)
+		}
+
+		if len(repo.saved) != 1 {
+			t.Fatalf("want 1 listing saved, got %d", len(repo.saved))
+		}
+		got := repo.saved[0]
+		if got.Company != "Acme Inc" {
+			t.Errorf("Company: want %q (catalog name), got %q", "Acme Inc", got.Company)
+		}
+		if got.CompanyKey != "acme.com" {
+			t.Errorf("CompanyKey: want %q (the Owner), got %q", "acme.com", got.CompanyKey)
+		}
+	})
+
+	t.Run("snapshot miss: extractor guess still discarded, Owner persisted", func(t *testing.T) {
+		repo := &spyJobListingRepo{}
+		proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
+			JobListingRepository: repo,
+			JobListingExtractor:  &stubExtractor{result: crawler.JobListing{Title: "Engineer", Company: "WrongGuess"}, isPosting: true},
+			DefinitionID:         uuid.New(),
+			CompanyNames:         map[string]string{"other.com": "Other Inc"},
+		})
+
+		u := newURL(t, "https://acme.com/jobs/1")
+		u.Owner = "acme.com"
+		raw := &crawler.RawJobListing{URL: u, Content: crawler.Content{MainContent: "we are hiring"}}
+		if err := proc.Process(t.Context(), raw); err != nil {
+			t.Fatalf("Process returned error: %v", err)
+		}
+
+		if len(repo.saved) != 1 {
+			t.Fatalf("want 1 listing saved, got %d", len(repo.saved))
+		}
+		got := repo.saved[0]
+		if got.Company != "" {
+			t.Errorf("Company: want empty on snapshot miss (extractor guess discarded), got %q", got.Company)
+		}
+		if got.CompanyKey != "acme.com" {
+			t.Errorf("CompanyKey: want %q (the Owner), got %q", "acme.com", got.CompanyKey)
+		}
+	})
+}
+
 // TestJobListingProcessorExtractErrorNotAbstain guards the err==nil half of the
 // abstain classification. On an extraction failure the extractor returns the zero
 // Extraction (IsJobPosting=false); without the err==nil guard the false verdict

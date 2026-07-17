@@ -23,6 +23,7 @@ import (
 	"github.com/joho/godotenv"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/api"
+	"github.com/nicholasbraun/job-crawler-poc/internal/catalog"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/postgres"
 	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
@@ -400,7 +401,9 @@ func newFactory(
 
 			return &runner.Engine{
 				Orchestrator: o,
-				SeedURLs:     def.SeedURLs,
+				// Discovery roams: seeds carry empty Scope/Owner provenance
+				// (ADR-0021), so no fence and no Catalog attribution is applied.
+				Seeds: crawler.SeedsFromURLs(def.SeedURLs),
 				// Close order: discovery pool first (the producer feeding the
 				// classify stage), then the stage. Closing the producer first means
 				// no new task is XADDed mid-drain; a clean finish then drains the
@@ -423,22 +426,36 @@ func newFactory(
 		}
 
 		// Seed a Keyword Crawl from the Catalog: the union of every Career Page
-		// URL and each Pageless Company's Website (its seed of last resort).
-		// Composed here from two honest repository queries -- the career-page
-		// listing stays exactly what its name says, and the pageless query
-		// self-heals, dropping a Company's Website the moment it gains a Career
-		// Page. On re-adoption (Reconcile) re-seeding is a no-op: the per-run Redis
-		// visited set survived the restart and dedups (which also collapses any
-		// overlap between the two seed sources).
-		careerPageSeeds, err := careerPageRepository.ListURLs(ctx)
+		// URL and each Pageless Company's Website (its seed of last resort). Each
+		// query returns a CatalogSeed carrying the seed URL and its owning
+		// Company's stored CompanyKey; catalog.ResolveSeeds then pairs the two
+		// ADR-0021 provenance keys onto each Seed -- Owner from the stored key (the
+		// attribution key), Scope from catalog.Identify(URL) (the fence key) --
+		// dropping any seed whose URL fails to parse so every Keyword seed carries
+		// a real Scope. On re-adoption (Reconcile) re-seeding is a no-op: the
+		// per-run Redis visited set survived the restart and dedups (which also
+		// collapses any overlap between the two seed sources).
+		careerPageSeeds, err := careerPageRepository.ListSeeds(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("resolving keyword crawl seeds from catalog: %w", err)
 		}
-		pagelessSeeds, err := companyRepository.ListPagelessWebsites(ctx)
+		pagelessSeeds, err := companyRepository.ListPagelessSeeds(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("resolving keyword crawl pageless seeds from catalog: %w", err)
 		}
-		seedURLs := append(careerPageSeeds, pagelessSeeds...)
+		catalogSeeds := append(careerPageSeeds, pagelessSeeds...)
+		seeds := catalog.ResolveSeeds(catalogSeeds)
+
+		// Per-run attribution snapshot (ADR-0021): a CompanyKey → Company-name map
+		// the extract stage uses to attribute a saved Job Listing to its Owner
+		// Company via the source URL's Owner, discarding the extractor's own company
+		// guess. Captured read-only and shared across the stage's per-worker
+		// processors (safe concurrent reads).
+		companies, err := companyRepository.List(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("resolving keyword crawl company snapshot from catalog: %w", err)
+		}
+		companySnapshot := catalog.NewCompanySnapshot(companies)
 
 		// Multi-keyword OR relevance filter built from the Definition: a page is
 		// relevant if its title OR main content contains any keyword. Prunes
@@ -466,6 +483,7 @@ func newFactory(
 					JobListingExtractor:  jobListingExtractor,
 					DefinitionID:         def.ID,
 					Recorder:             llmRecorder,
+					CompanyNames:         companySnapshot,
 				})
 			},
 			llmstream.WithWorkers[crawler.RawJobListing](llmMaxWorkers),
@@ -520,7 +538,7 @@ func newFactory(
 
 		return &runner.Engine{
 			Orchestrator: o,
-			SeedURLs:     seedURLs,
+			Seeds:        seeds,
 			// Close order: url pool first (the producer feeding the extract stage),
 			// then the stage. Closing the producer first means no new task is XADDed
 			// mid-drain; a clean finish then drains the stream to empty, while a

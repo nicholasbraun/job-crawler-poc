@@ -67,20 +67,27 @@ func (r *CareerPageRepository) MergeImport(ctx context.Context, m *crawler.Caree
 	return nil
 }
 
-// ListURLs returns every catalogued Career Page URL, most-recently-seen first.
-// It never returns nil; an empty Catalog yields an empty slice.
-func (r *CareerPageRepository) ListURLs(ctx context.Context) ([]string, error) {
-	rows, err := r.pool.Query(ctx, `SELECT url FROM career_page ORDER BY last_seen DESC`)
+// ListSeeds returns every catalogued Career Page URL paired with its owning
+// Company's stored CompanyKey, most-recently-seen first. The (url, company_key)
+// column order matches the crawler.CatalogSeed (URL, CompanyKey) field order the
+// positional collector binds by. It never returns nil; an empty Catalog yields
+// an empty slice.
+func (r *CareerPageRepository) ListSeeds(ctx context.Context) ([]crawler.CatalogSeed, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT p.url, c.company_key
+		FROM career_page p JOIN company c ON c.id = p.company_id
+		ORDER BY p.last_seen DESC
+		`)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: error listing career page urls: %w", err)
+		return nil, fmt.Errorf("postgres: error listing career page seeds: %w", err)
 	}
 
-	urls, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	seeds, err := pgx.CollectRows(rows, pgx.RowToStructByPos[crawler.CatalogSeed])
 	if err != nil {
-		return nil, fmt.Errorf("postgres: error listing career page urls: %w", err)
+		return nil, fmt.Errorf("postgres: error listing career page seeds: %w", err)
 	}
 
-	return urls, nil
+	return seeds, nil
 }
 
 // Delete removes the Career Page with the given id. Deleting a row that does

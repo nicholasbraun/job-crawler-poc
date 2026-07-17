@@ -240,13 +240,14 @@ func TestCompanyUpsertWebsite(t *testing.T) {
 	})
 }
 
-// TestCompanyRepositoryListPagelessWebsites pins the pageless-websites query
-// that seeds Keyword Crawls from imported prospects with no known Career Page.
-// It seeds four companies exercising every branch: two Pageless-with-Website
-// (returned), one with a Website but an owned Career Page (excluded), and one
-// Pageless-without-Website (excluded). The self-heal subtest then gives one of
-// the returned companies a Career Page and proves its Website stops seeding.
-func TestCompanyRepositoryListPagelessWebsites(t *testing.T) {
+// TestCompanyRepositoryListPagelessSeeds pins the pageless-seeds query that
+// seeds Keyword Crawls from imported prospects with no known Career Page. It
+// seeds four companies exercising every branch: two Pageless-with-Website
+// (returned, each paired with its stored CompanyKey), one with a Website but an
+// owned Career Page (excluded), and one Pageless-without-Website (excluded). The
+// self-heal subtest then gives one of the returned companies a Career Page and
+// proves its Website stops seeding.
+func TestCompanyRepositoryListPagelessSeeds(t *testing.T) {
 	pool := newTestPool(t)
 	repo := postgres.NewCompanyRepository(pool)
 	pageRepo := postgres.NewCareerPageRepository(pool)
@@ -285,21 +286,26 @@ func TestCompanyRepositoryListPagelessWebsites(t *testing.T) {
 		t.Fatalf("error upserting company C: %v", err)
 	}
 
-	t.Run("returns only pageless companies that declare a website", func(t *testing.T) {
-		websites, err := repo.ListPagelessWebsites(t.Context())
+	t.Run("returns only pageless companies that declare a website, paired with their key", func(t *testing.T) {
+		seeds, err := repo.ListPagelessSeeds(t.Context())
 		if err != nil {
-			t.Fatalf("error listing pageless company websites: %v", err)
+			t.Fatalf("error listing pageless company seeds: %v", err)
 		}
-		want := map[string]bool{
-			"https://pageless.io": true,
-			"https://second.io":   true,
+		want := map[string]string{
+			"https://pageless.io": "pageless.io",
+			"https://second.io":   "second.io",
 		}
-		if len(websites) != len(want) {
-			t.Fatalf("want %d websites, got %d: %v", len(want), len(websites), websites)
+		if len(seeds) != len(want) {
+			t.Fatalf("want %d seeds, got %d: %v", len(want), len(seeds), seeds)
 		}
-		for _, w := range websites {
-			if !want[w] {
-				t.Errorf("unexpected website in result: %q", w)
+		for _, s := range seeds {
+			wantKey, ok := want[s.URL]
+			if !ok {
+				t.Errorf("unexpected website in result: %q", s.URL)
+				continue
+			}
+			if s.CompanyKey != wantKey {
+				t.Errorf("seed %q CompanyKey: want %q, got %q", s.URL, wantKey, s.CompanyKey)
 			}
 		}
 	})
@@ -315,35 +321,40 @@ func TestCompanyRepositoryListPagelessWebsites(t *testing.T) {
 			t.Fatalf("error attaching career page to company A: %v", err)
 		}
 
-		websites, err := repo.ListPagelessWebsites(t.Context())
+		seeds, err := repo.ListPagelessSeeds(t.Context())
 		if err != nil {
-			t.Fatalf("error listing pageless company websites: %v", err)
+			t.Fatalf("error listing pageless company seeds: %v", err)
 		}
-		want := map[string]bool{"https://second.io": true}
-		if len(websites) != len(want) {
-			t.Fatalf("after self-heal want %d websites, got %d: %v", len(want), len(websites), websites)
+		want := map[string]string{"https://second.io": "second.io"}
+		if len(seeds) != len(want) {
+			t.Fatalf("after self-heal want %d seeds, got %d: %v", len(want), len(seeds), seeds)
 		}
-		for _, w := range websites {
-			if !want[w] {
-				t.Errorf("unexpected website after self-heal: %q", w)
+		for _, s := range seeds {
+			wantKey, ok := want[s.URL]
+			if !ok {
+				t.Errorf("unexpected website after self-heal: %q", s.URL)
+				continue
+			}
+			if s.CompanyKey != wantKey {
+				t.Errorf("seed %q CompanyKey after self-heal: want %q, got %q", s.URL, wantKey, s.CompanyKey)
 			}
 		}
 	})
 }
 
-func TestCompanyRepositoryListPagelessWebsitesEmpty(t *testing.T) {
+func TestCompanyRepositoryListPagelessSeedsEmpty(t *testing.T) {
 	pool := newTestPool(t)
 	repo := postgres.NewCompanyRepository(pool)
 
-	got, err := repo.ListPagelessWebsites(t.Context())
+	got, err := repo.ListPagelessSeeds(t.Context())
 	if err != nil {
-		t.Fatalf("error listing pageless company websites: %v", err)
+		t.Fatalf("error listing pageless company seeds: %v", err)
 	}
 	if got == nil {
-		t.Fatal("ListPagelessWebsites must return a non-nil slice, got nil")
+		t.Fatal("ListPagelessSeeds must return a non-nil slice, got nil")
 	}
 	if len(got) != 0 {
-		t.Errorf("empty catalog should yield no websites, got %v", got)
+		t.Errorf("empty catalog should yield no seeds, got %v", got)
 	}
 }
 

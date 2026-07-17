@@ -27,8 +27,8 @@ import (
 )
 
 // memberSep separates the fields of an encoded queue/inflight member
-// (depth, hostname, url). It is the ASCII unit separator (0x1f), a control
-// byte that never appears in a normalized URL or hostname.
+// (depth, hostname, scope, owner, url). It is the ASCII unit separator (0x1f), a
+// control byte that never appears in a normalized URL, hostname, or CompanyKey.
 const memberSep = "\x1f"
 
 // maxJitter is the upper bound on the random delay added to every computed Next
@@ -61,7 +61,12 @@ return 'NEW'
 // KEYS: domains, processing, inflight. ARGV: queuePrefix, now(ms), leaseTTL(ms),
 // cooldown(ms), pollInterval(ms). Returns a 2-element table:
 //
-//	{'URL', member}   — a URL to crawl (member is depth\x1fhostname\x1furl)
+//	{'URL', member}   — a URL to crawl
+//	                     (member is depth\x1fhostname\x1fscope\x1fowner\x1furl)
+//	{'BADMEMBER', m}  — a queued member predating the #118 provenance format
+//	                     (fewer than four separators); put back on its queue and
+//	                     surfaced by Next as an error, so stale state is flushed
+//	                     rather than silently crawled unfenced.
 //	{'WAIT', wakeMs}   — nothing ready; caller sleeps until wakeMs then retries.
 //	                     wakeMs is bounded by now+pollInterval and the earliest
 //	                     in-flight lease expiry, so reclaim latency tracks
@@ -144,8 +149,21 @@ if not member then
 end
 
 redis.call('ZADD', domains, now + cooldown, bestDomain)
-local i2 = string.find(member, sep, string.find(member, sep, 1, true) + 1, true)
-local url = string.sub(member, i2 + 1)
+-- url is the last field: walk past depth, hostname, scope, owner to the 4th
+-- separator, then take the rest. Consecutive separators (empty scope/owner)
+-- are handled because string.find advances one position per call. Each step is
+-- guarded so a member with fewer than four separators -- one written before the
+-- #118 provenance format -- yields an actionable BADMEMBER instead of crashing
+-- on arithmetic over a nil find; it is pushed back so no URL is lost.
+local p = string.find(member, sep, 1, true)                 -- after depth
+if p then p = string.find(member, sep, p + 1, true) end     -- after hostname
+if p then p = string.find(member, sep, p + 1, true) end     -- after scope
+if p then p = string.find(member, sep, p + 1, true) end     -- after owner
+if not p then
+  redis.call('LPUSH', queuePrefix .. bestDomain, member)
+  return {'BADMEMBER', member}
+end
+local url = string.sub(member, p + 1)
 redis.call('ZADD', processing, now + leaseTTL, url)
 redis.call('HSET', inflight, url, member)
 return {'URL', member}
@@ -343,6 +361,9 @@ func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 		case "URL":
 			member, _ := reply[1].(string)
 			return decodeMember(member)
+		case "BADMEMBER":
+			member, _ := reply[1].(string)
+			return crawler.URL{}, fmt.Errorf("frontier: queue member %q predates the #118 provenance format; flush this run's frontier state before resuming on this build", member)
 		case "WAIT":
 			wakeMs, perr := strconv.ParseInt(fmt.Sprint(reply[1]), 10, 64)
 			if perr != nil {
@@ -397,21 +418,30 @@ func (f *Frontier) sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// encodeMember serializes a URL into a queue member: depth, hostname, and raw
-// URL joined by memberSep. Hostname is embedded so the reclaim path can route
-// an expired lease back to its domain queue without parsing the URL.
+// encodeMember serializes a URL into a queue member: depth, hostname, scope,
+// owner, and raw URL joined by memberSep, with the raw URL last (the only field
+// that can hold arbitrary bytes). Hostname is embedded at index 1 so the reclaim
+// path can route an expired lease back to its domain queue without parsing the
+// URL; scope and owner carry keyword-crawl provenance (ADR-0021).
 func encodeMember(u crawler.URL) string {
-	return strconv.Itoa(u.Depth) + memberSep + u.Hostname + memberSep + u.RawURL
+	return strconv.Itoa(u.Depth) + memberSep + u.Hostname + memberSep +
+		u.Scope + memberSep + u.Owner + memberSep + u.RawURL
 }
 
 func decodeMember(member string) (crawler.URL, error) {
-	parts := strings.SplitN(member, memberSep, 3)
-	if len(parts) != 3 {
+	parts := strings.SplitN(member, memberSep, 5)
+	if len(parts) != 5 {
 		return crawler.URL{}, fmt.Errorf("frontier: malformed member %q", member)
 	}
 	depth, err := strconv.Atoi(parts[0])
 	if err != nil {
 		return crawler.URL{}, fmt.Errorf("frontier: bad depth in member %q: %w", member, err)
 	}
-	return crawler.URL{Depth: depth, Hostname: parts[1], RawURL: parts[2]}, nil
+	return crawler.URL{
+		Depth:    depth,
+		Hostname: parts[1],
+		Scope:    parts[2],
+		Owner:    parts[3],
+		RawURL:   parts[4],
+	}, nil
 }
