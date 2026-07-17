@@ -446,6 +446,17 @@ func newFactory(
 		catalogSeeds := append(careerPageSeeds, pagelessSeeds...)
 		seeds := catalog.ResolveSeeds(catalogSeeds)
 
+		// Per-run attribution snapshot (ADR-0021): a CompanyKey → Company-name map
+		// the extract stage uses to attribute a saved Job Listing to its Owner
+		// Company via the source URL's Owner, discarding the extractor's own company
+		// guess. Captured read-only and shared across the stage's per-worker
+		// processors (safe concurrent reads).
+		companies, err := companyRepository.List(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("resolving keyword crawl company snapshot from catalog: %w", err)
+		}
+		companySnapshot := catalog.NewCompanySnapshot(companies)
+
 		// Multi-keyword OR relevance filter built from the Definition: a page is
 		// relevant if its title OR main content contains any keyword. Prunes
 		// pages before the expensive LLM extraction (ADR-0004). A title match
@@ -472,6 +483,7 @@ func newFactory(
 					JobListingExtractor:  jobListingExtractor,
 					DefinitionID:         def.ID,
 					Recorder:             llmRecorder,
+					CompanyNames:         companySnapshot,
 				})
 			},
 			llmstream.WithWorkers[crawler.RawJobListing](llmMaxWorkers),
