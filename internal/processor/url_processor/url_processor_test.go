@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -38,12 +39,18 @@ type stubRobots struct{}
 func (stubRobots) Check(ctx context.Context, u string) error { return nil }
 
 // stubFrontier returns addErr from every AddURL call, letting a test drive the
-// worker's handling of a specific frontier rejection.
+// worker's handling of a specific frontier rejection. It also records every URL
+// passed to AddURL so a test can assert exactly which links reached the
+// frontier (e.g. the scope fence dropping off-scope links before enqueue).
 type stubFrontier struct {
 	addErr error
+	added  []crawler.URL
 }
 
-func (f *stubFrontier) AddURL(ctx context.Context, url crawler.URL) error { return f.addErr }
+func (f *stubFrontier) AddURL(ctx context.Context, url crawler.URL) error {
+	f.added = append(f.added, url)
+	return f.addErr
+}
 func (f *stubFrontier) Next(ctx context.Context) (crawler.URL, error) {
 	return crawler.URL{}, frontier.ErrDone
 }
@@ -239,6 +246,80 @@ func TestProcessRecordsRelevanceGate(t *testing.T) {
 				if rec.gates[i] != want {
 					t.Errorf("gate[%d] = %v, want %v", i, rec.gates[i], want)
 				}
+			}
+		})
+	}
+}
+
+// TestProcessScopeFence proves the Keyword Crawl scope fence (ADR-0021) drops
+// off-scope discovered links before they reach the frontier, and is inert when
+// the seed carries no Scope (the Discovery Crawl roam property).
+func TestProcessScopeFence(t *testing.T) {
+	urls := []string{
+		"https://acme.com/jobs/1",
+		"https://careers.acme.com/jobs/2",
+		"https://talish.dev/portfolio",
+		"https://boards.greenhouse.io/globex",
+	}
+
+	tests := []struct {
+		name  string
+		scope string
+		want  []string
+	}{
+		{
+			// A self-hosted seed keyed on acme.com follows only links resolving to the
+			// same Company: its registrable domain and every subdomain. The off-catalog
+			// host (talish.dev) and the sibling ATS tenant (greenhouse:globex) are
+			// fenced out before enqueue — which also proves a self-hosted seed does not
+			// follow a link onto a known ATS host.
+			name:  "keyword crawl fences off-scope links",
+			scope: "acme.com",
+			want: []string{
+				"https://acme.com/jobs/1",
+				"https://careers.acme.com/jobs/2",
+			},
+		},
+		{
+			// Without a Scope the fence is inert — the Discovery Crawl roams — so every
+			// discovered link is enqueued regardless of Company.
+			name:  "empty scope roams",
+			scope: "",
+			want:  urls,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fr := &stubFrontier{}
+			cfg := &urlprocessor.Config{
+				Frontier:         fr,
+				Downloader:       &stubDownloader{content: []byte("<html></html>")},
+				Parser:           &stubParser{content: &crawler.Content{Title: "role", MainContent: "body", URLs: urls}},
+				ContentFilter:    func(*crawler.Content) error { return nil },
+				URLFilter:        func(string) error { return nil },
+				RobotsTxtChecker: stubRobots{},
+				RelevanceFilter:  func(*crawler.Content) error { return errors.New("not a listing") },
+				OnJobListing:     func(context.Context, *crawler.RawJobListing) error { return nil },
+			}
+
+			worker := urlprocessor.NewProcessor(cfg)
+			seed, err := crawler.NewURL("https://acme.com")
+			if err != nil {
+				t.Fatalf("NewURL: %v", err)
+			}
+			seed.Scope = tt.scope
+
+			if err := worker.Process(t.Context(), &seed); err != nil {
+				t.Fatalf("Process returned error: %v", err)
+			}
+
+			got := make([]string, len(fr.added))
+			for i, u := range fr.added {
+				got[i] = u.RawURL
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("enqueued URLs = %v, want %v", got, tt.want)
 			}
 		})
 	}
