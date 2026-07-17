@@ -1,0 +1,80 @@
+name: CI
+
+# Gate every push to main and every pull request targeting main on the same
+# checks the Makefile wires up locally: gofmt, golangci-lint, build, and the
+# full Go test suite (with the race detector), plus the dashboard build.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Superseded PR runs are cancelled to keep feedback fast; main runs are left to
+# finish so every merged commit gets a complete result.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go (lint, build, test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting (gofmt)
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::The following files are not gofmt-formatted (run 'gofmt -w .'):"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      # golangci-lint (v2 config in .golangci.yml) runs the standard set:
+      # govet, staticcheck, errcheck, ineffassign, unused.
+      - name: Lint (golangci-lint)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
+      - name: Build
+        run: go build ./...
+
+      # Runs against real Postgres/Redis via testcontainers-go, which uses the
+      # Docker daemon preinstalled on the runner. -race matches `make test-race`.
+      - name: Test (race)
+        run: go test -race ./...
+
+  web:
+    name: Dashboard (typecheck, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `npm run build` is `tsc -b && vite build`: type-checks the whole project
+      # and produces the production bundle the server embeds.
+      - name: Build dashboard
+        run: npm run build
