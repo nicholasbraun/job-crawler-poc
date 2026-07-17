@@ -10,6 +10,7 @@ import (
 	"log/slog"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
+	"github.com/nicholasbraun/job-crawler-poc/internal/catalog"
 	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
@@ -150,6 +151,16 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 		}
 		if err := w.urlFilter(parsed.RawURL); err != nil {
 			slog.Info("worker: url filtered out", "url", parsed.RawURL, "cause", err)
+			continue
+		}
+
+		// Scope fence (ADR-0021): on a Keyword Crawl, follow a discovered link only
+		// when it resolves to the same Company as its seed. parsed.Scope is inherited
+		// from the seed via URL.Parse; an empty Scope means roam, so this is inert for
+		// any un-scoped crawl. Runs alongside the URL filter chain but keyed on
+		// provenance the chain cannot see.
+		if !catalog.InScope(parsed.Scope, parsed) {
+			slog.Info("worker: url out of scope, dropping", "url", parsed.RawURL, "scope", parsed.Scope)
 			continue
 		}
 
