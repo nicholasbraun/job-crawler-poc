@@ -116,6 +116,36 @@ func TestURLs(t *testing.T) {
 	})
 }
 
+func TestURLProvenance(t *testing.T) {
+	t.Run("fresh URL has empty Scope and Owner", func(t *testing.T) {
+		u, err := crawler.NewURL("https://acme.com")
+		if err != nil {
+			t.Fatalf("NewURL: %v", err)
+		}
+		assertStrings(t, "", u.Scope)
+		assertStrings(t, "", u.Owner)
+	})
+
+	t.Run("child inherits Scope/Owner unchanged while Depth increments", func(t *testing.T) {
+		parent := crawler.URL{
+			Hostname: "acme.com",
+			RawURL:   "https://acme.com",
+			Depth:    2,
+			Scope:    "acme.com",
+			Owner:    "greenhouse:acme",
+		}
+		child, err := parent.Parse("/jobs/123")
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		assertStrings(t, parent.Scope, child.Scope)
+		assertStrings(t, parent.Owner, child.Owner)
+		if child.Depth != parent.Depth+1 {
+			t.Errorf("Depth: got %d, want %d", child.Depth, parent.Depth+1)
+		}
+	})
+}
+
 func TestURLNormalize(t *testing.T) {
 	cases := []struct {
 		name string

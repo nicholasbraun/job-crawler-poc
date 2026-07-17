@@ -392,4 +392,63 @@ func TestRedisFrontier(t *testing.T) {
 			t.Errorf("after marking one done: want 2, got %d", n)
 		}
 	})
+
+	t.Run("provenance survives add then next", func(t *testing.T) {
+		f := redisfrontier.New(client, uuid.New())
+		want := crawler.URL{
+			Hostname: "a",
+			RawURL:   "http://a/1",
+			Depth:    0,
+			Scope:    "a.example",
+			Owner:    "greenhouse:a",
+		}
+		if err := f.AddURL(t.Context(), want); err != nil {
+			t.Fatalf("AddURL: %v", err)
+		}
+		got, err := f.Next(t.Context())
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		// Struct compare covers Scope/Owner because URL stays a comparable value.
+		if got != want {
+			t.Errorf("Next: got %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("provenance survives a reclaimed lease", func(t *testing.T) {
+		f := redisfrontier.New(client, uuid.New(),
+			redisfrontier.WithLeaseTTL(300*time.Millisecond),
+			redisfrontier.WithPollInterval(50*time.Millisecond),
+		)
+		want := crawler.URL{
+			Hostname: "a",
+			RawURL:   "http://a/1",
+			Depth:    0,
+			Scope:    "a.example",
+			Owner:    "greenhouse:a",
+		}
+		if err := f.AddURL(t.Context(), want); err != nil {
+			t.Fatalf("AddURL: %v", err)
+		}
+
+		// Lease it and never MarkDone (crashed worker); the reclaim path
+		// re-enqueues the exact member, so Scope/Owner must survive it.
+		got, err := f.Next(t.Context())
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		if got != want {
+			t.Fatalf("first pop: got %+v, want %+v", got, want)
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+		reclaimed, err := f.Next(ctx)
+		if err != nil {
+			t.Fatalf("Next (reclaim): %v", err)
+		}
+		if reclaimed != want {
+			t.Errorf("reclaimed: got %+v, want %+v", reclaimed, want)
+		}
+	})
 }
