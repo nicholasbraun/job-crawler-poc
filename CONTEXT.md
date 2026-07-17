@@ -22,7 +22,7 @@ The single, perpetual Crawl Definition of kind Discovery: bounded-broad, it find
 _Avoid_: spider, broad crawl
 
 **Keyword Crawl**:
-A Crawl Definition kind: seeded from the Catalog, it extracts Job Listings matching a set of OR-matched keywords.
+A Crawl Definition kind: seeded from the Catalog, it collects Job Listings matching a set of OR-matched keywords, each seed confined to its own Company by Scope. It acquires listings two ways — an ATS Fetch for a Company on a recognized ATS, otherwise by crawling and extracting posting pages.
 _Avoid_: search, filter crawl
 
 ### Run lifecycle
@@ -54,7 +54,7 @@ The index page that lists a Company's open jobs; may be paginated.
 _Avoid_: jobs page, listings page
 
 **Job Listing**:
-A single job posting, extracted from under a Career Page.
+A single job posting found under a Career Page, attributed to that Career Page's Company rather than to a name read off the page. Obtained either by extracting a crawled posting page or by an ATS Fetch.
 _Avoid_: job, posting, vacancy, ad
 
 **Catalog**:
@@ -113,6 +113,14 @@ _Avoid_: queue, backlog
 A crawl's starting URLs. For a Discovery Crawl they are configured, and may also be added while it runs — appended to the Definition and injected into the live Frontier; for a Keyword Crawl they are resolved from the Catalog at run start — every Career Page, plus each Pageless Company's Website.
 _Avoid_: entry point, root URL
 
+**Scope**:
+The Company-identity boundary a Keyword Crawl stays within: a crawl seeded from one Career Page follows links only into that same Company — its own site and subdomains, or its single ATS tenant — never onto unrelated hosts. Derived from the seed's URL so any discovered link can be tested against it. The Discovery Crawl has no Scope; roaming is its job.
+_Avoid_: domain limit, allowlist, fence
+
+**ATS Fetch**:
+A Keyword Crawl's acquisition of a Company's Job Listings straight from its ATS provider's board API in one call, rather than by crawling and extracting its posting pages. Available for a Company on — or embedding — a recognized ATS the crawler has an API client for; other ATS boards are crawled as a fallback.
+_Avoid_: board fetch, API scrape, direct ingest
+
 ### Classification
 
 **Gate**:
@@ -132,7 +140,7 @@ A content-derived mark that a page is a Career Page hub — an ATS Embed, a stru
 _Avoid_: feature, heuristic, hint
 
 **ATS Embed**:
-A Company's own page that renders a third-party ATS board inline, via an iframe or a provider script. Structurally a Career Page even though its host is the Company's domain rather than the ATS, so identity still attributes it to the Company by that domain.
+A Company's own page that renders a third-party ATS board inline, via an iframe or a provider script. Structurally a Career Page even though its host is the Company's domain rather than the ATS, so identity still attributes it to the Company by that domain. In a Keyword Crawl it triggers an ATS Fetch of the embedded board, reaching postings the crawler cannot otherwise follow.
 _Avoid_: iframe, widget, integration
 
 **Terminal-Hub Word**:
