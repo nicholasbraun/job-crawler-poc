@@ -6,6 +6,17 @@ version: "2"
 linters:
   default: standard
 
+  settings:
+    errcheck:
+      # Ignore unchecked errors from calls whose error is not actionable:
+      # writes to stdout/stderr/buffers in CLI report code, and Close on
+      # read paths. Real unchecked errors elsewhere still fail the lint.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Closer).Close
+
   exclusions:
     # Loosen a few checks in test files, where unchecked errors and
     # throwaway values are common and rarely worth failing the lint.

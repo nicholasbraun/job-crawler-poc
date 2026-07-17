@@ -23,7 +23,7 @@ func Migrate(ctx context.Context, dsn string) error {
 	if err != nil {
 		return fmt.Errorf("postgres: error opening migration db: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	goose.SetBaseFS(migrations)
 	if err := goose.SetDialect("postgres"); err != nil {

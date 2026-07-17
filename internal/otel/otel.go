@@ -26,7 +26,9 @@ func Setup(ctx context.Context) (func(context.Context), error) {
 	// Each registered cleanup will be invoked once.
 	shutdown := func(ctx context.Context) {
 		for _, fn := range shutdownFuncs {
-			fn(ctx)
+			if err := fn(ctx); err != nil {
+				slog.Error("otel: shutdown function failed", "err", err)
+			}
 		}
 		shutdownFuncs = nil
 	}
@@ -54,7 +56,9 @@ func Setup(ctx context.Context) (func(context.Context), error) {
 		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 		slog.Info("serving metrics at :2223/metrics")
-		http.ListenAndServe(":2223", mux)
+		if err := http.ListenAndServe(":2223", mux); err != nil {
+			slog.Error("otel: metrics server stopped", "err", err)
+		}
 	}()
 
 	return shutdown, nil

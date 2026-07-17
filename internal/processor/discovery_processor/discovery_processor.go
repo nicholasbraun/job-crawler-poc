@@ -80,7 +80,11 @@ func NewProcessor(cfg *Config) *discoveryWorker {
 }
 
 func (w *discoveryWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
-	defer w.frontier.MarkDone(ctx, nextURL.RawURL)
+	defer func() {
+		if err := w.frontier.MarkDone(ctx, nextURL.RawURL); err != nil {
+			slog.Error("discovery_worker: failed to mark url done", "url", nextURL.RawURL, "err", err)
+		}
+	}()
 
 	slog.Info("discovery_worker: got nextURL", "url", nextURL.RawURL)
 

@@ -46,7 +46,7 @@ func readReport(path string) (bench.Report, error) {
 	if err != nil {
 		return bench.Report{}, fmt.Errorf("open %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	rep, err := bench.DecodeReport(f)
 	if err != nil {
