@@ -48,6 +48,17 @@ type Config struct {
 	// OnJobListing is called when a page passes the relevance filter.
 	// Typically this enqueues the raw listing into a job listing worker pool.
 	OnJobListing func(ctx context.Context, jobListing *crawler.RawJobListing) error
+	// HasATSFetcher reports whether an ATS provider has a registered board-API
+	// fetcher. Only a firing ATS Embed for such a provider triggers OnATSEmbed; an
+	// embed for a clientless provider is ignored — v1 does not derive a crawlable
+	// board URL from it (ADR-0022). Optional: nil reports false for every provider,
+	// disabling embed-triggered fetches.
+	HasATSFetcher func(provider string) bool
+	// OnATSEmbed triggers an ATS Fetch of a board embedded on a crawled Keyword-Crawl
+	// page, attributed to the page's Owner (ADR-0022, #129). Called once per firing
+	// embed whose provider HasATSFetcher reports registered. Optional: nil disables
+	// embed-triggered fetches.
+	OnATSEmbed func(ctx context.Context, provider, tenant, owner string) error
 	// Recorder instruments the keyword relevance gate (pages resolved without the
 	// LLM extractor) for the ADR-0007 measurement. Optional: a nil Recorder
 	// records nothing.
@@ -66,6 +77,8 @@ type urlWorker struct {
 	recorder             llmobs.Recorder
 	urlsProcessedCounter metric.Int64Counter
 	onJobListing         func(ctx context.Context, jobListing *crawler.RawJobListing) error
+	hasATSFetcher        func(provider string) bool
+	onATSEmbed           func(ctx context.Context, provider, tenant, owner string) error
 }
 
 func NewProcessor(cfg *Config) *urlWorker {
@@ -93,6 +106,8 @@ func NewProcessor(cfg *Config) *urlWorker {
 		recorder:             recorder,
 		urlsProcessedCounter: urlsProcessedCounter,
 		onJobListing:         cfg.OnJobListing,
+		hasATSFetcher:        cfg.HasATSFetcher,
+		onATSEmbed:           cfg.OnATSEmbed,
 	}
 }
 
@@ -122,6 +137,12 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 	if err := w.contentFilter(content); err != nil {
 		return fmt.Errorf("worker: content filtered out %w", err)
 	}
+
+	// Trigger an ATS Fetch for any board embedded on this page (ADR-0022, #129).
+	// Runs for every downloaded+parsed+filtered page regardless of the extract or
+	// relevance outcome: the embedded board is not among content.URLs (embeds are
+	// kept out of the crawl frontier) so it is otherwise unreachable.
+	w.triggerATSEmbeds(ctx, nextURL, content)
 
 	if !pagegate.ShouldExtract(*nextURL, content, w.gateConfig) {
 		// The Extract Gate shed this page without the LLM extractor -- a URL signal
@@ -186,4 +207,26 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 
 	w.urlsProcessedCounter.Add(ctx, 1)
 	return nil
+}
+
+// triggerATSEmbeds fires an ATS Fetch for each firing ATS Embed on content whose
+// provider has a registered board-API fetcher (ADR-0022, #129). The fetched board
+// is attributed to nextURL.Owner — the ADR-0021 attribution key the page inherited
+// from its seed. An embed for a clientless provider (no registered fetcher) is
+// ignored; v1 never derives a crawlable board URL from it. It is inert when either
+// hook is nil (a Discovery Crawl or an un-wired Keyword Crawl). A trigger error is
+// logged and skipped, best-effort, so it never aborts Process.
+func (w *urlWorker) triggerATSEmbeds(ctx context.Context, nextURL *crawler.URL, content *crawler.Content) {
+	if w.onATSEmbed == nil || w.hasATSFetcher == nil {
+		return
+	}
+	for _, ref := range pagegate.ATSEmbedTenants(content) {
+		if !w.hasATSFetcher(ref.Provider) {
+			continue
+		}
+		if err := w.onATSEmbed(ctx, ref.Provider, ref.Tenant, nextURL.Owner); err != nil {
+			slog.Error("worker: ats embed trigger failed", "err", err,
+				"provider", ref.Provider, "tenant", ref.Tenant, "url", nextURL.RawURL)
+		}
+	}
 }

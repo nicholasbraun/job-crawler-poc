@@ -569,7 +569,23 @@ func newFactory(
 					RelevanceFilter:  keywordFilter,
 					GateConfig:       gateConfig,
 					OnJobListing:     onJobListing,
-					Recorder:         llmRecorder,
+					// ATS Embed trigger (ADR-0022, #129): a firing board embed on a
+					// crawled page whose provider has a registered fetcher is submitted
+					// through the same deduped Lane.Submit as the routed seeds, attributed
+					// to the embedding page's Owner. An embed for a clientless provider is
+					// ignored (HasATSFetcher reports false).
+					HasATSFetcher: func(provider string) bool {
+						_, ok := atsRegistry.Fetcher(provider)
+						return ok
+					},
+					OnATSEmbed: func(ctx context.Context, provider, tenant, owner string) error {
+						return atsLane.Submit(ctx, atsingest.FetchTask{
+							Provider:   provider,
+							TenantSlug: tenant,
+							Owner:      owner,
+						})
+					},
+					Recorder: llmRecorder,
 				})
 			}, pool.WithMaxWorkers[crawler.URL](maxWorkers))
 

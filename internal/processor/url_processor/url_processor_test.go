@@ -251,6 +251,166 @@ func TestProcessRecordsRelevanceGate(t *testing.T) {
 	}
 }
 
+// atsEmbedCall records one OnATSEmbed invocation so a test can assert exactly
+// which boards a crawled page's embeds triggered a fetch for, and with which Owner.
+type atsEmbedCall struct {
+	Provider string
+	Tenant   string
+	Owner    string
+}
+
+// atsEmbedSpy captures every OnATSEmbed call the worker makes and can be told to
+// return an error, to drive the best-effort error path.
+type atsEmbedSpy struct {
+	calls  []atsEmbedCall
+	retErr error
+}
+
+func (s *atsEmbedSpy) onEmbed(_ context.Context, provider, tenant, owner string) error {
+	s.calls = append(s.calls, atsEmbedCall{Provider: provider, Tenant: tenant, Owner: owner})
+	return s.retErr
+}
+
+// TestProcessATSEmbedTrigger proves the Keyword Crawl ATS Embed trigger (ADR-0022,
+// #129) fires an ATS Fetch for a firing board embed whose provider has a registered
+// fetcher, attributes it to the page's Owner, ignores clientless providers, and is
+// inert (and panic-free) when the hooks are nil.
+func TestProcessATSEmbedTrigger(t *testing.T) {
+	// A firing Greenhouse script embed: needs its board-container marker present.
+	greenhouseEmbed := &crawler.Content{
+		Title:       "Careers",
+		MainContent: "body",
+		Embeds:      []crawler.Embed{{Src: "https://boards.greenhouse.io/embed/job_board/js?for=acme"}},
+		ElementIDs:  []string{"grnhse_app"},
+	}
+	// A firing Personio iframe embed (clientless provider — no registered fetcher).
+	personioEmbed := &crawler.Content{
+		Title:       "Team",
+		MainContent: "body",
+		Embeds:      []crawler.Embed{{Src: "https://globex.jobs.personio.de/search", IsFrame: true}},
+	}
+
+	t.Run("registered provider fires tagged with the page Owner", func(t *testing.T) {
+		spy := &atsEmbedSpy{}
+		cfg := &urlprocessor.Config{
+			Frontier:         &stubFrontier{},
+			Downloader:       &stubDownloader{content: []byte("<html></html>")},
+			Parser:           &stubParser{content: greenhouseEmbed},
+			ContentFilter:    func(*crawler.Content) error { return nil },
+			URLFilter:        func(string) error { return nil },
+			RobotsTxtChecker: stubRobots{},
+			RelevanceFilter:  func(*crawler.Content) error { return errors.New("not a listing") },
+			OnJobListing:     func(context.Context, *crawler.RawJobListing) error { return nil },
+			HasATSFetcher:    func(p string) bool { return p == "greenhouse" },
+			OnATSEmbed:       spy.onEmbed,
+		}
+
+		worker := urlprocessor.NewProcessor(cfg)
+		seed, err := crawler.NewURL("https://acme.com/team")
+		if err != nil {
+			t.Fatalf("NewURL: %v", err)
+		}
+		seed.Owner = "acme.com"
+
+		if err := worker.Process(t.Context(), &seed); err != nil {
+			t.Fatalf("Process returned error: %v", err)
+		}
+
+		want := []atsEmbedCall{{Provider: "greenhouse", Tenant: "acme", Owner: "acme.com"}}
+		if !reflect.DeepEqual(spy.calls, want) {
+			t.Errorf("OnATSEmbed calls = %v, want %v", spy.calls, want)
+		}
+	})
+
+	t.Run("clientless provider does not fire", func(t *testing.T) {
+		spy := &atsEmbedSpy{}
+		cfg := &urlprocessor.Config{
+			Frontier:         &stubFrontier{},
+			Downloader:       &stubDownloader{content: []byte("<html></html>")},
+			Parser:           &stubParser{content: personioEmbed},
+			ContentFilter:    func(*crawler.Content) error { return nil },
+			URLFilter:        func(string) error { return nil },
+			RobotsTxtChecker: stubRobots{},
+			RelevanceFilter:  func(*crawler.Content) error { return errors.New("not a listing") },
+			OnJobListing:     func(context.Context, *crawler.RawJobListing) error { return nil },
+			// Personio has no registered fetcher, so the firing embed must not fire.
+			HasATSFetcher: func(string) bool { return false },
+			OnATSEmbed:    spy.onEmbed,
+		}
+
+		worker := urlprocessor.NewProcessor(cfg)
+		seed, err := crawler.NewURL("https://globex.com/team")
+		if err != nil {
+			t.Fatalf("NewURL: %v", err)
+		}
+
+		if err := worker.Process(t.Context(), &seed); err != nil {
+			t.Fatalf("Process returned error: %v", err)
+		}
+
+		if len(spy.calls) != 0 {
+			t.Errorf("OnATSEmbed calls = %v, want none (clientless provider)", spy.calls)
+		}
+	})
+
+	t.Run("nil hooks are inert", func(t *testing.T) {
+		cfg := &urlprocessor.Config{
+			Frontier:         &stubFrontier{},
+			Downloader:       &stubDownloader{content: []byte("<html></html>")},
+			Parser:           &stubParser{content: greenhouseEmbed},
+			ContentFilter:    func(*crawler.Content) error { return nil },
+			URLFilter:        func(string) error { return nil },
+			RobotsTxtChecker: stubRobots{},
+			RelevanceFilter:  func(*crawler.Content) error { return errors.New("not a listing") },
+			OnJobListing:     func(context.Context, *crawler.RawJobListing) error { return nil },
+			// HasATSFetcher and OnATSEmbed left nil (Discovery / un-wired Keyword Crawl).
+		}
+
+		worker := urlprocessor.NewProcessor(cfg)
+		seed, err := crawler.NewURL("https://acme.com/team")
+		if err != nil {
+			t.Fatalf("NewURL: %v", err)
+		}
+
+		if err := worker.Process(t.Context(), &seed); err != nil {
+			t.Fatalf("Process returned error: %v", err)
+		}
+	})
+
+	t.Run("trigger error is logged and does not abort Process", func(t *testing.T) {
+		spy := &atsEmbedSpy{retErr: errors.New("boom")}
+		cfg := &urlprocessor.Config{
+			Frontier:         &stubFrontier{},
+			Downloader:       &stubDownloader{content: []byte("<html></html>")},
+			Parser:           &stubParser{content: greenhouseEmbed},
+			ContentFilter:    func(*crawler.Content) error { return nil },
+			URLFilter:        func(string) error { return nil },
+			RobotsTxtChecker: stubRobots{},
+			RelevanceFilter:  func(*crawler.Content) error { return errors.New("not a listing") },
+			OnJobListing:     func(context.Context, *crawler.RawJobListing) error { return nil },
+			HasATSFetcher:    func(p string) bool { return p == "greenhouse" },
+			OnATSEmbed:       spy.onEmbed,
+		}
+
+		worker := urlprocessor.NewProcessor(cfg)
+		seed, err := crawler.NewURL("https://acme.com/team")
+		if err != nil {
+			t.Fatalf("NewURL: %v", err)
+		}
+
+		var buf bytes.Buffer
+		captureLogs(t, &buf, func() {
+			if err := worker.Process(t.Context(), &seed); err != nil {
+				t.Fatalf("Process returned error: %v", err)
+			}
+		})
+
+		if !hasErrorLevel(t, &buf) {
+			t.Errorf("expected an ERROR-level log for the failed trigger; logs:\n%s", buf.String())
+		}
+	})
+}
+
 // TestProcessScopeFence proves the Keyword Crawl scope fence (ADR-0021) drops
 // off-scope discovered links before they reach the frontier, and is inert when
 // the seed carries no Scope (the Discovery Crawl roam property).
