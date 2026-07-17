@@ -87,9 +87,9 @@ func TestNewDefaultRegistry(t *testing.T) {
 	if _, ok := reg.Fetcher(ats.ProviderGreenhouse); !ok {
 		t.Errorf("NewDefaultRegistry did not wire the Greenhouse fetcher")
 	}
-	// Lever has no board-API client until #128; the registry must gracefully fall
-	// back rather than resolve a fetcher for it.
-	if _, ok := reg.Fetcher("lever"); ok {
-		t.Error("NewDefaultRegistry resolved a fetcher for lever, want fallback (ok=false)")
+	// #128 ships the Lever board-API client, so the default registry now resolves
+	// it too rather than falling back to the crawl path.
+	if _, ok := reg.Fetcher(ats.ProviderLever); !ok {
+		t.Errorf("NewDefaultRegistry did not wire the Lever fetcher")
 	}
 }

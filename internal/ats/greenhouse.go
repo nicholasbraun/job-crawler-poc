@@ -4,12 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"html"
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
-	"strings"
 	"time"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
@@ -143,7 +140,7 @@ func mapGreenhouseJob(j greenhouseJob) *crawler.JobListing {
 		Title:       j.Title,
 		URL:         j.AbsoluteURL, // canonical posting URL; the lane keys upserts on it (#127)
 		Location:    j.Location.Name,
-		Description: htmlToText(j.Content),
+		Description: htmlDoubleEncodedToText(j.Content),
 	}
 	if len(j.Departments) > 0 {
 		listing.Department = j.Departments[0].Name
@@ -152,23 +149,6 @@ func mapGreenhouseJob(j greenhouseJob) *crawler.JobListing {
 		listing.FirstPublished = t
 	}
 	return listing
-}
-
-var htmlTagRegex = regexp.MustCompile("<[^>]*>")
-
-// htmlToText turns Greenhouse's HTML-entity-encoded HTML body into plain text.
-// The board field is entity-encoded HTML, so a single unescape only yields real
-// HTML whose text nodes are themselves still entity-encoded (e.g. &amp;nbsp;,
-// &amp;amp;). The steps are therefore: unescape the outer layer to real HTML,
-// strip tags to spaces (so words do not glue across block tags), unescape the
-// residual text-node entities (&amp; -> &, &nbsp; -> a space, &rsquo; -> ’), then
-// collapse runs of whitespace — including the NBSP that Fields treats as space —
-// to single spaces.
-func htmlToText(s string) string {
-	unescaped := html.UnescapeString(s)
-	stripped := htmlTagRegex.ReplaceAllString(unescaped, " ")
-	text := html.UnescapeString(stripped)
-	return strings.Join(strings.Fields(text), " ")
 }
 
 // parseGreenhouseTime parses Greenhouse's RFC3339 first_published, tolerating a
