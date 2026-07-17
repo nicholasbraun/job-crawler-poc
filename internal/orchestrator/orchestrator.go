@@ -43,19 +43,24 @@ func NewOrchestrator(cfg Config) *Orchestrator {
 	}
 }
 
-// Run seeds the frontier with the provided URLs, then enters the main crawl
+// Run seeds the frontier with the provided Seeds, then enters the main crawl
 // loop: pulling URLs from the frontier and dispatching them via onNextURL.
-// Returns nil when the frontier signals ErrDone (all work complete),
-// or an error if the frontier or dispatch fails.
-func (o *Orchestrator) Run(ctx context.Context, seedURLs []string) error {
+// Each seed's ADR-0021 provenance (Scope, Owner) is copied onto the parsed URL
+// so every link discovered from it inherits the pair; the orchestrator stays
+// catalog-agnostic and only carries pre-computed provenance forward. Returns
+// nil when the frontier signals ErrDone (all work complete), or an error if the
+// frontier or dispatch fails.
+func (o *Orchestrator) Run(ctx context.Context, seeds []crawler.Seed) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 
-	for _, seedURL := range seedURLs {
-		parsed, err := crawler.NewURL(seedURL)
+	for _, seed := range seeds {
+		parsed, err := crawler.NewURL(seed.URL)
 		if err != nil {
 			slog.Error("could not parse seed url", "err", err)
 			continue
 		}
+		parsed.Scope = seed.Scope
+		parsed.Owner = seed.Owner
 
 		// AddURL dedups internally now, so no separate visited check is needed.
 		err = o.frontier.AddURL(ctx, parsed)

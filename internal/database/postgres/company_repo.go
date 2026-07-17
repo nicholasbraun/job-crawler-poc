@@ -94,31 +94,33 @@ func (r *CompanyRepository) MergeImport(ctx context.Context, m *crawler.CompanyM
 	return nil
 }
 
-// ListPagelessWebsites returns the Website of every Pageless Company: a company
-// row with a non-NULL website and no career_page. Ordered most-recently-seen
-// first to mirror ListURLs -- ordering is not load-bearing, since the Frontier
-// dedups and does not depend on seed order. Because the write path stores an
-// empty Website as SQL NULL (the ats_provider idiom), `website IS NOT NULL`
-// alone excludes the without-website case. Never returns nil; an empty result
-// yields an empty slice.
-func (r *CompanyRepository) ListPagelessWebsites(ctx context.Context) ([]string, error) {
+// ListPagelessSeeds returns each Pageless Company's Website paired with its
+// stored CompanyKey (the seed's Owner): a company row with a non-NULL website
+// and no career_page. Ordered most-recently-seen first to mirror ListSeeds --
+// ordering is not load-bearing, since the Frontier dedups and does not depend on
+// seed order. The (website, company_key) column order matches the
+// crawler.CatalogSeed (URL, CompanyKey) field order the positional collector
+// binds by. Because the write path stores an empty Website as SQL NULL (the
+// ats_provider idiom), `website IS NOT NULL` alone excludes the without-website
+// case. Never returns nil; an empty result yields an empty slice.
+func (r *CompanyRepository) ListPagelessSeeds(ctx context.Context) ([]crawler.CatalogSeed, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT website
+		SELECT c.website, c.company_key
 		FROM company c
 		WHERE c.website IS NOT NULL
 		  AND NOT EXISTS (SELECT 1 FROM career_page p WHERE p.company_id = c.id)
 		ORDER BY c.last_seen DESC
 		`)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: error listing pageless company websites: %w", err)
+		return nil, fmt.Errorf("postgres: error listing pageless company seeds: %w", err)
 	}
 
-	websites, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	seeds, err := pgx.CollectRows(rows, pgx.RowToStructByPos[crawler.CatalogSeed])
 	if err != nil {
-		return nil, fmt.Errorf("postgres: error listing pageless company websites: %w", err)
+		return nil, fmt.Errorf("postgres: error listing pageless company seeds: %w", err)
 	}
 
-	return websites, nil
+	return seeds, nil
 }
 
 // Delete removes the Company with the given id. Deleting a row that does not

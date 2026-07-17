@@ -59,9 +59,12 @@ type CareerPageRepository interface {
 	// present, derived from the URL host) is refreshed. Re-merging changes no data.
 	MergeImport(ctx context.Context, m *CareerPageMerge) error
 
-	// ListURLs returns every catalogued Career Page URL. A Keyword Crawl calls
-	// this at run start to seed the Frontier from the Catalog.
-	ListURLs(ctx context.Context) ([]string, error)
+	// ListSeeds returns every catalogued Career Page URL paired with its owning
+	// Company's stored CompanyKey. A Keyword Crawl calls this at run start to seed
+	// the Frontier from the Catalog, carrying each seed's Owner (the attribution
+	// key) so a saved Job Listing is attributed to the Catalog's Company, not the
+	// extractor's guess (ADR-0021).
+	ListSeeds(ctx context.Context) ([]CatalogSeed, error)
 
 	// List returns every catalogued Career Page as a full entity (including
 	// CompanyID so the dashboard can group pages under their Company),

@@ -74,8 +74,11 @@ func (c *Counters) Snapshot() crawler.RunCounters {
 // listings).
 type Engine struct {
 	Orchestrator *orchestrator.Orchestrator
-	SeedURLs     []string
-	Close        func()
+	// Seeds are the run's entry points, each carrying its ADR-0021 provenance
+	// (Scope/Owner). Discovery seeds carry empty provenance (they roam); Keyword
+	// seeds are resolved from the Catalog so each stays fenced to its Company.
+	Seeds []crawler.Seed
+	Close func()
 }
 
 // Factory builds an Engine for a single run. runID is the just-created run's
@@ -615,7 +618,7 @@ func (r *Runner) supervise(runCtx context.Context, cancel context.CancelFunc, ru
 		}
 	}()
 
-	runErr := engine.Orchestrator.Run(runCtx, engine.SeedURLs)
+	runErr := engine.Orchestrator.Run(runCtx, engine.Seeds)
 
 	close(flushDone)
 	close(watchDone)

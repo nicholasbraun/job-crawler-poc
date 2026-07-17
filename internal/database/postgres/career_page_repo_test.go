@@ -91,21 +91,26 @@ func TestCareerPageRepository(t *testing.T) {
 	})
 
 	// Runs after the upserts above, so the Catalog holds both career pages.
-	t.Run("ListURLs returns every catalogued url", func(t *testing.T) {
-		urls, err := repo.ListURLs(t.Context())
+	t.Run("ListSeeds pairs each url with its owning company key", func(t *testing.T) {
+		seeds, err := repo.ListSeeds(t.Context())
 		if err != nil {
-			t.Fatalf("error listing career page urls: %v", err)
+			t.Fatalf("error listing career page seeds: %v", err)
 		}
-		want := map[string]bool{
-			acmeURL: true,
-			"https://boards.greenhouse.io/globex/jobs/2": true,
+		want := map[string]string{
+			acmeURL: "greenhouse:acme",
+			"https://boards.greenhouse.io/globex/jobs/2": "greenhouse:globex",
 		}
-		if len(urls) != len(want) {
-			t.Fatalf("want %d urls, got %d: %v", len(want), len(urls), urls)
+		if len(seeds) != len(want) {
+			t.Fatalf("want %d seeds, got %d: %v", len(want), len(seeds), seeds)
 		}
-		for _, u := range urls {
-			if !want[u] {
-				t.Errorf("unexpected url in catalog: %q", u)
+		for _, s := range seeds {
+			wantKey, ok := want[s.URL]
+			if !ok {
+				t.Errorf("unexpected url in catalog: %q", s.URL)
+				continue
+			}
+			if s.CompanyKey != wantKey {
+				t.Errorf("seed %q CompanyKey: want %q, got %q", s.URL, wantKey, s.CompanyKey)
 			}
 		}
 	})
@@ -137,19 +142,19 @@ func TestCareerPageRepository(t *testing.T) {
 	})
 }
 
-func TestCareerPageRepositoryListURLsEmpty(t *testing.T) {
+func TestCareerPageRepositoryListSeedsEmpty(t *testing.T) {
 	pool := newTestPool(t)
 	repo := postgres.NewCareerPageRepository(pool)
 
-	urls, err := repo.ListURLs(t.Context())
+	seeds, err := repo.ListSeeds(t.Context())
 	if err != nil {
-		t.Fatalf("error listing career page urls: %v", err)
+		t.Fatalf("error listing career page seeds: %v", err)
 	}
-	if urls == nil {
-		t.Fatal("ListURLs must return a non-nil slice, got nil")
+	if seeds == nil {
+		t.Fatal("ListSeeds must return a non-nil slice, got nil")
 	}
-	if len(urls) != 0 {
-		t.Errorf("empty catalog should yield no urls, got %v", urls)
+	if len(seeds) != 0 {
+		t.Errorf("empty catalog should yield no seeds, got %v", seeds)
 	}
 }
 

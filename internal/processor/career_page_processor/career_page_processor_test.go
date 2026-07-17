@@ -34,7 +34,7 @@ func (r *spyCompanyRepo) MergeImport(ctx context.Context, m *crawler.CompanyMerg
 	return nil // career-page processor never imports; unused
 }
 
-func (r *spyCompanyRepo) ListPagelessWebsites(ctx context.Context) ([]string, error) {
+func (r *spyCompanyRepo) ListPagelessSeeds(ctx context.Context) ([]crawler.CatalogSeed, error) {
 	return nil, nil // career-page processor never seeds; unused
 }
 
@@ -48,12 +48,8 @@ func (r *spyCareerPageRepo) Upsert(ctx context.Context, p *crawler.CareerPage) e
 	return nil
 }
 
-func (r *spyCareerPageRepo) ListURLs(ctx context.Context) ([]string, error) {
-	urls := []string{}
-	for _, p := range r.upserted {
-		urls = append(urls, p.URL)
-	}
-	return urls, nil
+func (r *spyCareerPageRepo) ListSeeds(ctx context.Context) ([]crawler.CatalogSeed, error) {
+	return nil, nil // career-page processor never seeds; unused
 }
 
 func (r *spyCareerPageRepo) List(ctx context.Context) ([]*crawler.CareerPage, error) {

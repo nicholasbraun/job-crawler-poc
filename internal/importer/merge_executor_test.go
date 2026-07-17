@@ -21,7 +21,7 @@ type fakeCatalogCompanyRepo struct {
 
 func (f *fakeCatalogCompanyRepo) Upsert(context.Context, *crawler.Company) error   { return nil }
 func (f *fakeCatalogCompanyRepo) List(context.Context) ([]*crawler.Company, error) { return nil, nil }
-func (f *fakeCatalogCompanyRepo) ListPagelessWebsites(context.Context) ([]string, error) {
+func (f *fakeCatalogCompanyRepo) ListPagelessSeeds(context.Context) ([]crawler.CatalogSeed, error) {
 	return nil, nil
 }
 func (f *fakeCatalogCompanyRepo) MergeImport(ctx context.Context, m *crawler.CompanyMerge) error {
@@ -48,7 +48,9 @@ type fakeCatalogPageRepo struct {
 }
 
 func (f *fakeCatalogPageRepo) Upsert(context.Context, *crawler.CareerPage) error { return nil }
-func (f *fakeCatalogPageRepo) ListURLs(context.Context) ([]string, error)        { return nil, nil }
+func (f *fakeCatalogPageRepo) ListSeeds(context.Context) ([]crawler.CatalogSeed, error) {
+	return nil, nil
+}
 func (f *fakeCatalogPageRepo) List(context.Context) ([]*crawler.CareerPage, error) {
 	return nil, nil
 }
