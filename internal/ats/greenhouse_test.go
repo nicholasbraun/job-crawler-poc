@@ -111,7 +111,7 @@ func TestGreenhouseFetchEmptyBoard(t *testing.T) {
 }
 
 func TestGreenhouseDescriptionStrippedAndUnescaped(t *testing.T) {
-	body := `{"jobs":[{"content":"&lt;p&gt;Build &lt;strong&gt;Go&lt;/strong&gt; services&lt;/p&gt;"}]}`
+	body := `{"jobs":[{"absolute_url":"https://boards.greenhouse.io/acme/jobs/1","content":"&lt;p&gt;Build &lt;strong&gt;Go&lt;/strong&gt; services&lt;/p&gt;"}]}`
 	fetcher := newGreenhouseFetcher(t, serveJSON(body))
 
 	got, err := fetcher.Fetch(t.Context(), "acme")
@@ -131,7 +131,7 @@ func TestGreenhouseDescriptionDecodesTextNodeEntities(t *testing.T) {
 	// entity-encoded after one unescape (e.g. &amp;nbsp;, &amp;amp;). The stored
 	// description must be fully decoded plain text, not literal &amp;/&nbsp;, or a
 	// keyword search for "R&D" would never match a stored "R&amp;D".
-	body := `{"jobs":[{"content":"&lt;p&gt;Join the R&amp;amp;D&amp;nbsp;team&lt;/p&gt;"}]}`
+	body := `{"jobs":[{"absolute_url":"https://boards.greenhouse.io/acme/jobs/1","content":"&lt;p&gt;Join the R&amp;amp;D&amp;nbsp;team&lt;/p&gt;"}]}`
 	fetcher := newGreenhouseFetcher(t, serveJSON(body))
 
 	got, err := fetcher.Fetch(t.Context(), "acme")
@@ -147,7 +147,7 @@ func TestGreenhouseDescriptionDecodesTextNodeEntities(t *testing.T) {
 }
 
 func TestGreenhouseMissingDepartment(t *testing.T) {
-	body := `{"jobs":[{"title":"X","departments":[]}]}`
+	body := `{"jobs":[{"title":"X","absolute_url":"https://boards.greenhouse.io/acme/jobs/1","departments":[]}]}`
 	fetcher := newGreenhouseFetcher(t, serveJSON(body))
 
 	got, err := fetcher.Fetch(t.Context(), "acme")
@@ -165,7 +165,7 @@ func TestGreenhouseMissingDepartment(t *testing.T) {
 func TestGreenhouseIgnoresProviderCompanyField(t *testing.T) {
 	// A stray company/companies blob in the board JSON must never populate
 	// Company: the mapper reads no provider company field.
-	body := `{"jobs":[{"title":"X","company":"SomeCorp","companies":[{"name":"SomeCorp"}]}]}`
+	body := `{"jobs":[{"title":"X","absolute_url":"https://boards.greenhouse.io/acme/jobs/1","company":"SomeCorp","companies":[{"name":"SomeCorp"}]}]}`
 	fetcher := newGreenhouseFetcher(t, serveJSON(body))
 
 	got, err := fetcher.Fetch(t.Context(), "acme")
@@ -177,6 +177,27 @@ func TestGreenhouseIgnoresProviderCompanyField(t *testing.T) {
 	}
 	if got[0].Company != "" {
 		t.Errorf("Company = %q, want empty; the mapper must not read a provider company field", got[0].Company)
+	}
+}
+
+func TestGreenhouseSkipsPostingWithoutAbsoluteURL(t *testing.T) {
+	// absolute_url is the upsert key (#127); a posting missing it cannot be saved
+	// and is dropped rather than mapped to a keyless listing (mirrors Lever).
+	body := `{"jobs":[
+		{"title":"Keyless"},
+		{"title":"Keyed","absolute_url":"https://boards.greenhouse.io/acme/jobs/1"}
+	]}`
+	fetcher := newGreenhouseFetcher(t, serveJSON(body))
+
+	got, err := fetcher.Fetch(t.Context(), "acme")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d listings, want 1 (the keyless posting is skipped)", len(got))
+	}
+	if got[0].URL != "https://boards.greenhouse.io/acme/jobs/1" {
+		t.Errorf("kept listing URL = %q, want the posting that has an absolute_url", got[0].URL)
 	}
 }
 
@@ -217,7 +238,7 @@ func TestGreenhouseNon200ReturnsErrBoardStatus(t *testing.T) {
 }
 
 func TestGreenhouseMalformedFirstPublished(t *testing.T) {
-	body := `{"jobs":[{"title":"X","first_published":"not-a-date"}]}`
+	body := `{"jobs":[{"title":"X","absolute_url":"https://boards.greenhouse.io/acme/jobs/1","first_published":"not-a-date"}]}`
 	fetcher := newGreenhouseFetcher(t, serveJSON(body))
 
 	got, err := fetcher.Fetch(t.Context(), "acme")

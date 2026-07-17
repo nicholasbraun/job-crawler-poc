@@ -103,6 +103,11 @@ func (g *GreenhouseFetcher) Fetch(ctx context.Context, tenant string) ([]*crawle
 
 	listings := []*crawler.JobListing{}
 	for _, j := range resp.Jobs {
+		// absolute_url is the canonical posting URL the lane keys upserts on (#127);
+		// a posting without one has no dedup key and cannot be saved, so skip it.
+		if j.AbsoluteURL == "" {
+			continue
+		}
 		listings = append(listings, mapGreenhouseJob(j))
 	}
 	return listings, nil
