@@ -22,15 +22,22 @@ const userAgent = "JobCrawlerBot/0.1 (+https://github.com/nicholasbraun/job-craw
 
 // runCapture fetches <url> through the crawler downloader (faithful bytes),
 // resolves the final URL, writes pages/NNNN-slug.html and appends an unlabeled
-// manifest stub. Returns the process exit code (2 usage error, 1 fetch/IO error).
+// manifest stub. -kind selects the manifest stub shape: classify (a bench.Entry,
+// the classifier Gold Set) or extract (a bench.ExtractEntry, the Extract Gold
+// Set). Returns the process exit code (2 usage error, 1 fetch/IO error).
 func runCapture(args []string) int {
 	fs := flag.NewFlagSet("capture", flag.ExitOnError)
 	gold := fs.String("gold", "cmd/llmbench/testdata", "Gold-Set directory holding manifest.json and pages/*.html")
+	kind := fs.String("kind", "classify", "manifest stub shape: classify (bench.Entry) or extract (bench.ExtractEntry)")
 	timeout := fs.Duration("timeout", 30*time.Second, "download timeout")
 	_ = fs.Parse(args)
 
+	if *kind != "classify" && *kind != "extract" {
+		fmt.Fprintf(os.Stderr, "llmbench capture: -kind must be classify or extract, got %q\n", *kind)
+		return 2
+	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: llmbench capture [-gold dir] [-timeout d] <url>")
+		fmt.Fprintln(os.Stderr, "usage: llmbench capture [-gold dir] [-kind classify|extract] [-timeout d] <url>")
 		return 2
 	}
 	reqURL := fs.Arg(0)
@@ -46,7 +53,7 @@ func runCapture(args []string) int {
 
 	finalURL, note := resolveFinalURL(ctx, reqURL)
 
-	if err := writeFixture(*gold, finalURL, note, resp.Content); err != nil {
+	if err := writeFixture(*gold, *kind, finalURL, note, resp.Content); err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench capture: %v\n", err)
 		return 1
 	}
@@ -81,9 +88,13 @@ func resolveFinalURL(ctx context.Context, reqURL string) (finalURL, note string)
 }
 
 // writeFixture writes body to <gold>/pages/NNNN-slug.html (NNNN next free index,
-// slug from finalURL) and appends an unlabeled stub Entry to <gold>/manifest.json,
-// creating pages/ and an empty manifest array when absent.
-func writeFixture(goldDir, finalURL, note string, body []byte) error {
+// slug from finalURL) and appends an unlabeled stub to <gold>/manifest.json,
+// creating pages/ and an empty manifest array when absent. kind ("classify" or
+// "extract") selects the stub shape appended to the manifest -- a bench.Entry for
+// the classifier Gold Set, a bench.ExtractEntry for the Extract Gold Set -- so the
+// committed manifest carries no vestigial fields from the other benchmark. The
+// index/slug/write-bytes path is shared; only the manifest append branches.
+func writeFixture(goldDir, kind, finalURL, note string, body []byte) error {
 	pagesDir := filepath.Join(goldDir, "pages")
 	if err := os.MkdirAll(pagesDir, 0o755); err != nil {
 		return fmt.Errorf("create pages dir: %w", err)
@@ -104,34 +115,77 @@ func writeFixture(goldDir, finalURL, note string, body []byte) error {
 		return fmt.Errorf("write fixture: %w", err)
 	}
 
-	manifestPath := filepath.Join(goldDir, "manifest.json")
-	entries := []bench.Entry{}
-	data, err := os.ReadFile(manifestPath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("read manifest: %w", err)
+	return appendManifestStub(filepath.Join(goldDir, "manifest.json"), kind, file, finalURL, note)
+}
+
+// appendManifestStub reads the existing manifest (an empty array when absent),
+// appends one unlabeled stub of the shape kind selects, and rewrites it as
+// indented JSON with a trailing newline. classify appends a bench.Entry, extract a
+// bench.ExtractEntry; the label is left empty for a human to fill in.
+func appendManifestStub(manifestPath, kind, file, finalURL, note string) error {
+	fetchedAt := time.Now().UTC().Format(time.RFC3339)
+
+	var out []byte
+	switch kind {
+	case "extract":
+		entries := []bench.ExtractEntry{}
+		if err := readManifest(manifestPath, &entries); err != nil {
+			return err
 		}
-	} else if err := json.Unmarshal(data, &entries); err != nil {
-		return fmt.Errorf("read manifest: %w", err)
+		entries = append(entries, bench.ExtractEntry{
+			File:      file,
+			URL:       finalURL,
+			Label:     "",
+			Verified:  false,
+			FetchedAt: fetchedAt,
+			Note:      note,
+		})
+		encoded, err := json.MarshalIndent(entries, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encode manifest: %w", err)
+		}
+		out = encoded
+	default: // classify
+		entries := []bench.Entry{}
+		if err := readManifest(manifestPath, &entries); err != nil {
+			return err
+		}
+		entries = append(entries, bench.Entry{
+			File:      file,
+			URL:       finalURL,
+			Label:     "",
+			Category:  "",
+			Verified:  false,
+			FetchedAt: fetchedAt,
+			Note:      note,
+		})
+		encoded, err := json.MarshalIndent(entries, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encode manifest: %w", err)
+		}
+		out = encoded
 	}
 
-	entries = append(entries, bench.Entry{
-		File:      file,
-		URL:       finalURL,
-		Label:     "",
-		Category:  "",
-		Verified:  false,
-		FetchedAt: time.Now().UTC().Format(time.RFC3339),
-		Note:      note,
-	})
-
-	out, err := json.MarshalIndent(entries, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode manifest: %w", err)
-	}
 	out = append(out, '\n')
 	if err := os.WriteFile(manifestPath, out, 0o644); err != nil {
 		return fmt.Errorf("write manifest: %w", err)
+	}
+	return nil
+}
+
+// readManifest unmarshals the JSON array at manifestPath into dst, treating a
+// missing file as an empty array so the first capture into a fresh directory
+// starts a new manifest. dst must be a pointer to a slice.
+func readManifest(manifestPath string, dst any) error {
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read manifest: %w", err)
+	}
+	if err := json.Unmarshal(data, dst); err != nil {
+		return fmt.Errorf("read manifest: %w", err)
 	}
 	return nil
 }

@@ -1,0 +1,210 @@
+[
+  {
+    "file": "0000-job-boards-greenhouse-io-anthropic-jobs-4020295008.html",
+    "url": "https://job-boards.greenhouse.io/anthropic/jobs/4020295008",
+    "label": "detail",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "ATS posting (greenhouse)"
+  },
+  {
+    "file": "0001-jobs-lever-co-figma-6a3e21b8-staff-product-designer.html",
+    "url": "https://jobs.lever.co/figma/6a3e21b8-staff-product-designer",
+    "label": "detail",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "ATS posting (lever)"
+  },
+  {
+    "file": "0002-jobs-ashbyhq-com-openai-1f2e-research-engineer.html",
+    "url": "https://jobs.ashbyhq.com/openai/1f2e-research-engineer",
+    "label": "detail",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "ATS posting (ashby)"
+  },
+  {
+    "file": "0003-acme-robotics-com-careers-senior-backend-engineer.html",
+    "url": "https://www.acme-robotics.com/careers/senior-backend-engineer",
+    "label": "detail",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "self-hosted posting on /careers/\u003cslug\u003e"
+  },
+  {
+    "file": "0004-boards-example-startup-io-positions-staff-data-scientist.html",
+    "url": "https://boards.example-startup.io/positions/staff-data-scientist",
+    "label": "detail",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "self-hosted posting on /positions/\u003cslug\u003e"
+  },
+  {
+    "file": "0005-careers-brightwave-io-openings-ios-engineer.html",
+    "url": "https://careers.brightwave.io/openings/ios-engineer",
+    "label": "detail",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "self-hosted posting on /openings/\u003cslug\u003e"
+  },
+  {
+    "file": "0006-nordwind-de-stellenangebote-produktmanager-mwd.html",
+    "url": "https://www.nordwind.de/stellenangebote/produktmanager-mwd",
+    "label": "detail",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "German posting on /stellenangebote/\u003cslug\u003e (safe job-segment path)"
+  },
+  {
+    "file": "0007-jobs-greenharvest-co-vacancies-marketing-lead.html",
+    "url": "https://jobs.greenharvest.co/vacancies/marketing-lead",
+    "label": "detail",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "self-hosted posting on /vacancies/\u003cslug\u003e"
+  },
+  {
+    "file": "0008-pixelforge-studio-roles-senior-go-engineer.html",
+    "url": "https://www.pixelforge.studio/roles/senior-go-engineer",
+    "label": "detail",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "posting on a generic /roles/\u003cslug\u003e path (no career/reject segment)"
+  },
+  {
+    "file": "0009-job-boards-greenhouse-io-stripe-jobs-6217886.html",
+    "url": "https://job-boards.greenhouse.io/stripe/jobs/6217886",
+    "label": "detail",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "ATS posting (greenhouse)"
+  },
+  {
+    "file": "0010-job-boards-greenhouse-io-anthropic.html",
+    "url": "https://job-boards.greenhouse.io/anthropic",
+    "label": "hub-index",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "ATS board root (greenhouse) -- RoleCareerPage, gate skips"
+  },
+  {
+    "file": "0011-jobs-lever-co-figma.html",
+    "url": "https://jobs.lever.co/figma",
+    "label": "hub-index",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "ATS board root (lever) -- RoleCareerPage, gate skips"
+  },
+  {
+    "file": "0012-acme-robotics-com-careers.html",
+    "url": "https://www.acme-robotics.com/careers",
+    "label": "hub-index",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "bare /careers hub -- career path signal, gate skips"
+  },
+  {
+    "file": "0013-boards-example-startup-io-jobs.html",
+    "url": "https://boards.example-startup.io/jobs",
+    "label": "hub-index",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "bare /jobs hub -- career path signal, gate skips"
+  },
+  {
+    "file": "0014-nordwind-de-karriere.html",
+    "url": "https://www.nordwind.de/karriere",
+    "label": "hub-index",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "bare /karriere hub -- career path signal, gate skips"
+  },
+  {
+    "file": "0015-jobs-brightwave-io-open-roles.html",
+    "url": "https://jobs.brightwave.io/open-roles",
+    "label": "hub-index",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "generic openings index -- URL has no job/career segment, gate LEAKS (#115 target)"
+  },
+  {
+    "file": "0016-careers-greenharvest-co-all-openings.html",
+    "url": "https://careers.greenharvest.co/all-openings",
+    "label": "hub-index",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "generic openings index -- gate LEAKS (#115 target)"
+  },
+  {
+    "file": "0017-pixelforge-studio-job-listings.html",
+    "url": "https://www.pixelforge.studio/job-listings",
+    "label": "hub-index",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "generic openings index (/job-listings not an exact job segment) -- gate LEAKS (#115 target)"
+  },
+  {
+    "file": "0018-acme-robotics-com-blog-life-at-acme.html",
+    "url": "https://www.acme-robotics.com/blog/life-at-acme",
+    "label": "residue",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "culture blog on /blog reject path -- gate skips"
+  },
+  {
+    "file": "0019-brightwave-io-news-were-growing.html",
+    "url": "https://www.brightwave.io/news/were-growing",
+    "label": "residue",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "hiring news on /news reject path -- gate skips"
+  },
+  {
+    "file": "0020-greenharvest-co-press-expanding-our-team.html",
+    "url": "https://www.greenharvest.co/press/expanding-our-team",
+    "label": "residue",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "press release on /press reject path -- gate skips"
+  },
+  {
+    "file": "0021-nordwind-de-stories-mitarbeiter-portrait.html",
+    "url": "https://www.nordwind.de/stories/mitarbeiter-portrait",
+    "label": "residue",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "employee story on /stories reject path -- gate skips"
+  },
+  {
+    "file": "0022-acme-robotics-com-about-our-culture.html",
+    "url": "https://www.acme-robotics.com/about/our-culture",
+    "label": "residue",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "culture page on generic /about path -- gate LEAKS (#115 target)"
+  },
+  {
+    "file": "0023-brightwave-io-life.html",
+    "url": "https://www.brightwave.io/life",
+    "label": "residue",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "career-landing page on generic /life path -- gate LEAKS (#115 target)"
+  },
+  {
+    "file": "0024-pixelforge-studio-work-with-us.html",
+    "url": "https://www.pixelforge.studio/work-with-us",
+    "label": "residue",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "career-landing page on generic /work-with-us path -- gate LEAKS (#115 target)"
+  },
+  {
+    "file": "0025-greenharvest-co-culture-values.html",
+    "url": "https://www.greenharvest.co/culture/values",
+    "label": "residue",
+    "verified": true,
+    "fetched_at": "2026-07-17T00:00:00Z",
+    "note": "culture page on generic /culture path -- gate LEAKS (#115 target)"
+  }
+]

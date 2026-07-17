@@ -2,6 +2,7 @@ package joblistingprocessor_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -28,11 +29,16 @@ func (r *spyJobListingRepo) FindByDefinition(ctx context.Context, definitionID u
 }
 
 type stubExtractor struct {
-	result crawler.JobListing
+	result    crawler.JobListing
+	isPosting bool
+	err       error
 }
 
-func (e *stubExtractor) Extract(ctx context.Context, raw crawler.RawJobListing) (crawler.JobListing, error) {
-	return e.result, nil
+func (e *stubExtractor) Extract(ctx context.Context, raw crawler.RawJobListing) (crawler.Extraction, error) {
+	if e.err != nil {
+		return crawler.Extraction{}, e.err
+	}
+	return crawler.Extraction{Listing: e.result, IsJobPosting: e.isPosting}, nil
 }
 
 type recordedCall struct {
@@ -69,7 +75,7 @@ func TestJobListingProcessorRecordsExtractCall(t *testing.T) {
 	rec := &spyRecorder{}
 	proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
 		JobListingRepository: repo,
-		JobListingExtractor:  &stubExtractor{result: crawler.JobListing{Title: "Engineer"}},
+		JobListingExtractor:  &stubExtractor{result: crawler.JobListing{Title: "Engineer"}, isPosting: true},
 		DefinitionID:         uuid.New(),
 		Recorder:             rec,
 	})
@@ -91,5 +97,76 @@ func TestJobListingProcessorRecordsExtractCall(t *testing.T) {
 	want := recordedCall{llmobs.KindExtract, llmobs.OutcomeOK}
 	if len(rec.calls) != 1 || rec.calls[0] != want {
 		t.Errorf("recorded calls = %v, want [%v]", rec.calls, want)
+	}
+}
+
+// TestJobListingProcessorAbstainSuppressesSave asserts the Extractor Abstain path:
+// a false is-job-posting verdict discards the extraction (no Save), records the
+// call as OutcomeAbstain, and still returns nil so the durable stream acks it.
+func TestJobListingProcessorAbstainSuppressesSave(t *testing.T) {
+	repo := &spyJobListingRepo{}
+	rec := &spyRecorder{}
+	proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
+		JobListingRepository: repo,
+		JobListingExtractor:  &stubExtractor{result: crawler.JobListing{Title: "Careers"}, isPosting: false},
+		DefinitionID:         uuid.New(),
+		Recorder:             rec,
+	})
+
+	raw := &crawler.RawJobListing{
+		URL:     newURL(t, "https://careers.acme.com/jobs"),
+		Content: crawler.Content{MainContent: "browse our open roles"},
+	}
+	if err := proc.Process(t.Context(), raw); err != nil {
+		t.Fatalf("Process returned error: %v", err)
+	}
+
+	if len(repo.saved) != 0 {
+		t.Fatalf("want 0 listings saved on abstain, got %d", len(repo.saved))
+	}
+	if rec.content != 1 {
+		t.Errorf("content probes = %d, want 1 (content is still fed to the extractor)", rec.content)
+	}
+	want := recordedCall{llmobs.KindExtract, llmobs.OutcomeAbstain}
+	if len(rec.calls) != 1 || rec.calls[0] != want {
+		t.Errorf("recorded calls = %v, want [%v]", rec.calls, want)
+	}
+}
+
+// TestJobListingProcessorExtractErrorNotAbstain guards the err==nil half of the
+// abstain classification. On an extraction failure the extractor returns the zero
+// Extraction (IsJobPosting=false); without the err==nil guard the false verdict
+// would be misrecorded as OutcomeAbstain, silently inflating the Empty-Extraction
+// Rate. A real failure must record OutcomeError, save nothing, and propagate the
+// error so the durable stream retries rather than acks.
+func TestJobListingProcessorExtractErrorNotAbstain(t *testing.T) {
+	repo := &spyJobListingRepo{}
+	rec := &spyRecorder{}
+	extractErr := errors.New("openrouter: status 500: oops")
+	proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
+		JobListingRepository: repo,
+		JobListingExtractor:  &stubExtractor{err: extractErr},
+		DefinitionID:         uuid.New(),
+		Recorder:             rec,
+	})
+
+	raw := &crawler.RawJobListing{
+		URL:     newURL(t, "https://careers.acme.com/jobs/1"),
+		Content: crawler.Content{MainContent: "we are hiring"},
+	}
+	err := proc.Process(t.Context(), raw)
+	if err == nil {
+		t.Fatal("Process returned nil, want error propagated on extraction failure")
+	}
+	if !errors.Is(err, extractErr) {
+		t.Errorf("Process error = %v, want wrapping %v", err, extractErr)
+	}
+
+	if len(repo.saved) != 0 {
+		t.Fatalf("want 0 listings saved on extract error, got %d", len(repo.saved))
+	}
+	want := recordedCall{llmobs.KindExtract, llmobs.OutcomeError}
+	if len(rec.calls) != 1 || rec.calls[0] != want {
+		t.Errorf("recorded calls = %v, want [%v] (error must not be miscounted as abstain)", rec.calls, want)
 	}
 }

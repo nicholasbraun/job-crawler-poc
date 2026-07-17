@@ -18,6 +18,10 @@ type kindStats struct {
 	calls    atomic.Int64
 	errors   atomic.Int64
 	timeouts atomic.Int64
+	// abstains is the number of calls the extractor completed but disavowed (the
+	// page was not a single job posting); extract-only. It still counts toward
+	// calls ("sent"), so the Empty-Extraction Rate is abstains / calls.
+	abstains atomic.Int64
 	gated    atomic.Int64
 	// seen is the number of page contents fed to this LLM kind; dup is how many
 	// of those hashes had been seen before (this run or a prior one).
@@ -45,6 +49,8 @@ func (s *Stats) recordCall(kind Kind, outcome Outcome) {
 		ks.errors.Add(1)
 	case OutcomeTimeout:
 		ks.timeouts.Add(1)
+	case OutcomeAbstain:
+		ks.abstains.Add(1)
 	}
 }
 
@@ -61,13 +67,20 @@ func (s *Stats) recordContent(kind Kind, duplicate bool) {
 	}
 }
 
+// Summary key prefixes, one per LLM kind, disambiguating the two kinds' tallies
+// on the shared end-of-run log line.
+const (
+	classifyPrefix = "classify"
+	extractPrefix  = "extract"
+)
+
 // Summary returns the run's LLM-stage tallies as slog key/value pairs for a
 // single end-of-run log line: the raw counts plus the derived rates the ADR-0007
 // measurement cares about (gate hit rate, error/timeout rate, duplicate-content
 // ratio), per kind.
 func (s *Stats) Summary() []any {
-	kv := s.classify.summary("classify")
-	return append(kv, s.extract.summary("extract")...)
+	kv := s.classify.summary(classifyPrefix)
+	return append(kv, s.extract.summary(extractPrefix)...)
 }
 
 func (ks *kindStats) summary(prefix string) []any {
@@ -79,7 +92,7 @@ func (ks *kindStats) summary(prefix string) []any {
 	dup := ks.dup.Load()
 	retries := ks.retries.Load()
 	deadletter := ks.deadletter.Load()
-	return []any{
+	kv := []any{
 		prefix + "_calls", calls,
 		prefix + "_errors", errs,
 		prefix + "_timeouts", timeouts,
@@ -91,6 +104,17 @@ func (ks *kindStats) summary(prefix string) []any {
 		prefix + "_timeout_rate", ratio(timeouts, calls),
 		prefix + "_dup_ratio", ratio(dup, seen),
 	}
+	// Abstain is extract-only (the classifier never abstains), so the abstain
+	// count and the Empty-Extraction Rate are emitted only for the extract kind --
+	// under classify they would always report zero and mislead.
+	if prefix == extractPrefix {
+		abstains := ks.abstains.Load()
+		kv = append(kv,
+			prefix+"_abstains", abstains,
+			prefix+"_empty_extraction_rate", ratio(abstains, calls),
+		)
+	}
+	return kv
 }
 
 // ratio is n/d rounded to four decimals, or 0 when d is 0.

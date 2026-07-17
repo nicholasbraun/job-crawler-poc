@@ -118,8 +118,10 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 		return fmt.Errorf("worker: content filtered out %w", err)
 	}
 
-	if !pagegate.ShouldExtract(*nextURL, w.gateConfig) {
-		// A Career Page index or a reject path — resolved without the LLM extractor.
+	if !pagegate.ShouldExtract(*nextURL, content, w.gateConfig) {
+		// The Extract Gate shed this page without the LLM extractor -- a URL signal
+		// (Career Page index or reject path) or a page-structure signal (ATS embed,
+		// JSON-LD openings index, or job-link saturation).
 		w.recorder.Gated(ctx, llmobs.KindExtract, llmobs.ReasonURLStructure)
 	} else if err := w.relevanceFilter(content); err == nil {
 		slog.Info("worker: content passed relevance filter", "title", content.Title, "url", nextURL.RawURL)

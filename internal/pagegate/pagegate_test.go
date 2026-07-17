@@ -773,49 +773,182 @@ func TestIsPostingPath(t *testing.T) {
 }
 
 func TestShouldExtract(t *testing.T) {
-	cfg := crawler.DefaultLLMGateConfig()
+	// cfg is a pointer so a case can override the gate config (the saturation
+	// fail-safe case zeroes ExtractJobLinkSaturationCount); a nil cfg uses
+	// DefaultLLMGateConfig. content is always set (the live call sites parse the
+	// page first); the URL-rung cases use empty content because a URL rung resolves
+	// them before any content rung reads it.
 	tests := []struct {
-		name string
-		url  string
-		want bool
+		name    string
+		url     string
+		content *crawler.Content
+		cfg     *crawler.LLMGateConfig
+		want    bool
 	}{
 		{
-			name: "ATS board root is resolved without the extractor",
-			url:  "https://job-boards.greenhouse.io/acme",
-			want: false,
+			name:    "ATS board root is resolved without the extractor",
+			url:     "https://job-boards.greenhouse.io/acme",
+			content: &crawler.Content{},
+			want:    false,
 		},
 		{
-			name: "ATS posting reaches the extractor",
+			name:    "ATS posting reaches the extractor",
+			url:     "https://job-boards.greenhouse.io/acme/jobs/123",
+			content: &crawler.Content{},
+			want:    true,
+		},
+		{
+			name:    "career-hub index is an index to crawl, not extract",
+			url:     "https://acme.com/careers",
+			content: &crawler.Content{},
+			want:    false,
+		},
+		{
+			name:    "reject path is dropped before the extractor",
+			url:     "https://acme.com/blog/hello",
+			content: &crawler.Content{},
+			want:    false,
+		},
+		{
+			name:    "editorial reject path is dropped before the extractor",
+			url:     "https://acme.com/magazine/issue-5",
+			content: &crawler.Content{},
+			want:    false,
+		},
+		{
+			name:    "self-hosted posting with no signal reaches the extractor",
+			url:     "https://acme.com/o/senior-engineer",
+			content: &crawler.Content{},
+			want:    true,
+		},
+		{
+			// Rung 2 exempts an ATS posting BEFORE any content rung, so its saturated
+			// "more openings" sidebar and JSON-LD openings index cannot drop it.
+			name: "ATS posting with a saturated sidebar and a JSON-LD index still extracts",
 			url:  "https://job-boards.greenhouse.io/acme/jobs/123",
+			content: &crawler.Content{
+				URLs: []string{
+					"/acme/jobs/1", "/acme/jobs/2", "/acme/jobs/3",
+					"/acme/jobs/4", "/acme/jobs/5", "/acme/jobs/6",
+				},
+				JSONLD: []string{`{"@type":"ItemList","itemListElement":[
+					{"@type":"ListItem","item":{"@type":"JobPosting","title":"Engineer"}},
+					{"@type":"ListItem","item":{"@type":"JobPosting","title":"Designer"}}]}`},
+			},
 			want: true,
 		},
 		{
-			name: "career-hub index is an index to crawl, not extract",
-			url:  "https://acme.com/careers",
+			// A /jobs/all hub is a job-posting path, so rung 4 does NOT reject it
+			// (IsPostingPath is not blanket-exempt); its JSON-LD ItemList is caught by
+			// rung 6 instead.
+			name: "/jobs/all hub with a JSON-LD openings index rejects",
+			url:  "https://acme.com/jobs/all",
+			content: &crawler.Content{
+				JSONLD: []string{`{"@type":"ItemList","itemListElement":[
+					{"@type":"ListItem","item":{"@type":"JobPosting","title":"Engineer"}}]}`},
+			},
 			want: false,
 		},
 		{
-			name: "reject path is dropped before the extractor",
-			url:  "https://acme.com/blog/hello",
+			// Rung 5: a page embedding a whole ATS board (an iframe to a known ATS
+			// host) is a hub, not a single posting.
+			name: "ATS embed rejects",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				Embeds: []crawler.Embed{{Src: "https://boards.greenhouse.io/acme", IsFrame: true}},
+			},
 			want: false,
 		},
 		{
-			name: "editorial reject path is dropped before the extractor",
-			url:  "https://acme.com/magazine/issue-5",
+			// Rung 6: two standalone JobPosting nodes are a structured-data openings
+			// index (postings >= 2), so the page is a hub.
+			name: "two JobPosting nodes reject",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				JSONLD: []string{`{"@type":"JobPosting","title":"Engineer"}`, `{"@type":"JobPosting","title":"Designer"}`},
+			},
 			want: false,
 		},
 		{
-			name: "self-hosted posting with no signal reaches the extractor",
-			url:  "https://acme.com/o/senior-engineer",
+			// Rung 7: five distinct same-host job links saturate the extract count
+			// (K=5), marking a jobs index.
+			name: "saturated same-host job links reject",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				URLs: []string{
+					"/careers/role-1", "/careers/role-2", "/careers/role-3",
+					"/careers/role-4", "/careers/role-5",
+				},
+			},
+			want: false,
+		},
+		{
+			// A real self-hosted posting: a lone JobPosting and a sidebar of only two
+			// sibling links (below K=5) trip none of the content rungs, so it extracts.
+			// This is the false-drop protection the calibration buys.
+			name: "self-hosted posting with a lone JobPosting and a small sidebar extracts",
+			url:  "https://acme.com/careers/senior-engineer",
+			content: &crawler.Content{
+				JSONLD: []string{`{"@type":"JobPosting","title":"Senior Engineer"}`},
+				URLs:   []string{"/careers/role-1", "/careers/role-2"},
+			},
+			want: true,
+		},
+		{
+			// The k-1 saturation boundary (K=5): a real self-hosted posting whose "more
+			// openings" sidebar links FOUR distinct same-host siblings is the LAST count
+			// that must still extract -- jobLinkSaturation(4, 5) = 0.8 < 1, so rung 7
+			// stays silent. This pins the "up to 4 sibling links of headroom" that the
+			// ExtractJobLinkSaturationCount comment and ADR-0019 promise: without it the
+			// gold set draws the saturation line only from the hub side (5, test 11) and
+			// a degenerate posting side (2, above), never the headroom between -- so
+			// lowering the count below 5 would false-drop this posting with the whole
+			// suite staying green.
+			name: "self-hosted posting with a four-link sidebar still extracts (k-1 boundary)",
+			url:  "https://acme.com/careers/senior-engineer",
+			content: &crawler.Content{
+				JSONLD: []string{`{"@type":"JobPosting","title":"Senior Engineer"}`},
+				URLs: []string{
+					"/careers/role-1", "/careers/role-2",
+					"/careers/role-3", "/careers/role-4",
+				},
+			},
+			want: true,
+		},
+		{
+			// Saturation fail-safe: zeroing ExtractJobLinkSaturationCount silences
+			// rung 7, so the same saturated page falls through to the extractor.
+			name: "saturation fail-safe: a zero extract count silences rung 7",
+			url:  "https://acme.com/team",
+			content: &crawler.Content{
+				URLs: []string{
+					"/careers/role-1", "/careers/role-2", "/careers/role-3",
+					"/careers/role-4", "/careers/role-5",
+				},
+			},
+			cfg:  zeroExtractSaturation(),
 			want: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := pagegate.ShouldExtract(newURL(t, tt.url), cfg); got != tt.want {
+			cfg := crawler.DefaultLLMGateConfig()
+			if tt.cfg != nil {
+				cfg = *tt.cfg
+			}
+			if got := pagegate.ShouldExtract(newURL(t, tt.url), tt.content, cfg); got != tt.want {
 				t.Errorf("ShouldExtract(%q) = %v, want %v", tt.url, got, tt.want)
 			}
 		})
 	}
+}
+
+// zeroExtractSaturation returns DefaultLLMGateConfig with the Extract Gate's
+// saturation count zeroed, exercising the rung-7 fail-safe (an unset count leaves
+// the saturation reject silent).
+func zeroExtractSaturation() *crawler.LLMGateConfig {
+	cfg := crawler.DefaultLLMGateConfig()
+	cfg.ExtractJobLinkSaturationCount = 0
+	return &cfg
 }
