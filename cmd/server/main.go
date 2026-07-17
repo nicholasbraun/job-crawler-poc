@@ -23,6 +23,8 @@ import (
 	"github.com/joho/godotenv"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/api"
+	"github.com/nicholasbraun/job-crawler-poc/internal/ats"
+	"github.com/nicholasbraun/job-crawler-poc/internal/atsingest"
 	"github.com/nicholasbraun/job-crawler-poc/internal/catalog"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/postgres"
 	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
@@ -76,6 +78,14 @@ const (
 	defaultKeywordMaxDepth   = 4
 	defaultDiscoveryMaxDepth = 10
 	defaultMaxWorkers        = 50
+
+	// ATS Fetch lane tuning (ADR-0022). defaultATSMaxWorkers sizes the per-run ATS
+	// ingest pool — how many tenants are fetched in parallel; the per-provider rate
+	// limiter serializes calls to one provider, so this mainly parallelizes across
+	// providers. defaultATSRateInterval is the minimum spacing between board-API
+	// calls to a single provider, keeping the crawler a polite board-API client.
+	defaultATSMaxWorkers   = 8
+	defaultATSRateInterval = 250 * time.Millisecond
 
 	// llmMaxBacklog is the high-water cap on a per-run LLM stream's outstanding
 	// entries. Past it, the crawl's Enqueue blocks until the classify/extract
@@ -301,6 +311,12 @@ func newFactory(
 	jobListingExtractor := openrouter.NewJobListingExtractor(llmConfig)
 	careerPageConfirmer := openrouter.NewCareerPageClassifier(llmConfig)
 
+	// ATS Fetch lane (ADR-0022): the provider→board-API-client registry, shared
+	// across runs. Today it ships a Greenhouse client; #128 adds Lever. Its clients
+	// use their own board-API HTTP client (separate from the crawl downloader); the
+	// per-run lane paces them via a HostLimiter.
+	atsRegistry := ats.NewDefaultRegistry()
+
 	// LLM-stage observability (ADR-0007 step 1): the Prometheus instruments and
 	// the Redis content-duplication probe are shared across runs; each run gets
 	// its own Stats + Recorder below for the end-of-run summary log.
@@ -457,6 +473,17 @@ func newFactory(
 		}
 		companySnapshot := catalog.NewCompanySnapshot(companies)
 
+		// ATS Fetch lane (ADR-0022): route each resolved Seed on a registered ATS
+		// host away from the Frontier and into a direct, LLM-free board-API pull.
+		// crawlSeeds keeps every self-hosted (and clientless-ATS) Seed on the
+		// crawl-and-fence path; atsTasks are the tenants the lane fetches. Routing is
+		// pure; the lane (which starts worker goroutines) is built below, after the
+		// last fallible setup step, so an early error can't leak an idle pool.
+		crawlSeeds, atsTasks := atsingest.RouteSeeds(seeds, func(provider string) bool {
+			_, ok := atsRegistry.Fetcher(provider)
+			return ok
+		})
+
 		// Multi-keyword OR relevance filter built from the Definition: a page is
 		// relevant if its title OR main content contains any keyword. Prunes
 		// pages before the expensive LLM extraction (ADR-0004). A title match
@@ -501,6 +528,28 @@ func newFactory(
 			return nil, fmt.Errorf("starting extract stage: %w", err)
 		}
 
+		// ATS Fetch lane (ADR-0022): the LLM-free pool that pulls the routed tenants'
+		// boards straight from their provider APIs. Built here — after the last
+		// fallible setup (extractStage.Start) — because NewLane starts worker
+		// goroutines that only Engine.Close reaps; an earlier error would leak them.
+		// A saved posting is attributed to its Owner Company via companySnapshot and
+		// counted the same way the crawl lane counts a listing found.
+		atsLimiter := atsingest.NewHostLimiter(defaultATSRateInterval)
+		atsLane := atsingest.NewLane(ctx, atsingest.Config{
+			MaxWorkers: defaultATSMaxWorkers,
+			NewWorker: func() processor.Processor[atsingest.FetchTask] {
+				return atsingest.NewProcessor(&atsingest.ProcessorConfig{
+					ResolveFetcher: atsRegistry.Fetcher,
+					Repository:     jobListingRepository,
+					DefinitionID:   def.ID,
+					Keywords:       def.Keywords,
+					CompanyNames:   companySnapshot,
+					RateLimiter:    atsLimiter,
+					OnSaved:        func(context.Context) { counters.ListingsFound.Add(1) },
+				})
+			},
+		})
+
 		// Counter tap: a matching page found becomes a job listing. Counted once
 		// here on enqueue (not per process) so a redelivery does not double-count.
 		onJobListing := func(ctx context.Context, jl *crawler.RawJobListing) error {
@@ -536,15 +585,24 @@ func newFactory(
 			ShouldStop: shouldStop,
 		})
 
+		// Prime the ATS lane last, after all fallible setup (extractStage.Start): from
+		// here a live priming goroutine feeds the ATS pool, and Engine.Close drains it.
+		atsLane.PrimeAsync(ctx, atsTasks)
+
 		return &runner.Engine{
 			Orchestrator: o,
-			Seeds:        seeds,
+			// crawlSeeds, not seeds: the routed ATS tenants are fetched by the lane
+			// and must not enter the Frontier (ADR-0022).
+			Seeds: crawlSeeds,
 			// Close order: url pool first (the producer feeding the extract stage),
-			// then the stage. Closing the producer first means no new task is XADDed
-			// mid-drain; a clean finish then drains the stream to empty, while a
-			// stop/shutdown leaves the PEL for resume.
+			// then the ATS lane (wait priming, drain the ATS pool so the run completes
+			// only after every in-flight fetch finishes), then the extract stage.
+			// Closing the url pool first means no new task is XADDed mid-drain; a clean
+			// finish then drains the stream to empty, while a stop/shutdown leaves the
+			// PEL for resume.
 			Close: func() {
 				urlWorkerPool.Close()
+				atsLane.Close()
 				extractStage.Close()
 				// All LLM calls for this run are done once the stage drains;
 				// emit the ADR-0007 measurement summary (ADR-0007 step 1).
