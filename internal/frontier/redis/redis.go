@@ -63,6 +63,10 @@ return 'NEW'
 //
 //	{'URL', member}   — a URL to crawl
 //	                     (member is depth\x1fhostname\x1fscope\x1fowner\x1furl)
+//	{'BADMEMBER', m}  — a queued member predating the #118 provenance format
+//	                     (fewer than four separators); put back on its queue and
+//	                     surfaced by Next as an error, so stale state is flushed
+//	                     rather than silently crawled unfenced.
 //	{'WAIT', wakeMs}   — nothing ready; caller sleeps until wakeMs then retries.
 //	                     wakeMs is bounded by now+pollInterval and the earliest
 //	                     in-flight lease expiry, so reclaim latency tracks
@@ -147,11 +151,18 @@ end
 redis.call('ZADD', domains, now + cooldown, bestDomain)
 -- url is the last field: walk past depth, hostname, scope, owner to the 4th
 -- separator, then take the rest. Consecutive separators (empty scope/owner)
--- are handled because string.find advances one position per call.
-local p = string.find(member, sep, 1, true)      -- after depth
-p = string.find(member, sep, p + 1, true)         -- after hostname
-p = string.find(member, sep, p + 1, true)         -- after scope
-p = string.find(member, sep, p + 1, true)         -- after owner
+-- are handled because string.find advances one position per call. Each step is
+-- guarded so a member with fewer than four separators -- one written before the
+-- #118 provenance format -- yields an actionable BADMEMBER instead of crashing
+-- on arithmetic over a nil find; it is pushed back so no URL is lost.
+local p = string.find(member, sep, 1, true)                 -- after depth
+if p then p = string.find(member, sep, p + 1, true) end     -- after hostname
+if p then p = string.find(member, sep, p + 1, true) end     -- after scope
+if p then p = string.find(member, sep, p + 1, true) end     -- after owner
+if not p then
+  redis.call('LPUSH', queuePrefix .. bestDomain, member)
+  return {'BADMEMBER', member}
+end
 local url = string.sub(member, p + 1)
 redis.call('ZADD', processing, now + leaseTTL, url)
 redis.call('HSET', inflight, url, member)
@@ -350,6 +361,9 @@ func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 		case "URL":
 			member, _ := reply[1].(string)
 			return decodeMember(member)
+		case "BADMEMBER":
+			member, _ := reply[1].(string)
+			return crawler.URL{}, fmt.Errorf("frontier: queue member %q predates the #118 provenance format; flush this run's frontier state before resuming on this build", member)
 		case "WAIT":
 			wakeMs, perr := strconv.ParseInt(fmt.Sprint(reply[1]), 10, 64)
 			if perr != nil {

@@ -17,10 +17,11 @@ type JobListing struct {
 	Description string `json:"description"`
 	Company     string `json:"company"`
 	// CompanyKey is the Owner CompanyKey (ADR-0021) the saved listing is attributed
-	// to. Carried on the source URL's Owner and set by the processor at save time,
-	// never by the extractor; not populated by JSON unmarshaling. Empty for a
-	// listing with no resolved Owner.
-	CompanyKey string
+	// to. The processor sets it from the source URL's Owner at save time; the
+	// json:"-" tag keeps the extractor's LLM-response unmarshaling from ever
+	// reaching it, so a hallucinated key can never leak in. Empty for a listing
+	// with no resolved Owner.
+	CompanyKey string `json:"-"`
 	Location   string `json:"location"`
 	// Remote indicates whether the position is available for remote work.
 	Remote    bool     `json:"remote"`

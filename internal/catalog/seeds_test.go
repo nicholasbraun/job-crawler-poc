@@ -74,6 +74,26 @@ func TestResolveSeeds(t *testing.T) {
 		}
 	})
 
+	t.Run("drops a parseable but host-less url whose scope would be empty", func(t *testing.T) {
+		// "careers.acme.com" (no scheme) parses as a bare path, so the URL has no
+		// host and Identify yields an empty CompanyKey. An empty Scope is the
+		// Discovery "roam" signal, so such a Keyword seed must be dropped rather
+		// than returned to crawl the open web unfenced — the exact sprawl #118 fixes.
+		got := catalog.ResolveSeeds([]crawler.CatalogSeed{
+			{URL: "careers.acme.com", CompanyKey: "acme.com"},
+			{URL: "https://acme.com/careers", CompanyKey: "acme.com"},
+		})
+		if len(got) != 1 {
+			t.Fatalf("want the host-less seed dropped, 1 survivor, got %d: %v", len(got), got)
+		}
+		if got[0].URL != "https://acme.com/careers" {
+			t.Errorf("survivor URL: want the acme seed, got %q", got[0].URL)
+		}
+		if got[0].Scope == "" {
+			t.Error("resolved seed must carry a non-empty Scope")
+		}
+	})
+
 	t.Run("returns non-nil empty slice for empty input", func(t *testing.T) {
 		got := catalog.ResolveSeeds(nil)
 		if got == nil {

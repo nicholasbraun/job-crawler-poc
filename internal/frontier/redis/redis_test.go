@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -449,6 +450,40 @@ func TestRedisFrontier(t *testing.T) {
 		}
 		if reclaimed != want {
 			t.Errorf("reclaimed: got %+v, want %+v", reclaimed, want)
+		}
+	})
+
+	t.Run("a legacy pre-provenance member yields an actionable error, not a crash", func(t *testing.T) {
+		ctx := t.Context()
+		id := uuid.New()
+		f := redisfrontier.New(client, id)
+		prefix := "frontier:" + id.String() + ":"
+		// Simulate frontier state written by a pre-#118 binary: a 3-field member
+		// (depth\x1fhostname\x1furl, no scope/owner) queued with its domain eligible.
+		legacy := "0\x1facme.com\x1fhttp://acme.com/legacy"
+		if err := client.Do(ctx, "LPUSH", prefix+"q:acme.com", legacy).Err(); err != nil {
+			t.Fatalf("seed legacy member: %v", err)
+		}
+		if err := client.Do(ctx, "ZADD", prefix+"domains", 0, "acme.com").Err(); err != nil {
+			t.Fatalf("seed domain: %v", err)
+		}
+
+		_, err := f.Next(ctx)
+		if err == nil {
+			t.Fatal("Next: want an error for a legacy member, got nil")
+		}
+		if errors.Is(err, frontier.ErrDone) {
+			t.Fatalf("Next: want a format error, got ErrDone")
+		}
+		if !strings.Contains(err.Error(), "provenance format") {
+			t.Errorf("Next error should explain the incompatible format, got: %v", err)
+		}
+		// The member is put back, not lost, so an operator can flush and restart
+		// without dropping URLs.
+		if n, err := client.Do(ctx, "LLEN", prefix+"q:acme.com").Int64(); err != nil {
+			t.Fatalf("LLEN: %v", err)
+		} else if n != 1 {
+			t.Errorf("legacy member should be put back on the queue, LLEN = %d, want 1", n)
 		}
 	})
 }
