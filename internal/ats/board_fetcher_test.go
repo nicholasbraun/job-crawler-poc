@@ -107,4 +107,9 @@ func TestNewDefaultRegistry(t *testing.T) {
 	if _, ok := reg.Fetcher(ats.ProviderAshby); !ok {
 		t.Errorf("NewDefaultRegistry did not wire the Ashby fetcher")
 	}
+	// #137 ships the SmartRecruiters (Posting API) board-API client, so the default
+	// registry resolves it too rather than falling back to the crawl path.
+	if _, ok := reg.Fetcher(ats.ProviderSmartRecruiters); !ok {
+		t.Errorf("NewDefaultRegistry did not wire the SmartRecruiters fetcher")
+	}
 }
