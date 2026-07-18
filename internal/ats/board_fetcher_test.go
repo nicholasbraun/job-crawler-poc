@@ -92,4 +92,9 @@ func TestNewDefaultRegistry(t *testing.T) {
 	if _, ok := reg.Fetcher(ats.ProviderLever); !ok {
 		t.Errorf("NewDefaultRegistry did not wire the Lever fetcher")
 	}
+	// #134 ships the Personio (XML) board-API client, so the default registry
+	// resolves it too rather than falling back to the crawl path.
+	if _, ok := reg.Fetcher(ats.ProviderPersonio); !ok {
+		t.Errorf("NewDefaultRegistry did not wire the Personio fetcher")
+	}
 }
