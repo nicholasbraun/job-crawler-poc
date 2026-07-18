@@ -62,7 +62,7 @@ func (r *Registry) Fetcher(provider string) (BoardFetcher, bool) {
 
 // NewDefaultRegistry wires every provider the crawler ships a board-API client
 // for, each built with default options: Greenhouse, Lever, Personio, Workable,
-// Ashby, and SmartRecruiters.
+// Ashby, SmartRecruiters, and Recruitee.
 func NewDefaultRegistry() *Registry {
 	return NewRegistry(
 		WithFetcher(ProviderGreenhouse, NewGreenhouseFetcher()),
@@ -71,5 +71,6 @@ func NewDefaultRegistry() *Registry {
 		WithFetcher(ProviderWorkable, NewWorkableFetcher()),
 		WithFetcher(ProviderAshby, NewAshbyFetcher()),
 		WithFetcher(ProviderSmartRecruiters, NewSmartRecruitersFetcher()),
+		WithFetcher(ProviderRecruitee, NewRecruiteeFetcher()),
 	)
 }
