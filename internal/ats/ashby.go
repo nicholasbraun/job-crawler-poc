@@ -69,9 +69,11 @@ func NewAshbyFetcher(opts ...AshbyFetcherOption) *AshbyFetcher {
 }
 
 // Fetch returns the tenant's postings mapped to Job Listings. It requests the
-// public GET job-board endpoint with includeCompensation=true (the live-verified
-// no-auth request shape) and sends NO Authorization header: the private
-// jobPosting.list endpoint is deliberately avoided. A non-200 response yields
+// public GET job-board endpoint (the live-verified no-auth request shape) and
+// sends NO Authorization header: the private jobPosting.list endpoint is
+// deliberately avoided. It does not request includeCompensation: the mapper
+// reads only descriptionPlain, so pulling compensation blocks would only inflate
+// the response toward the shared size cap. A non-200 response yields
 // ErrBoardStatus; a decode failure is wrapped. Company and CompanyKey are left
 // empty for the ingest lane to stamp from the page's Owner (ADR-0022). An empty
 // board yields an empty, non-nil slice.
@@ -80,7 +82,7 @@ func (a *AshbyFetcher) Fetch(ctx context.Context, tenant string) ([]*crawler.Job
 		return nil, fmt.Errorf("ats: ashby: empty tenant slug")
 	}
 
-	endpoint := a.baseURL + "/posting-api/job-board/" + url.PathEscape(tenant) + "?includeCompensation=true"
+	endpoint := a.baseURL + "/posting-api/job-board/" + url.PathEscape(tenant)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("ats: ashby build request for tenant %q: %w", tenant, err)

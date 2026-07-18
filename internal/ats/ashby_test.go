@@ -261,8 +261,10 @@ func TestAshbyBuildsBoardURL(t *testing.T) {
 	if gotPath != "/posting-api/job-board/acme" {
 		t.Errorf("request path = %q, want %q", gotPath, "/posting-api/job-board/acme")
 	}
-	if gotCompensation != "true" {
-		t.Errorf("includeCompensation query = %q, want %q", gotCompensation, "true")
+	// The mapper reads only descriptionPlain, so the fetcher must not request
+	// compensation blocks it would only discard (they count against the size cap).
+	if gotCompensation != "" {
+		t.Errorf("includeCompensation query = %q, want it unset", gotCompensation)
 	}
 	// The gotcha guard: the fetcher uses the public GET job-board endpoint, never
 	// the HTTP-Basic-auth jobPosting.list endpoint, so it must send no credential.
