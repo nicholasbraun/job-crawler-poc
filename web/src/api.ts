@@ -173,7 +173,6 @@ export type Listing = {
   company: string;
   location: string;
   remote: boolean;
-  techStack: string[];
   description: string;
 };
 
