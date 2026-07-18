@@ -97,4 +97,9 @@ func TestNewDefaultRegistry(t *testing.T) {
 	if _, ok := reg.Fetcher(ats.ProviderPersonio); !ok {
 		t.Errorf("NewDefaultRegistry did not wire the Personio fetcher")
 	}
+	// #135 ships the Workable (widget-JSON) board-API client, so the default
+	// registry resolves it too rather than falling back to the crawl path.
+	if _, ok := reg.Fetcher(ats.ProviderWorkable); !ok {
+		t.Errorf("NewDefaultRegistry did not wire the Workable fetcher")
+	}
 }
