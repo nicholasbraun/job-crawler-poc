@@ -102,4 +102,9 @@ func TestNewDefaultRegistry(t *testing.T) {
 	if _, ok := reg.Fetcher(ats.ProviderWorkable); !ok {
 		t.Errorf("NewDefaultRegistry did not wire the Workable fetcher")
 	}
+	// #136 ships the Ashby (job-board JSON) board-API client, so the default
+	// registry resolves it too rather than falling back to the crawl path.
+	if _, ok := reg.Fetcher(ats.ProviderAshby); !ok {
+		t.Errorf("NewDefaultRegistry did not wire the Ashby fetcher")
+	}
 }
