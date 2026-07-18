@@ -92,4 +92,29 @@ func TestNewDefaultRegistry(t *testing.T) {
 	if _, ok := reg.Fetcher(ats.ProviderLever); !ok {
 		t.Errorf("NewDefaultRegistry did not wire the Lever fetcher")
 	}
+	// #134 ships the Personio (XML) board-API client, so the default registry
+	// resolves it too rather than falling back to the crawl path.
+	if _, ok := reg.Fetcher(ats.ProviderPersonio); !ok {
+		t.Errorf("NewDefaultRegistry did not wire the Personio fetcher")
+	}
+	// #135 ships the Workable (widget-JSON) board-API client, so the default
+	// registry resolves it too rather than falling back to the crawl path.
+	if _, ok := reg.Fetcher(ats.ProviderWorkable); !ok {
+		t.Errorf("NewDefaultRegistry did not wire the Workable fetcher")
+	}
+	// #136 ships the Ashby (job-board JSON) board-API client, so the default
+	// registry resolves it too rather than falling back to the crawl path.
+	if _, ok := reg.Fetcher(ats.ProviderAshby); !ok {
+		t.Errorf("NewDefaultRegistry did not wire the Ashby fetcher")
+	}
+	// #137 ships the SmartRecruiters (Posting API) board-API client, so the default
+	// registry resolves it too rather than falling back to the crawl path.
+	if _, ok := reg.Fetcher(ats.ProviderSmartRecruiters); !ok {
+		t.Errorf("NewDefaultRegistry did not wire the SmartRecruiters fetcher")
+	}
+	// #138 ships the Recruitee (Careers Site API) board-API client, so the default
+	// registry resolves it too rather than falling back to the crawl path.
+	if _, ok := reg.Fetcher(ats.ProviderRecruitee); !ok {
+		t.Errorf("NewDefaultRegistry did not wire the Recruitee fetcher")
+	}
 }

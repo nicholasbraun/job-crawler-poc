@@ -85,6 +85,11 @@ var pathRules = []pathRule{
 	{provider: "lever", hosts: []string{"jobs.lever.co"}},
 	{provider: "ashby", hosts: []string{"jobs.ashbyhq.com"}},
 	{provider: "workable", hosts: []string{"apply.workable.com"}},
+	// SmartRecruiters slugs the tenant (companyIdentifier) as the first path
+	// segment on both its careers-landing host (careers.smartrecruiters.com/{slug})
+	// and its posting host (jobs.smartrecruiters.com/{slug}/{id}--slug, the live
+	// postingUrl host). A discovery seed may be either, so both are recognized (#137).
+	{provider: "smartrecruiters", hosts: []string{"careers.smartrecruiters.com", "jobs.smartrecruiters.com"}},
 	// join.com lays each employer under /companies/{slug}; the extra "companies"
 	// prefix segment shifts the tenant slug right by one. Splitting this out is the
 	// #46 fix that stops 20+ real employers collapsing into one fake "join.com".
