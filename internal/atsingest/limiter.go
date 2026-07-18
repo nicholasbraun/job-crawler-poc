@@ -28,7 +28,9 @@ func NewHostLimiter(interval time.Duration) *HostLimiter {
 
 // Wait blocks until this call's reserved slot for key — spaced interval after the
 // previous reservation for the same key — or returns ctx.Err() if ctx is
-// cancelled first. A nil limiter or a non-positive interval never blocks. The
+// cancelled first. A cancelled wait rolls its reservation back when it is still
+// the latest one for key, so a stop doesn't leave the next caller waiting an
+// extra interval. A nil limiter or a non-positive interval never blocks. The
 // mutex is released before blocking (frontier convention), so a slow key never
 // stalls callers waiting on a different key.
 func (l *HostLimiter) Wait(ctx context.Context, key string) error {
@@ -38,11 +40,13 @@ func (l *HostLimiter) Wait(ctx context.Context, key string) error {
 
 	l.mu.Lock()
 	now := time.Now()
+	prev, hadPrev := l.next[key]
 	at := now
-	if scheduled, ok := l.next[key]; ok && scheduled.After(now) {
-		at = scheduled
+	if hadPrev && prev.After(now) {
+		at = prev
 	}
-	l.next[key] = at.Add(l.interval)
+	reserved := at.Add(l.interval)
+	l.next[key] = reserved
 	l.mu.Unlock()
 
 	delay := time.Until(at)
@@ -55,6 +59,19 @@ func (l *HostLimiter) Wait(ctx context.Context, key string) error {
 	case <-timer.C:
 		return nil
 	case <-ctx.Done():
+		// The wait was cancelled (typically shutdown). Give this call's slot
+		// back so the next caller for key isn't pushed an extra interval — but
+		// only if no later caller has already reserved on top of ours, since
+		// their slots chain off the schedule we advanced.
+		l.mu.Lock()
+		if scheduled, ok := l.next[key]; ok && scheduled.Equal(reserved) {
+			if hadPrev {
+				l.next[key] = prev
+			} else {
+				delete(l.next, key)
+			}
+		}
+		l.mu.Unlock()
 		return ctx.Err()
 	}
 }

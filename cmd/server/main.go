@@ -532,8 +532,7 @@ func newFactory(
 		// boards straight from their provider APIs. Built here — after the last
 		// fallible setup (extractStage.Start) — because NewLane starts worker
 		// goroutines that only Engine.Close reaps; an earlier error would leak them.
-		// A saved posting is attributed to its Owner Company via companySnapshot and
-		// counted the same way the crawl lane counts a listing found.
+		// A saved posting is attributed to its Owner Company via companySnapshot.
 		atsLimiter := atsingest.NewHostLimiter(defaultATSRateInterval)
 		atsLane := atsingest.NewLane(ctx, atsingest.Config{
 			MaxWorkers: defaultATSMaxWorkers,
@@ -545,7 +544,15 @@ func newFactory(
 					Keywords:       def.Keywords,
 					CompanyNames:   companySnapshot,
 					RateLimiter:    atsLimiter,
-					OnSaved:        func(context.Context) { counters.ListingsFound.Add(1) },
+					// A saved posting increments ListingsFound. Unlike the crawl
+					// lane's count-on-enqueue tap (deduped by the visited set), the
+					// ATS lane counts on save and has no durable redelivery: it
+					// rebuilds its per-run fetched-tenant set each launch (ADR-0022 —
+					// a board fetch is idempotent and re-runnable), so a resumed run
+					// re-fetches every tenant and re-counts its postings. Saved rows
+					// stay deduped by (definition_id, url); only this metric inflates
+					// on resume, by design.
+					OnSaved: func(context.Context) { counters.ListingsFound.Add(1) },
 				})
 			},
 		})

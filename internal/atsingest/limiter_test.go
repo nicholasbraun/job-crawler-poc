@@ -74,6 +74,38 @@ func TestHostLimiterWaitCancels(t *testing.T) {
 	})
 }
 
+// TestHostLimiterCancelledWaitReleasesSlot asserts a Wait cancelled mid-block
+// gives its reserved slot back, so the next caller for the same key waits only
+// one interval (not two): the cancelled call's tail reservation is rolled back.
+func TestHostLimiterCancelledWaitReleasesSlot(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const interval = 100 * time.Millisecond
+		l := atsingest.NewHostLimiter(interval)
+
+		// First Wait takes the immediate slot; the next reservation is at +interval.
+		if err := l.Wait(t.Context(), "greenhouse"); err != nil {
+			t.Fatalf("first Wait: %v", err)
+		}
+
+		// A second Wait would block until +interval; cancel it so it releases its slot.
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if err := l.Wait(ctx, "greenhouse"); !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled Wait error = %v, want context.Canceled", err)
+		}
+
+		// The next Wait inherits the slot the cancelled call gave back: one
+		// interval after the first, not two. Without the rollback it would be two.
+		start := time.Now()
+		if err := l.Wait(t.Context(), "greenhouse"); err != nil {
+			t.Fatalf("third Wait: %v", err)
+		}
+		if got := time.Since(start); got != interval {
+			t.Errorf("Wait after a cancelled Wait blocked %v, want %v (cancelled slot released)", got, interval)
+		}
+	})
+}
+
 // TestHostLimiterNeverBlocks covers the two no-op configurations: a nil limiter
 // and a non-positive interval both return immediately.
 func TestHostLimiterNeverBlocks(t *testing.T) {

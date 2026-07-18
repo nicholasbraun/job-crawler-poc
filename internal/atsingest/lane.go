@@ -49,9 +49,18 @@ func NewLane(ctx context.Context, cfg Config) *Lane {
 
 // Submit enqueues t unless its tenant was already submitted this run, in which
 // case it is silently skipped (returns nil). It is the single dedup point shared
-// by PrimeAsync and #129's embed trigger. It returns the pool's error (e.g.
-// pool.ErrPoolClosed after Close, or ctx.Err() on cancel) when the enqueue itself
-// fails.
+// by PrimeAsync and #129's embed trigger.
+//
+// The first submission for a (Provider, TenantSlug) wins: its Owner becomes the
+// attribution the tenant's postings are saved under, and any later submission for
+// the same tenant — including one carrying a different Owner — is dropped. The
+// spec only requires that a tenant be fetched once, not which Owner wins; this
+// pins the tie-break to first-submit-wins. PrimeAsync enqueues the routed seed
+// tasks before the crawl can discover an embed, so a tenant reached by both a
+// Seed and an embed is attributed to its Seed Owner.
+//
+// It returns the pool's error (e.g. pool.ErrPoolClosed after Close, or ctx.Err()
+// on cancel) when the enqueue itself fails.
 func (l *Lane) Submit(ctx context.Context, t FetchTask) error {
 	if !l.tenants.Add(t.Provider + ":" + t.TenantSlug) {
 		return nil
