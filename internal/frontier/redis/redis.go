@@ -331,10 +331,17 @@ func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 	}
 
 	keys := []string{f.key("visited"), f.key("domains")}
-	res, err := addScript.Run(ctx, f.client, keys,
-		f.queuePrefix, url.Hostname, encodeMember(url), url.RawURL,
-		time.Now().UnixMilli(),
-	).Result()
+	// At-least-once safe: addScript is one atomic Lua script whose first mutation
+	// is SADD visited. If a prior attempt fully applied but its reply was lost to
+	// a transient blip, the retry sees SADD -> 0 and returns DUP, so LPUSH never
+	// doubles. time.Now() is read inside the closure so a retry after a stalled
+	// attempt stamps a fresh domain-eligibility timestamp into ZADD domains NX.
+	res, err := f.withRetry(ctx, opAdd, func() (any, error) {
+		return addScript.Run(ctx, f.client, keys,
+			f.queuePrefix, url.Hostname, encodeMember(url), url.RawURL,
+			time.Now().UnixMilli(),
+		).Result()
+	})
 	if err != nil {
 		return fmt.Errorf("frontier: add url: %w", err)
 	}
@@ -405,7 +412,12 @@ func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 // returned by Next.
 func (f *Frontier) MarkDone(ctx context.Context, url string) error {
 	keys := []string{f.key("processing"), f.key("inflight")}
-	if err := doneScript.Run(ctx, f.client, keys, url).Err(); err != nil {
+	// At-least-once safe: doneScript's ZREM/HDEL are idempotent, so re-running on
+	// an already-cleared lease is a harmless no-op. The script's return value (1)
+	// is unused, so .Result() feeds the withRetry closure shape and is discarded.
+	if _, err := f.withRetry(ctx, opDone, func() (any, error) {
+		return doneScript.Run(ctx, f.client, keys, url).Result()
+	}); err != nil {
 		return fmt.Errorf("frontier: mark done: %w", err)
 	}
 	return nil

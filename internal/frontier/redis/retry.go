@@ -19,6 +19,14 @@ import (
 // low-cardinality value (no run_id), so a Grafana series never explodes per run.
 const opNext = "next"
 
+// opAdd and opDone are the sibling low-cardinality op labels to opNext, stamping
+// the transient-retry metric/log for Frontier.AddURL and Frontier.MarkDone
+// respectively (no run_id, so a Grafana series never explodes per run).
+const (
+	opAdd  = "add"
+	opDone = "done"
+)
+
 // WithRetryBackoff sets the transient-error retry backoff bounds: the first
 // retry waits min, doubling to the max cap, then holds at max. Both are reused
 // by the Frontier's jittered, context-aware sleep, so min/max are pre-jitter

@@ -139,6 +139,43 @@ func TestWithRetry(t *testing.T) {
 		})
 	})
 
+	t.Run("records op label add and done on retries", func(t *testing.T) {
+		for _, op := range []string{opAdd, opDone} {
+			t.Run(op, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					counter := &countingCounter{}
+					f := retryFrontier(counter, 10*time.Millisecond, 100*time.Millisecond)
+
+					const transientN = 2
+					calls := 0
+					fn := func() (any, error) {
+						calls++
+						if calls <= transientN {
+							return nil, io.EOF
+						}
+						return "ok", nil
+					}
+
+					res, err := f.withRetry(t.Context(), op, fn)
+					if err != nil {
+						t.Fatalf("withRetry: unexpected error %v", err)
+					}
+					if res != "ok" {
+						t.Errorf("result: got %v, want %q", res, "ok")
+					}
+					if got := counter.total(); got != transientN {
+						t.Errorf("retry count: got %d, want %d", got, transientN)
+					}
+					for i, gotOp := range counter.opValues() {
+						if gotOp != op {
+							t.Errorf("op[%d]: got %q, want %q", i, gotOp, op)
+						}
+					}
+				})
+			})
+		}
+	})
+
 	t.Run("fatal error surfaces immediately with no retry", func(t *testing.T) {
 		counter := &countingCounter{}
 		f := retryFrontier(counter, 10*time.Millisecond, 100*time.Millisecond)

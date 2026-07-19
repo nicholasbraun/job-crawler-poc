@@ -87,14 +87,15 @@ func TestNextRidesOutTransientErrorThenContextWins(t *testing.T) {
 		t.Fatalf("collecting metrics: %v", err)
 	}
 
-	if got := transientRetryCount(t, &rm); got == 0 {
+	if got := transientRetryCount(t, &rm, "next"); got == 0 {
 		t.Errorf("transient_retries counter (op=next): got 0, want > 0")
 	}
 }
 
 // transientRetryCount extracts the summed crawler.frontier.transient_retries
-// value carrying op="next" from a collected metric set, or 0 if absent.
-func transientRetryCount(t *testing.T, rm *metricdata.ResourceMetrics) int64 {
+// value carrying the given op attribute from a collected metric set, or 0 if
+// absent. Shared across the redis_test package's retry tests (next/add/done).
+func transientRetryCount(t *testing.T, rm *metricdata.ResourceMetrics, op string) int64 {
 	t.Helper()
 	var total int64
 	for _, sm := range rm.ScopeMetrics {
@@ -110,7 +111,7 @@ func transientRetryCount(t *testing.T, rm *metricdata.ResourceMetrics) int64 {
 				t.Fatalf("transient_retries: unexpected data type %T", m.Data)
 			}
 			for _, dp := range sum.DataPoints {
-				if v, ok := dp.Attributes.Value("op"); ok && v.AsString() == "next" {
+				if v, ok := dp.Attributes.Value("op"); ok && v.AsString() == op {
 					total += dp.Value
 				}
 			}
