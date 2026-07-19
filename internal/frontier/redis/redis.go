@@ -24,6 +24,7 @@ import (
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // memberSep separates the fields of an encoded queue/inflight member
@@ -190,6 +191,9 @@ type Frontier struct {
 	pollInterval time.Duration
 	maxDepth     int
 	mode         frontier.Mode
+	retryMin     time.Duration       // first backoff before a transient-error retry (default 100ms)
+	retryMax     time.Duration       // backoff cap; retries continue at this interval (default 5s)
+	retries      metric.Int64Counter // crawler.frontier.transient_retries, op-attributed
 }
 
 var _ frontier.Frontier = &Frontier{}
@@ -236,11 +240,18 @@ func New(client *redis.Client, runID uuid.UUID, opts ...Option) *Frontier {
 		pollInterval: 250 * time.Millisecond,
 		maxDepth:     3,
 		mode:         frontier.Bounded,
+		retryMin:     100 * time.Millisecond,
+		retryMax:     5 * time.Second,
 	}
 
 	for _, opt := range opts {
 		opt(f)
 	}
+
+	// Created after options so the counter is always present even if a test
+	// swaps the backoff bounds; nil-safe (a no-op instrument on registration
+	// error), so withRetry can Add unconditionally.
+	f.retries = newTransientRetryCounter()
 
 	return f
 }
@@ -343,11 +354,15 @@ func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 	keys := []string{f.key("domains"), f.key("processing"), f.key("inflight")}
 	for {
-		res, err := nextScript.Run(ctx, f.client, keys,
-			f.queuePrefix, time.Now().UnixMilli(),
-			f.leaseTTL.Milliseconds(), f.cooldown.Milliseconds(),
-			f.pollInterval.Milliseconds(),
-		).Result()
+		// time.Now() is read inside the closure so each retry re-computes the
+		// clock, keeping lease/reclaim deadlines correct across a stalled retry.
+		res, err := f.withRetry(ctx, opNext, func() (any, error) {
+			return nextScript.Run(ctx, f.client, keys,
+				f.queuePrefix, time.Now().UnixMilli(),
+				f.leaseTTL.Milliseconds(), f.cooldown.Milliseconds(),
+				f.pollInterval.Milliseconds(),
+			).Result()
+		})
 		if err != nil {
 			return crawler.URL{}, fmt.Errorf("frontier: next: %w", err)
 		}

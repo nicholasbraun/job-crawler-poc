@@ -165,7 +165,15 @@ func main() {
 	if redisAddr == "" {
 		redisAddr = defaultRedisAddr
 	}
-	redisClient := redis.NewClient(&redis.Options{Addr: redisAddr})
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+		// A finite read timeout is load-bearing for the Frontier's transient-error
+		// retry (ADR-0024): it converts a stalled Redis read into the retryable i/o
+		// timeout the retry loop rides out. A zero ("no timeout") read would hang
+		// forever and the loop could never run. 3s == the go-redis default, pinned
+		// here so it is never silently disabled.
+		ReadTimeout: 3 * time.Second,
+	})
 	if err := waitForRedis(ctx, redisClient, redisReadyTimeout); err != nil {
 		log.Fatalf("error connecting to redis at %s: %v", redisAddr, err)
 	}

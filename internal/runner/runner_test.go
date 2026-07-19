@@ -215,9 +215,12 @@ func TestTerminalStatus(t *testing.T) {
 		// A cancellation that surfaced as an i/o timeout is stopped only because
 		// the run context was cancelled (Stop/Shutdown) — this is the #32 path.
 		{"io timeout under cancelled ctx is stopped", ioTimeout, context.Canceled, crawler.RunStatusStopped, false},
-		// The same error with a live context is a genuine transient failure and
-		// must still fail (the deferred, unrecoverable case stays failed).
-		{"io timeout under live ctx still fails", ioTimeout, nil, crawler.RunStatusFailed, true},
+		// Under a live context the failing arm is reached only by a genuinely fatal
+		// error. Transient i/o errors no longer reach terminalStatus at all — the
+		// Redis Frontier absorbs and retries them in place (ADR-0024) — so this
+		// case now guards that a fatal error surfacing with a live context still
+		// fails (an i/o-timeout-shaped error stands in for any such fatal error).
+		{"fatal error under live ctx fails", ioTimeout, nil, crawler.RunStatusFailed, true},
 	}
 
 	for _, tt := range tests {
@@ -723,8 +726,9 @@ func TestStopClassifiesFrontierTimeoutAsStopped(t *testing.T) {
 // surfacing as the run drains leaves the run running (frontier preserved) rather
 // than failing it. This favours resume over a terminal failure during shutdown;
 // a genuinely broken run just re-fails after Reconcile. It is the counterpart to
-// the terminalStatus "io timeout under live ctx still fails" case: the same class
-// of error under a LIVE (non-cancelled) context stays failed.
+// the terminalStatus "fatal error under live ctx fails" case: a genuinely fatal
+// error under a LIVE (non-cancelled) context stays failed (transient i/o errors
+// are now absorbed by the Frontier, ADR-0024, and never reach that decision).
 func TestShutdownLeavesRunRunningWithRealErrorDuringDrain(t *testing.T) {
 	defID := uuid.New()
 	defs := &fakeDefRepo{def: &crawler.CrawlDefinition{ID: defID, Name: "test", Kind: crawler.CrawlKindDiscovery}}
