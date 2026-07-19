@@ -55,11 +55,13 @@ func newTransientRetryCounter() metric.Int64Counter {
 // should ride out (ADR-0024). It is an allowlist, generous on network shapes:
 // any net.Error (i/o timeout, OpError-wrapped connection refused/reset), EOF,
 // bare connection refused/reset/broken-pipe syscalls, the go-redis connection-
-// pool timeout, and the known temporarily-unavailable server replies. Any OTHER
-// Redis *reply* (e.g. WRONGTYPE, a Lua error) is deterministic and therefore
-// fatal. A cancelled/deadline-exceeded run context is intentional, not
-// transient, and is excluded up front (context.DeadlineExceeded also satisfies
-// net.Error).
+// pool timeout, and the known temporarily-unavailable server replies. BUSY is
+// one of those: Redis returns it while a Lua script runs past lua-time-limit,
+// rejecting all other commands until that script finishes -- the rejected
+// command never ran, so retrying once the script clears is safe. Any OTHER Redis
+// *reply* (e.g. WRONGTYPE, a Lua error) is deterministic and therefore fatal. A
+// cancelled/deadline-exceeded run context is intentional, not transient, and is
+// excluded up front (context.DeadlineExceeded also satisfies net.Error).
 func isTransient(err error) bool {
 	if err == nil {
 		return false
@@ -82,7 +84,7 @@ func isTransient(err error) bool {
 	if errors.Is(err, redis.ErrPoolTimeout) {
 		return true
 	}
-	for _, prefix := range []string{"LOADING", "READONLY", "CLUSTERDOWN", "MASTERDOWN", "TRYAGAIN"} {
+	for _, prefix := range []string{"LOADING", "READONLY", "CLUSTERDOWN", "MASTERDOWN", "TRYAGAIN", "BUSY"} {
 		if redis.HasErrorPrefix(err, prefix) {
 			return true
 		}

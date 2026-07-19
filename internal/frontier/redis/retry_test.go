@@ -90,6 +90,7 @@ func TestIsTransient(t *testing.T) {
 		{"clusterdown reply", redisReplyErr("CLUSTERDOWN The cluster is down"), true},
 		{"masterdown reply", redisReplyErr("MASTERDOWN Link with MASTER is down"), true},
 		{"tryagain reply", redisReplyErr("TRYAGAIN Multiple keys request during rehashing"), true},
+		{"busy reply", redisReplyErr("BUSY Redis is busy running a script. You can only call SCRIPT KILL or SHUTDOWN NOSAVE."), true},
 		{"wrongtype reply is fatal", redisReplyErr("WRONGTYPE Operation against a key holding the wrong kind of value"), false},
 		{"context canceled", context.Canceled, false},
 		{"context deadline", context.DeadlineExceeded, false},

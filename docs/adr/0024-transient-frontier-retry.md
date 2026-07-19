@@ -27,10 +27,13 @@ Shutdown cancels it and breaks the retry loop promptly.
 
 "Transient" is an allowlist: network-shaped errors (connection refused/reset,
 EOF, i/o timeout, pool timeout) and the known temporarily-unavailable server
-replies (LOADING, READONLY, CLUSTERDOWN, MASTERDOWN, TRYAGAIN). Any unrecognized
-Redis *reply* is treated as fatal and still Fails the run. A cancelled context
-wins over any error shape, so an intentional Stop/Shutdown that surfaces as an
-i/o timeout (#32) is still classified as stopped, not retried.
+replies (LOADING, READONLY, CLUSTERDOWN, MASTERDOWN, TRYAGAIN, BUSY). BUSY is
+returned while a Lua script runs past `lua-time-limit` — Redis rejects every
+other command until that script finishes, and the rejected command never ran, so
+retrying once it clears is safe. Any unrecognized Redis *reply* is treated as
+fatal and still Fails the run. A cancelled context wins over any error shape, so
+an intentional Stop/Shutdown that surfaces as an i/o timeout (#32) is still
+classified as stopped, not retried.
 
 ## Considered options
 
