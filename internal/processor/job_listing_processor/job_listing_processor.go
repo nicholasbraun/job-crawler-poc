@@ -38,6 +38,10 @@ type Config struct {
 	// source URL's Owner, discarding the extractor's own company. A nil map or a
 	// missing Owner leaves Company empty.
 	CompanyNames map[string]string
+	// OnSaved is called once per listing actually persisted -- after a successful
+	// Save, so an Extractor Abstain or an extraction/save error never fires it
+	// (e.g. the run's saved-listings counter tap, #119). Optional: nil is a no-op.
+	OnSaved func(ctx context.Context)
 }
 
 // JobListingProcessor extracts structured job data from raw crawled pages
@@ -49,6 +53,7 @@ type JobListingProcessor struct {
 	recorder                    llmobs.Recorder
 	definitionID                uuid.UUID
 	companyNames                map[string]string
+	onSaved                     func(ctx context.Context)
 }
 
 func NewProcessor(cfg *Config) *JobListingProcessor {
@@ -71,16 +76,17 @@ func NewProcessor(cfg *Config) *JobListingProcessor {
 		recorder:                    recorder,
 		definitionID:                cfg.DefinitionID,
 		companyNames:                cfg.CompanyNames,
+		onSaved:                     cfg.OnSaved,
 	}
 }
 
 // Process extracts structured job listing fields from the raw page content via
-// the configured JobListingExtractor, saves the result, and increments the
-// processed counter. When the extractor abstains (the page is not a single job
-// posting) the extraction is discarded, not saved, and the call is recorded as an
-// abstain; Process still returns nil so the durable extract stream acks the task
-// (an abstain is a completed decision, not a failure to retry). Returns an error
-// only when extraction or persistence fails.
+// the configured JobListingExtractor, saves the result, increments the processed
+// counter, and fires OnSaved. When the extractor abstains (the page is not a single
+// job posting) the extraction is discarded, not saved, OnSaved does not fire, and
+// the call is recorded as an abstain; Process still returns nil so the durable
+// extract stream acks the task (an abstain is a completed decision, not a failure
+// to retry). Returns an error only when extraction or persistence fails.
 func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.RawJobListing) error {
 	slog.Info("process job listing", "url", workload.URL.RawURL)
 	w.recorder.Content(ctx, llmobs.KindExtract, workload.Content.MainContent)
@@ -116,5 +122,8 @@ func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.Raw
 	}
 
 	w.jobListingsProcessedCounter.Add(ctx, 1)
+	if w.onSaved != nil {
+		w.onSaved(ctx)
+	}
 	return nil
 }

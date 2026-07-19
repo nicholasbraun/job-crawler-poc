@@ -519,6 +519,14 @@ func newFactory(
 					DefinitionID:         def.ID,
 					Recorder:             llmRecorder,
 					CompanyNames:         companySnapshot,
+					// A saved listing increments ListingsFound (#119). Counting on
+					// save -- not on enqueue below -- means the header reflects the
+					// LLM-confirmed, saved rows shown in the listings table, not the
+					// pre-extraction candidates that a later Extractor Abstain discards.
+					// Like the ATS lane, a durable-stream redelivery that re-saves an
+					// in-flight entry re-counts it; saved rows stay deduped by
+					// (definition_id, url), so only this per-run metric can inflate.
+					OnSaved: func(context.Context) { counters.ListingsFound.Add(1) },
 				})
 			},
 			llmstream.WithWorkers[crawler.RawJobListing](llmMaxWorkers),
@@ -565,10 +573,11 @@ func newFactory(
 			},
 		})
 
-		// Counter tap: a matching page found becomes a job listing. Counted once
-		// here on enqueue (not per process) so a redelivery does not double-count.
+		// A relevance-passing page is enqueued onto the durable extract stream. The
+		// run's ListingsFound is bumped downstream on save (the extractor's OnSaved
+		// above), not here on enqueue: enqueue only means a keyword-matching candidate,
+		// which a later Extractor Abstain may discard without ever saving a listing (#119).
 		onJobListing := func(ctx context.Context, jl *crawler.RawJobListing) error {
-			counters.ListingsFound.Add(1)
 			return extractStage.Enqueue(ctx, jl)
 		}
 

@@ -100,6 +100,56 @@ func TestJobListingProcessorRecordsExtractCall(t *testing.T) {
 	}
 }
 
+// TestJobListingProcessorOnSaved asserts the run's saved-listings counter tap
+// (#119): OnSaved fires exactly once when a listing is persisted, and never when
+// the extractor abstains -- so the header counts saved rows, not enqueued
+// candidates a later abstain would discard.
+func TestJobListingProcessorOnSaved(t *testing.T) {
+	t.Run("fires once on a saved listing", func(t *testing.T) {
+		saved := 0
+		proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
+			JobListingRepository: &spyJobListingRepo{},
+			JobListingExtractor:  &stubExtractor{result: crawler.JobListing{Title: "Engineer"}, isPosting: true},
+			DefinitionID:         uuid.New(),
+			OnSaved:              func(context.Context) { saved++ },
+		})
+
+		raw := &crawler.RawJobListing{
+			URL:     newURL(t, "https://careers.acme.com/jobs/1"),
+			Content: crawler.Content{MainContent: "we are hiring"},
+		}
+		if err := proc.Process(t.Context(), raw); err != nil {
+			t.Fatalf("Process returned error: %v", err)
+		}
+
+		if saved != 1 {
+			t.Errorf("OnSaved fired %d times, want 1", saved)
+		}
+	})
+
+	t.Run("does not fire on an abstain", func(t *testing.T) {
+		saved := 0
+		proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
+			JobListingRepository: &spyJobListingRepo{},
+			JobListingExtractor:  &stubExtractor{result: crawler.JobListing{Title: "Careers"}, isPosting: false},
+			DefinitionID:         uuid.New(),
+			OnSaved:              func(context.Context) { saved++ },
+		})
+
+		raw := &crawler.RawJobListing{
+			URL:     newURL(t, "https://careers.acme.com/jobs"),
+			Content: crawler.Content{MainContent: "browse our open roles"},
+		}
+		if err := proc.Process(t.Context(), raw); err != nil {
+			t.Fatalf("Process returned error: %v", err)
+		}
+
+		if saved != 0 {
+			t.Errorf("OnSaved fired %d times on abstain, want 0", saved)
+		}
+	})
+}
+
 // TestJobListingProcessorAbstainSuppressesSave asserts the Extractor Abstain path:
 // a false is-job-posting verdict discards the extraction (no Save), records the
 // call as OutcomeAbstain, and still returns nil so the durable stream acks it.
