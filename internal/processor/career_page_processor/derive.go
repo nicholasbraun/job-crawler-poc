@@ -23,9 +23,11 @@ var nameSeparators = []string{" — ", " – ", " - ", " | ", " · ", " :: "}
 // "Acme Careers" -> "Acme").
 var nameSuffixes = []string{" careers", " career", " jobs", " hiring", " job board"}
 
-// nameLeadingWords are single leading words stripped from a title
-// (e.g. "Join Acme" -> "Acme").
-var nameLeadingWords = []string{"join", "careers", "career", "jobs"}
+// nameLeadingWords are single leading words stripped from a title -- hiring
+// boilerplate ("Join Acme" -> "Acme") and leading German articles
+// ("der Commerzbank" -> "Commerzbank"). English "the" is deliberately excluded:
+// it is commonly part of a real name (e.g. "The Guardian").
+var nameLeadingWords = []string{"join", "careers", "career", "jobs", "der", "die", "das"}
 
 // boilerplateWords are the words that, on their own, make a title part generic
 // hiring boilerplate rather than a company name.
@@ -34,7 +36,14 @@ var boilerplateWords = map[string]bool{
 	"openings": true, "opening": true, "positions": true, "position": true,
 	"vacancies": true, "vacancy": true, "open": true, "join": true, "us": true,
 	"team": true, "work": true, "current": true, "karriere": true,
-	"stellen": true, "stellenangebote": true, "board": true,
+	"stellen": true, "stellenangebote": true, "stellenangebot": true, "board": true,
+	// German hiring boilerplate seen on pages without JSON-LD ("Offene Stellen",
+	// "Stellenausschreibung", "Karriereseite und Stellenangebote").
+	"offene": true, "stellenausschreibung": true, "stellenausschreibungen": true,
+	"karriereseite": true, "karriereportal": true, "und": true, "and": true,
+	// Generic nav / placeholder labels that are not company names.
+	"landing": true, "page": true, "internships": true, "internship": true,
+	"deals": true, "deal": true,
 }
 
 // isBoilerplate reports whether every word of part is hiring boilerplate, so the
@@ -77,10 +86,14 @@ func companyNameFrom(content *crawler.Content, fallback string) string {
 }
 
 // companyName derives a human-readable company name from a career-page title by
-// stripping common board boilerplate. It falls back to fallback (the tenant
-// slug) when nothing usable remains.
+// normalizing whitespace and stripping common board boilerplate. It falls back
+// to fallback (the tenant slug) when nothing usable remains -- the title was
+// empty, or every remaining word is hiring boilerplate.
 func companyName(title, fallback string) string {
-	name := strings.TrimSpace(title)
+	// Collapse any run of whitespace (including embedded newlines) to a single
+	// space and trim, so a title like "der IHK Berlin\n- IHK Berlin" is handled
+	// as one line rather than leaking a literal newline into the stored name.
+	name := strings.Join(strings.Fields(title), " ")
 
 	// Leading boilerplate before a connector: "Jobs at <Company>",
 	// "Current openings at <Company>". Take the text after the last connector.
@@ -123,7 +136,12 @@ func companyName(title, fallback string) string {
 		}
 	}
 
-	if name == "" {
+	// Nothing usable survived: an empty title, or a title that is entirely
+	// hiring boilerplate ("Offene Stellen", "Landing Page", "Internships").
+	// A single-part boilerplate title reaches here untouched -- the separator
+	// branch above is the only other place isBoilerplate is consulted -- so this
+	// final gate is what sends it to the fallback.
+	if name == "" || isBoilerplate(name) {
 		return fallback
 	}
 	return name

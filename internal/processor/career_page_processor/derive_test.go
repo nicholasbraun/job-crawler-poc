@@ -22,8 +22,27 @@ func TestCompanyName(t *testing.T) {
 		{"separator with boilerplate on the left", "PostHog | Careers", "posthog.com", "PostHog"},
 		{"separator dropping multi-word boilerplate", "Open Positions – Tailscale", "tailscale.com", "Tailscale"},
 		{"plain company name kept", "Remote", "remotecom", "Remote"},
+		{"multi-word company name kept", "Rocket Internet", "rocket-internet.de", "Rocket Internet"},
 		{"empty title falls back", "", "remotecom", "remotecom"},
 		{"boilerplate-only title falls back", "Careers", "acme", "acme"},
+
+		// German leading articles are stripped (issue #30).
+		{"strip leading article after connector", "Karriere bei der Commerzbank", "commerzbank.de", "Commerzbank"},
+		{"collapse newline and strip leading article", "der IHK Berlin\n- IHK Berlin", "ihk.de", "IHK Berlin"},
+
+		// Whole-title German boilerplate falls back rather than leaking a fragment.
+		{"German 'Offene Stellen' falls back", "Offene Stellen", "testblu.de", "testblu.de"},
+		{"German 'Stellenausschreibung' falls back", "Stellenausschreibung", "pwc-stiftung.de", "pwc-stiftung.de"},
+		{"German 'Karriereseite und Stellenangebote' falls back", "Karriereseite und Stellenangebote", "neura-electronics.com", "neura-electronics.com"},
+
+		// Generic nav / placeholder labels fall back.
+		{"placeholder 'Landing Page' falls back", "Landing Page", "rebuy.com", "rebuy.com"},
+		{"nav 'Internships' falls back", "Internships", "nationalgeographic.org", "nationalgeographic.org"},
+		{"nav 'Deals' falls back", "Deals", "deutsche-startups.de", "deutsche-startups.de"},
+
+		// A real name sharing one boilerplate word is kept (not over-stripped).
+		{"'Landing AI' kept (not pure boilerplate)", "Landing AI", "landing.ai", "Landing AI"},
+		{"collapse internal whitespace then strip suffix", "Acme\n\tCareers", "acme", "Acme"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
