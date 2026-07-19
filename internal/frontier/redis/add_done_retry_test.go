@@ -36,6 +36,10 @@ func TestAddAndDoneRideOutTransientErrorThenContextWins(t *testing.T) {
 	t.Cleanup(func() { redis.SetLogger(newStderrRedisLogger()) })
 
 	reader := sdkmetric.NewManualReader()
+	// Restore the process-global meter provider afterward so this sanity check
+	// does not leak its manual-reader provider into later tests in the package.
+	prevMP := otel.GetMeterProvider()
+	t.Cleanup(func() { otel.SetMeterProvider(prevMP) })
 	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
 
 	// Nothing listens on 127.0.0.1:1, so every dial is refused. The pool's own

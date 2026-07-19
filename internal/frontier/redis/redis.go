@@ -334,8 +334,10 @@ func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 	// At-least-once safe: addScript is one atomic Lua script whose first mutation
 	// is SADD visited. If a prior attempt fully applied but its reply was lost to
 	// a transient blip, the retry sees SADD -> 0 and returns DUP, so LPUSH never
-	// doubles. time.Now() is read inside the closure so a retry after a stalled
-	// attempt stamps a fresh domain-eligibility timestamp into ZADD domains NX.
+	// doubles. time.Now() is read inside the closure so that a retry whose prior
+	// attempt did NOT apply stamps a current domain-eligibility timestamp into
+	// ZADD domains NX; a fully-applied retry short-circuits at SADD -> DUP and
+	// never reaches that ZADD.
 	res, err := f.withRetry(ctx, opAdd, func() (any, error) {
 		return addScript.Run(ctx, f.client, keys,
 			f.queuePrefix, url.Hostname, encodeMember(url), url.RawURL,
