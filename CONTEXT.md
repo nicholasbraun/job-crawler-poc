@@ -121,6 +121,10 @@ _Avoid_: domain limit, allowlist, fence
 A Keyword Crawl's acquisition of a Company's Job Listings straight from its ATS provider's board API in one call, rather than by crawling and extracting its posting pages. Available for a Company on — or embedding — a recognized ATS the crawler has an API client for; other ATS boards are crawled as a fallback.
 _Avoid_: board fetch, API scrape, direct ingest
 
+**Transient Frontier Error**:
+A momentary Redis disruption (a blip, failover, or dropped connection) the Frontier rides out by retrying while the Crawl Run's context is live, so the run stays Running rather than Failing. Distinct from a fatal Frontier error — a corrupt or unrecognized Redis reply — which still Fails the run.
+_Avoid_: outage, crash
+
 ### Classification
 
 **Gate**:
