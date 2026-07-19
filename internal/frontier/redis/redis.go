@@ -24,6 +24,7 @@ import (
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // memberSep separates the fields of an encoded queue/inflight member
@@ -190,6 +191,9 @@ type Frontier struct {
 	pollInterval time.Duration
 	maxDepth     int
 	mode         frontier.Mode
+	retryMin     time.Duration       // first backoff before a transient-error retry (default 100ms)
+	retryMax     time.Duration       // backoff cap; retries continue at this interval (default 5s)
+	retries      metric.Int64Counter // crawler.frontier.transient_retries, op-attributed
 }
 
 var _ frontier.Frontier = &Frontier{}
@@ -236,11 +240,18 @@ func New(client *redis.Client, runID uuid.UUID, opts ...Option) *Frontier {
 		pollInterval: 250 * time.Millisecond,
 		maxDepth:     3,
 		mode:         frontier.Bounded,
+		retryMin:     100 * time.Millisecond,
+		retryMax:     5 * time.Second,
 	}
 
 	for _, opt := range opts {
 		opt(f)
 	}
+
+	// Created after options so the counter is always present even if a test
+	// swaps the backoff bounds; nil-safe (a no-op instrument on registration
+	// error), so withRetry can Add unconditionally.
+	f.retries = newTransientRetryCounter()
 
 	return f
 }
@@ -320,10 +331,19 @@ func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 	}
 
 	keys := []string{f.key("visited"), f.key("domains")}
-	res, err := addScript.Run(ctx, f.client, keys,
-		f.queuePrefix, url.Hostname, encodeMember(url), url.RawURL,
-		time.Now().UnixMilli(),
-	).Result()
+	// At-least-once safe: addScript is one atomic Lua script whose first mutation
+	// is SADD visited. If a prior attempt fully applied but its reply was lost to
+	// a transient blip, the retry sees SADD -> 0 and returns DUP, so LPUSH never
+	// doubles. time.Now() is read inside the closure so that a retry whose prior
+	// attempt did NOT apply stamps a current domain-eligibility timestamp into
+	// ZADD domains NX; a fully-applied retry short-circuits at SADD -> DUP and
+	// never reaches that ZADD.
+	res, err := f.withRetry(ctx, opAdd, func() (any, error) {
+		return addScript.Run(ctx, f.client, keys,
+			f.queuePrefix, url.Hostname, encodeMember(url), url.RawURL,
+			time.Now().UnixMilli(),
+		).Result()
+	})
 	if err != nil {
 		return fmt.Errorf("frontier: add url: %w", err)
 	}
@@ -343,11 +363,15 @@ func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 	keys := []string{f.key("domains"), f.key("processing"), f.key("inflight")}
 	for {
-		res, err := nextScript.Run(ctx, f.client, keys,
-			f.queuePrefix, time.Now().UnixMilli(),
-			f.leaseTTL.Milliseconds(), f.cooldown.Milliseconds(),
-			f.pollInterval.Milliseconds(),
-		).Result()
+		// time.Now() is read inside the closure so each retry re-computes the
+		// clock, keeping lease/reclaim deadlines correct across a stalled retry.
+		res, err := f.withRetry(ctx, opNext, func() (any, error) {
+			return nextScript.Run(ctx, f.client, keys,
+				f.queuePrefix, time.Now().UnixMilli(),
+				f.leaseTTL.Milliseconds(), f.cooldown.Milliseconds(),
+				f.pollInterval.Milliseconds(),
+			).Result()
+		})
 		if err != nil {
 			return crawler.URL{}, fmt.Errorf("frontier: next: %w", err)
 		}
@@ -390,7 +414,12 @@ func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 // returned by Next.
 func (f *Frontier) MarkDone(ctx context.Context, url string) error {
 	keys := []string{f.key("processing"), f.key("inflight")}
-	if err := doneScript.Run(ctx, f.client, keys, url).Err(); err != nil {
+	// At-least-once safe: doneScript's ZREM/HDEL are idempotent, so re-running on
+	// an already-cleared lease is a harmless no-op. The script's return value (1)
+	// is unused, so .Result() feeds the withRetry closure shape and is discarded.
+	if _, err := f.withRetry(ctx, opDone, func() (any, error) {
+		return doneScript.Run(ctx, f.client, keys, url).Result()
+	}); err != nil {
 		return fmt.Errorf("frontier: mark done: %w", err)
 	}
 	return nil

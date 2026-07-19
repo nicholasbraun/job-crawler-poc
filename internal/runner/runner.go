@@ -754,9 +754,11 @@ func countersFrom(rc crawler.RunCounters) *Counters {
 // run context's error (runCtx.Err()): when it is non-nil the run was
 // intentionally Stopped or Shutdown, so any error is downgraded to stopped even
 // if the frontier surfaced a net i/o timeout (from a cancellation landing
-// mid-read) rather than a wrapped context.Canceled. A transient frontier I/O
-// error during normal operation happens with a live (non-cancelled) context, so
-// it still fails.
+// mid-read) rather than a wrapped context.Canceled. Transient frontier I/O
+// errors during normal operation are now absorbed by the Redis Frontier itself
+// (ADR-0024), which retries them in place while the run context is live, so they
+// never reach here — the default (failing) arm is reached only by genuinely
+// fatal errors (an unrecognized/corrupt Redis reply).
 func terminalStatus(err error, ctxErr error) (crawler.RunStatus, string) {
 	switch {
 	case err == nil:
