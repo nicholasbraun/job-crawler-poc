@@ -1,7 +1,8 @@
 // Package redis implements a crash-safe, resumable URL frontier backed by
 // Redis, keyed per crawl run. It preserves the semantics of the in-memory
-// reference frontier (per-domain FIFO queues with a cooldown, a maxDepth reject,
-// and dedup) while surviving process restarts: queued URLs,
+// reference frontier (per-domain FIFO queues with a cooldown — best-effort,
+// enforced only while a domain has continuously-queued work (ADR-0026) — a
+// maxDepth reject, and dedup) while surviving process restarts: queued URLs,
 // the visited set, and in-flight leases all live in Redis under a
 // frontier:{runID}: namespace.
 //
@@ -59,19 +60,32 @@ return 'NEW'
 `)
 
 // nextScript reclaims expired leases, then hands out the earliest eligible URL.
+// It relies on the non-empty-domains invariant: the domains schedule holds a
+// domain only while its queue is non-empty (AddURL and lease-reclaim re-add it,
+// a pop ZREMs it the moment its queue drains). So the earliest eligible domain
+// is an O(log N) indexed lookup (ZRANGEBYSCORE ... LIMIT 0 1) rather than a scan
+// of every domain ever seen. Both loops are bounded per call by Lua-local
+// constants (maxReclaim, maxPrune) so no single pop can exceed Redis's Lua time
+// limit (the #145 BUSY); leftover work is handled on later pops.
+//
 // KEYS: domains, processing, inflight. ARGV: queuePrefix, now(ms), leaseTTL(ms),
 // cooldown(ms), pollInterval(ms). Returns a 2-element table:
 //
 //	{'URL', member}   — a URL to crawl
 //	                     (member is depth\x1fhostname\x1fscope\x1fowner\x1furl)
 //	{'BADMEMBER', m}  — a queued member predating the #118 provenance format
-//	                     (fewer than four separators); put back on its queue and
-//	                     surfaced by Next as an error, so stale state is flushed
-//	                     rather than silently crawled unfenced.
+//	                     (fewer than four separators); pushed back with a fresh
+//	                     cooldown (its domain stays scheduled, its queue being
+//	                     non-empty) and surfaced by Next as an error, so stale
+//	                     state is flushed rather than silently crawled unfenced.
 //	{'WAIT', wakeMs}   — nothing ready; caller sleeps until wakeMs then retries.
-//	                     wakeMs is bounded by now+pollInterval and the earliest
-//	                     in-flight lease expiry, so reclaim latency tracks
-//	                     leaseTTL rather than a domain cooldown.
+//	                     For a real deadline wakeMs is bounded by now+pollInterval,
+//	                     the earliest future domain deadline, and the earliest
+//	                     in-flight lease expiry, so reclaim latency tracks leaseTTL
+//	                     rather than a domain cooldown. When the defensive prune
+//	                     cap is hit before a poppable member is found, wakeMs is
+//	                     now itself — an immediate retry that resumes stale-domain
+//	                     cleanup on the next pop.
 //	{'DONE'}           — queues empty and no leases in flight
 var nextScript = redis.NewScript(`
 local domains      = KEYS[1]
@@ -84,12 +98,20 @@ local cooldown     = tonumber(ARGV[4])
 local pollInterval = tonumber(ARGV[5])
 local sep          = string.char(31)
 
--- wakeDeadline bounds a WAIT sleep so a live worker re-evaluates Redis at least
--- once per pollInterval (catching URLs another process added, since there is no
--- cross-process wakeup signal), and no later than the earliest in-flight lease
--- expiry so crash-reclaim tracks leaseTTL rather than a domain cooldown. It is
--- called after the reclaim loop, so every remaining processing score is in the
--- future. candidate is a concrete domain deadline, or nil when there is none.
+-- Per-pop bounds keep every atomic pop within Redis's Lua time limit (the #145
+-- BUSY root cause). 256 keeps a pop's worst-case work sub-millisecond, while a
+-- large pre-fix backlog (tens of thousands of stale domains) self-heals over a
+-- few rapid cleanup pops rather than one BUSY-tripping script. Overflow of
+-- either loop is handled on subsequent pops. These are Lua-local constants,
+-- never plumbed configuration.
+local maxReclaim = 256   -- expired leases reclaimed per pop
+local maxPrune   = 256   -- stale/empty domains pruned from the schedule per pop
+
+-- wakeDeadline bounds a WAIT sleep to now+pollInterval and to the earliest
+-- in-flight lease expiry. It is only ever reached when the reclaim loop found no
+-- expired lease this pop (an expired lease would have re-scheduled its domain at
+-- now and made it eligible, avoiding this branch), so every processing score
+-- here is in the future. candidate is a concrete future domain deadline, or nil.
 local function wakeDeadline(candidate)
   local deadline = now + pollInterval
   if candidate ~= nil and candidate < deadline then
@@ -105,9 +127,11 @@ local function wakeDeadline(candidate)
   return deadline
 end
 
--- 1. Reclaim leases whose expiry has passed: re-enqueue the exact member (with
--- its depth) onto its domain queue and make the domain eligible again.
-local expired = redis.call('ZRANGEBYSCORE', processing, '-inf', now)
+-- 1. Reclaim up to maxReclaim expired leases: re-enqueue the exact member (with
+-- its depth) onto its domain queue and re-schedule the domain (NX preserves an
+-- active cooldown; adds a drained domain back at now). Leases beyond the cap are
+-- reclaimed on later pops.
+local expired = redis.call('ZRANGEBYSCORE', processing, '-inf', now, 'LIMIT', 0, maxReclaim)
 for _, u in ipairs(expired) do
   local member = redis.call('HGET', inflight, u)
   if member then
@@ -121,50 +145,71 @@ for _, u in ipairs(expired) do
   redis.call('HDEL', inflight, u)
 end
 
--- 2. Pick the earliest-deadline domain whose queue is non-empty. domains is
--- ascending by score, so the first non-empty one has the nearest deadline.
-local ranked = redis.call('ZRANGE', domains, 0, -1, 'WITHSCORES')
-local bestDomain, bestScore
-for i = 1, #ranked, 2 do
-  if redis.call('LLEN', queuePrefix .. ranked[i]) > 0 then
-    bestDomain = ranked[i]
-    bestScore = tonumber(ranked[i + 1])
+-- 2. Select the earliest-eligible non-empty domain by indexed lookup. Under the
+-- non-empty-domains invariant a scheduled domain has queued work; a domain whose
+-- queue is unexpectedly empty (pre-fix bloat or an invariant slip) is pruned and
+-- the next candidate tried, up to maxPrune per pop.
+local candidate, member
+local pruned = 0
+while pruned < maxPrune do
+  local sel = redis.call('ZRANGEBYSCORE', domains, '-inf', now, 'LIMIT', 0, 1)
+  if #sel == 0 then
+    -- Nothing eligible now. Wake at the earliest FUTURE domain deadline; with no
+    -- domains at all, wait on in-flight leases, or finish.
+    local future = redis.call('ZRANGE', domains, 0, 0, 'WITHSCORES')
+    if #future > 0 then
+      return {'WAIT', tostring(wakeDeadline(tonumber(future[2])))}
+    end
+    if redis.call('ZCARD', processing) > 0 then
+      return {'WAIT', tostring(wakeDeadline(nil))}
+    end
+    return {'DONE'}
+  end
+  candidate = sel[1]
+  member = redis.call('RPOP', queuePrefix .. candidate)
+  if member then
     break
   end
+  -- Queue empty: prune the stale/drained domain and try the next.
+  redis.call('ZREM', domains, candidate)
+  pruned = pruned + 1
 end
 
-if bestDomain == nil then
-  if redis.call('ZCARD', processing) > 0 then
-    return {'WAIT', tostring(wakeDeadline(nil))}
-  end
-  return {'DONE'}
-end
-
-if bestScore > now then
-  return {'WAIT', tostring(wakeDeadline(bestScore))}
-end
-
-local member = redis.call('RPOP', queuePrefix .. bestDomain)
+-- redis.call RPOP on a missing key returns Lua false (not nil), so this tests
+-- falsiness with "not member" rather than an equality against nil.
 if not member then
-  return {'WAIT', tostring(wakeDeadline(nil))}
+  -- Prune cap hit without a poppable member: WAIT with a past deadline, i.e. an
+  -- immediate retry that continues stale-domain cleanup on the next pop.
+  return {'WAIT', tostring(now)}
 end
 
-redis.call('ZADD', domains, now + cooldown, bestDomain)
 -- url is the last field: walk past depth, hostname, scope, owner to the 4th
 -- separator, then take the rest. Consecutive separators (empty scope/owner)
 -- are handled because string.find advances one position per call. Each step is
 -- guarded so a member with fewer than four separators -- one written before the
 -- #118 provenance format -- yields an actionable BADMEMBER instead of crashing
--- on arithmetic over a nil find; it is pushed back so no URL is lost.
+-- on arithmetic over a nil find; it is pushed back and its domain kept scheduled
+-- with a fresh cooldown (queue non-empty) so the error loop is throttled.
 local p = string.find(member, sep, 1, true)                 -- after depth
 if p then p = string.find(member, sep, p + 1, true) end     -- after hostname
 if p then p = string.find(member, sep, p + 1, true) end     -- after scope
 if p then p = string.find(member, sep, p + 1, true) end     -- after owner
 if not p then
-  redis.call('LPUSH', queuePrefix .. bestDomain, member)
+  redis.call('LPUSH', queuePrefix .. candidate, member)
+  redis.call('ZADD', domains, now + cooldown, candidate)
   return {'BADMEMBER', member}
 end
 local url = string.sub(member, p + 1)
+
+-- Non-empty-domains invariant: if this pop drained the queue, remove the domain
+-- from the schedule (a later URL re-enters it as immediately eligible -- the
+-- accepted cooldown-reset-on-redrain, ADR-0026); otherwise re-schedule it a
+-- cooldown out so its remaining work stays politely spaced.
+if redis.call('LLEN', queuePrefix .. candidate) == 0 then
+  redis.call('ZREM', domains, candidate)
+else
+  redis.call('ZADD', domains, now + cooldown, candidate)
+end
 redis.call('ZADD', processing, now + leaseTTL, url)
 redis.call('HSET', inflight, url, member)
 return {'URL', member}
