@@ -72,8 +72,9 @@ const (
 	// Crawl tuning defaults, previously sourced from config.json. The per-kind
 	// maxDepth constants seed a new crawl definition's field when the request
 	// omits maxDepth (overridable per definition via the API); Discovery reaches
-	// deeper because it is the perpetual catalog-building crawl. maxWorkers sizes
-	// the per-run worker pools.
+	// deeper because it is the perpetual catalog-building crawl. defaultMaxWorkers
+	// is the default size of the per-run worker pools, overridable via
+	// CRAWL_MAX_WORKERS.
 	defaultLogLevel          = "INFO"
 	defaultKeywordMaxDepth   = 4
 	defaultDiscoveryMaxDepth = 10
@@ -148,6 +149,17 @@ func main() {
 		ExtractMaxChars:  llmExtractMaxChars,
 	}
 
+	// CRAWL_MAX_WORKERS sizes the per-run crawl worker pools (the discovery and
+	// url/keyword pools) — how many pages are downloaded and processed in parallel
+	// per run. Crawl workers are I/O-bound (blocked on network downloads), so this
+	// can be raised well past the default to lift throughput once the frontier is
+	// no longer the bottleneck; the Postgres pool and outbound network are the next
+	// caps to watch.
+	crawlMaxWorkers, err := strconv.Atoi(envOr("CRAWL_MAX_WORKERS", strconv.Itoa(defaultMaxWorkers)))
+	if err != nil || crawlMaxWorkers < 1 {
+		log.Fatalf("error parsing CRAWL_MAX_WORKERS: must be a positive integer, got %q", os.Getenv("CRAWL_MAX_WORKERS"))
+	}
+
 	var logLevel slog.LevelVar
 	if err := logLevel.UnmarshalText([]byte(envOr("LOG_LEVEL", defaultLogLevel))); err != nil {
 		log.Fatalf("error parsing LOG_LEVEL: %v", err)
@@ -197,7 +209,7 @@ func main() {
 	runRepository := postgres.NewCrawlRunRepository(pgPool)
 	importJobRepository := postgres.NewImportJobRepository(pgPool)
 
-	factory := newFactory(defaultMaxWorkers, llmMaxWorkers, llmConfig, redisClient,
+	factory := newFactory(crawlMaxWorkers, llmMaxWorkers, llmConfig, redisClient,
 		jobListingRepository, companyRepository, careerPageRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory,
 		// One cleaner sweeps all of a run's transient Redis state on a terminal
