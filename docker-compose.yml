@@ -9,6 +9,8 @@ services:
       - LLM_MODEL=${LLM_MODEL}
       - LLM_TIMEOUT=${LLM_TIMEOUT}
       - LLM_MAX_WORKERS=${LLM_MAX_WORKERS}
+      - CRAWL_MAX_WORKERS=${CRAWL_MAX_WORKERS:-50}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DATABASE_URL=postgres://crawler:crawler@postgres:5432/crawler?sslmode=disable
       - REDIS_ADDR=redis:6379
     depends_on:
