@@ -86,7 +86,7 @@ func (w *discoveryWorker) Process(ctx context.Context, nextURL *crawler.URL) err
 		}
 	}()
 
-	slog.Info("discovery_worker: got nextURL", "url", nextURL.RawURL)
+	slog.Debug("discovery_worker: got nextURL", "url", nextURL.RawURL)
 
 	if err := w.robotsTxtChecker.Check(ctx, nextURL.RawURL); err != nil {
 		return fmt.Errorf("discovery_worker: robots.txt filtered out url (%s): %w", nextURL.RawURL, err)
@@ -126,15 +126,17 @@ func (w *discoveryWorker) Process(ctx context.Context, nextURL *crawler.URL) err
 			continue
 		}
 		if err := w.urlFilter(parsed.RawURL); err != nil {
-			slog.Info("discovery_worker: url filtered out", "url", parsed.RawURL, "cause", err)
+			slog.Debug("discovery_worker: url filtered out", "url", parsed.RawURL, "cause", err)
 			continue
 		}
 
-		if err := w.robotsTxtChecker.Check(ctx, parsed.RawURL); err != nil {
-			slog.Info("discovery_worker: robots.txt filtered out url", "url", parsed.RawURL, "cause", err)
-			continue
-		}
-
+		// robots.txt is enforced when a URL is actually crawled (the page-level
+		// Check at the top of Process), not here at discovery. Fetching robots.txt
+		// for every discovered link -- most never crawled, many already visited --
+		// serialized each worker on the network and was the discovery throughput
+		// bottleneck. A disallowed URL is enqueued but rejected before any fetch
+		// once it is popped.
+		//
 		// AddURL fuses dedup with enqueue: an already-seen URL is a silent
 		// no-op, so there is no separate visited check to race against.
 		err = w.frontier.AddURL(ctx, parsed)

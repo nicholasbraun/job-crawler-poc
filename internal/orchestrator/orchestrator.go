@@ -88,7 +88,7 @@ func (o *Orchestrator) Run(ctx context.Context, seeds []crawler.Seed) error {
 			cancel(err)
 			return err
 		}
-		slog.Info("got nextURL", "url", nextURL.RawURL)
+		slog.Debug("got nextURL", "url", nextURL.RawURL)
 
 		err = o.onNextURL(ctx, &nextURL)
 		if err != nil {
