@@ -3,6 +3,14 @@ services:
     build: .
     ports:
       - "8080:8080"
+    # Forward external DNS to fast public resolvers instead of the embedded
+    # 127.0.0.11 default upstream. A discovery crawl resolves thousands of new
+    # hosts, and the embedded resolver throttles that load (it becomes the
+    # throughput ceiling under concurrency). Service names (redis, postgres) still
+    # resolve via the embedded DNS, which forwards only external queries here.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     environment:
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_BASE_URL=${LLM_BASE_URL}
