@@ -194,6 +194,60 @@ Engineer</h1>
 		}
 	})
 
+	t.Run("extracts og:site_name into SiteName", func(t *testing.T) {
+		html := `
+<html>
+	<head>
+		<title>Careers</title>
+		<meta property="og:site_name" content="Süddeutsche Zeitung">
+	</head>
+	<body><main>content</main></body>
+</html>
+`
+		content, err := parser.NewHTMLParser().Parse([]byte(html))
+		if err != nil {
+			t.Fatalf("error parsing content: %v", err)
+		}
+
+		if content.SiteName != "Süddeutsche Zeitung" {
+			t.Errorf("expected SiteName to be 'Süddeutsche Zeitung', got: %q", content.SiteName)
+		}
+	})
+
+	t.Run("absent og:site_name yields empty SiteName", func(t *testing.T) {
+		html := `
+<html>
+	<head><title>Careers</title></head>
+	<body><main>content</main></body>
+</html>
+`
+		content, err := parser.NewHTMLParser().Parse([]byte(html))
+		if err != nil {
+			t.Fatalf("error parsing content: %v", err)
+		}
+
+		if content.SiteName != "" {
+			t.Errorf("expected empty SiteName, got: %q", content.SiteName)
+		}
+	})
+
+	t.Run("trims surrounding whitespace from og:site_name", func(t *testing.T) {
+		html := `
+<html>
+	<head><meta property="og:site_name" content="  Acme  "></head>
+	<body><main>content</main></body>
+</html>
+`
+		content, err := parser.NewHTMLParser().Parse([]byte(html))
+		if err != nil {
+			t.Fatalf("error parsing content: %v", err)
+		}
+
+		if content.SiteName != "Acme" {
+			t.Errorf("expected trimmed SiteName 'Acme', got: %q", content.SiteName)
+		}
+	})
+
 	t.Run("extracts ld+json blocks into JSONLD", func(t *testing.T) {
 		html := `
 <html>

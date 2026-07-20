@@ -140,6 +140,13 @@ func TestDeriveName(t *testing.T) {
 			wantSource: crawler.NameSourceTitle,
 		},
 		{
+			name:       "boilerplate-only meta abstains to the cued title",
+			content:    &crawler.Content{Title: "Jobs at Acme", SiteName: "Offene Stellen"},
+			identity:   selfHosted,
+			wantName:   "Acme",
+			wantSource: crawler.NameSourceTitle,
+		},
+		{
 			name:       "llm wins over the title when no jsonld or meta",
 			content:    &crawler.Content{Title: "Careers at Acme"},
 			identity:   selfHosted,
