@@ -3,7 +3,7 @@
 // entities the dashboard renders. The design treats a "crawl" as a definition
 // married to its latest run; the catalog panels need company/career-page joins.
 
-import type { CareerPage, Company, Definition, Run } from "../api";
+import type { CareerPage, Company, Definition, NameSource, Run } from "../api";
 import type { DisplayStatus } from "./status";
 
 // isoAfter reports whether ISO timestamp a is strictly later than b, comparing
@@ -173,6 +173,58 @@ export function recentlyCatalogued(
 // provider name, or "Self-hosted".
 export function companySource(company: Company): string {
   return company.atsProvider || "Self-hosted";
+}
+
+// NameTier buckets a Company's Name Source into the dashboard's 3-tier confidence
+// treatment (ADR-0025): "structured" = the site declared its own name (verified),
+// "derived" = the LLM read it or the title yielded it (unverified), "fallback" =
+// no real name was found (the domain, or a legacy/unknown NULL source).
+export type NameTier = "structured" | "derived" | "fallback";
+
+export function nameTier(company: Company): NameTier {
+  switch (company.nameSource) {
+    case "jsonld":
+    case "meta":
+      return "structured";
+    case "llm":
+    case "title":
+      return "derived";
+    default: // "domain", "" (NULL/legacy/unknown)
+      return "fallback";
+  }
+}
+
+// verifiedNameShare is the share of catalogued Companies whose name a site
+// declared about itself (the "structured" tier) — the Catalog's name-quality
+// headline. Percentage rounds to a whole number; 0 for an empty Catalog.
+export function verifiedNameShare(companies: Company[]): {
+  verifiedCount: number;
+  verifiedPct: number;
+} {
+  const total = companies.length;
+  const verifiedCount = companies.filter((c) => nameTier(c) === "structured").length;
+  const verifiedPct = total === 0 ? 0 : Math.round((verifiedCount / total) * 100);
+  return { verifiedCount, verifiedPct };
+}
+
+// nameSourceLabel is the human tooltip text naming the exact Name Ladder rung a
+// Company's name came from (ADR-0025), so an analyst sees precisely how the name
+// was obtained, not just its tier.
+export function nameSourceLabel(source: NameSource): string {
+  switch (source) {
+    case "jsonld":
+      return "Declared in structured data (JSON-LD)";
+    case "meta":
+      return "Site metadata (og:site_name)";
+    case "llm":
+      return "Read by the LLM from the page";
+    case "title":
+      return "Parsed from the page title";
+    case "domain":
+      return "Domain fallback — no name found";
+    default:
+      return "Unknown — catalogued before name provenance";
+  }
 }
 
 // companyInitial buckets a company by the first character of its display name
