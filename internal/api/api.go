@@ -212,6 +212,7 @@ type companyDTO struct {
 	DisplayDomain string    `json:"displayDomain"`
 	Website       string    `json:"website"`
 	Name          string    `json:"name"`
+	NameSource    string    `json:"nameSource"`
 	FirstSeen     time.Time `json:"firstSeen"`
 	LastSeen      time.Time `json:"lastSeen"`
 }
@@ -224,6 +225,7 @@ func toCompanyDTO(c *crawler.Company) companyDTO {
 		DisplayDomain: c.DisplayDomain,
 		Website:       c.Website,
 		Name:          c.Name,
+		NameSource:    string(c.NameSource),
 		FirstSeen:     c.FirstSeen,
 		LastSeen:      c.LastSeen,
 	}

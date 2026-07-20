@@ -7,47 +7,46 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/catalog"
 )
 
-func TestCompanyName(t *testing.T) {
+func TestTitleName(t *testing.T) {
 	tests := []struct {
-		name     string
-		title    string
-		fallback string
-		want     string
+		name  string
+		title string
+		want  string
 	}{
-		{"strip 'X at Y' prefix", "Current openings at Remote", "remotecom", "Remote"},
-		{"strip 'Jobs at' prefix", "Jobs at xAI", "xai", "xAI"},
-		{"strip trailing Careers", "Acme Careers", "acme", "Acme"},
-		{"strip 'Join' leading word", "Join Globex", "globex", "Globex"},
-		{"separator with boilerplate on the right", "Careers - PostHog", "posthog.com", "PostHog"},
-		{"separator with boilerplate on the left", "PostHog | Careers", "posthog.com", "PostHog"},
-		{"separator dropping multi-word boilerplate", "Open Positions – Tailscale", "tailscale.com", "Tailscale"},
-		{"plain company name kept", "Remote", "remotecom", "Remote"},
-		{"multi-word company name kept", "Rocket Internet", "rocket-internet.de", "Rocket Internet"},
-		{"empty title falls back", "", "remotecom", "remotecom"},
-		{"boilerplate-only title falls back", "Careers", "acme", "acme"},
+		// A structural cue (connector / separator / suffix / leading word) fired,
+		// so the title yields a name.
+		{"strip 'X at Y' prefix", "Current openings at Remote", "Remote"},
+		{"strip 'Jobs at' prefix", "Jobs at xAI", "xAI"},
+		{"strip trailing Careers", "Acme Careers", "Acme"},
+		{"strip 'Join' leading word", "Join Globex", "Globex"},
+		{"separator with boilerplate on the right", "Careers - PostHog", "PostHog"},
+		{"separator with boilerplate on the left", "PostHog | Careers", "PostHog"},
+		{"separator dropping multi-word boilerplate", "Open Positions – Tailscale", "Tailscale"},
+		{"strip leading article after connector", "Karriere bei der Commerzbank", "Commerzbank"},
+		{"collapse newline and strip leading article", "der IHK Berlin\n- IHK Berlin", "IHK Berlin"},
+		{"collapse internal whitespace then strip suffix", "Acme\n\tCareers", "Acme"},
 
-		// German leading articles are stripped (issue #30).
-		{"strip leading article after connector", "Karriere bei der Commerzbank", "commerzbank.de", "Commerzbank"},
-		{"collapse newline and strip leading article", "der IHK Berlin\n- IHK Berlin", "ihk.de", "IHK Berlin"},
+		// A bare title carries no structural cue, so the ladder cannot tell a real
+		// name from junk: it abstains ("") to the domain rung (ADR-0025).
+		{"bare single-word title abstains", "Remote", ""},
+		{"bare multi-word title abstains", "Rocket Internet", ""},
+		{"bare name sharing a boilerplate word abstains", "Landing AI", ""},
+		{"empty title abstains", "", ""},
 
-		// Whole-title German boilerplate falls back rather than leaking a fragment.
-		{"German 'Offene Stellen' falls back", "Offene Stellen", "testblu.de", "testblu.de"},
-		{"German 'Stellenausschreibung' falls back", "Stellenausschreibung", "pwc-stiftung.de", "pwc-stiftung.de"},
-		{"German 'Karriereseite und Stellenangebote' falls back", "Karriereseite und Stellenangebote", "neura-electronics.com", "neura-electronics.com"},
+		// A cue fired but left only boilerplate -> "".
+		{"leading-word strip leaves nothing", "Careers", ""},
 
-		// Generic nav / placeholder labels fall back.
-		{"placeholder 'Landing Page' falls back", "Landing Page", "rebuy.com", "rebuy.com"},
-		{"nav 'Internships' falls back", "Internships", "nationalgeographic.org", "nationalgeographic.org"},
-		{"nav 'Deals' falls back", "Deals", "deutsche-startups.de", "deutsche-startups.de"},
-
-		// A real name sharing one boilerplate word is kept (not over-stripped).
-		{"'Landing AI' kept (not pure boilerplate)", "Landing AI", "landing.ai", "Landing AI"},
-		{"collapse internal whitespace then strip suffix", "Acme\n\tCareers", "acme", "Acme"},
+		// Whole-title boilerplate with no cue abstains.
+		{"German 'Offene Stellen' abstains", "Offene Stellen", ""},
+		{"German 'Stellenausschreibung' abstains", "Stellenausschreibung", ""},
+		{"placeholder 'Landing Page' abstains", "Landing Page", ""},
+		{"nav 'Internships' abstains", "Internships", ""},
+		{"nav 'Deals' abstains", "Deals", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := companyName(tt.title, tt.fallback); got != tt.want {
-				t.Errorf("companyName(%q, %q) = %q, want %q", tt.title, tt.fallback, got, tt.want)
+			if got := titleName(tt.title); got != tt.want {
+				t.Errorf("titleName(%q) = %q, want %q", tt.title, got, tt.want)
 			}
 		})
 	}
@@ -101,30 +100,83 @@ func TestOrganizationName(t *testing.T) {
 	}
 }
 
-func TestCompanyNameFrom(t *testing.T) {
-	t.Run("JSON-LD company name is preferred over the title", func(t *testing.T) {
-		content := &crawler.Content{
-			Title:  "Referent*in Politik (m/w/d)",
-			JSONLD: []string{`{"@type":"JobPosting","hiringOrganization":{"name":"softgarden"}}`},
-		}
-		if got := companyNameFrom(content, "softgarden.io"); got != "softgarden" {
-			t.Errorf("companyNameFrom = %q, want softgarden", got)
-		}
-	})
+func TestDeriveName(t *testing.T) {
+	selfHosted := catalog.Identity{ATSProvider: "", CompanyKey: "acme.com"}
+	ats := catalog.Identity{ATSProvider: "greenhouse", CompanyKey: "greenhouse:acme"}
 
-	t.Run("falls back to the title heuristic when no JSON-LD name", func(t *testing.T) {
-		content := &crawler.Content{Title: "Acme Careers"}
-		if got := companyNameFrom(content, "acme"); got != "Acme" {
-			t.Errorf("companyNameFrom = %q, want Acme", got)
-		}
-	})
-
-	t.Run("falls back to the tenant slug when nothing is usable", func(t *testing.T) {
-		content := &crawler.Content{Title: "Careers"}
-		if got := companyNameFrom(content, "acme"); got != "acme" {
-			t.Errorf("companyNameFrom = %q, want acme", got)
-		}
-	})
+	tests := []struct {
+		name       string
+		content    *crawler.Content
+		identity   catalog.Identity
+		llmName    string
+		wantName   string
+		wantSource crawler.NameSource
+	}{
+		{
+			name: "jsonld wins over meta, llm, and title",
+			content: &crawler.Content{
+				Title:    "Careers at Acme",
+				SiteName: "Acme Site",
+				JSONLD:   []string{`{"@type":"Organization","name":"Slack"}`},
+			},
+			identity:   selfHosted,
+			llmName:    "Evil",
+			wantName:   "Slack",
+			wantSource: crawler.NameSourceJSONLD,
+		},
+		{
+			name:       "meta wins for a self-hosted company when no jsonld",
+			content:    &crawler.Content{Title: "Careers at Acme", SiteName: "Süddeutsche Zeitung"},
+			identity:   selfHosted,
+			llmName:    "Acme GmbH",
+			wantName:   "Süddeutsche Zeitung",
+			wantSource: crawler.NameSourceMeta,
+		},
+		{
+			name:       "meta abstains on an ATS board (site name is the ATS brand)",
+			content:    &crawler.Content{Title: "Jobs at Acme", SiteName: "Greenhouse"},
+			identity:   ats,
+			wantName:   "Acme",
+			wantSource: crawler.NameSourceTitle,
+		},
+		{
+			name:       "llm wins over the title when no jsonld or meta",
+			content:    &crawler.Content{Title: "Careers at Acme"},
+			identity:   selfHosted,
+			llmName:    "Acme GmbH",
+			wantName:   "Acme GmbH",
+			wantSource: crawler.NameSourceLLM,
+		},
+		{
+			name:       "cued title wins when nothing higher fired",
+			content:    &crawler.Content{Title: "Jobs at Acme"},
+			identity:   selfHosted,
+			wantName:   "Acme",
+			wantSource: crawler.NameSourceTitle,
+		},
+		{
+			name:       "everything abstains -> self-hosted domain fallback",
+			content:    &crawler.Content{Title: "Remote"},
+			identity:   selfHosted,
+			wantName:   "acme.com",
+			wantSource: crawler.NameSourceDomain,
+		},
+		{
+			name:       "everything abstains -> ATS tenant-slug fallback",
+			content:    &crawler.Content{Title: "Remote"},
+			identity:   ats,
+			wantName:   "acme",
+			wantSource: crawler.NameSourceDomain,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			name, source := deriveName(tt.content, tt.identity, tt.llmName)
+			if name != tt.wantName || source != tt.wantSource {
+				t.Errorf("deriveName = (%q, %q), want (%q, %q)", name, source, tt.wantName, tt.wantSource)
+			}
+		})
+	}
 }
 
 func TestCompanyDomain(t *testing.T) {

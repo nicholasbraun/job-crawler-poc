@@ -1405,7 +1405,7 @@ func TestAddSeed(t *testing.T) {
 
 func TestListCompanies(t *testing.T) {
 	companies := &fakeCompanyRepo{companies: []*crawler.Company{
-		{ID: uuid.New(), CompanyKey: "greenhouse:acme", ATSProvider: "greenhouse", Name: "Acme", Website: "https://acme.io"},
+		{ID: uuid.New(), CompanyKey: "greenhouse:acme", ATSProvider: "greenhouse", Name: "Acme", NameSource: crawler.NameSourceJSONLD, Website: "https://acme.io"},
 	}}
 	srv := newHandler(api.Config{Companies: companies})
 
@@ -1423,6 +1423,9 @@ func TestListCompanies(t *testing.T) {
 	}
 	if got[0]["website"] != "https://acme.io" {
 		t.Errorf("website not carried by the DTO: got %v, want https://acme.io", got[0]["website"])
+	}
+	if got[0]["nameSource"] != "jsonld" {
+		t.Errorf("nameSource not carried by the DTO: got %v, want jsonld", got[0]["nameSource"])
 	}
 }
 

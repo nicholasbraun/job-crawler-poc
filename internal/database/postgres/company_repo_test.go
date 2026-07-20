@@ -20,6 +20,7 @@ func TestCompanyRepository(t *testing.T) {
 		ATSProvider:   "greenhouse",
 		DisplayDomain: "boards.greenhouse.io",
 		Name:          "Acme",
+		NameSource:    crawler.NameSourceTitle,
 	}
 
 	t.Run("Upsert inserts and returns a generated id", func(t *testing.T) {
@@ -120,6 +121,15 @@ func TestCompanyRepository(t *testing.T) {
 		}
 		if acme := byKey["greenhouse:acme"]; acme == nil || acme.ATSProvider != "greenhouse" {
 			t.Errorf("greenhouse:acme should carry its provider, got %+v", acme)
+		}
+		// The Name Ladder rung set at insert round-trips through List.
+		if acme := byKey["greenhouse:acme"]; acme == nil || acme.NameSource != crawler.NameSourceTitle {
+			t.Errorf("greenhouse:acme NameSource should round-trip as title, got %+v", acme)
+		}
+		// initech was inserted with a zero-value NameSource, stored as NULL, and
+		// surfaced as "".
+		if selfHosted := byKey["initech.com"]; selfHosted == nil || selfHosted.NameSource != "" {
+			t.Errorf("initech.com NameSource should surface NULL as empty, got %+v", selfHosted)
 		}
 	})
 
@@ -236,6 +246,56 @@ func TestCompanyUpsertWebsite(t *testing.T) {
 		}
 		if got := companyWebsite(t, pool, key); got == nil || *got != "https://imported.com" {
 			t.Errorf("Upsert must not blank the imported website, got %v", got)
+		}
+	})
+}
+
+// TestCompanyUpsertNameSource proves the Name Ladder rung (ADR-0025) is stored,
+// that a zero-value Source lands as SQL NULL (the legacy/unknown path), and that
+// a re-crawl overwrites the Source in place.
+func TestCompanyUpsertNameSource(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCompanyRepository(pool)
+
+	nameSource := func(key string) *string {
+		t.Helper()
+		var s *string
+		if err := pool.QueryRow(context.Background(),
+			`SELECT name_source FROM company WHERE company_key = $1`, key,
+		).Scan(&s); err != nil {
+			t.Fatalf("read company name_source: %v", err)
+		}
+		return s
+	}
+
+	t.Run("zero-value NameSource is stored as NULL and round-trips as empty", func(t *testing.T) {
+		c := &crawler.Company{CompanyKey: "legacy.com", DisplayDomain: "legacy.com", Name: "Legacy"}
+		if err := repo.Upsert(t.Context(), c); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+		if got := nameSource("legacy.com"); got != nil {
+			t.Errorf("zero-value NameSource should be NULL, got %q", *got)
+		}
+	})
+
+	t.Run("a set NameSource is stored and a re-crawl overwrites it in place", func(t *testing.T) {
+		key := "acme.com"
+		if err := repo.Upsert(t.Context(), &crawler.Company{
+			CompanyKey: key, DisplayDomain: key, Name: "Acme", NameSource: crawler.NameSourceDomain,
+		}); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+		if got := nameSource(key); got == nil || *got != string(crawler.NameSourceDomain) {
+			t.Errorf("NameSource should be stored as domain, got %v", got)
+		}
+		// A later crawl reads a JSON-LD name: the Source is upgraded in place.
+		if err := repo.Upsert(t.Context(), &crawler.Company{
+			CompanyKey: key, DisplayDomain: key, Name: "Acme Inc", NameSource: crawler.NameSourceJSONLD,
+		}); err != nil {
+			t.Fatalf("re-upsert: %v", err)
+		}
+		if got := nameSource(key); got == nil || *got != string(crawler.NameSourceJSONLD) {
+			t.Errorf("re-crawl should overwrite NameSource to jsonld, got %v", got)
 		}
 	})
 }

@@ -65,13 +65,13 @@ func (r *spyCareerPageRepo) MergeImport(ctx context.Context, m *crawler.CareerPa
 }
 
 type spyConfirmer struct {
-	calls  int
-	result bool
+	calls   int
+	verdict careerpageprocessor.Verdict
 }
 
-func (c *spyConfirmer) Confirm(ctx context.Context, url string, content *crawler.Content) (bool, error) {
+func (c *spyConfirmer) Confirm(ctx context.Context, url string, content *crawler.Content) (careerpageprocessor.Verdict, error) {
 	c.calls++
-	return c.result, nil
+	return c.verdict, nil
 }
 
 type recordedCall struct {
@@ -115,7 +115,7 @@ func newURL(t *testing.T, raw string) crawler.URL {
 func TestCareerPageProcessorCertainSkipsLLM(t *testing.T) {
 	companyRepo := &spyCompanyRepo{assignID: uuid.New()}
 	careerPageRepo := &spyCareerPageRepo{}
-	confirmer := &spyConfirmer{result: false} // would reject if consulted
+	confirmer := &spyConfirmer{verdict: careerpageprocessor.Verdict{IsCareerPage: false}} // would reject if consulted
 
 	proc := careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
 		CompanyRepository:    companyRepo,
@@ -145,6 +145,10 @@ func TestCareerPageProcessorCertainSkipsLLM(t *testing.T) {
 	if company.Name != "Acme" {
 		t.Errorf("company name = %q, want Acme (stripped from title)", company.Name)
 	}
+	// The certain (ATS) path skips the LLM, so a cued title supplies the name.
+	if company.NameSource != crawler.NameSourceTitle {
+		t.Errorf("company NameSource = %q, want title", company.NameSource)
+	}
 	if company.DisplayDomain != "" {
 		t.Errorf("ATS company with no Organization JSON-LD should have empty DisplayDomain, got %q", company.DisplayDomain)
 	}
@@ -168,7 +172,7 @@ func TestCareerPageProcessorJobPostingJSONLDStillConsultsLLM(t *testing.T) {
 	careerPageRepo := &spyCareerPageRepo{}
 	// A JobPosting JSON-LD marks a single posting, not a hub, so the confirmer
 	// rejects it -- and the candidate must be dropped, not catalogued.
-	confirmer := &spyConfirmer{result: false}
+	confirmer := &spyConfirmer{verdict: careerpageprocessor.Verdict{IsCareerPage: false}}
 
 	proc := careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
 		CompanyRepository:    companyRepo,
@@ -205,7 +209,7 @@ func TestCareerPageProcessorCanonicalizesPostingToBoardRoot(t *testing.T) {
 	proc := careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
 		CompanyRepository:    companyRepo,
 		CareerPageRepository: careerPageRepo,
-		Confirmer:            &spyConfirmer{result: true},
+		Confirmer:            &spyConfirmer{verdict: careerpageprocessor.Verdict{IsCareerPage: true}},
 	})
 
 	// Even if a deeper ATS URL reaches the pool, its Career Page is the board root.
@@ -239,7 +243,7 @@ func TestCareerPageProcessorCanonicalizesStoredURL(t *testing.T) {
 			proc := careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
 				CompanyRepository:    companyRepo,
 				CareerPageRepository: careerPageRepo,
-				Confirmer:            &spyConfirmer{result: true},
+				Confirmer:            &spyConfirmer{verdict: careerpageprocessor.Verdict{IsCareerPage: true}},
 			})
 			raw := &crawler.RawCareerPage{
 				URL:     newURL(t, tt.raw),
@@ -265,7 +269,7 @@ func TestCareerPageProcessorTwinsCollapseToOneStoredURL(t *testing.T) {
 	proc := careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
 		CompanyRepository:    companyRepo,
 		CareerPageRepository: careerPageRepo,
-		Confirmer:            &spyConfirmer{result: true},
+		Confirmer:            &spyConfirmer{verdict: careerpageprocessor.Verdict{IsCareerPage: true}},
 	})
 	// http/https, trailing-slash, and query-string twins of the same hub. The
 	// spy repo does not enforce the DB UNIQUE(company_id, url) constraint, so we
@@ -303,7 +307,7 @@ func TestCareerPageProcessorTwinsCollapseToOneStoredURL(t *testing.T) {
 func TestCareerPageProcessorConfirmRejectDrops(t *testing.T) {
 	companyRepo := &spyCompanyRepo{assignID: uuid.New()}
 	careerPageRepo := &spyCareerPageRepo{}
-	confirmer := &spyConfirmer{result: false}
+	confirmer := &spyConfirmer{verdict: careerpageprocessor.Verdict{IsCareerPage: false}}
 
 	proc := careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
 		CompanyRepository:    companyRepo,
@@ -378,7 +382,7 @@ func TestCareerPageProcessorRecordsGateAndCallDecisions(t *testing.T) {
 			proc := careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
 				CompanyRepository:    &spyCompanyRepo{assignID: uuid.New()},
 				CareerPageRepository: &spyCareerPageRepo{},
-				Confirmer:            &spyConfirmer{result: tt.confirm},
+				Confirmer:            &spyConfirmer{verdict: careerpageprocessor.Verdict{IsCareerPage: tt.confirm}},
 				Recorder:             rec,
 			})
 
@@ -412,7 +416,7 @@ func TestCareerPageProcessorRecordsGateAndCallDecisions(t *testing.T) {
 func TestCareerPageProcessorConfirmAcceptPersists(t *testing.T) {
 	companyRepo := &spyCompanyRepo{assignID: uuid.New()}
 	careerPageRepo := &spyCareerPageRepo{}
-	confirmer := &spyConfirmer{result: true}
+	confirmer := &spyConfirmer{verdict: careerpageprocessor.Verdict{IsCareerPage: true}}
 
 	proc := careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
 		CompanyRepository:    companyRepo,
@@ -448,11 +452,135 @@ func TestCareerPageProcessorConfirmAcceptPersists(t *testing.T) {
 	if company.Name != "Acme" {
 		t.Errorf("company name = %q, want Acme", company.Name)
 	}
+	// The verdict carried no name, so the cued title supplies it.
+	if company.NameSource != crawler.NameSourceTitle {
+		t.Errorf("company NameSource = %q, want title", company.NameSource)
+	}
 	if len(careerPageRepo.upserted) != 1 {
 		t.Fatalf("want 1 career page upserted, got %d", len(careerPageRepo.upserted))
 	}
 	// Self-hosted keeps its own index URL (no ATS canonicalization).
 	if got := careerPageRepo.upserted[0].URL; got != "https://careers.acme.com/jobs" {
 		t.Errorf("self-hosted career page URL = %q, want the index URL", got)
+	}
+}
+
+// TestCareerPageProcessorNameLadder pins the Name Ladder end-to-end at the
+// processor seam (ADR-0025): each rung's precedence and, critically, that the
+// display-only name never bleeds into Company identity.
+func TestCareerPageProcessorNameLadder(t *testing.T) {
+	tests := []struct {
+		name       string
+		url        string
+		content    crawler.Content
+		certain    bool
+		verdict    careerpageprocessor.Verdict
+		wantName   string
+		wantSource crawler.NameSource
+	}{
+		{
+			name:       "jsonld beats the verdict name",
+			url:        "https://careers.acme.com/jobs",
+			content:    crawler.Content{Title: "x", JSONLD: []string{`{"@type":"Organization","name":"Slack"}`}},
+			verdict:    careerpageprocessor.Verdict{IsCareerPage: true, CompanyName: "Evil"},
+			wantName:   "Slack",
+			wantSource: crawler.NameSourceJSONLD,
+		},
+		{
+			name:       "verdict name beats the title",
+			url:        "https://careers.acme.com/jobs",
+			content:    crawler.Content{Title: "Careers at Acme"},
+			verdict:    careerpageprocessor.Verdict{IsCareerPage: true, CompanyName: "Acme GmbH"},
+			wantName:   "Acme GmbH",
+			wantSource: crawler.NameSourceLLM,
+		},
+		{
+			name:       "bare title abstains to the self-hosted domain",
+			url:        "https://remote.com/careers",
+			content:    crawler.Content{Title: "Remote"},
+			verdict:    careerpageprocessor.Verdict{IsCareerPage: true},
+			wantName:   "remote.com",
+			wantSource: crawler.NameSourceDomain,
+		},
+		{
+			name:       "meta rung names a self-hosted company",
+			url:        "https://careers.sz.de/jobs",
+			content:    crawler.Content{Title: "Zulieferern", SiteName: "Süddeutsche Zeitung"},
+			verdict:    careerpageprocessor.Verdict{IsCareerPage: true},
+			wantName:   "Süddeutsche Zeitung",
+			wantSource: crawler.NameSourceMeta,
+		},
+		{
+			name:       "meta rung is ignored on an ATS board",
+			url:        "https://boards.greenhouse.io/acme",
+			content:    crawler.Content{Title: "Jobs at Acme", SiteName: "Süddeutsche Zeitung"},
+			certain:    true,
+			wantName:   "Acme",
+			wantSource: crawler.NameSourceTitle,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			companyRepo := &spyCompanyRepo{assignID: uuid.New()}
+			proc := careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
+				CompanyRepository:    companyRepo,
+				CareerPageRepository: &spyCareerPageRepo{},
+				Confirmer:            &spyConfirmer{verdict: tt.verdict},
+			})
+			raw := &crawler.RawCareerPage{URL: newURL(t, tt.url), Content: tt.content, Certain: tt.certain}
+			if err := proc.Process(t.Context(), raw); err != nil {
+				t.Fatalf("Process returned error: %v", err)
+			}
+			if len(companyRepo.upserted) != 1 {
+				t.Fatalf("want 1 company upserted, got %d", len(companyRepo.upserted))
+			}
+			c := companyRepo.upserted[0]
+			if c.Name != tt.wantName {
+				t.Errorf("Name = %q, want %q", c.Name, tt.wantName)
+			}
+			if c.NameSource != tt.wantSource {
+				t.Errorf("NameSource = %q, want %q", c.NameSource, tt.wantSource)
+			}
+		})
+	}
+}
+
+// TestCareerPageProcessorNameNeverTouchesIdentity proves a hostile verdict name
+// lands verbatim in the display-only Name (ADR-0025) yet cannot reach the
+// identity fields, which stay derived from the URL alone.
+func TestCareerPageProcessorNameNeverTouchesIdentity(t *testing.T) {
+	companyRepo := &spyCompanyRepo{assignID: uuid.New()}
+	proc := careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
+		CompanyRepository:    companyRepo,
+		CareerPageRepository: &spyCareerPageRepo{},
+		Confirmer: &spyConfirmer{verdict: careerpageprocessor.Verdict{
+			IsCareerPage: true,
+			CompanyName:  "MEGACORP INC (definitely legit)",
+		}},
+	})
+	raw := &crawler.RawCareerPage{
+		URL:     newURL(t, "https://careers.evil.com/jobs"),
+		Content: crawler.Content{Title: "Remote"}, // bare title abstains
+		Certain: false,
+	}
+	if err := proc.Process(t.Context(), raw); err != nil {
+		t.Fatalf("Process returned error: %v", err)
+	}
+	c := companyRepo.upserted[0]
+	if c.Name != "MEGACORP INC (definitely legit)" {
+		t.Errorf("Name = %q, want the verbatim hostile string", c.Name)
+	}
+	if c.NameSource != crawler.NameSourceLLM {
+		t.Errorf("NameSource = %q, want llm", c.NameSource)
+	}
+	// Identity is derived from the URL, never the name.
+	if c.CompanyKey != "evil.com" {
+		t.Errorf("CompanyKey = %q, want evil.com (URL-derived, not the name)", c.CompanyKey)
+	}
+	if c.ATSProvider != "" {
+		t.Errorf("ATSProvider = %q, want empty (self-hosted)", c.ATSProvider)
+	}
+	if c.DisplayDomain != "evil.com" {
+		t.Errorf("DisplayDomain = %q, want evil.com", c.DisplayDomain)
 	}
 }

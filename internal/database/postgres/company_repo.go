@@ -30,19 +30,25 @@ func (r *CompanyRepository) Upsert(ctx context.Context, c *crawler.Company) erro
 	if c.ATSProvider != "" {
 		atsProvider = &c.ATSProvider
 	}
+	var nameSource *string
+	if c.NameSource != "" {
+		s := string(c.NameSource)
+		nameSource = &s
+	}
 
 	err := r.pool.QueryRow(ctx, `
 		INSERT INTO company
-			(company_key, ats_provider, display_domain, name)
-		VALUES ($1, $2, $3, $4)
+			(company_key, ats_provider, display_domain, name, name_source)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (company_key) DO UPDATE SET
 			ats_provider = EXCLUDED.ats_provider,
 			display_domain = EXCLUDED.display_domain,
 			name = EXCLUDED.name,
+			name_source = EXCLUDED.name_source,
 			last_seen = now()
 		RETURNING id
 		`,
-		c.CompanyKey, atsProvider, c.DisplayDomain, c.Name,
+		c.CompanyKey, atsProvider, c.DisplayDomain, c.Name, nameSource,
 	).Scan(&c.ID)
 	if err != nil {
 		return fmt.Errorf("postgres: error upserting company: %w", err)
@@ -137,13 +143,14 @@ func (r *CompanyRepository) Delete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// List returns every catalogued Company, most-recently-seen first. ats_provider
-// and website are nullable in the schema (self-hosted companies store a NULL
-// ats_provider; a Company whose homepage is unknown stores a NULL website); each
-// NULL is surfaced as the empty string, matching how the write path encodes it.
+// List returns every catalogued Company, most-recently-seen first. ats_provider,
+// website, and name_source are nullable in the schema (self-hosted companies store
+// a NULL ats_provider; a Company whose homepage is unknown stores a NULL website;
+// a legacy/imported row stores a NULL name_source); each NULL is surfaced as the
+// empty string, matching how the write path encodes it.
 func (r *CompanyRepository) List(ctx context.Context) ([]*crawler.Company, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, company_key, ats_provider, display_domain, name, website, first_seen, last_seen
+		SELECT id, company_key, ats_provider, display_domain, name, name_source, website, first_seen, last_seen
 		FROM company ORDER BY last_seen DESC
 		`)
 	if err != nil {
@@ -154,15 +161,18 @@ func (r *CompanyRepository) List(ctx context.Context) ([]*crawler.Company, error
 	companies := []*crawler.Company{}
 	for rows.Next() {
 		c := &crawler.Company{}
-		var atsProvider, website *string
+		var atsProvider, nameSource, website *string
 		if err := rows.Scan(
-			&c.ID, &c.CompanyKey, &atsProvider, &c.DisplayDomain, &c.Name, &website,
+			&c.ID, &c.CompanyKey, &atsProvider, &c.DisplayDomain, &c.Name, &nameSource, &website,
 			&c.FirstSeen, &c.LastSeen,
 		); err != nil {
 			return nil, fmt.Errorf("postgres: error scanning company: %w", err)
 		}
 		if atsProvider != nil {
 			c.ATSProvider = *atsProvider
+		}
+		if nameSource != nil {
+			c.NameSource = crawler.NameSource(*nameSource)
 		}
 		if website != nil {
 			c.Website = *website

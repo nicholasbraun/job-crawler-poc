@@ -10,6 +10,10 @@ type Content struct {
 	// block on the page, for structured-data-aware consumers (e.g. JobPosting
 	// extraction). Other pipelines ignore it.
 	JSONLD []string
+	// SiteName is the page's og:site_name meta value, or "" when absent. The Name
+	// Ladder's metadata rung (ADR-0025) reads it for a self-hosted Company. Only the
+	// parser populates it; other pipelines ignore it.
+	SiteName string
 	// Embeds holds every <iframe> and <script> that carries a src, tagged by
 	// element kind. It is kept SEPARATE from URLs so a third-party board, tracker,
 	// or CDN src is never enqueued as a crawl target. The Gate's ATS-embed signal
