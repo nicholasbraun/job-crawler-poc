@@ -78,9 +78,10 @@ CI/CD pipeline or linter configuration.
 ## Development Workflow
 
 Two lanes, chosen by the size of the change. Each lane is a fixed sequence of
-skills; the session breaks in the feature/fix lane are deliberate human gates.
+skills; the session break between align/specify and deliver, plus the in-session
+fix/merge decision gate, are deliberate human gates.
 
-### Feature / fix lane (non-trivial work — spans several sessions)
+### Feature / fix lane (non-trivial work — spans two sessions)
 
 Session 1 — align & specify:
 
@@ -90,24 +91,24 @@ Session 1 — align & specify:
 3. `/to-spec` — publish the spec / tracking GitHub issue.
 4. `/to-tickets` — break it into vertical sub-issues with their blocking edges.
 
-Session 2 — deliver (fresh session; hand it the spec issue number):
+Session 2 — deliver & review (fresh session; hand it the spec issue number):
 
-5. `/deliver <spec#>` — create the `feat/<spec#>_…` or `fix/<spec#>_…` branch, then create an ultracode
-   workflow that orchestrates one sub-process per sub-issue. Each sub-process is a
-   fresh-context pipeline: plan agent -> handoff to implementer agent -> 1-3 adversarial review agents
-   -> fix if necessary -> commit. Run them in parallel when possible. In sequence otherwise.
-   Then collect the results, summarize, and open the PR that closes the spec and its sub-issues.
-   Stops at the PR; it does not self-review or merge.
-   **You orchestrate ONLY**: read the issues, open the branch, launch the workflow, collect results,
-   open the PR — nothing else. Do NOT plan, implement, review, capture, or commit any ticket yourself;
-   do NOT do manual pre-work before launching; and do NOT bake plans or design decisions into the
-   workflow — each pipeline's plan agent derives its own plan from the sub-issue. "Start an ultracode
-   workflow" means: read issues, branch, author and launch the workflow. No warm-up solo work.
-
-Session 3 — review (fresh session):
-
-6. `/code-review` the PR — fix small, contained issues in place; open follow-up
-   issues for anything larger; then merge.
+5. `/deliver <spec#>` — create the `feat/<spec#>_…` or `fix/<spec#>_…` branch, then launch an
+   ultracode **implementation workflow** that orchestrates one sub-process per sub-issue. Each
+   sub-process is a fresh-context pipeline: plan agent -> handoff to implementer agent -> commit
+   (**no review inside the pipeline**). Run them in parallel when possible. In sequence otherwise.
+   Collect the results, run the suite, and open the PR that closes the spec and its sub-issues.
+   Then launch a SECOND, separate ultracode **review workflow** that fans out 1-3 independent,
+   fresh-context `/code-review` agents in parallel over the whole branch diff and reports their
+   findings back to the main thread. There, **YOU decide what to fix and whether to merge**; the
+   main agent applies the fixes you pick (small in place, larger delegated or filed as follow-ups)
+   and merges on your say-so.
+   **You orchestrate the workflows**: read the issues, open the branch, launch the implementation
+   workflow, open the PR, launch the review workflow, relay findings. Do NOT plan, implement,
+   review, capture, or commit any ticket yourself; do NOT do manual pre-work before launching; and
+   do NOT bake plans or design decisions into the workflow — each pipeline's plan agent derives its
+   own plan from the sub-issue. The **one exception** is the final decision gate: after reviews
+   report, you apply the fixes the human picks. No warm-up solo work.
 
 ### One-off lane (small, contained changes — no ceremony)
 
