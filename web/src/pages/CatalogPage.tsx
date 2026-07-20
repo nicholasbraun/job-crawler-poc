@@ -3,10 +3,19 @@ import { useState } from "react";
 import type { CareerPage, Company } from "../api";
 import { useCareerPages, useCompanies } from "../hooks";
 import { fmt, hostOf, prettyUrl, relativeTime } from "../lib/format";
-import { atsSplit, careerPagesByCompany, companyInitial, companySource } from "../lib/model";
+import type { NameTier } from "../lib/model";
+import {
+  atsSplit,
+  careerPagesByCompany,
+  companyInitial,
+  companySource,
+  nameSourceLabel,
+  nameTier,
+  verifiedNameShare,
+} from "../lib/model";
 import { ImportModal } from "../components/ImportModal";
 import { PageShell } from "../components/PageShell";
-import { EmptyState, ErrorNote, Icon, Loading, StatCard } from "../components/primitives";
+import { Dot, EmptyState, ErrorNote, Icon, Loading, StatCard } from "../components/primitives";
 
 type Filter = "all" | "ats" | "self";
 const FILTERS: { key: Filter; label: string }[] = [
@@ -21,6 +30,7 @@ const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
 export function CatalogPage() {
   const [filter, setFilter] = useState<Filter>("all");
+  const [unverifiedOnly, setUnverifiedOnly] = useState(false);
   const [letter, setLetter] = useState<string>("all");
   const [importOpen, setImportOpen] = useState(false);
   const companiesQ = useCompanies();
@@ -29,23 +39,26 @@ export function CatalogPage() {
   const companies = companiesQ.data ?? [];
   const pages = pagesQ.data ?? [];
   const split = atsSplit(companies);
+  const verified = verifiedNameShare(companies);
   const pagesByCompany = careerPagesByCompany(pages);
   const atsProviders = new Set(companies.filter((c) => c.atsProvider).map((c) => c.atsProvider)).size;
   const avgPerCompany = companies.length ? (pages.length / companies.length).toFixed(1) : "0.0";
 
-  // The ATS/self source filter and the A–Z letter filter AND together: the
-  // source filter narrows first (bySource), then the letter filter. `available`
-  // is the set of initials present after the source filter, so the index dims
-  // buckets that have no rows under the current source selection.
-  const bySource = companies.filter((c) =>
-    filter === "all" ? true : filter === "ats" ? c.atsProvider !== "" : c.atsProvider === "",
-  );
-  const available = new Set(bySource.map(companyInitial));
+  // The source filter (ATS/self), the unverified toggle, and the A–Z letter
+  // filter AND together. Source + unverified narrow first (base); `available` is
+  // the set of initials present after them, so the index dims empty buckets;
+  // then the letter filter applies.
+  const base = companies.filter((c) => {
+    const sourceOk = filter === "all" ? true : filter === "ats" ? c.atsProvider !== "" : c.atsProvider === "";
+    const verifiedOk = !unverifiedOnly || nameTier(c) !== "structured";
+    return sourceOk && verifiedOk;
+  });
+  const available = new Set(base.map(companyInitial));
   // Fall back to "all" when the selected bucket has no companies under the
   // current source filter (e.g. after switching All → ATS), so the table never
   // shows an empty view with a stale, disabled bucket still highlighted.
   const activeLetter = letter === "all" || available.has(letter) ? letter : "all";
-  const byLetter = activeLetter === "all" ? bySource : bySource.filter((c) => companyInitial(c) === activeLetter);
+  const byLetter = activeLetter === "all" ? base : base.filter((c) => companyInitial(c) === activeLetter);
   const filtered = [...byLetter].sort((a, b) =>
     (a.name || a.displayDomain).localeCompare(b.name || b.displayDomain, undefined, { sensitivity: "base" }),
   );
@@ -75,28 +88,51 @@ export function CatalogPage() {
       }
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "var(--space-4)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "var(--space-4)" }}>
           <StatCard size="md" label="Companies" value={fmt(companies.length)} sub="globally-unique keys" />
           <StatCard size="md" label="Career pages" value={fmt(pages.length)} sub={`${avgPerCompany} avg per company`} />
           <StatCard size="md" label="Self-hosted" value={`${split.selfPct}%`} sub={`${fmt(split.selfCount)} companies`} />
           <StatCard size="md" label="ATS hubs" value={`${split.atsPct}%`} sub={`${fmt(split.atsCount)} · ${atsProviders} providers`} />
+          <StatCard size="md" label="Verified names" value={`${verified.verifiedPct}%`} sub={`${fmt(verified.verifiedCount)} site-declared`} />
         </div>
 
         <div className="card elev-sm" style={{ gap: "var(--space-4)", padding: "var(--space-6)" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--space-4)", flexWrap: "wrap" }}>
             <h4 style={{ margin: 0, fontSize: 17 }}>Companies</h4>
-            <div className="seg">
-              {FILTERS.map((f) => (
-                <label key={f.key} className="seg-opt">
-                  <input
-                    type="radio"
-                    name="catfilter"
-                    checked={filter === f.key}
-                    onChange={() => setFilter(f.key)}
-                  />
-                  {f.label}
-                </label>
-              ))}
+            {/* Source is a mutually-exclusive segmented control; "Unverified
+                only" is an orthogonal narrowing that ANDs on top, so it sits
+                beside the control as a checkbox rather than as a fourth radio. */}
+            <div style={{ display: "flex", gap: "var(--space-4)", alignItems: "center", flexWrap: "wrap" }}>
+              <div className="seg">
+                {FILTERS.map((f) => (
+                  <label key={f.key} className="seg-opt">
+                    <input
+                      type="radio"
+                      name="catfilter"
+                      checked={filter === f.key}
+                      onChange={() => setFilter(f.key)}
+                    />
+                    {f.label}
+                  </label>
+                ))}
+              </div>
+              <label
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "var(--space-2)",
+                  fontSize: 13,
+                  color: "var(--color-neutral-400)",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={unverifiedOnly}
+                  onChange={(e) => setUnverifiedOnly(e.target.checked)}
+                />
+                Unverified only
+              </label>
             </div>
           </div>
 
@@ -197,9 +233,23 @@ function AlphaButton({
   );
 }
 
+// dotColor maps a name-confidence tier to the accent+neutral palette: verified
+// names get the trusted accent, derived names a mid neutral, fallbacks a dim one.
+function dotColor(tier: NameTier): string {
+  switch (tier) {
+    case "structured":
+      return "var(--color-accent)";
+    case "derived":
+      return "var(--color-neutral-400)";
+    case "fallback":
+      return "var(--color-neutral-700)";
+  }
+}
+
 function CompanyRow({ company, pages }: { company: Company; pages: CareerPage[] }) {
   const [expanded, setExpanded] = useState(false);
   const isAts = company.atsProvider !== "";
+  const tier = nameTier(company);
   const expandable = pages.length > 0;
   return (
     <>
@@ -229,7 +279,15 @@ function CompanyRow({ company, pages }: { company: Company; pages: CareerPage[] 
               style={{ visibility: expandable ? "visible" : "hidden" }}
             />
             <div>
-              <div style={{ fontSize: 14 }}>{company.name || company.displayDomain}</div>
+              <div
+                style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", fontSize: 14 }}
+                title={nameSourceLabel(company.nameSource)}
+              >
+                <Dot color={dotColor(tier)} size={8} />
+                <span style={tier === "fallback" ? { color: "var(--color-neutral-500)", fontStyle: "italic" } : undefined}>
+                  {company.name || company.displayDomain}
+                </span>
+              </div>
               {company.website ? (
                 // Imported companies carry a homepage; link the domain to it. The
                 // row toggles its career-page list on click, so following the link

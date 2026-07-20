@@ -17,12 +17,21 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+// Verdict is the Confirmer's combined answer: whether the candidate is a Career
+// Page, plus the employer name the LLM read from the page. CompanyName is "" when
+// the page does not unambiguously name its employer; the Name Ladder treats "" as
+// abstain (ADR-0025). It is a display-only label and never affects Company identity.
+type Verdict struct {
+	IsCareerPage bool
+	CompanyName  string
+}
+
 // Confirmer decides whether a gate-passing candidate is really a Career Page.
 // Implementations may call an external service (e.g. an LLM API); it is
 // consulted for every candidate that is not a structurally-certain ATS board
 // root.
 type Confirmer interface {
-	Confirm(ctx context.Context, url string, content *crawler.Content) (bool, error)
+	Confirm(ctx context.Context, url string, content *crawler.Content) (Verdict, error)
 }
 
 type Config struct {
@@ -76,29 +85,33 @@ func (w *CareerPageProcessor) Process(ctx context.Context, raw *crawler.RawCaree
 	// the Confirmer first, keeping single postings and non-openings sub-pages out
 	// of the Catalog. The pre-LLM gate already sheds aggregator hosts and reject
 	// paths, bounding LLM cost at perpetual discovery scale.
+	var llmName string
 	if raw.Certain {
 		w.recorder.Gated(ctx, llmobs.KindClassify, llmobs.ReasonCertain)
 	} else {
 		w.recorder.Content(ctx, llmobs.KindClassify, raw.Content.MainContent)
 		start := time.Now()
-		ok, err := w.confirmer.Confirm(ctx, raw.URL.RawURL, &raw.Content)
+		verdict, err := w.confirmer.Confirm(ctx, raw.URL.RawURL, &raw.Content)
 		w.recorder.Call(ctx, llmobs.KindClassify, llmobs.Classify(err), time.Since(start))
 		if err != nil {
 			return fmt.Errorf("career_page_processor: error confirming career page %s: %w", raw.URL.RawURL, err)
 		}
-		if !ok {
+		if !verdict.IsCareerPage {
 			slog.Info("career_page_processor: candidate rejected by confirmer", "url", raw.URL.RawURL)
 			return nil
 		}
+		llmName = verdict.CompanyName
 	}
 
 	identity := catalog.Identify(raw.URL)
+	name, source := deriveName(&raw.Content, identity, llmName)
 
 	company := &crawler.Company{
 		CompanyKey:    identity.CompanyKey,
 		ATSProvider:   identity.ATSProvider,
 		DisplayDomain: companyDomain(identity, &raw.Content),
-		Name:          companyNameFrom(&raw.Content, nameFallback(identity)),
+		Name:          name,
+		NameSource:    source,
 	}
 	if err := w.companyRepository.Upsert(ctx, company); err != nil {
 		return fmt.Errorf("career_page_processor: error upserting company %s: %w", identity.CompanyKey, err)

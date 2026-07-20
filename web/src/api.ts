@@ -93,6 +93,11 @@ export type DefinitionDefaults = {
   maxDepth: number;
 };
 
+// NameSource is the Name Ladder rung that produced a Company's name (ADR-0025),
+// i.e. how far to trust it. "" = legacy/unknown (catalogued before provenance,
+// or an imported row); the server sends it for a SQL NULL. See internal/company.go.
+export type NameSource = "jsonld" | "meta" | "llm" | "title" | "domain" | "";
+
 export type Company = {
   id: string;
   companyKey: string;
@@ -102,6 +107,7 @@ export type Company = {
   // never learns it; only a Catalog Import sets it). See internal/company.go.
   website: string;
   name: string;
+  nameSource: NameSource;
   firstSeen: string;
   lastSeen: string;
 };

@@ -7,6 +7,20 @@ import (
 	"github.com/google/uuid"
 )
 
+// NameSource records which Name Ladder rung produced a Company's stored Name
+// (ADR-0025), so the Catalog records how far to trust it. The zero value ""
+// means unknown/legacy (a row catalogued before the ladder, or an imported row):
+// it is stored as SQL NULL and acquires a real Source only on re-crawl.
+type NameSource string
+
+const (
+	NameSourceJSONLD NameSource = "jsonld"
+	NameSourceMeta   NameSource = "meta"
+	NameSourceLLM    NameSource = "llm"
+	NameSourceTitle  NameSource = "title"
+	NameSourceDomain NameSource = "domain"
+)
+
 // Company is a durable Catalog entry identifying an employer whose Career Pages
 // the crawler has discovered. Identity is ATS-aware (ADR-0001): CompanyKey is
 // globally unique and provider-qualified ("greenhouse:acme", or the eTLD+1
@@ -23,6 +37,9 @@ type Company struct {
 	// DisplayDomain is the human-facing host for the company.
 	DisplayDomain string
 	Name          string
+	// NameSource is the Name Ladder rung that produced Name (ADR-0025); "" =
+	// legacy/unknown, stored as SQL NULL. Discovery-derived; imports leave it "".
+	NameSource NameSource
 	// Website is the Company's declared homepage (CONTEXT.md "Website"), or "" when
 	// unknown. Known only from a Catalog Import — Discovery never learns it — and
 	// stored as SQL NULL when "" (the ats_provider idiom). The empty domain value

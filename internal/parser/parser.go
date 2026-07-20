@@ -31,6 +31,7 @@ func (p *HTMLParser) Parse(b []byte) (*crawler.Content, error) {
 		MainContent: getMainContent(doc),
 		URLs:        getUrls(doc),
 		JSONLD:      getJSONLD(doc),
+		SiteName:    getSiteName(doc),
 		Embeds:      getEmbeds(doc),
 		ElementIDs:  getElementIDs(doc),
 	}
@@ -127,6 +128,21 @@ func getJSONLD(doc *goquery.Document) []string {
 	})
 
 	return blocks
+}
+
+// getSiteName returns the page's og:site_name meta content, or "" when absent.
+// The Name Ladder's metadata rung (ADR-0025) reads it for a self-hosted Company;
+// other pipelines ignore it. Only surrounding whitespace is trimmed here; full
+// normalization is left to the consumer (metaName), matching getTitle's raw-text
+// behavior.
+func getSiteName(doc *goquery.Document) string {
+	sel := doc.FindMatcher(goquery.Single(`meta[property="og:site_name"]`))
+	if sel.Length() == 1 {
+		if content, ok := sel.Attr("content"); ok {
+			return strings.TrimSpace(content)
+		}
+	}
+	return ""
 }
 
 func getTitle(doc *goquery.Document) string {

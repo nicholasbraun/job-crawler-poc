@@ -135,12 +135,12 @@ func runBench(args []string) int {
 		if *llm && (isolated || gate == bench.GateUncertain) {
 			votes := make([]bool, 0, *repeats)
 			for range *repeats {
-				confirmed, err := confirmer.Confirm(ctx, e.URL, content)
+				verdict, err := confirmer.Confirm(ctx, e.URL, content)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "llmbench bench: confirm %q: %v\n", e.URL, err)
 					return 2
 				}
-				votes = append(votes, confirmed)
+				votes = append(votes, verdict.IsCareerPage)
 			}
 			row.LLMVotes = votes
 		}
