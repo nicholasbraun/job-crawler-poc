@@ -133,6 +133,27 @@ func TestDeriveName(t *testing.T) {
 			wantSource: crawler.NameSourceMeta,
 		},
 		{
+			name:       "meta strips a boilerplate tail from og:site_name",
+			content:    &crawler.Content{Title: "Jobs at Acme", SiteName: "Acme | Careers"},
+			identity:   selfHosted,
+			wantName:   "Acme",
+			wantSource: crawler.NameSourceMeta,
+		},
+		{
+			name:       "meta strips a trailing Careers suffix from og:site_name",
+			content:    &crawler.Content{SiteName: "Acme Careers"},
+			identity:   selfHosted,
+			wantName:   "Acme",
+			wantSource: crawler.NameSourceMeta,
+		},
+		{
+			name:       "meta keeps a bare one-word brand the title net would reject",
+			content:    &crawler.Content{Title: "Remote", SiteName: "Remote"},
+			identity:   selfHosted,
+			wantName:   "Remote",
+			wantSource: crawler.NameSourceMeta,
+		},
+		{
 			name:       "meta abstains on an ATS board (site name is the ATS brand)",
 			content:    &crawler.Content{Title: "Jobs at Acme", SiteName: "Greenhouse"},
 			identity:   ats,

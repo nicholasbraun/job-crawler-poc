@@ -72,9 +72,10 @@ func nameFallback(identity catalog.Identity) string {
 }
 
 // deriveName runs the Name Ladder (ADR-0025), higher-trust first, returning the
-// name and the rung that produced it. The meta and llm rungs are dormant until
-// their inputs (Content.SiteName, the Verdict name) are populated by later work,
-// but the logic is live: an empty input abstains to the next rung. The domain
+// name and the rung that produced it. All five rungs are live: the meta rung
+// reads the parser-populated Content.SiteName (gated to a self-hosted Company)
+// and the llm rung reads the name the Confirmer's Verdict carries from the
+// classify call, each abstaining to the next rung on an empty input. The domain
 // rung always yields a name, so the ladder never returns "".
 func deriveName(content *crawler.Content, identity catalog.Identity, llmName string) (string, crawler.NameSource) {
 	if name := organizationName(content.JSONLD); name != "" {
@@ -95,6 +96,13 @@ func deriveName(content *crawler.Content, identity catalog.Identity, llmName str
 // metaName returns the site's og:site_name for a self-hosted Company, or "" when
 // the Company is on an ATS board (there the metadata is the ATS's brand, not the
 // employer -- ADR-0025) or the metadata is empty / pure hiring boilerplate.
+//
+// A partly-boilerplate og:site_name ("Acme | Careers", "Acme Careers") is cleaned
+// with the same connector/separator/suffix stripping the title net uses, so a
+// self-declared brand is not stored with a hiring tail and mis-ranked as a clean
+// verified name. Unlike the title net the metadata rung trusts a bare og:site_name
+// (a real one-word brand like "Remote"), so a missing structural cue is not a
+// reason to abstain -- only a strip that leaves nothing usable is.
 func metaName(content *crawler.Content, identity catalog.Identity) string {
 	if identity.ATSProvider != "" {
 		return ""
@@ -103,25 +111,22 @@ func metaName(content *crawler.Content, identity catalog.Identity) string {
 	if name == "" || isBoilerplate(name) {
 		return ""
 	}
-	return name
+	stripped, _ := stripTitleBoilerplate(name)
+	stripped = strings.Trim(stripped, " .,:|-–—·")
+	if stripped == "" || isBoilerplate(stripped) {
+		return ""
+	}
+	return stripped
 }
 
-// titleName derives a human-readable company name from a career-page title by
-// normalizing whitespace and stripping common board boilerplate. Unlike a bare
-// domain or LLM read, a <title> earns trust only from a STRUCTURAL cue -- a
-// connector ("Jobs at X"), a separator ("Careers - X"), a boilerplate suffix
-// ("X Careers"), or a leading hiring/article word ("Join X"). Absent any cue the
-// title is a bare label the ladder cannot tell from junk, so it abstains,
-// returning "" for the domain rung to answer (ADR-0025). It also returns "" when
-// the cue leaves nothing but hiring boilerplate.
-func titleName(title string) string {
-	// Collapse any run of whitespace (including embedded newlines) to a single
-	// space and trim, so a title like "der IHK Berlin\n- IHK Berlin" is handled
-	// as one line rather than leaking a literal newline into the stored name.
-	name := strings.Join(strings.Fields(title), " ")
-
-	cued := false
-
+// stripTitleBoilerplate removes hiring/board boilerplate around a company name
+// using the structural cues the Name Ladder recognizes: a connector ("Jobs at
+// X"), a separator ("Careers - X" / "X | Careers"), a trailing suffix ("X
+// Careers"), and a leading hiring word or German article ("Join X", "der X"). It
+// reports via cued whether any cue fired, so the title net can abstain on a bare
+// title while the metadata rung -- which trusts a bare og:site_name -- keeps it.
+// Whitespace is assumed already collapsed.
+func stripTitleBoilerplate(name string) (result string, cued bool) {
 	// Leading boilerplate before a connector: "Jobs at <Company>",
 	// "Current openings at <Company>". Take the text after the last connector.
 	lower := strings.ToLower(name)
@@ -166,6 +171,23 @@ func titleName(title string) string {
 			}
 		}
 	}
+
+	return name, cued
+}
+
+// titleName derives a human-readable company name from a career-page title by
+// normalizing whitespace and stripping common board boilerplate. Unlike a bare
+// domain or LLM read, a <title> earns trust only from a STRUCTURAL cue -- a
+// connector ("Jobs at X"), a separator ("Careers - X"), a boilerplate suffix
+// ("X Careers"), or a leading hiring/article word ("Join X"). Absent any cue the
+// title is a bare label the ladder cannot tell from junk, so it abstains,
+// returning "" for the domain rung to answer (ADR-0025). It also returns "" when
+// the cue leaves nothing but hiring boilerplate.
+func titleName(title string) string {
+	// Collapse any run of whitespace (including embedded newlines) to a single
+	// space and trim, so a title like "der IHK Berlin\n- IHK Berlin" is handled
+	// as one line rather than leaking a literal newline into the stored name.
+	name, cued := stripTitleBoilerplate(strings.Join(strings.Fields(title), " "))
 
 	// A bare title with no structural cue is indistinguishable from junk, so it
 	// abstains to the domain rung rather than being kept (ADR-0025).
