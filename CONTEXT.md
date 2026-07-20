@@ -45,6 +45,14 @@ _Avoid_: restart, unpause, continue
 An organization that hires; owns any number of Career Pages — possibly none — and may declare a Website. Identity is ATS-aware — the tenant slug on a known ATS host, otherwise the registrable domain (eTLD+1).
 _Avoid_: org, employer, site, domain
 
+**Name Ladder**:
+The precedence deciding a Company's display name from a discovered page, higher-trust first: a name the page declares about itself (in structured data, then site metadata) outranks a name the LLM reads from the page, which outranks a name parsed from the page title, which outranks the Company's bare identity — its tenant slug or registrable domain. A title parse counts only when it carries a real structural cue; otherwise it abstains to the next rung, so a bare title never becomes a name. The Discovery-side counterpart to the import-time Identity Ladder; every name it yields carries a Name Source.
+_Avoid_: title heuristic, name fallback chain
+
+**Name Source**:
+The recorded origin of a Company's stored name, and so how far to trust it: a page-declared name is *verified* — the site named itself; a name the LLM reads or the title yields is derived but unverified; the identity fallback means no real name was found. Discovery stamps every name with its Source so the Catalog can be audited for name quality — the dashboard reports the verified share and filters unverified or nameless entries.
+_Avoid_: name confidence (bare), label origin
+
 **Politeness Domain**:
 The host the Frontier rate-limits against (e.g. `boards.greenhouse.io`). Deliberately distinct from Company — many Companies can share one Politeness Domain.
 _Avoid_: domain, host (unqualified)
