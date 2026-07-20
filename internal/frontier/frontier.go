@@ -4,8 +4,7 @@
 // - Internal rate limiting
 // - Giving out the next URL for the crawler
 //
-// Implementations live in the submodules
-// For the POC we'll do an in-memory frontier.
+// The Redis-backed implementation lives in the redis submodule.
 package frontier
 
 import (

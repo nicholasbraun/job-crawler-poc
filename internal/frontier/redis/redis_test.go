@@ -3,6 +3,8 @@ package redis_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,13 @@ import (
 
 func url(host, raw string, depth int) crawler.URL {
 	return crawler.URL{Hostname: host, RawURL: raw, Depth: depth}
+}
+
+// encodeTestMember mirrors the unexported encodeMember layout
+// (depth\x1fhostname\x1fscope\x1fowner\x1furl) so a test can arrange raw
+// inflight/queue state the public API cannot construct.
+func encodeTestMember(depth int, host, scope, owner, raw string) string {
+	return strconv.Itoa(depth) + "\x1f" + host + "\x1f" + scope + "\x1f" + owner + "\x1f" + raw
 }
 
 // TestRedisFrontier exercises the behaviors the in-mem reference guarantees,
@@ -484,6 +493,226 @@ func TestRedisFrontier(t *testing.T) {
 			t.Fatalf("LLEN: %v", err)
 		} else if n != 1 {
 			t.Errorf("legacy member should be put back on the queue, LLEN = %d, want 1", n)
+		}
+		// The domain keeps queued (bad) work, so the non-empty-domains invariant
+		// requires it to stay in the schedule; a fresh cooldown throttles the error
+		// loop until an operator flushes. (Read the raw domains ZSET directly; the
+		// domains.size gauge that expresses this invariant is asserted in
+		// metrics_test.go.)
+		if err := client.Do(ctx, "ZSCORE", prefix+"domains", "acme.com").Err(); err != nil {
+			t.Errorf("BADMEMBER domain must remain scheduled (queue non-empty), ZSCORE err: %v", err)
+		}
+	})
+
+	t.Run("cooldown resets when a drained domain is refilled", func(t *testing.T) {
+		// The keystone invariant proof: draining a domain's only URL must ZREM it
+		// from the schedule, so a URL added back inside the cooldown window re-enters
+		// as immediately eligible (ADR-0026's accepted trade). Under the old
+		// unconditional ZADD-on-drain this second pop would WAIT ~cooldown.
+		cooldown := 2 * time.Second
+		f := redisfrontier.New(client, uuid.New(), redisfrontier.WithCooldown(cooldown))
+
+		if err := f.AddURL(t.Context(), url("a", "http://a/1", 0)); err != nil {
+			t.Fatalf("AddURL a/1: %v", err)
+		}
+		got1, err := f.Next(t.Context())
+		if err != nil {
+			t.Fatalf("Next a/1: %v", err)
+		}
+		if err := f.MarkDone(t.Context(), got1.RawURL); err != nil {
+			t.Fatalf("MarkDone: %v", err)
+		}
+
+		// Refill the drained domain well inside its 2s cooldown window.
+		second := url("a", "http://a/2", 0)
+		if err := f.AddURL(t.Context(), second); err != nil {
+			t.Fatalf("AddURL a/2: %v", err)
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+		start := time.Now()
+		got2, err := f.Next(ctx)
+		if err != nil {
+			t.Fatalf("Next a/2: %v", err)
+		}
+		elapsed := time.Since(start)
+		if got2 != second {
+			t.Errorf("second pop: got %+v, want %+v", got2, second)
+		}
+		// Immediately eligible: nowhere near the 2s cooldown.
+		if elapsed >= time.Second {
+			t.Errorf("refilled domain was not immediately eligible: pop took %v (cooldown %v)", elapsed, cooldown)
+		}
+	})
+
+	t.Run("pop wakes at the earliest future domain deadline", func(t *testing.T) {
+		// A domain with remaining queued work is scheduled a cooldown out; when it
+		// is the only work, the WAIT must fold in that future domain deadline rather
+		// than blind-poll the (far larger) pollInterval.
+		f := redisfrontier.New(client, uuid.New(),
+			redisfrontier.WithCooldown(200*time.Millisecond),
+			redisfrontier.WithPollInterval(5*time.Second),
+		)
+		if err := f.AddURL(t.Context(), url("a", "http://a/1", 0)); err != nil {
+			t.Fatalf("AddURL a/1: %v", err)
+		}
+		second := url("a", "http://a/2", 0)
+		if err := f.AddURL(t.Context(), second); err != nil {
+			t.Fatalf("AddURL a/2: %v", err)
+		}
+		first, err := f.Next(t.Context())
+		if err != nil {
+			t.Fatalf("Next a/1: %v", err)
+		}
+		if err := f.MarkDone(t.Context(), first.RawURL); err != nil {
+			t.Fatalf("MarkDone: %v", err)
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+		start := time.Now()
+		got, err := f.Next(ctx)
+		if err != nil {
+			t.Fatalf("Next a/2: %v", err)
+		}
+		elapsed := time.Since(start)
+		if got != second {
+			t.Errorf("second pop: got %+v, want %+v", got, second)
+		}
+		// Below the 5s pollInterval (so it did not blind-poll) but not instant (so
+		// it actually waited the ~200ms domain deadline).
+		if elapsed >= 2*time.Second {
+			t.Errorf("Next took %v; WAIT did not fold in the future domain deadline", elapsed)
+		}
+		if elapsed < 100*time.Millisecond {
+			t.Errorf("Next took %v; domain cooldown was not enforced before the second pop", elapsed)
+		}
+	})
+
+	t.Run("expired leases are reclaimed in bounded batches, exactly once", func(t *testing.T) {
+		// n > maxReclaim (256) forces at least two reclaim batches across pops, so
+		// this exercises the cross-pop bound: every lease is returned to its queue
+		// and handed out exactly once, none lost, none double-handed. The per-pop
+		// cap itself is a structural guarantee of the Lua constant, not observable
+		// through Next; the assertions target the outcomes the bound must produce.
+		const n = 300
+		id := uuid.New()
+		f := redisfrontier.New(client, id)
+		prefix := "frontier:" + id.String() + ":"
+		ctx := t.Context()
+
+		// Arrange raw expired leases across n distinct hostnames (each drains with
+		// no cross-domain cooldown interplay) — state the public API cannot build.
+		want := make(map[string]bool, n)
+		pastMs := time.Now().Add(-time.Minute).UnixMilli()
+		for i := 0; i < n; i++ {
+			raw := fmt.Sprintf("http://h%d.example/x", i)
+			member := encodeTestMember(0, fmt.Sprintf("h%d.example", i), "", "", raw)
+			if err := client.Do(ctx, "HSET", prefix+"inflight", raw, member).Err(); err != nil {
+				t.Fatalf("HSET inflight: %v", err)
+			}
+			if err := client.Do(ctx, "ZADD", prefix+"processing", pastMs, raw).Err(); err != nil {
+				t.Fatalf("ZADD processing: %v", err)
+			}
+			want[raw] = true
+		}
+
+		drainCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		got := make(map[string]int, n)
+		for {
+			u, err := f.Next(drainCtx)
+			if errors.Is(err, frontier.ErrDone) {
+				break
+			}
+			if err != nil {
+				t.Fatalf("Next: %v", err)
+			}
+			got[u.RawURL]++
+			if err := f.MarkDone(drainCtx, u.RawURL); err != nil {
+				t.Fatalf("MarkDone: %v", err)
+			}
+		}
+
+		if len(got) != n {
+			t.Errorf("reclaimed %d distinct URLs, want %d", len(got), n)
+		}
+		for raw := range want {
+			switch got[raw] {
+			case 0:
+				t.Errorf("URL %q was never reclaimed", raw)
+			case 1:
+				// exactly once
+			default:
+				t.Errorf("URL %q handed out %d times, want 1", raw, got[raw])
+			}
+		}
+	})
+
+	t.Run("a stale-domain backlog self-heals while real work drains", func(t *testing.T) {
+		// Reproduces a pre-fix run's domain bloat: staleCount domains scheduled with
+		// no queue behind them, at scores far below the real work. staleCount >
+		// maxPrune forces several bounded prune pops. Because every stale score sorts
+		// before the real domains (added at now), draining cannot reach the real URLs
+		// until all stale domains are pruned — so terminating within the ctx is proof
+		// the prune works, and a non-pruning pop would loop on the lowest stale domain
+		// forever.
+		const staleCount = 1000
+		id := uuid.New()
+		f := redisfrontier.New(client, id)
+		prefix := "frontier:" + id.String() + ":"
+		ctx := t.Context()
+
+		for i := 0; i < staleCount; i++ {
+			if err := client.Do(ctx, "ZADD", prefix+"domains", int64(i), fmt.Sprintf("stale%d.example", i)).Err(); err != nil {
+				t.Fatalf("ZADD stale domain: %v", err)
+			}
+		}
+
+		real := []crawler.URL{
+			url("r0", "http://r0.example/x", 0),
+			url("r1", "http://r1.example/x", 0),
+			url("r2", "http://r2.example/x", 0),
+		}
+		for _, u := range real {
+			if err := f.AddURL(ctx, u); err != nil {
+				t.Fatalf("AddURL %q: %v", u.RawURL, err)
+			}
+		}
+
+		drainCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		got := make(map[string]int, len(real))
+		for {
+			u, err := f.Next(drainCtx)
+			if errors.Is(err, frontier.ErrDone) {
+				break
+			}
+			if err != nil {
+				t.Fatalf("Next: %v", err)
+			}
+			got[u.RawURL]++
+			if err := f.MarkDone(drainCtx, u.RawURL); err != nil {
+				t.Fatalf("MarkDone: %v", err)
+			}
+		}
+
+		for _, u := range real {
+			if got[u.RawURL] != 1 {
+				t.Errorf("real URL %q handed out %d times, want 1", u.RawURL, got[u.RawURL])
+			}
+		}
+		if len(got) != len(real) {
+			t.Errorf("handed out %d distinct URLs, want %d", len(got), len(real))
+		}
+		// Invariant end-state: after full drain the schedule holds only non-empty
+		// domains, and there are none. (Direct ZCARD read; the domains.size gauge
+		// is asserted in metrics_test.go.)
+		if card, err := client.ZCard(ctx, prefix+"domains").Result(); err != nil {
+			t.Fatalf("ZCard domains: %v", err)
+		} else if card != 0 {
+			t.Errorf("domains schedule should be empty after drain, ZCARD = %d", card)
 		}
 	})
 }

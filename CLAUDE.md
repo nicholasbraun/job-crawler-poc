@@ -49,7 +49,7 @@ go test -v -run TestParseURL/valid_url ./internal/
 
 # Run all tests in one package
 go test -v ./internal/database/postgres/
-go test -v ./internal/frontier/inmem/
+go test -v ./internal/frontier/redis/
 go test -v ./internal/downloader/
 go test -v ./internal/parser/
 go test -v ./internal/filter/
@@ -133,7 +133,6 @@ internal/
   filter/job_listing_filter/ # Job listing filters (title, main content keywords)
   filter/url/                # URL filters (TLD, subdomain, path, hostname)
   frontier/                  # Frontier interface + sentinel errors
-  frontier/inmem/            # In-memory frontier implementation
   frontier/redis/            # Redis-backed frontier (per-run queues, visited sets)
   openrouter/                # LLM career-page classifier + job-listing extractor
   orchestrator/              # Crawl loop wiring all components
@@ -220,7 +219,7 @@ internal/
 
 - **Framework:** Standard library `testing` only. No testify, no gomock.
 - **Test packages:** Use external test packages (e.g., `package crawler_test`,
-  `package inmem_test`) to test the public API.
+  `package redis_test`) to test the public API.
 - **Table-driven tests:** Use `t.Run("description", ...)` subtests.
 - **Mocks:** Define mock/spy structs inline in test files. No code generation.
 - **HTTP tests:** Use `httptest.NewServer` for integration tests.
@@ -271,4 +270,4 @@ standard library.
 
 Follow Conventional Commits: `type: description` (lowercase, imperative mood).
 Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`.
-Scoped variants allowed: `test(inmem_frontier): add cooldown tests`.
+Scoped variants allowed: `test(redis_frontier): add cooldown tests`.
