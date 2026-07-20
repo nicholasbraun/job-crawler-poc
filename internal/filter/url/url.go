@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"slices"
 	"strings"
 
@@ -32,6 +33,28 @@ func BlockPathSegments(pathSegments ...string) filter.CheckFn[string] {
 	return func(u string) error {
 		err := fmt.Errorf("filter: blocked because of path segment")
 		return checkPathSegments(u, err, pathSegments...)
+	}
+}
+
+// BlockFileExtensions rejects a URL whose final path segment ends in one of the
+// given extensions (given without a leading dot; compared case-insensitively).
+// It sheds non-HTML assets -- documents, images, archives, audio/video -- that a
+// discovery crawl should never fetch: they yield no outbound company links, so
+// downloading them is pure wasted budget. Extensionless paths and page
+// extensions the list omits (e.g. .html, .php) pass through untouched.
+func BlockFileExtensions(extensions ...string) filter.CheckFn[string] {
+	return func(u string) error {
+		parsed, err := url.Parse(u)
+		if err != nil {
+			return fmt.Errorf("filter: error parsing url: %s. err: %w", u, err)
+		}
+
+		ext := strings.ToLower(strings.TrimPrefix(path.Ext(parsed.Path), "."))
+		if ext != "" && slices.Contains(extensions, ext) {
+			return fmt.Errorf("filter: blocked because of file extension: %s", ext)
+		}
+
+		return nil
 	}
 }
 

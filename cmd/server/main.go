@@ -348,6 +348,7 @@ func newFactory(
 			urlfilter.PassPathSegments(uf.PassPathSegments...),
 			urlfilter.BlockSubdomains(uf.BlockedSubdomains...),
 			urlfilter.BlockPathSegments(uf.BlockedPathSegments...),
+			urlfilter.BlockFileExtensions(uf.BlockedFileExtensions...),
 			urlfilter.BlockHostnames(uf.BlockedHostnames...),
 		)
 

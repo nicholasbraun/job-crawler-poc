@@ -31,12 +31,13 @@ const (
 // carries its own filters; a create request that omits them is filled with the
 // built-in DefaultURLFilterConfig by the API.
 type URLFilterConfig struct {
-	AllowedTLDs         []string `json:"allowedTLDs"`
-	BlockedSubdomains   []string `json:"blockedSubdomains"`
-	BlockedPathSegments []string `json:"blockedPathSegments"`
-	BlockedHostnames    []string `json:"blockedHostnames"`
-	PassSubdomains      []string `json:"passSubdomains"`
-	PassPathSegments    []string `json:"passPathSegments"`
+	AllowedTLDs           []string `json:"allowedTLDs"`
+	BlockedSubdomains     []string `json:"blockedSubdomains"`
+	BlockedPathSegments   []string `json:"blockedPathSegments"`
+	BlockedHostnames      []string `json:"blockedHostnames"`
+	BlockedFileExtensions []string `json:"blockedFileExtensions"`
+	PassSubdomains        []string `json:"passSubdomains"`
+	PassPathSegments      []string `json:"passPathSegments"`
 }
 
 // LLMGateConfig holds pre-LLM gate signals (ADR-0007 step 2): cheap URL-path
@@ -246,9 +247,10 @@ type CrawlDefinitionRepository interface {
 // crawl definition when a create request omits its own. These tuned lists steer
 // a crawl toward company career pages: they restrict TLDs, short-circuit-pass
 // hiring-related subdomains and path segments, and block the subdomains, path
-// segments, and hostnames that reliably lead away from job listings (docs,
-// shops, auth, social media, and so on). Previously sourced from
-// config.json; now the process-wide default lives here in the domain.
+// segments, hostnames, and file extensions that reliably lead away from job
+// listings (docs, shops, auth, social media, media assets, and so on).
+// Previously sourced from config.json; now the process-wide default lives here
+// in the domain.
 //
 // Editorial paths (blog, news, press, media, articles, stories, posts, magazine)
 // are intentionally NOT blocked here: they often link out to companies, so they
@@ -296,6 +298,35 @@ func DefaultURLFilterConfig() URLFilterConfig {
 			"trial", "onboarding", "tour", "features", "integrations",
 			"changelog", "roadmap", "status", "model", "workflows", "cgi",
 			"cdn-cgi", "authenticate", "games",
+			// CMS internals and media directories: WordPress/TYPO3/Drupal asset
+			// trees that hold only binaries, never a page that links to a company.
+			"wp-content", "wp-json", "wp-includes", "wp-admin",
+			"uploads", "fileadmin", "plugins", "themes",
+			// Taxonomy / archive index pages. These are duplicative navigation over
+			// a site's own posts (every post reappears under each tag, category, and
+			// author), not the posts themselves -- the frontier bloats without
+			// reaching new outbound links. The editorial posts they index stay
+			// crawlable: /blog, /news and date-permalink posts are not blocked, so a
+			// blog's outbound company links are still harvested (see note above).
+			"category", "categories", "tag", "tags",
+			"author", "authors", "archive", "archives",
+			// Site search results: an unbounded query space with no unique content.
+			"search",
+		},
+		BlockedFileExtensions: []string{
+			// Documents: never HTML, never a source of outbound company links.
+			"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+			"odt", "ods", "odp", "rtf", "csv",
+			// Images.
+			"jpg", "jpeg", "png", "gif", "svg", "webp", "bmp", "ico",
+			"tif", "tiff",
+			// Archives and installers.
+			"zip", "rar", "gz", "tar", "7z", "bz2", "dmg", "exe", "pkg",
+			// Audio / video.
+			"mp4", "mp3", "mov", "avi", "wmv", "m4a", "m4v", "wav",
+			"ogg", "webm", "flv", "mkv", "m3u", "m3u8",
+			// Fonts.
+			"woff", "woff2", "ttf", "otf", "eot",
 		},
 		BlockedHostnames: []string{
 			"www.addtoany.com", "trustpilot.com", "www.apple.com", "x.com",

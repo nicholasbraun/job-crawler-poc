@@ -173,6 +173,33 @@ func TestURLFilter(t *testing.T) {
 		}
 	})
 
+	t.Run("block file extensions", func(t *testing.T) {
+		blockExtensionsCheck := urlfilter.BlockFileExtensions("pdf", "jpg", "zip")
+		tests := []test{
+			{"block pdf", "https://example.com/reports/annual.pdf", false},
+			{"block uppercase with query", "https://example.com/img/PHOTO.JPG?v=2", false},
+			{"block double extension", "https://example.com/dl/bundle.tar.zip", false},
+			{"pass html", "https://example.com/careers.html", true},
+			{"pass php", "https://example.com/index.php", true},
+			{"pass no extension", "https://example.com/careers", true},
+			{"pass dot in earlier segment", "https://example.com/v1.2/careers", true},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				checkFn := filter.Chain(blockExtensionsCheck)
+
+				err := checkFn(tt.url)
+				if err == nil && !tt.wantPass {
+					t.Errorf("expected an error. got nil")
+				}
+				if err != nil && tt.wantPass {
+					t.Errorf("expected no error. got %v", err)
+				}
+			})
+		}
+	})
+
 	t.Run("pass check fails fast", func(t *testing.T) {
 		passPathSegmentsCheck := urlfilter.PassPathSegments("jobs", "career")
 		blockPathSegmentsCheck := urlfilter.BlockPathSegments("blog", "contact")
