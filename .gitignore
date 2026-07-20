@@ -8,6 +8,9 @@
 # llmbench local A/B run artifacts (bench -json output, diffed across runs)
 /cmd/llmbench/results/
 
+# stray binary from `go build ./cmd/llmbench` (the Makefile builds to /bin)
+/llmbench
+
 # Node / Vite
 web/node_modules/
 
