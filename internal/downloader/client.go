@@ -1,6 +1,7 @@
 // Package downloader provides HTTP clients for fetching web pages. The base
-// Client handles single requests; RetryClient wraps any Downloader with
-// exponential backoff.
+// Client handles single requests over a transport with a bounded dial timeout
+// and a caching resolver (see resolver.go), so a crawl over many hosts does not
+// overwhelm DNS; RetryClient wraps any Downloader with exponential backoff.
 package downloader
 
 import (
@@ -83,12 +84,68 @@ type Client struct {
 	userAgent             string
 }
 
-func NewClient(userAgent string) *Client {
+// ClientOption configures a Client.
+type ClientOption func(*clientConfig)
+
+// clientConfig holds a Client's tunables. The DNS defaults suit a discovery
+// crawl over many mostly-once-seen hosts on a shared resolver.
+type clientConfig struct {
+	timeout       time.Duration // overall per-request budget (dial + TLS + response)
+	dialTimeout   time.Duration // bounds a single TCP dial (and, via the cache, DNS)
+	dnsPosTTL     time.Duration // how long a successful lookup is cached
+	dnsNegTTL     time.Duration // how long a failed lookup is cached (kept shorter)
+	dnsTimeout    time.Duration // bounds one underlying DNS resolution
+	dnsMaxEntries int           // upper bound on cached hosts
+}
+
+// WithTimeout overrides the overall per-request timeout (default 10s).
+func WithTimeout(d time.Duration) ClientOption {
+	return func(c *clientConfig) { c.timeout = d }
+}
+
+// WithDialTimeout bounds a single TCP dial, so a slow or dead host frees a
+// worker quickly rather than riding out the overall request timeout (default 5s).
+func WithDialTimeout(d time.Duration) ClientOption {
+	return func(c *clientConfig) { c.dialTimeout = d }
+}
+
+// WithDNSCacheTTL sets how long a successful DNS lookup is cached (default 5m).
+func WithDNSCacheTTL(d time.Duration) ClientOption {
+	return func(c *clientConfig) { c.dnsPosTTL = d }
+}
+
+// WithDNSNegativeTTL sets how long a failed DNS lookup is cached (default 1m).
+func WithDNSNegativeTTL(d time.Duration) ClientOption {
+	return func(c *clientConfig) { c.dnsNegTTL = d }
+}
+
+// WithDNSCacheSize bounds how many hosts the DNS cache holds (default 16384).
+func WithDNSCacheSize(n int) ClientOption {
+	return func(c *clientConfig) { c.dnsMaxEntries = n }
+}
+
+func NewClient(userAgent string, opts ...ClientOption) *Client {
+	cfg := clientConfig{
+		timeout:       10 * time.Second,
+		dialTimeout:   5 * time.Second,
+		dnsPosTTL:     5 * time.Minute,
+		dnsNegTTL:     1 * time.Minute,
+		dnsTimeout:    5 * time.Second,
+		dnsMaxEntries: 16384,
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	meter := otel.Meter("http_client")
 	downloadTimeHistogram, _ := meter.Float64Histogram("crawler.http-client.downloads.time", metric.WithUnit("ms"))
+
+	cache := newDNSCache(cfg.dnsPosTTL, cfg.dnsNegTTL, cfg.dnsTimeout, cfg.dnsMaxEntries)
+	dialer := &net.Dialer{Timeout: cfg.dialTimeout, KeepAlive: 30 * time.Second}
 	return &Client{
 		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout:   cfg.timeout,
+			Transport: newCachingTransport(dialer, cache),
 		},
 		downloadTimeHistogram: downloadTimeHistogram,
 		userAgent:             userAgent,
