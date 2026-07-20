@@ -38,5 +38,13 @@ step.
   drains back into the queues over several pops rather than all at once;
   correctness is unaffected, since an expired lease is already-lost work being
   returned to its queue.
+- **The `crawler.frontier.domains.size` gauge is labeled `run_id`**, a deliberate
+  exception to the no-`run_id` metric rule: a gauge is last-value, so concurrent
+  runs would clobber one unlabeled series. The cost is that the SDK's last-value
+  aggregation never evicts an attribute set, so one series accrues per `run_id`
+  the process has ever popped — the count grows with runs *seen* over the process
+  lifetime, not just concurrently-active runs. Accepted as bounded for this
+  crawler's shape (a perpetual Discovery plus occasional bounded Keyword Crawls);
+  evicting a finished run's series in `DeleteRun` is a deferred hardening.
 - The `visited`-set growth that dominates a perpetual run's footprint is
   untouched here; bounding it remains #75.

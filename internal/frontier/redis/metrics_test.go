@@ -187,6 +187,13 @@ func TestFrontierMetrics(t *testing.T) {
 	})
 
 	t.Run("next_time excludes the WAIT sleep", func(t *testing.T) {
+		// Isolate this assertion from sibling subtests. next.time is label-free, so
+		// a shared reader's max folds in every prior subtest's pops — a cold
+		// warm-up EVAL there could then trip the < 200ms bound and blame this
+		// subtest. A fresh reader (with the Frontier built AFTER it, so its
+		// instruments rebind) scopes the max to only the pops driven here.
+		reader := installManualReader(t)
+
 		// Domain a holds a 400ms cooldown with a second URL queued behind it, so
 		// the second Next spends ~400ms in bounded WAIT sleeps before the pop. If
 		// the sleep were inside the measured window, a sample near 400ms would
