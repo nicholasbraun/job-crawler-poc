@@ -25,6 +25,7 @@ import (
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -69,24 +70,30 @@ return 'NEW'
 // limit (the #145 BUSY); leftover work is handled on later pops.
 //
 // KEYS: domains, processing, inflight. ARGV: queuePrefix, now(ms), leaseTTL(ms),
-// cooldown(ms), pollInterval(ms). Returns a 2-element table:
+// cooldown(ms), pollInterval(ms). Every reply carries a uniform trailing element
+// — the post-mutation domain-schedule cardinality (ZCARD domains) — appended by
+// the Lua reply helper on every path, so Next records the domains.size gauge
+// without inspecting the tag. It is appended (trailing), so all tag/payload
+// index reads below are unaffected. The leading tag and payload are:
 //
-//	{'URL', member}   — a URL to crawl
-//	                     (member is depth\x1fhostname\x1fscope\x1fowner\x1furl)
-//	{'BADMEMBER', m}  — a queued member predating the #118 provenance format
-//	                     (fewer than four separators); pushed back with a fresh
-//	                     cooldown (its domain stays scheduled, its queue being
-//	                     non-empty) and surfaced by Next as an error, so stale
-//	                     state is flushed rather than silently crawled unfenced.
-//	{'WAIT', wakeMs}   — nothing ready; caller sleeps until wakeMs then retries.
-//	                     For a real deadline wakeMs is bounded by now+pollInterval,
-//	                     the earliest future domain deadline, and the earliest
-//	                     in-flight lease expiry, so reclaim latency tracks leaseTTL
-//	                     rather than a domain cooldown. When the defensive prune
-//	                     cap is hit before a poppable member is found, wakeMs is
-//	                     now itself — an immediate retry that resumes stale-domain
-//	                     cleanup on the next pop.
-//	{'DONE'}           — queues empty and no leases in flight
+//	{'URL', member, card}   — a URL to crawl
+//	                          (member is depth\x1fhostname\x1fscope\x1fowner\x1furl)
+//	{'BADMEMBER', m, card}  — a queued member predating the #118 provenance format
+//	                          (fewer than four separators); pushed back with a
+//	                          fresh cooldown (its domain stays scheduled, its
+//	                          queue being non-empty) and surfaced by Next as an
+//	                          error, so stale state is flushed rather than silently
+//	                          crawled unfenced.
+//	{'WAIT', wakeMs, card}  — nothing ready; caller sleeps until wakeMs then
+//	                          retries. For a real deadline wakeMs is bounded by
+//	                          now+pollInterval, the earliest future domain
+//	                          deadline, and the earliest in-flight lease expiry, so
+//	                          reclaim latency tracks leaseTTL rather than a domain
+//	                          cooldown. When the defensive prune cap is hit before
+//	                          a poppable member is found, wakeMs is now itself — an
+//	                          immediate retry that resumes stale-domain cleanup on
+//	                          the next pop.
+//	{'DONE', card}          — queues empty and no leases in flight
 var nextScript = redis.NewScript(`
 local domains      = KEYS[1]
 local processing   = KEYS[2]
@@ -127,6 +134,16 @@ local function wakeDeadline(candidate)
   return deadline
 end
 
+-- reply appends the current domain-schedule cardinality as a uniform trailing
+-- element on every tag, so Next can record the domains.size gauge without
+-- knowing the tag. It is evaluated at each return site (after that path's
+-- ZADD/ZREM), so the value is the post-mutation schedule cardinality.
+local function reply(...)
+  local r = {...}
+  r[#r + 1] = redis.call('ZCARD', domains)
+  return r
+end
+
 -- 1. Reclaim up to maxReclaim expired leases: re-enqueue the exact member (with
 -- its depth) onto its domain queue and re-schedule the domain (NX preserves an
 -- active cooldown; adds a drained domain back at now). Leases beyond the cap are
@@ -158,12 +175,12 @@ while pruned < maxPrune do
     -- domains at all, wait on in-flight leases, or finish.
     local future = redis.call('ZRANGE', domains, 0, 0, 'WITHSCORES')
     if #future > 0 then
-      return {'WAIT', tostring(wakeDeadline(tonumber(future[2])))}
+      return reply('WAIT', tostring(wakeDeadline(tonumber(future[2]))))
     end
     if redis.call('ZCARD', processing) > 0 then
-      return {'WAIT', tostring(wakeDeadline(nil))}
+      return reply('WAIT', tostring(wakeDeadline(nil)))
     end
-    return {'DONE'}
+    return reply('DONE')
   end
   candidate = sel[1]
   member = redis.call('RPOP', queuePrefix .. candidate)
@@ -180,7 +197,7 @@ end
 if not member then
   -- Prune cap hit without a poppable member: WAIT with a past deadline, i.e. an
   -- immediate retry that continues stale-domain cleanup on the next pop.
-  return {'WAIT', tostring(now)}
+  return reply('WAIT', tostring(now))
 end
 
 -- url is the last field: walk past depth, hostname, scope, owner to the 4th
@@ -197,7 +214,7 @@ if p then p = string.find(member, sep, p + 1, true) end     -- after owner
 if not p then
   redis.call('LPUSH', queuePrefix .. candidate, member)
   redis.call('ZADD', domains, now + cooldown, candidate)
-  return {'BADMEMBER', member}
+  return reply('BADMEMBER', member)
 end
 local url = string.sub(member, p + 1)
 
@@ -212,7 +229,7 @@ else
 end
 redis.call('ZADD', processing, now + leaseTTL, url)
 redis.call('HSET', inflight, url, member)
-return {'URL', member}
+return reply('URL', member)
 `)
 
 // doneScript clears a completed URL's lease. KEYS: processing, inflight.
@@ -236,9 +253,12 @@ type Frontier struct {
 	pollInterval time.Duration
 	maxDepth     int
 	mode         frontier.Mode
-	retryMin     time.Duration       // first backoff before a transient-error retry (default 100ms)
-	retryMax     time.Duration       // backoff cap; retries continue at this interval (default 5s)
-	retries      metric.Int64Counter // crawler.frontier.transient_retries, op-attributed
+	retryMin     time.Duration           // first backoff before a transient-error retry (default 100ms)
+	retryMax     time.Duration           // backoff cap; retries continue at this interval (default 5s)
+	retries      metric.Int64Counter     // crawler.frontier.transient_retries, op-attributed
+	runID        string                  // run's UUID string; the run_id attribute on domainsSize
+	popLatency   metric.Float64Histogram // crawler.frontier.next.time (ms), label-free
+	domainsSize  metric.Int64Gauge       // crawler.frontier.domains.size, run_id-labeled
 }
 
 var _ frontier.Frontier = &Frontier{}
@@ -287,16 +307,19 @@ func New(client *redis.Client, runID uuid.UUID, opts ...Option) *Frontier {
 		mode:         frontier.Bounded,
 		retryMin:     100 * time.Millisecond,
 		retryMax:     5 * time.Second,
+		runID:        runID.String(),
 	}
 
 	for _, opt := range opts {
 		opt(f)
 	}
 
-	// Created after options so the counter is always present even if a test
-	// swaps the backoff bounds; nil-safe (a no-op instrument on registration
-	// error), so withRetry can Add unconditionally.
+	// Created after options so the instruments are always present even if a test
+	// swaps the backoff bounds; nil-safe (no-op instruments on a registration
+	// error), so Record/Add is always unconditional.
 	f.retries = newTransientRetryCounter()
+	f.popLatency = newPopLatencyHistogram()
+	f.domainsSize = newDomainsSizeGauge()
 
 	return f
 }
@@ -411,19 +434,36 @@ func (f *Frontier) Next(ctx context.Context) (crawler.URL, error) {
 		// time.Now() is read inside the closure so each retry re-computes the
 		// clock, keeping lease/reclaim deadlines correct across a stalled retry.
 		res, err := f.withRetry(ctx, opNext, func() (any, error) {
-			return nextScript.Run(ctx, f.client, keys,
+			start := time.Now()
+			r, rerr := nextScript.Run(ctx, f.client, keys,
 				f.queuePrefix, time.Now().UnixMilli(),
 				f.leaseTTL.Milliseconds(), f.cooldown.Milliseconds(),
 				f.pollInterval.Milliseconds(),
 			).Result()
+			if rerr == nil {
+				// Pop-script evaluation latency in fractional ms (sub-ms pops).
+				// Recorded only on a successful eval, so transient-retry backoff
+				// (between closure calls) is excluded; the WAIT sleep a WAIT reply
+				// triggers is in the switch below, so it too is excluded.
+				f.popLatency.Record(ctx, float64(time.Since(start).Microseconds())/1000)
+			}
+			return r, rerr
 		})
 		if err != nil {
 			return crawler.URL{}, fmt.Errorf("frontier: next: %w", err)
 		}
 
 		reply, ok := res.([]interface{})
-		if !ok || len(reply) == 0 {
+		// Every real reply carries a leading tag plus the trailing schedule
+		// cardinality: DONE is len 2, the others len 3.
+		if !ok || len(reply) < 2 {
 			return crawler.URL{}, fmt.Errorf("frontier: unexpected next result %v", res)
+		}
+		// Uniform trailing element = current domain-schedule cardinality; record
+		// the run-scoped gauge before switching on the tag. Best-effort: a
+		// malformed value is skipped, never fatal to a pop.
+		if card, cerr := strconv.ParseInt(fmt.Sprint(reply[len(reply)-1]), 10, 64); cerr == nil {
+			f.domainsSize.Record(ctx, card, metric.WithAttributes(attribute.String("run_id", f.runID)))
 		}
 
 		switch reply[0] {

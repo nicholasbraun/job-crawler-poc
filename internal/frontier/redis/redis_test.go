@@ -496,8 +496,9 @@ func TestRedisFrontier(t *testing.T) {
 		}
 		// The domain keeps queued (bad) work, so the non-empty-domains invariant
 		// requires it to stay in the schedule; a fresh cooldown throttles the error
-		// loop until an operator flushes. (Read the raw domains ZSET directly: the
-		// #156 domains.size gauge that will express this invariant lands after #154.)
+		// loop until an operator flushes. (Read the raw domains ZSET directly; the
+		// domains.size gauge that expresses this invariant is asserted in
+		// metrics_test.go.)
 		if err := client.Do(ctx, "ZSCORE", prefix+"domains", "acme.com").Err(); err != nil {
 			t.Errorf("BADMEMBER domain must remain scheduled (queue non-empty), ZSCORE err: %v", err)
 		}
@@ -706,8 +707,8 @@ func TestRedisFrontier(t *testing.T) {
 			t.Errorf("handed out %d distinct URLs, want %d", len(got), len(real))
 		}
 		// Invariant end-state: after full drain the schedule holds only non-empty
-		// domains, and there are none. (Direct ZCARD read stands in for the #156
-		// domains.size gauge, which lands after #154.)
+		// domains, and there are none. (Direct ZCARD read; the domains.size gauge
+		// is asserted in metrics_test.go.)
 		if card, err := client.ZCard(ctx, prefix+"domains").Result(); err != nil {
 			t.Fatalf("ZCard domains: %v", err)
 		} else if card != 0 {
