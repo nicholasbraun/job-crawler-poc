@@ -3,6 +3,8 @@ package downloader_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -255,6 +257,54 @@ func TestRetry(t *testing.T) {
 		if gotAttempts != wantAttempts {
 			t.Errorf("expected %d attemps. got: %d", wantAttempts, gotAttempts)
 		}
+	})
+
+	t.Run("Don't retry on NXDOMAIN", func(t *testing.T) {
+		dnsErr := &net.DNSError{Err: "no such host", Name: "nxdomain.invalid", IsNotFound: true}
+		mock := &mockDownloader{
+			responses: []*downloader.Response{nil},
+			// Wrapped as the base Client wraps a download error, to prove the
+			// verdict survives unwrapping.
+			errors: []error{fmt.Errorf("error downloading url (%s). %w", "http://nxdomain.invalid", dnsErr)},
+		}
+		retryClient := downloader.NewRetryClient(mock)
+
+		res, err := retryClient.Get(t.Context(), "http://nxdomain.invalid")
+
+		var gotDNS *net.DNSError
+		if !errors.As(err, &gotDNS) || !gotDNS.IsNotFound {
+			t.Fatalf("expected a not-found DNS error, got: %v", err)
+		}
+		if res != nil {
+			t.Errorf("expected res to be nil, got: %v", res)
+		}
+		if mock.callCount != 1 {
+			t.Errorf("expected 1 attempt (NXDOMAIN is permanent), got: %d", mock.callCount)
+		}
+	})
+
+	t.Run("Retry on a transient DNS timeout", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			mock := &mockDownloader{
+				responses: []*downloader.Response{nil, {StatusCode: 200}},
+				errors: []error{
+					&net.DNSError{Err: "i/o timeout", Name: "slow.example", IsTimeout: true},
+					nil,
+				},
+			}
+			retryClient := downloader.NewRetryClient(mock)
+
+			res, err := retryClient.Get(t.Context(), "http://slow.example")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if res.StatusCode != 200 {
+				t.Errorf("expected status 200, got: %d", res.StatusCode)
+			}
+			if mock.callCount != 2 {
+				t.Errorf("expected 2 attempts (a DNS timeout is transient), got: %d", mock.callCount)
+			}
+		})
 	})
 
 	t.Run("Retry on error", func(t *testing.T) {

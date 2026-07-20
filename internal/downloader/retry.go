@@ -4,13 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"time"
 )
 
 type RetryClientOption func(*RetryClient)
 
 // RetryClient is a Downloader decorator that retries failed requests with
-// exponential backoff. Non-retryable errors (e.g., ErrNoHTML) fail immediately.
+// exponential backoff. Non-retryable errors (e.g., ErrNoHTML, a permanent 4xx,
+// an NXDOMAIN DNS failure) fail immediately.
 type RetryClient struct {
 	inner Downloader
 	// backoff is the initial delay before the first retry. Multiplied by
@@ -104,6 +106,16 @@ func isRetryable(err error) bool {
 		return false
 	}
 	if errors.Is(err, ErrNoHTML) {
+		return false
+	}
+
+	// A DNS "no such host" (NXDOMAIN) is permanent: the name does not resolve and
+	// will not within a run, so retrying only sleeps a worker through backoff to
+	// the same failure (now an instant negative-cache hit, see resolver.go).
+	// Transient DNS errors (timeout, temporary SERVFAIL) stay retryable and fall
+	// through below.
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
 		return false
 	}
 
