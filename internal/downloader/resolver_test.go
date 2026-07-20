@@ -235,6 +235,27 @@ func TestCachingTransport(t *testing.T) {
 		}
 	})
 
+	t.Run("a shared transport shares its DNS cache across clients", func(t *testing.T) {
+		// This is what the page downloader and the robots.txt fetcher rely on: one
+		// transport instance means one resolution per host serves both.
+		c, _, calls := newTestCache(t, func(string) ([]net.IPAddr, error) { return ip("127.0.0.1"), nil })
+		transport := newCachingTransport(&net.Dialer{Timeout: 5 * time.Second}, c)
+		clientA := &http.Client{Transport: transport}
+		clientB := &http.Client{Transport: transport}
+
+		url := "http://shared.test.invalid:" + port + "/"
+		for _, cl := range []*http.Client{clientA, clientB, clientA, clientB} {
+			resp, err := cl.Get(url)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			resp.Body.Close()
+		}
+		if n := calls.Load(); n != 1 {
+			t.Errorf("resolver calls across two clients sharing a transport: got %d, want 1", n)
+		}
+	})
+
 	t.Run("a literal IP address bypasses the resolver", func(t *testing.T) {
 		c, _, calls := newTestCache(t, func(string) ([]net.IPAddr, error) {
 			t.Errorf("resolver must not be called for a literal IP")

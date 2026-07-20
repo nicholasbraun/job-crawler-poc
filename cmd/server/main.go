@@ -320,12 +320,16 @@ func newFactory(
 	companyRepository crawler.CompanyRepository,
 	careerPageRepository crawler.CareerPageRepository,
 ) runner.Factory {
-	httpClient := downloader.NewClient(userAgent)
+	// One caching transport (DNS cache + bounded dial + connection pool) shared by
+	// page downloads and robots.txt fetches: a host resolved for its robots.txt is
+	// then a cache hit for its pages, and vice versa, halving DNS load per host.
+	sharedTransport := downloader.NewCachingTransport()
+	httpClient := downloader.NewClient(userAgent, downloader.WithTransport(sharedTransport))
 	retryHTTPClient := downloader.NewRetryClient(httpClient)
 	htmlParser := parser.NewHTMLParser()
 
 	robotsTxtParser := temoto.NewRobotsTxtParser(userAgent)
-	robotsTxtDownloader := robotstxt.NewRobotsTxtDownloader(userAgent)
+	robotsTxtDownloader := robotstxt.NewRobotsTxtDownloader(userAgent, sharedTransport)
 	robotsTxtChecker := robotstxt.NewChecker(robotsTxtParser, robotsTxtDownloader)
 
 	jobListingExtractor := openrouter.NewJobListingExtractor(llmConfig)

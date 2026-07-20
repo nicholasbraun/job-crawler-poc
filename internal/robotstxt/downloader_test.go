@@ -21,7 +21,7 @@ func TestDownloaderGet200(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := robotstxt.NewRobotsTxtDownloader("TestBot/1.0")
+	d := robotstxt.NewRobotsTxtDownloader("TestBot/1.0", nil)
 
 	res, err := d.Get(t.Context(), server.URL+"/robots.txt")
 	if err != nil {
@@ -56,7 +56,7 @@ func TestDownloaderPropagatesStatusCode(t *testing.T) {
 			}))
 			defer server.Close()
 
-			d := robotstxt.NewRobotsTxtDownloader("TestBot/1.0")
+			d := robotstxt.NewRobotsTxtDownloader("TestBot/1.0", nil)
 			res, err := d.Get(t.Context(), server.URL)
 			if err != nil {
 				t.Fatalf("unexpected err: %v", err)
@@ -76,7 +76,7 @@ func TestDownloaderCapsBodyAt1MB(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := robotstxt.NewRobotsTxtDownloader("TestBot/1.0")
+	d := robotstxt.NewRobotsTxtDownloader("TestBot/1.0", nil)
 	res, err := d.Get(t.Context(), server.URL)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -95,7 +95,7 @@ func TestDownloaderCancelledCtxErrors(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	d := robotstxt.NewRobotsTxtDownloader("TestBot/1.0")
+	d := robotstxt.NewRobotsTxtDownloader("TestBot/1.0", nil)
 	_, err := d.Get(ctx, server.URL)
 	if err == nil {
 		t.Fatalf("expected error from cancelled ctx, got nil")

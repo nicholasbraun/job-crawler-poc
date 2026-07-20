@@ -96,6 +96,11 @@ type clientConfig struct {
 	dnsNegTTL     time.Duration // how long a failed lookup is cached (kept shorter)
 	dnsTimeout    time.Duration // bounds one underlying DNS resolution
 	dnsMaxEntries int           // upper bound on cached hosts
+
+	// transport, when set, is used verbatim instead of building a caching
+	// transport from the DNS/dial fields — so a Client can share one transport
+	// (hence one DNS cache and connection pool) with other clients.
+	transport http.RoundTripper
 }
 
 // WithTimeout overrides the overall per-request timeout (default 10s).
@@ -124,8 +129,15 @@ func WithDNSCacheSize(n int) ClientOption {
 	return func(c *clientConfig) { c.dnsMaxEntries = n }
 }
 
-func NewClient(userAgent string, opts ...ClientOption) *Client {
-	cfg := clientConfig{
+// WithTransport makes the Client use rt instead of building its own caching
+// transport, so it can share one transport — and thus one DNS cache and
+// connection pool — with other clients (e.g. the robots.txt fetcher).
+func WithTransport(rt http.RoundTripper) ClientOption {
+	return func(c *clientConfig) { c.transport = rt }
+}
+
+func defaultClientConfig() clientConfig {
+	return clientConfig{
 		timeout:       10 * time.Second,
 		dialTimeout:   5 * time.Second,
 		dnsPosTTL:     5 * time.Minute,
@@ -133,6 +145,30 @@ func NewClient(userAgent string, opts ...ClientOption) *Client {
 		dnsTimeout:    5 * time.Second,
 		dnsMaxEntries: 16384,
 	}
+}
+
+// cachingTransport builds the bounded-dial, DNS-caching transport from cfg.
+func cachingTransport(cfg *clientConfig) *http.Transport {
+	cache := newDNSCache(cfg.dnsPosTTL, cfg.dnsNegTTL, cfg.dnsTimeout, cfg.dnsMaxEntries)
+	dialer := &net.Dialer{Timeout: cfg.dialTimeout, KeepAlive: 30 * time.Second}
+	return newCachingTransport(dialer, cache)
+}
+
+// NewCachingTransport builds an *http.Transport with a bounded dial timeout and
+// a caching resolver in front of system DNS. Share one instance across HTTP
+// clients — e.g. the page downloader and the robots.txt fetcher — so they use a
+// single DNS cache and connection pool, and a host resolved for one is a cache
+// hit for the other. Safe for concurrent use.
+func NewCachingTransport(opts ...ClientOption) *http.Transport {
+	cfg := defaultClientConfig()
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	return cachingTransport(&cfg)
+}
+
+func NewClient(userAgent string, opts ...ClientOption) *Client {
+	cfg := defaultClientConfig()
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -140,12 +176,14 @@ func NewClient(userAgent string, opts ...ClientOption) *Client {
 	meter := otel.Meter("http_client")
 	downloadTimeHistogram, _ := meter.Float64Histogram("crawler.http-client.downloads.time", metric.WithUnit("ms"))
 
-	cache := newDNSCache(cfg.dnsPosTTL, cfg.dnsNegTTL, cfg.dnsTimeout, cfg.dnsMaxEntries)
-	dialer := &net.Dialer{Timeout: cfg.dialTimeout, KeepAlive: 30 * time.Second}
+	transport := cfg.transport
+	if transport == nil {
+		transport = cachingTransport(&cfg)
+	}
 	return &Client{
 		httpClient: &http.Client{
 			Timeout:   cfg.timeout,
-			Transport: newCachingTransport(dialer, cache),
+			Transport: transport,
 		},
 		downloadTimeHistogram: downloadTimeHistogram,
 		userAgent:             userAgent,

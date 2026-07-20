@@ -22,11 +22,16 @@ type RobotsTxtDownloader struct {
 	userAgent  string
 }
 
-// NewRobotsTxtDownloader creates a RobotsTxtDownloader with a 5-second HTTP timeout.
-func NewRobotsTxtDownloader(userAgent string) *RobotsTxtDownloader {
+// NewRobotsTxtDownloader creates a RobotsTxtDownloader with a 5-second HTTP
+// timeout over transport. Pass the crawler's shared caching transport so
+// robots.txt lookups reuse the same DNS cache and connection pool as page
+// downloads — a host resolved for one is then a cache hit for the other. A nil
+// transport falls back to http.DefaultTransport.
+func NewRobotsTxtDownloader(userAgent string, transport http.RoundTripper) *RobotsTxtDownloader {
 	return &RobotsTxtDownloader{
 		httpClient: &http.Client{
-			Timeout: 5 * time.Second,
+			Timeout:   5 * time.Second,
+			Transport: transport,
 		},
 		userAgent: userAgent,
 	}
