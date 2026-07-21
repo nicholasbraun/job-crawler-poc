@@ -184,9 +184,10 @@ func TestProcessorResolvesCountryAtSave(t *testing.T) {
 
 // TestProcessorCountryConstraintGate asserts the ATS-lane Country Constraint
 // (ADR-0028): with a target set of {DE}, a keyword-matching posting is saved only
-// when its resolved Country is DE, its Country is unresolved, or its Work
-// Arrangement is Remote; any other resolved Country is discarded before save.
-// Country is driven via the provider CountryHint / Location the resolver reads.
+// when its resolved Country is DE or its Country is unresolved; any other resolved
+// Country is discarded before save regardless of Work Arrangement (Remote is not an
+// override). Country is driven via the provider CountryHint / Location the resolver
+// reads.
 func TestProcessorCountryConstraintGate(t *testing.T) {
 	all := []*crawler.JobListing{
 		{Title: "Go DE", URL: "https://board/de", Location: "Berlin, Germany"},
@@ -201,9 +202,9 @@ func TestProcessorCountryConstraintGate(t *testing.T) {
 		wantTitles []string
 	}{
 		{
-			name:       "DE constraint keeps DE, unresolved and remote; drops FR onsite",
+			name:       "DE constraint keeps DE and unresolved; drops FR onsite and FR remote",
 			countries:  []string{"DE"},
-			wantTitles: []string{"Go DE", "Go unresolved", "Go FR remote"},
+			wantTitles: []string{"Go DE", "Go unresolved"},
 		},
 		{
 			name:       "empty constraint keeps every country",

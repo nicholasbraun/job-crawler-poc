@@ -296,9 +296,10 @@ func TestJobListingProcessorResolvesCountryAtSave(t *testing.T) {
 
 // TestJobListingProcessorCountryConstraintGate asserts the crawl-lane Country
 // Constraint (ADR-0028): with a target set of {DE}, a listing is kept only when its
-// resolved Country is DE, its Country is unresolved, or its Work Arrangement is
-// Remote; any other resolved Country is discarded. A discard is a completed decision
-// -- Process returns nil (no retry), nothing is saved, and OnSaved never fires.
+// resolved Country is DE or its Country is unresolved; any other resolved Country is
+// discarded regardless of Work Arrangement (Remote is not an override). A discard is
+// a completed decision -- Process returns nil (no retry), nothing is saved, and
+// OnSaved never fires.
 func TestJobListingProcessorCountryConstraintGate(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -310,7 +311,8 @@ func TestJobListingProcessorCountryConstraintGate(t *testing.T) {
 		{"in-set country is kept", []string{"DE"}, "Berlin, Germany", crawler.WorkArrangementOnsite, true},
 		{"out-of-set country is dropped", []string{"DE"}, "Paris, France", crawler.WorkArrangementOnsite, false},
 		{"unresolved country is kept", []string{"DE"}, "", crawler.WorkArrangementOnsite, true},
-		{"remote overrides an out-of-set country", []string{"DE"}, "Paris, France", crawler.WorkArrangementRemote, true},
+		{"remote does NOT override an out-of-set country", []string{"DE"}, "Paris, France", crawler.WorkArrangementRemote, false},
+		{"remote with unresolved location is still kept", []string{"DE"}, "Remote - EU", crawler.WorkArrangementRemote, true},
 		{"empty constraint keeps every country", nil, "Paris, France", crawler.WorkArrangementOnsite, true},
 	}
 

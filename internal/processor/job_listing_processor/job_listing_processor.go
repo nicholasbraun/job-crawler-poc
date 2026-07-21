@@ -140,7 +140,7 @@ func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.Raw
 	// unless it passes the definition's target Countries. A discard is a completed
 	// decision -- no Save, no processed/OnSaved counter -- so return nil (parity with
 	// the Extractor Abstain above), never an error the durable stream would retry.
-	if !crawler.KeepForCountry(w.countries, extraction.Listing.Country, extraction.Listing.WorkArrangement) {
+	if !crawler.KeepForCountry(w.countries, extraction.Listing.Country) {
 		slog.Info("dropped by country constraint", "url", workload.URL.RawURL, "country", extraction.Listing.Country)
 		w.droppedByCountryCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("lane", "crawl")))
 		return nil

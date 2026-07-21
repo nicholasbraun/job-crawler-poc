@@ -131,7 +131,7 @@ func (p *Processor) Process(ctx context.Context, task *FetchTask) error {
 		// Country Constraint gate (ADR-0028): discard before persistence unless the
 		// listing passes the definition's target Countries. A drop is a continue --
 		// not saved, OnSaved not fired, no saveErr -- matching the keyword-skip above.
-		if !crawler.KeepForCountry(p.countries, jl.Country, jl.WorkArrangement) {
+		if !crawler.KeepForCountry(p.countries, jl.Country) {
 			p.droppedByCountry.Add(ctx, 1, metric.WithAttributes(attribute.String("lane", "ats")))
 			continue
 		}

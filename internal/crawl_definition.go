@@ -233,14 +233,21 @@ type CrawlDefinition struct {
 	CreatedAt time.Time
 }
 
-// KeepForCountry reports whether a Job Listing with the given resolved Country and
-// Work Arrangement passes the Country Constraint countries (ADR-0028): kept when
-// countries is empty (anywhere), the Country is in the set, the Country is
-// unresolved (empty), or the Work Arrangement is Remote; otherwise discarded.
-// Codes compare case-insensitively (uppercased). This single predicate is why
-// "Germany means Germany" is identical on both the crawl and ATS acquisition lanes.
-func KeepForCountry(countries []string, country string, arrangement WorkArrangement) bool {
-	if len(countries) == 0 || country == "" || arrangement == WorkArrangementRemote {
+// KeepForCountry reports whether a Job Listing with the given resolved Country
+// passes the Country Constraint countries (ADR-0028): kept when countries is empty
+// (anywhere), the Country is unresolved (the empty Country), or the Country is in
+// the set; otherwise discarded. Codes compare case-insensitively (uppercased). This
+// single predicate is why "Germany means Germany" is identical on both the crawl
+// and ATS acquisition lanes.
+//
+// Work Arrangement is deliberately NOT an input. An earlier revision kept any
+// Remote listing as a blanket override, but that retained out-of-target remote jobs
+// (e.g. a US-only remote role under a {DE} constraint), so it was removed: a Remote
+// listing is now kept only when its Country is unknown or in the set, like any
+// other listing. Keep-unknown still covers a genuinely location-agnostic posting
+// ("Remote — EU"/"Remote"), which resolves to the empty Country.
+func KeepForCountry(countries []string, country string) bool {
+	if len(countries) == 0 || country == "" {
 		return true
 	}
 	country = strings.ToUpper(strings.TrimSpace(country))

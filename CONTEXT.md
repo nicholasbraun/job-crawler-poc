@@ -108,7 +108,7 @@ A Job Listing's working mode — Remote, Onsite, Hybrid, or Unspecified — extr
 _Avoid_: remote (as a standalone flag), workplace type, remote status
 
 **Country Constraint**:
-The set of target Countries on a Keyword Crawl Definition, narrowing which Job Listings it keeps: a listing is kept when the set is empty (anywhere), its Country is in the set, its Country is unresolved, or its Work Arrangement is Remote. The location counterpart to the crawl's keyword relevance.
+The set of target Countries on a Keyword Crawl Definition, narrowing which Job Listings it keeps: a listing is kept when the set is empty (anywhere), its Country is in the set, or its Country is unresolved. The location counterpart to the crawl's keyword relevance. (Work Arrangement is not a gate input: a Remote listing is kept only when its Country is unknown or in the set — see ADR-0028.)
 _Avoid_: location filter, geo filter, country fence
 
 ### Import / Export
