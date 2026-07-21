@@ -114,8 +114,12 @@ _Avoid_: fallback chain, resolution order
 ### Crawl mechanics
 
 **Frontier**:
-The set of URLs a Crawl Run still has to fetch, scheduled per Politeness Domain with a cooldown.
+The set of URLs a Crawl Run still has to fetch, scheduled per Politeness Domain with a cooldown. It also remembers the URLs it has already seen, deduping every addition against that memory.
 _Avoid_: queue, backlog
+
+**Re-admission**:
+A URL the Frontier had already seen being crawled again because its seen-memory is finite: a perpetual Discovery Crawl caps that memory and forgets the oldest URLs first, so one re-linked afterwards is treated as new. Accepted as the price of a bounded Frontier — politeness and correctness are unaffected; only a repeat LLM classify can result, and only when the re-crawled page also re-passes the Gate.
+_Avoid_: re-crawl, re-visit, duplicate
 
 **Seed**:
 A crawl's starting URLs. For a Discovery Crawl they are configured, and may also be added while it runs — appended to the Definition and injected into the live Frontier; for a Keyword Crawl they are resolved from the Catalog at run start — every Career Page, plus each Pageless Company's Website.

@@ -21,13 +21,15 @@
   "refresh": "10s",
   "schemaVersion": 39,
   "tags": ["frontier", "crawler"],
-  "templating": { "list": [] },
+  "templating": {
+    "list": []
+  },
   "time": { "from": "now-1h", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
   "title": "Frontier",
   "uid": "frontier",
-  "version": 1,
+  "version": 3,
   "panels": [
     {
       "type": "row",
@@ -337,6 +339,96 @@
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "sum by (op) (rate(crawler_frontier_transient_retries_total[$__rate_interval]))",
           "legendFormat": "{{op}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 103,
+      "title": "Visited footprint (ADR-0027)",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 }
+    },
+    {
+      "type": "timeseries",
+      "id": 9,
+      "title": "Visited-set size by run (vs cap)",
+      "description": "Post-eviction visited-ZSET cardinality per run (crawler.frontier.visited.size), plotted against the per-run cap. Headroom below the cap line means the FIFO backstop has never fired for that run (ADR-0027 / #162).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "cap" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } },
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } },
+              { "id": "custom.fillOpacity", "value": 0 }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["max", "lastNotNull"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (run_id) (crawler_frontier_visited_size)",
+          "legendFormat": "{{run_id}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "max(crawler_frontier_visited_cap)",
+          "legendFormat": "cap",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 10,
+      "title": "Visited eviction rate by run",
+      "description": "Per-run rate of visited-ZSET FIFO evictions (crawler.frontier.visited.evicted). Flat at zero until a run crosses the cap; a nonzero rate is Re-admission happening — an evicted URL re-discovered is re-crawled (ADR-0027 / #162).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum", "lastNotNull"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (run_id) (rate(crawler_frontier_visited_evicted_total[$__rate_interval]))",
+          "legendFormat": "{{run_id}}",
           "refId": "A"
         }
       ]

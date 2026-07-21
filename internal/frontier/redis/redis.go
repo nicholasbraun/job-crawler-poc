@@ -11,16 +11,23 @@
 // processing ZSET (member=url, score=expiry); a worker that crashes without
 // calling MarkDone has its lease reclaimed by a later Next once the lease TTL
 // elapses, so no URL is lost or duplicated.
+//
+// The visited set is a FIFO-capped hashed ZSET (member = xxhash64(RawURL),
+// score = insertion ms) rather than an unbounded full-URL SET (ADR-0027), so a
+// perpetual Discovery run's per-run footprint stays bounded: past the cap the
+// oldest-inserted entries are evicted inline in the add script.
 package redis
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"math/rand/v2"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
@@ -38,26 +45,55 @@ const memberSep = "\x1f"
 // sleep, spreading out workers that would otherwise wake on the same deadline.
 const maxJitter = 50 * time.Millisecond
 
-// addScript fuses dedup with enqueue. KEYS: visited, domains.
-// ARGV: queuePrefix, domain, member, url, now(ms). Returns DUP (already visited)
-// or NEW.
+// DefaultVisitedCap is the per-run ceiling on the visited ZSET's cardinality
+// (ADR-0027): ~5M distinct URLs (~425 MB/run at ~85 B/entry) before FIFO
+// eviction fires, so for most runs it never does. Overridable per Frontier via
+// WithVisitedCap and process-wide via CRAWL_VISITED_CAP.
+const DefaultVisitedCap = 5_000_000
+
+// addScript fuses dedup with enqueue. KEYS: visited (a hashed ZSET, member =
+// 8-byte xxhash64(RawURL), score = insertion ms), domains. ARGV: queuePrefix,
+// domain, member, visitedKey(8-byte xxhash64), now(ms), cap. Dedup is ZADD NX,
+// so an already-resident URL short-circuits as DUP with no further work. On a
+// NEW insert it FIFO-evicts by rank down to cap (ADR-0027), pinning visited at
+// the cap with no overshoot. Returns bare DUP (already resident, no extra work)
+// or the table {'NEW', evicted, size} — the count this insert FIFO-evicted plus
+// the post-eviction ZCARD visited, feeding the visited.size gauge and
+// visited.evicted counter (#162).
 var addScript = redis.NewScript(`
 local visited     = KEYS[1]
 local domains     = KEYS[2]
 local queuePrefix = ARGV[1]
 local domain      = ARGV[2]
 local member      = ARGV[3]
-local url         = ARGV[4]
+local visitedKey  = ARGV[4]   -- 8-byte xxhash64(RawURL), binary; never parsed
 local now         = tonumber(ARGV[5])
+local cap         = tonumber(ARGV[6])
 
-if redis.call('SADD', visited, url) == 0 then
+-- Dedup: ZADD NX reports how many NEW members it added. 0 => the URL is already
+-- resident, so short-circuit as a no-op with NO score bump (the hot duplicate
+-- path stays a single write; FIFO order is not disturbed by re-sees).
+if redis.call('ZADD', visited, 'NX', now, visitedKey) == 0 then
   return 'DUP'
 end
 
 -- Make the domain eligible immediately; NX so an active cooldown is not reset.
 redis.call('ZADD', domains, 'NX', now, domain)
 redis.call('LPUSH', queuePrefix .. domain, member)
-return 'NEW'
+
+-- FIFO eviction runs ONLY on a NEW insert: shed everything above the cap by
+-- rank (rank 0 = lowest score = oldest inserted), pinning visited at the cap
+-- with no overshoot and no background sweeper. The NEW reply then carries the
+-- number of entries this insert evicted and the post-eviction ZCARD, both
+-- derived from the single ZCARD above (no second ZCARD): size = card - evicted.
+local card    = redis.call('ZCARD', visited)
+local over    = card - cap
+local evicted = 0
+if over > 0 then
+  redis.call('ZREMRANGEBYRANK', visited, 0, over - 1)
+  evicted = over
+end
+return {'NEW', evicted, card - evicted}
 `)
 
 // nextScript reclaims expired leases, then hands out the earliest eligible URL.
@@ -245,20 +281,24 @@ type Option func(*Frontier)
 
 // Frontier is a Redis-backed frontier.Frontier for a single crawl run.
 type Frontier struct {
-	client       *redis.Client
-	keyPrefix    string
-	queuePrefix  string
-	cooldown     time.Duration
-	leaseTTL     time.Duration
-	pollInterval time.Duration
-	maxDepth     int
-	mode         frontier.Mode
-	retryMin     time.Duration           // first backoff before a transient-error retry (default 100ms)
-	retryMax     time.Duration           // backoff cap; retries continue at this interval (default 5s)
-	retries      metric.Int64Counter     // crawler.frontier.transient_retries, op-attributed
-	runID        string                  // run's UUID string; the run_id attribute on domainsSize
-	popLatency   metric.Float64Histogram // crawler.frontier.next.time (ms), label-free
-	domainsSize  metric.Int64Gauge       // crawler.frontier.domains.size, run_id-labeled
+	client         *redis.Client
+	keyPrefix      string
+	queuePrefix    string
+	cooldown       time.Duration
+	leaseTTL       time.Duration
+	pollInterval   time.Duration
+	maxDepth       int
+	mode           frontier.Mode
+	visitedCap     int                     // per-run visited ZSET ceiling; FIFO-evicted past this (ADR-0027)
+	retryMin       time.Duration           // first backoff before a transient-error retry (default 100ms)
+	retryMax       time.Duration           // backoff cap; retries continue at this interval (default 5s)
+	retries        metric.Int64Counter     // crawler.frontier.transient_retries, op-attributed
+	runID          string                  // run's UUID string; the run_id attribute on domainsSize
+	popLatency     metric.Float64Histogram // crawler.frontier.next.time (ms), label-free
+	domainsSize    metric.Int64Gauge       // crawler.frontier.domains.size, run_id-labeled
+	visitedSize    metric.Int64Gauge       // crawler.frontier.visited.size, run_id-labeled (ADR-0027 / #162)
+	visitedEvicted metric.Int64Counter     // crawler.frontier.visited.evicted, run_id-labeled (ADR-0027 / #162)
+	visitedCapG    metric.Int64Gauge       // crawler.frontier.visited.cap, run_id-labeled effective cap (ADR-0027 / #162)
 }
 
 var _ frontier.Frontier = &Frontier{}
@@ -291,6 +331,13 @@ func WithMode(m frontier.Mode) Option {
 	return func(f *Frontier) { f.mode = m }
 }
 
+// WithVisitedCap sets the per-run ceiling on the visited ZSET's cardinality;
+// once exceeded, the oldest-inserted entries are FIFO-evicted inline in the add
+// script (ADR-0027). Defaults to DefaultVisitedCap.
+func WithVisitedCap(n int) Option {
+	return func(f *Frontier) { f.visitedCap = n }
+}
+
 // New builds a Frontier for runID against the given client. Multiple Frontiers
 // constructed with the same runID and client share the same Redis state, so a
 // restarted process resumes an in-progress run by re-constructing here.
@@ -305,6 +352,7 @@ func New(client *redis.Client, runID uuid.UUID, opts ...Option) *Frontier {
 		pollInterval: 250 * time.Millisecond,
 		maxDepth:     3,
 		mode:         frontier.Bounded,
+		visitedCap:   DefaultVisitedCap,
 		retryMin:     100 * time.Millisecond,
 		retryMax:     5 * time.Second,
 		runID:        runID.String(),
@@ -320,6 +368,9 @@ func New(client *redis.Client, runID uuid.UUID, opts ...Option) *Frontier {
 	f.retries = newTransientRetryCounter()
 	f.popLatency = newPopLatencyHistogram()
 	f.domainsSize = newDomainsSizeGauge()
+	f.visitedSize = newVisitedSizeGauge()
+	f.visitedEvicted = newVisitedEvictedCounter()
+	f.visitedCapG = newVisitedCapGauge()
 
 	return f
 }
@@ -400,24 +451,51 @@ func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 
 	keys := []string{f.key("visited"), f.key("domains")}
 	// At-least-once safe: addScript is one atomic Lua script whose first mutation
-	// is SADD visited. If a prior attempt fully applied but its reply was lost to
-	// a transient blip, the retry sees SADD -> 0 and returns DUP, so LPUSH never
-	// doubles. time.Now() is read inside the closure so that a retry whose prior
-	// attempt did NOT apply stamps a current domain-eligibility timestamp into
-	// ZADD domains NX; a fully-applied retry short-circuits at SADD -> DUP and
-	// never reaches that ZADD.
+	// is ZADD NX visited. If a prior attempt fully applied but its reply was lost
+	// to a transient blip, the retry sees ZADD NX -> 0 and returns DUP, so LPUSH
+	// never doubles. Because FIFO eviction lives only on the NEW path, that
+	// short-circuited retry also never evicts a second time. time.Now() is read
+	// inside the closure so that a retry whose prior attempt did NOT apply stamps
+	// a current domain-eligibility timestamp into ZADD domains NX; a fully-applied
+	// retry short-circuits at ZADD NX -> DUP and never reaches that ZADD.
 	res, err := f.withRetry(ctx, opAdd, func() (any, error) {
 		return addScript.Run(ctx, f.client, keys,
-			f.queuePrefix, url.Hostname, encodeMember(url), url.RawURL,
-			time.Now().UnixMilli(),
+			f.queuePrefix, url.Hostname, encodeMember(url), visitedMember(url.RawURL),
+			time.Now().UnixMilli(), f.visitedCap,
 		).Result()
 	})
 	if err != nil {
 		return fmt.Errorf("frontier: add url: %w", err)
 	}
 
-	switch res {
-	case "NEW", "DUP":
+	switch r := res.(type) {
+	case string:
+		// Bare short-circuit: the hot duplicate path records nothing.
+		if r == "DUP" {
+			return nil
+		}
+		return fmt.Errorf("frontier: unexpected add result %v", res)
+	case []interface{}:
+		// NEW reply: {"NEW", evicted, size}. Record the two visited instruments
+		// only here — the dup path above records nothing (#162). Recording the
+		// gauge unconditionally on every NEW satisfies "gauge reflects ZCARD
+		// visited"; Add(evicted) with evicted==0 under the cap still creates the
+		// run_id series at 0, so a run that never evicts is observably at zero.
+		if len(r) != 3 || fmt.Sprint(r[0]) != "NEW" {
+			return fmt.Errorf("frontier: unexpected add result %v", res)
+		}
+		attrs := metric.WithAttributes(attribute.String("run_id", f.runID))
+		if size, perr := strconv.ParseInt(fmt.Sprint(r[2]), 10, 64); perr == nil {
+			f.visitedSize.Record(ctx, size, attrs)
+		}
+		if evicted, perr := strconv.ParseInt(fmt.Sprint(r[1]), 10, 64); perr == nil {
+			f.visitedEvicted.Add(ctx, evicted, attrs)
+		}
+		// The effective per-run cap is static, so re-recording it on every NEW
+		// only refreshes the last-value; recording it here (never on the DUP
+		// path) pins it to the same NEW cadence and run_id series as
+		// visited.size, so the vs-cap panel always has both to align.
+		f.visitedCapG.Record(ctx, int64(f.visitedCap), attrs)
 		return nil
 	default:
 		return fmt.Errorf("frontier: unexpected add result %v", res)
@@ -540,6 +618,17 @@ func (f *Frontier) sleep(ctx context.Context, d time.Duration) error {
 func encodeMember(u crawler.URL) string {
 	return strconv.Itoa(u.Depth) + memberSep + u.Hostname + memberSep +
 		u.Scope + memberSep + u.Owner + memberSep + u.RawURL
+}
+
+// visitedMember hashes a URL's RawURL into the 8-byte big-endian xxhash64 that
+// keys it in the visited ZSET (ADR-0027). visited members are never parsed back,
+// so a raw binary key is fine and halves per-entry memory versus a full URL. The
+// hash is pinned: dedup across a run depends on it, so changing the function or
+// its byte layout is a dedup-breaking migration, never a casual swap.
+func visitedMember(rawURL string) string {
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], xxhash.Sum64String(rawURL))
+	return string(b[:])
 }
 
 func decodeMember(member string) (crawler.URL, error) {
