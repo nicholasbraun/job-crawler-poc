@@ -281,7 +281,10 @@ export function Layout() {
         </div>
       </aside>
 
-      <main className="app-scroll" style={{ flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column" }}>
+      {/* overflowX hidden is the backstop: the page scrolls only vertically, so a
+          stray wide element can never produce sideways page scroll. Tables keep
+          their own overflow-x:auto wrappers and still scroll internally. */}
+      <main className="app-scroll" style={{ flex: 1, minWidth: 0, minHeight: 0, overflowX: "hidden", overflowY: "auto", display: "flex", flexDirection: "column" }}>
         <Outlet
           context={
             {

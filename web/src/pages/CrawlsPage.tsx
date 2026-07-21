@@ -30,7 +30,7 @@ export function CrawlsPage() {
           hint="A keyword crawl seeds from the catalogued career pages and gates them by your keywords. Create one from the header."
         />
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(2, 1fr)", gap: "var(--space-4)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : "repeat(2, minmax(0, 1fr))", gap: "var(--space-4)" }}>
           {crawls.map((c) => (
             <CrawlCard key={c.definitionId} crawl={c} />
           ))}

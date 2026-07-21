@@ -62,7 +62,10 @@ export function OverviewPage() {
           />
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1.35fr 1fr", gap: "var(--space-4)", alignItems: "start" }}>
+        {/* minmax(0, …) keeps a flexible track from growing past the viewport
+            when an item's content (the sparkline, the counters) is intrinsically
+            wide — the track clamps and the content shrinks instead. */}
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : "minmax(0, 1.35fr) minmax(0, 1fr)", gap: "var(--space-4)", alignItems: "start" }}>
           <DiscoveryPanel discovery={discovery} careerPages={pages.length} companies={companies.length} split={split} />
           <RecentlyCatalogued pages={pages} companies={companies} />
         </div>
@@ -115,8 +118,8 @@ function DiscoveryPanel({
 
   return (
     <div className="card elev-sm" style={{ gap: "var(--space-4)", padding: "var(--space-6)" }}>
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "var(--space-4)" }}>
-        <div style={{ display: "flex", gap: 12 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "var(--space-4)", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 12, minWidth: 0 }}>
           <span
             style={{
               display: "grid",
@@ -262,7 +265,7 @@ function KeywordCrawlsSection({ crawls }: { crawls: ReturnType<typeof buildKeywo
       {crawls.length === 0 ? (
         <EmptyState icon="ph-magnifying-glass" title="No keyword crawls yet" hint="Create one from the header — it seeds from the catalog and gates pages by your keywords." />
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(2, 1fr)", gap: "var(--space-4)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : "repeat(2, minmax(0, 1fr))", gap: "var(--space-4)" }}>
           {crawls.slice(0, 6).map((c) => (
             <CrawlCard key={c.definitionId} crawl={c} />
           ))}

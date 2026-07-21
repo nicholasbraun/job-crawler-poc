@@ -150,7 +150,7 @@ export function StatCard({
 export function Sparkline({ series }: { series: number[] }) {
   const { line, area } = sparklinePoints(series, 280, 70);
   return (
-    <svg viewBox="0 0 280 70" preserveAspectRatio="none" style={{ flex: 1, height: 70, overflow: "visible" }}>
+    <svg viewBox="0 0 280 70" preserveAspectRatio="none" style={{ flex: 1, minWidth: 0, height: 70, overflow: "visible" }}>
       <defs>
         <linearGradient id="sparkfill" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="var(--color-accent)" stopOpacity="0.32" />
