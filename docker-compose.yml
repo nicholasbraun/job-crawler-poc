@@ -41,13 +41,27 @@ services:
   redis:
     image: redis:7
     logging: *default-logging
-    # Keep accepting writes even when an RDB snapshot fails (e.g. a full disk).
-    # Redis here holds only transient, resumable crawl state (frontier queues,
-    # visited set, leases) -- the durable data is in Postgres -- so a stalled
-    # snapshot should degrade gracefully rather than halt every crawl with MISCONF
-    # (the overnight disk-full failure mode). RDB stays enabled so a Redis restart
-    # can still resume a run.
-    command: redis-server --stop-writes-on-bgsave-error no
+    # Redis holds only transient crawl state (frontier queues, visited set,
+    # leases); the durable data is in Postgres. Two guards keep the growing state
+    # (see #75) from taking the stack down:
+    #   --save ""          disable RDB snapshots. Removes both the on-disk growth
+    #                      that filled the disk and the periodic fork memory spikes
+    #                      that OOM-killed Redis. Trade-off: a Redis *process*
+    #                      restart loses the frontier (a paused run can't resume
+    #                      across it); in-process pause/resume is unaffected.
+    #   --maxmemory 2gb    cap Redis below the VM so it rejects writes and stays
+    #   --maxmemory-policy alive (crawl stalls recoverably, state preserved) instead
+    #     noeviction       of the kernel OOM-killing it (container dies, all state
+    #                      lost, silent stall). noeviction because frontier data
+    #                      can't be evicted without corrupting the crawl.
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --maxmemory
+      - 2gb
+      - --maxmemory-policy
+      - noeviction
     ports:
       - "6379:6379"
 
