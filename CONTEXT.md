@@ -22,7 +22,7 @@ The single, perpetual Crawl Definition of kind Discovery: bounded-broad, it find
 _Avoid_: spider, broad crawl
 
 **Keyword Crawl**:
-A Crawl Definition kind: seeded from the Catalog, it collects Job Listings matching a set of OR-matched keywords, each seed confined to its own Company by Scope. It acquires listings two ways — an ATS Fetch for a Company on a recognized ATS, otherwise by crawling and extracting posting pages.
+A Crawl Definition kind: seeded from the Catalog, it collects Job Listings matching a set of OR-matched keywords, each seed confined to its own Company by Scope and optionally narrowed to a set of target Countries by its Country Constraint. It acquires listings two ways — an ATS Fetch for a Company on a recognized ATS, otherwise by crawling and extracting posting pages.
 _Avoid_: search, filter crawl
 
 ### Run lifecycle
@@ -92,6 +92,24 @@ _Avoid_: homepage, url, company domain
 **Pageless Company**:
 A catalogued Company with no Career Page yet: employer known, page undiscovered.
 _Avoid_: prospect, stub, empty company
+
+### Location
+
+**Country**:
+The ISO 3166-1 alpha-2 code a Job Listing resolves to (e.g. `DE`, `US`) — the unit a Keyword Crawl constrains by. Derived from the listing's raw, free-text location string, which is kept unchanged for display; the Country is the structured, filterable value, and is empty when nothing resolves.
+_Avoid_: location (for the code), region, geo, locale
+
+**Country Resolver**:
+The deterministic mapping from a Job Listing's free-text location to a Country, and the sole authority on the ISO code. A location it cannot place resolves to the empty Country — kept, never dropped.
+_Avoid_: geocoder, normalizer, geo lookup
+
+**Work Arrangement**:
+A Job Listing's working mode — Remote, Onsite, Hybrid, or Unspecified — extracted per listing and shown as a tag. Unspecified is the honest default: a source that does not positively state the mode never becomes Onsite. Replaces the former remote boolean.
+_Avoid_: remote (as a standalone flag), workplace type, remote status
+
+**Country Constraint**:
+The set of target Countries on a Keyword Crawl Definition, narrowing which Job Listings it keeps: a listing is kept when the set is empty (anywhere), its Country is in the set, its Country is unresolved, or its Work Arrangement is Remote. The location counterpart to the crawl's keyword relevance.
+_Avoid_: location filter, geo filter, country fence
 
 ### Import / Export
 
