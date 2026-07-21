@@ -56,7 +56,10 @@ const DefaultVisitedCap = 5_000_000
 // domain, member, visitedKey(8-byte xxhash64), now(ms), cap. Dedup is ZADD NX,
 // so an already-resident URL short-circuits as DUP with no further work. On a
 // NEW insert it FIFO-evicts by rank down to cap (ADR-0027), pinning visited at
-// the cap with no overshoot. Returns DUP (already visited) or NEW.
+// the cap with no overshoot. Returns bare DUP (already resident, no extra work)
+// or the table {'NEW', evicted, size} — the count this insert FIFO-evicted plus
+// the post-eviction ZCARD visited, feeding the visited.size gauge and
+// visited.evicted counter (#162).
 var addScript = redis.NewScript(`
 local visited     = KEYS[1]
 local domains     = KEYS[2]
@@ -80,12 +83,17 @@ redis.call('LPUSH', queuePrefix .. domain, member)
 
 -- FIFO eviction runs ONLY on a NEW insert: shed everything above the cap by
 -- rank (rank 0 = lowest score = oldest inserted), pinning visited at the cap
--- with no overshoot and no background sweeper.
-local over = redis.call('ZCARD', visited) - cap
+-- with no overshoot and no background sweeper. The NEW reply then carries the
+-- number of entries this insert evicted and the post-eviction ZCARD, both
+-- derived from the single ZCARD above (no second ZCARD): size = card - evicted.
+local card    = redis.call('ZCARD', visited)
+local over    = card - cap
+local evicted = 0
 if over > 0 then
   redis.call('ZREMRANGEBYRANK', visited, 0, over - 1)
+  evicted = over
 end
-return 'NEW'
+return {'NEW', evicted, card - evicted}
 `)
 
 // nextScript reclaims expired leases, then hands out the earliest eligible URL.
@@ -273,21 +281,23 @@ type Option func(*Frontier)
 
 // Frontier is a Redis-backed frontier.Frontier for a single crawl run.
 type Frontier struct {
-	client       *redis.Client
-	keyPrefix    string
-	queuePrefix  string
-	cooldown     time.Duration
-	leaseTTL     time.Duration
-	pollInterval time.Duration
-	maxDepth     int
-	mode         frontier.Mode
-	visitedCap   int                     // per-run visited ZSET ceiling; FIFO-evicted past this (ADR-0027)
-	retryMin     time.Duration           // first backoff before a transient-error retry (default 100ms)
-	retryMax     time.Duration           // backoff cap; retries continue at this interval (default 5s)
-	retries      metric.Int64Counter     // crawler.frontier.transient_retries, op-attributed
-	runID        string                  // run's UUID string; the run_id attribute on domainsSize
-	popLatency   metric.Float64Histogram // crawler.frontier.next.time (ms), label-free
-	domainsSize  metric.Int64Gauge       // crawler.frontier.domains.size, run_id-labeled
+	client         *redis.Client
+	keyPrefix      string
+	queuePrefix    string
+	cooldown       time.Duration
+	leaseTTL       time.Duration
+	pollInterval   time.Duration
+	maxDepth       int
+	mode           frontier.Mode
+	visitedCap     int                     // per-run visited ZSET ceiling; FIFO-evicted past this (ADR-0027)
+	retryMin       time.Duration           // first backoff before a transient-error retry (default 100ms)
+	retryMax       time.Duration           // backoff cap; retries continue at this interval (default 5s)
+	retries        metric.Int64Counter     // crawler.frontier.transient_retries, op-attributed
+	runID          string                  // run's UUID string; the run_id attribute on domainsSize
+	popLatency     metric.Float64Histogram // crawler.frontier.next.time (ms), label-free
+	domainsSize    metric.Int64Gauge       // crawler.frontier.domains.size, run_id-labeled
+	visitedSize    metric.Int64Gauge       // crawler.frontier.visited.size, run_id-labeled (ADR-0027 / #162)
+	visitedEvicted metric.Int64Counter     // crawler.frontier.visited.evicted, run_id-labeled (ADR-0027 / #162)
 }
 
 var _ frontier.Frontier = &Frontier{}
@@ -357,6 +367,8 @@ func New(client *redis.Client, runID uuid.UUID, opts ...Option) *Frontier {
 	f.retries = newTransientRetryCounter()
 	f.popLatency = newPopLatencyHistogram()
 	f.domainsSize = newDomainsSizeGauge()
+	f.visitedSize = newVisitedSizeGauge()
+	f.visitedEvicted = newVisitedEvictedCounter()
 
 	return f
 }
@@ -454,8 +466,29 @@ func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 		return fmt.Errorf("frontier: add url: %w", err)
 	}
 
-	switch res {
-	case "NEW", "DUP":
+	switch r := res.(type) {
+	case string:
+		// Bare short-circuit: the hot duplicate path records nothing.
+		if r == "DUP" {
+			return nil
+		}
+		return fmt.Errorf("frontier: unexpected add result %v", res)
+	case []interface{}:
+		// NEW reply: {"NEW", evicted, size}. Record the two visited instruments
+		// only here — the dup path above records nothing (#162). Recording the
+		// gauge unconditionally on every NEW satisfies "gauge reflects ZCARD
+		// visited"; Add(evicted) with evicted==0 under the cap still creates the
+		// run_id series at 0, so a run that never evicts is observably at zero.
+		if len(r) != 3 || fmt.Sprint(r[0]) != "NEW" {
+			return fmt.Errorf("frontier: unexpected add result %v", res)
+		}
+		attrs := metric.WithAttributes(attribute.String("run_id", f.runID))
+		if size, perr := strconv.ParseInt(fmt.Sprint(r[2]), 10, 64); perr == nil {
+			f.visitedSize.Record(ctx, size, attrs)
+		}
+		if evicted, perr := strconv.ParseInt(fmt.Sprint(r[1]), 10, 64); perr == nil {
+			f.visitedEvicted.Add(ctx, evicted, attrs)
+		}
 		return nil
 	default:
 		return fmt.Errorf("frontier: unexpected add result %v", res)
