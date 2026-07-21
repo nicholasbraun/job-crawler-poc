@@ -11,10 +11,12 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
+	"github.com/nicholasbraun/job-crawler-poc/internal/geo"
 	"github.com/nicholasbraun/job-crawler-poc/internal/runner"
 )
 
@@ -137,6 +139,7 @@ type createCrawlRequest struct {
 	SeedURLs  []string                 `json:"seedUrls"`
 	Kind      string                   `json:"kind"`
 	Keywords  []string                 `json:"keywords"`
+	Countries []string                 `json:"countries"`
 	MaxDepth  *int                     `json:"maxDepth"`
 	URLFilter *crawler.URLFilterConfig `json:"urlFilter"`
 }
@@ -177,6 +180,7 @@ type definitionDTO struct {
 	Kind      string                  `json:"kind"`
 	SeedURLs  []string                `json:"seedUrls"`
 	Keywords  []string                `json:"keywords"`
+	Countries []string                `json:"countries"`
 	MaxDepth  int                     `json:"maxDepth"`
 	URLFilter crawler.URLFilterConfig `json:"urlFilter"`
 	CreatedAt time.Time               `json:"createdAt"`
@@ -193,12 +197,17 @@ func toDefinitionDTO(def *crawler.CrawlDefinition) definitionDTO {
 	if keywords == nil {
 		keywords = []string{}
 	}
+	countries := def.Countries
+	if countries == nil {
+		countries = []string{}
+	}
 	return definitionDTO{
 		ID:        def.ID.String(),
 		Name:      def.Name,
 		Kind:      string(def.Kind),
 		SeedURLs:  seedURLs,
 		Keywords:  keywords,
+		Countries: countries,
 		MaxDepth:  def.MaxDepth,
 		URLFilter: def.URLFilter,
 		CreatedAt: def.CreatedAt,
@@ -595,10 +604,22 @@ type discoveryDefaultsDTO struct {
 	MaxDepth int      `json:"maxDepth"`
 }
 
+// countryOptionDTO is one selectable Country in the keyword template's
+// known-country set: an ISO code plus its display name, backing the dashboard's
+// Country Constraint multi-select (ADR-0028).
+type countryOptionDTO struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
+}
+
 type keywordDefaultsDTO struct {
 	Kind     string   `json:"kind"`
 	Keywords []string `json:"keywords"`
 	MaxDepth int      `json:"maxDepth"`
+	// Countries is the known-country set (sorted by name) the Country Constraint
+	// multi-select offers. Only the keyword template carries it — the constraint
+	// applies to keyword crawls (ADR-0028) — so the discovery template omits it.
+	Countries []countryOptionDTO `json:"countries"`
 }
 
 // getDefinitionDefaults returns the modal prefill template for
@@ -620,10 +641,18 @@ func (h *Handler) getDefinitionDefaults(w http.ResponseWriter, r *http.Request) 
 			MaxDepth: h.cfg.Defaults.DiscoveryMaxDepth,
 		})
 	case crawler.CrawlKindKeyword:
+		// The known-country set is sourced from the domain gazetteer (geo), not from
+		// Defaults, so the multi-select stays in sync with what the Resolver can place.
+		known := geo.KnownCountries()
+		countries := make([]countryOptionDTO, 0, len(known))
+		for _, c := range known {
+			countries = append(countries, countryOptionDTO{Code: c.Code, Name: c.Name})
+		}
 		writeJSON(w, http.StatusOK, keywordDefaultsDTO{
-			Kind:     string(crawler.CrawlKindKeyword),
-			Keywords: []string{},
-			MaxDepth: h.cfg.Defaults.KeywordMaxDepth,
+			Kind:      string(crawler.CrawlKindKeyword),
+			Keywords:  []string{},
+			MaxDepth:  h.cfg.Defaults.KeywordMaxDepth,
+			Countries: countries,
 		})
 	default:
 		writeError(w, http.StatusBadRequest, "unknown or missing kind")
@@ -832,11 +861,25 @@ func (h *Handler) decodeDefinition(r *http.Request) (*crawler.CrawlDefinition, s
 		return nil, fmt.Sprintf("maxDepth must be between %d and %d", minCrawlDepth, maxCrawlDepth)
 	}
 
+	// Validate + normalize the Country Constraint (ADR-0028), matching the
+	// keywords-required strictness: an unknown code is a hard reject rather than a
+	// silent drop. Stored uppercased so the save-time gate compares canonically. An
+	// omitted or empty array is the "anywhere" constraint. Kind-agnostic: the field
+	// is stored on any definition, but only the keyword lanes read it.
+	countries := make([]string, 0, len(req.Countries))
+	for _, c := range req.Countries {
+		if !geo.Valid(c) {
+			return nil, fmt.Sprintf("unknown country code: %q", c)
+		}
+		countries = append(countries, strings.ToUpper(strings.TrimSpace(c)))
+	}
+
 	def := &crawler.CrawlDefinition{
 		Name:      req.Name,
 		Kind:      kind,
 		SeedURLs:  seedURLs,
 		Keywords:  req.Keywords,
+		Countries: countries,
 		MaxDepth:  maxDepth,
 		URLFilter: h.cfg.Defaults.URLFilter,
 	}

@@ -677,6 +677,47 @@ func TestCreateKeywordCrawl(t *testing.T) {
 		}
 	})
 
+	t.Run("country constraint is validated and stored uppercased", func(t *testing.T) {
+		defs := &fakeDefRepo{}
+		srv := newHandler(api.Config{Definitions: defs})
+
+		body, _ := json.Marshal(map[string]any{
+			"name":      "go-de-at",
+			"kind":      "keyword",
+			"keywords":  []string{"golang"},
+			"countries": []string{"de", "AT"},
+		})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status: got %d, want 201; body=%s", rec.Code, rec.Body)
+		}
+		if defs.created == nil {
+			t.Fatal("expected a definition to be created")
+		}
+		if want := []string{"DE", "AT"}; !slices.Equal(defs.created.Countries, want) {
+			t.Errorf("countries: got %v, want %v (uppercased, order preserved)", defs.created.Countries, want)
+		}
+	})
+
+	t.Run("unknown country code is rejected", func(t *testing.T) {
+		srv := newHandler(api.Config{})
+
+		body, _ := json.Marshal(map[string]any{
+			"name":      "bad-country",
+			"kind":      "keyword",
+			"keywords":  []string{"golang"},
+			"countries": []string{"DE", "ZZ"},
+		})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status: got %d, want 400 for an unknown country code", rec.Code)
+		}
+	})
+
 	t.Run("unknown kind is rejected", func(t *testing.T) {
 		srv := newHandler(api.Config{})
 
@@ -759,6 +800,32 @@ func TestDefinitionDefaults(t *testing.T) {
 		}
 		if got["seedUrls"] != nil {
 			t.Errorf("keyword template should not carry seedUrls, got %v", got["seedUrls"])
+		}
+
+		// The known-country set backs the Country Constraint multi-select: a
+		// non-empty array of {code,name} options, sourced from the geo gazetteer.
+		countries, ok := got["countries"].([]any)
+		if !ok {
+			t.Fatalf("countries should be an array (not null), got %T", got["countries"])
+		}
+		if len(countries) == 0 {
+			t.Fatal("countries should be the non-empty known-country set")
+		}
+		foundDE := false
+		for _, raw := range countries {
+			opt, ok := raw.(map[string]any)
+			if !ok {
+				t.Fatalf("country option should be an object, got %T", raw)
+			}
+			if opt["code"] == "DE" {
+				foundDE = true
+				if opt["name"] != "Germany" {
+					t.Errorf("DE name: got %v, want Germany", opt["name"])
+				}
+			}
+		}
+		if !foundDE {
+			t.Error("known-country set should contain {code:DE, name:Germany}")
 		}
 	})
 

@@ -3,6 +3,7 @@ package crawler
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -222,10 +223,33 @@ type CrawlDefinition struct {
 	Kind     CrawlKind
 	SeedURLs []string
 	// Keywords gate pages for keyword crawls. Unused for discovery crawls.
-	Keywords  []string
+	Keywords []string
+	// Countries is the Country Constraint (ADR-0028): the set of target ISO 3166-1
+	// alpha-2 codes (uppercase) a Keyword Crawl keeps Job Listings for. Empty means
+	// anywhere (today's behavior). Immutable, like Keywords; unused for discovery.
+	Countries []string
 	MaxDepth  int
 	URLFilter URLFilterConfig
 	CreatedAt time.Time
+}
+
+// KeepForCountry reports whether a Job Listing with the given resolved Country and
+// Work Arrangement passes the Country Constraint countries (ADR-0028): kept when
+// countries is empty (anywhere), the Country is in the set, the Country is
+// unresolved (empty), or the Work Arrangement is Remote; otherwise discarded.
+// Codes compare case-insensitively (uppercased). This single predicate is why
+// "Germany means Germany" is identical on both the crawl and ATS acquisition lanes.
+func KeepForCountry(countries []string, country string, arrangement WorkArrangement) bool {
+	if len(countries) == 0 || country == "" || arrangement == WorkArrangementRemote {
+		return true
+	}
+	country = strings.ToUpper(strings.TrimSpace(country))
+	for _, c := range countries {
+		if strings.ToUpper(strings.TrimSpace(c)) == country {
+			return true
+		}
+	}
+	return false
 }
 
 // CrawlDefinitionRepository persists and retrieves crawl definitions.
