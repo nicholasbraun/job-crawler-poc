@@ -71,26 +71,37 @@ export type Definition = {
   createdAt: string;
 };
 
+// CountryOption is one selectable Country in the keyword template's Country
+// Constraint multi-select: an ISO alpha-2 code plus its display name. It mirrors
+// the server's countryOptionDTO and is sourced from the geo resolver's known set,
+// so the options always match what the crawler can actually place (ADR-0028).
+export type CountryOption = { code: string; name: string };
+
 // Only the fields a user supplies; the server fills depth/urlFilter from
 // its configured defaults when omitted. An omitted maxDepth lets the server
-// apply the per-kind default (discovery 10 / keyword 4).
+// apply the per-kind default (discovery 10 / keyword 4). `countries` is the
+// keyword-only Country Constraint (ISO alpha-2 codes); omitted or empty means
+// anywhere (no country filtering), matching ADR-0028's empty-set rule.
 export type CreateDefinitionRequest = {
   name: string;
   kind: CrawlKind;
   seedUrls?: string[];
   keywords?: string[];
   maxDepth?: number;
+  countries?: string[];
 };
 
 // DefinitionDefaults is the per-kind crawl-modal prefill template from
 // GET /api/definitions/defaults. Discovery carries name + seedUrls; keyword
-// carries keywords. maxDepth is always present (discovery 10 / keyword 4).
+// carries keywords and the `countries` known-country set for the Country
+// Constraint multi-select. maxDepth is always present (discovery 10 / keyword 4).
 export type DefinitionDefaults = {
   kind: CrawlKind;
   name?: string;
   seedUrls?: string[];
   keywords?: string[];
   maxDepth: number;
+  countries?: CountryOption[];
 };
 
 // NameSource is the Name Ladder rung that produced a Company's name (ADR-0025),

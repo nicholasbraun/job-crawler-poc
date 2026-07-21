@@ -229,6 +229,43 @@ a:hover {
   pointer-events: none;
 }
 
+/* — country multi-select (Country Constraint control) — */
+.country-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.country-options {
+  max-height: 180px;
+  overflow-y: auto;
+  margin-top: var(--space-2);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+}
+.country-opt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  color: var(--color-text);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.country-opt:hover {
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
+}
+.country-opt-selected {
+  color: var(--color-accent);
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+
 /* — cards — */
 .card {
   display: flex;
