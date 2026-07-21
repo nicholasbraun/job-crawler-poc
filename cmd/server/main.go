@@ -160,6 +160,14 @@ func main() {
 		log.Fatalf("error parsing CRAWL_MAX_WORKERS: must be a positive integer, got %q", os.Getenv("CRAWL_MAX_WORKERS"))
 	}
 
+	// CRAWL_VISITED_CAP bounds each run's visited ZSET (ADR-0027 / #75). Read once
+	// and applied to every Frontier built for a run so the FIFO cap is consistent
+	// regardless of which Frontier performs the AddURL.
+	visitedCap, err := strconv.Atoi(envOr("CRAWL_VISITED_CAP", strconv.Itoa(redisfrontier.DefaultVisitedCap)))
+	if err != nil || visitedCap < 1 {
+		log.Fatalf("error parsing CRAWL_VISITED_CAP: must be a positive integer, got %q", os.Getenv("CRAWL_VISITED_CAP"))
+	}
+
 	var logLevel slog.LevelVar
 	if err := logLevel.UnmarshalText([]byte(envOr("LOG_LEVEL", defaultLogLevel))); err != nil {
 		log.Fatalf("error parsing LOG_LEVEL: %v", err)
@@ -209,7 +217,7 @@ func main() {
 	runRepository := postgres.NewCrawlRunRepository(pgPool)
 	importJobRepository := postgres.NewImportJobRepository(pgPool)
 
-	factory := newFactory(crawlMaxWorkers, llmMaxWorkers, llmConfig, redisClient,
+	factory := newFactory(crawlMaxWorkers, visitedCap, llmMaxWorkers, llmConfig, redisClient,
 		jobListingRepository, companyRepository, careerPageRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory,
 		// One cleaner sweeps all of a run's transient Redis state on a terminal
@@ -258,7 +266,7 @@ func main() {
 		// fresh redisfrontier for the run shares its Redis keys, so the depth-0
 		// add lands in the same Frontier the orchestrator pops from.
 		FrontierSeeder: func(ctx context.Context, runID uuid.UUID, u crawler.URL) error {
-			return redisfrontier.New(redisClient, runID).AddURL(ctx, u)
+			return redisfrontier.New(redisClient, runID, redisfrontier.WithVisitedCap(visitedCap)).AddURL(ctx, u)
 		},
 		Defaults: api.Defaults{
 			KeywordMaxDepth:   defaultKeywordMaxDepth,
@@ -313,6 +321,7 @@ func main() {
 // here and shared across runs; per-run state (frontier, pools) is built inside.
 func newFactory(
 	maxWorkers int,
+	visitedCap int,
 	llmMaxWorkers int,
 	llmConfig openrouter.Config,
 	redisClient *redis.Client,
@@ -376,6 +385,7 @@ func newFactory(
 			discoveryFrontier := redisfrontier.New(redisClient, runID,
 				redisfrontier.WithMaxDepth(def.MaxDepth),
 				redisfrontier.WithMode(frontier.Perpetual),
+				redisfrontier.WithVisitedCap(visitedCap),
 			)
 
 			// Durable LLM stage: gate-passing candidates are XADDed onto a per-run
@@ -522,6 +532,7 @@ func newFactory(
 
 		boundedFrontier := redisfrontier.New(redisClient, runID,
 			redisfrontier.WithMaxDepth(def.MaxDepth),
+			redisfrontier.WithVisitedCap(visitedCap),
 		)
 
 		// Durable LLM stage: relevance-passing pages are XADDed onto a per-run
