@@ -1,6 +1,16 @@
+# Shared log-rotation policy applied to every service. Docker's json-file log
+# driver is unbounded by default; an overnight run's logs helped fill the disk
+# and stall Redis. Caps each container to ~30 MB of logs (10 MB x 3 files).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   crawler:
     build: .
+    logging: *default-logging
     ports:
       - "8080:8080"
     # Forward external DNS to fast public resolvers instead of the embedded
@@ -30,11 +40,20 @@ services:
 
   redis:
     image: redis:7
+    logging: *default-logging
+    # Keep accepting writes even when an RDB snapshot fails (e.g. a full disk).
+    # Redis here holds only transient, resumable crawl state (frontier queues,
+    # visited set, leases) -- the durable data is in Postgres -- so a stalled
+    # snapshot should degrade gracefully rather than halt every crawl with MISCONF
+    # (the overnight disk-full failure mode). RDB stays enabled so a Redis restart
+    # can still resume a run.
+    command: redis-server --stop-writes-on-bgsave-error no
     ports:
       - "6379:6379"
 
   postgres:
     image: postgres:17
+    logging: *default-logging
     environment:
       - POSTGRES_USER=crawler
       - POSTGRES_PASSWORD=crawler
@@ -46,6 +65,7 @@ services:
 
   prometheus:
     image: prom/prometheus:latest
+    logging: *default-logging
     ports:
       - "9090:9090"
     volumes:
@@ -53,12 +73,14 @@ services:
 
   loki:
     image: grafana/loki:latest
+    logging: *default-logging
     ports:
       - "3100:3100"
     command: -config.file=/etc/loki/local-config.yaml
 
   promtail:
     image: grafana/promtail:latest
+    logging: *default-logging
     volumes:
       - ./promtail.yml:/etc/promtail/config.yml
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -68,8 +90,7 @@ services:
 
   grafana:
     image: grafana/grafana:latest
-    ports:
-      - "3000:3000"
+    logging: *default-logging
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
     volumes:
