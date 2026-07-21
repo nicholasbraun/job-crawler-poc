@@ -261,22 +261,22 @@ type catalogHistoryResponse struct {
 }
 
 type listingDTO struct {
-	URL         string `json:"url"`
-	Title       string `json:"title"`
-	Company     string `json:"company"`
-	Location    string `json:"location"`
-	Remote      bool   `json:"remote"`
-	Description string `json:"description"`
+	URL             string `json:"url"`
+	Title           string `json:"title"`
+	Company         string `json:"company"`
+	Location        string `json:"location"`
+	WorkArrangement string `json:"workArrangement"`
+	Description     string `json:"description"`
 }
 
 func toListingDTO(jl *crawler.JobListing) listingDTO {
 	return listingDTO{
-		URL:         jl.URL,
-		Title:       jl.Title,
-		Company:     jl.Company,
-		Location:    jl.Location,
-		Remote:      jl.Remote,
-		Description: jl.Description,
+		URL:             jl.URL,
+		Title:           jl.Title,
+		Company:         jl.Company,
+		Location:        jl.Location,
+		WorkArrangement: string(jl.WorkArrangement),
+		Description:     jl.Description,
 	}
 }
 

@@ -260,13 +260,20 @@ type smartRecruitersSection struct {
 // the embedding/seed page's Owner (ADR-0022, #127) — never from a SmartRecruiters
 // field.
 func mapSmartRecruitersPosting(p smartRecruitersPosting) *crawler.JobListing {
+	// location.remote is a bare boolean, so only remote:true is a positive signal.
+	// remote:false is NOT an on-site signal — it degrades to Unspecified, the ADR's
+	// headline case (ADR-0030).
+	arrangement := crawler.WorkArrangementUnspecified
+	if p.Location.Remote {
+		arrangement = crawler.WorkArrangementRemote
+	}
 	listing := &crawler.JobListing{
-		Title:       p.Name,
-		URL:         p.PostingURL, // canonical posting URL; the lane keys upserts on it (#127)
-		Location:    smartRecruitersLocationText(p.Location),
-		Description: smartRecruitersDescription(p.JobAd.Sections),
-		Remote:      p.Location.Remote,
-		Department:  smartRecruitersDepartment(p),
+		Title:           p.Name,
+		URL:             p.PostingURL, // canonical posting URL; the lane keys upserts on it (#127)
+		Location:        smartRecruitersLocationText(p.Location),
+		Description:     smartRecruitersDescription(p.JobAd.Sections),
+		WorkArrangement: arrangement,
+		Department:      smartRecruitersDepartment(p),
 	}
 	if t, ok := parseSmartRecruitersTime(p.ReleasedDate); ok {
 		listing.FirstPublished = t

@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -30,20 +29,22 @@ func NewJobListingRepository(pool *pgxpool.Pool) *JobListingRepository {
 func (r *JobListingRepository) Save(ctx context.Context, definitionID uuid.UUID, jl *crawler.JobListing) error {
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO job_listing
-			(definition_id, url, company, title, description, location, remote, content_hash, company_key)
+			(definition_id, url, company, title, description, location, work_arrangement, content_hash, company_key)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (definition_id, url) DO UPDATE SET
 			company = EXCLUDED.company,
 			title = EXCLUDED.title,
 			description = EXCLUDED.description,
 			location = EXCLUDED.location,
-			remote = EXCLUDED.remote,
+			work_arrangement = EXCLUDED.work_arrangement,
 			content_hash = EXCLUDED.content_hash,
 			company_key = EXCLUDED.company_key,
 			last_seen = now()
 		`,
 		definitionID, jl.URL, jl.Company, jl.Title, jl.Description,
-		jl.Location, jl.Remote, contentHash(jl), jl.CompanyKey,
+		// Pass the underlying string, not the named WorkArrangement type, to avoid
+		// any pgx encode ambiguity for a named string type.
+		jl.Location, string(jl.WorkArrangement), contentHash(jl), jl.CompanyKey,
 	)
 	if err != nil {
 		return fmt.Errorf("postgres: error saving job listing: %w", err)
@@ -54,7 +55,7 @@ func (r *JobListingRepository) Save(ctx context.Context, definitionID uuid.UUID,
 
 func (r *JobListingRepository) Find(ctx context.Context) ([]*crawler.JobListing, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT company, url, title, description, location, remote, company_key
+		SELECT company, url, title, description, location, work_arrangement, company_key
 		FROM job_listing
 		`)
 	if err != nil {
@@ -65,12 +66,17 @@ func (r *JobListingRepository) Find(ctx context.Context) ([]*crawler.JobListing,
 	jobListings := []*crawler.JobListing{}
 	for rows.Next() {
 		jl := &crawler.JobListing{}
+		// Scan the column into an intermediate string, then normalize: this sidesteps
+		// pgx named-type scan questions and defensively folds any legacy DB value onto
+		// the enum (ADR-0030).
+		var wa string
 		if err := rows.Scan(
 			&jl.Company, &jl.URL, &jl.Title, &jl.Description,
-			&jl.Location, &jl.Remote, &jl.CompanyKey,
+			&jl.Location, &wa, &jl.CompanyKey,
 		); err != nil {
 			return nil, fmt.Errorf("postgres: error scanning job listing: %w", err)
 		}
+		jl.WorkArrangement = crawler.NormalizeWorkArrangement(wa)
 		jobListings = append(jobListings, jl)
 	}
 
@@ -85,7 +91,7 @@ func (r *JobListingRepository) FindByDefinition(ctx context.Context, definitionI
 	// The keyword branches the WHERE clause rather than always binding a
 	// pattern, so the common "no keyword" case is a plain definition_id scan.
 	query := `
-		SELECT company, url, title, description, location, remote, company_key
+		SELECT company, url, title, description, location, work_arrangement, company_key
 		FROM job_listing
 		WHERE definition_id = $1`
 	args := []any{definitionID}
@@ -106,12 +112,15 @@ func (r *JobListingRepository) FindByDefinition(ctx context.Context, definitionI
 	jobListings := []*crawler.JobListing{}
 	for rows.Next() {
 		jl := &crawler.JobListing{}
+		// See Find: scan through an intermediate string, then normalize onto the enum.
+		var wa string
 		if err := rows.Scan(
 			&jl.Company, &jl.URL, &jl.Title, &jl.Description,
-			&jl.Location, &jl.Remote, &jl.CompanyKey,
+			&jl.Location, &wa, &jl.CompanyKey,
 		); err != nil {
 			return nil, fmt.Errorf("postgres: error scanning job listing: %w", err)
 		}
+		jl.WorkArrangement = crawler.NormalizeWorkArrangement(wa)
 		jobListings = append(jobListings, jl)
 	}
 
@@ -137,7 +146,7 @@ func contentHash(jl *crawler.JobListing) string {
 		jl.Description,
 		jl.Company,
 		jl.Location,
-		strconv.FormatBool(jl.Remote),
+		string(jl.WorkArrangement),
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return hex.EncodeToString(sum[:])

@@ -2,10 +2,44 @@ package crawler
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// WorkArrangement is a Job Listing's working mode (ADR-0030), replacing the
+// former Remote boolean. Unspecified is the honest default: a source that does
+// not positively state the mode is never Onsite.
+type WorkArrangement string
+
+const (
+	WorkArrangementUnspecified WorkArrangement = "unspecified"
+	WorkArrangementRemote      WorkArrangement = "remote"
+	WorkArrangementOnsite      WorkArrangement = "onsite"
+	WorkArrangementHybrid      WorkArrangement = "hybrid"
+)
+
+// workArrangementFolder drops the separators providers vary on ("on-site",
+// "On_site", "on site"), so NormalizeWorkArrangement folds them all to onsite.
+var workArrangementFolder = strings.NewReplacer("-", "", "_", "", " ", "")
+
+// NormalizeWorkArrangement maps a free-form provider/LLM value to a known
+// WorkArrangement, folding case and separators ("on-site", "On_site" -> onsite).
+// Any unrecognized or empty value degrades to Unspecified — a source that does
+// not positively state the mode is never Onsite (ADR-0030).
+func NormalizeWorkArrangement(s string) WorkArrangement {
+	switch strings.ToLower(workArrangementFolder.Replace(strings.TrimSpace(s))) {
+	case "remote":
+		return WorkArrangementRemote
+	case "onsite":
+		return WorkArrangementOnsite
+	case "hybrid":
+		return WorkArrangementHybrid
+	default:
+		return WorkArrangementUnspecified
+	}
+}
 
 // JobListing holds the structured data of a single job posting. It is populated
 // by a JobListingExtractor (crawl lane) or an ATS BoardFetcher (ATS Fetch lane,
@@ -25,8 +59,11 @@ type JobListing struct {
 	// with no resolved Owner.
 	CompanyKey string `json:"-"`
 	Location   string `json:"location"`
-	// Remote indicates whether the position is available for remote work.
-	Remote bool `json:"remote"`
+	// WorkArrangement is the posting's working mode (ADR-0030). On the crawl lane
+	// the LLM emits it (validated to the enum); on the ATS lane each provider mapper
+	// derives it from its structured signal. The json tag drives LLM-response
+	// unmarshaling; API serialization uses the listing DTO, not this tag.
+	WorkArrangement WorkArrangement `json:"work_arrangement"`
 	// Department is the posting's department/team, taken from the provider board
 	// API on an ATS Fetch (ADR-0022). Empty for a crawled-and-extracted listing.
 	// The json:"-" tag keeps LLM-response unmarshaling from ever reaching it.

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/ats"
 )
 
@@ -176,8 +177,9 @@ func TestSmartRecruitersFetchMapsBoard(t *testing.T) {
 	if first.Department != "Engineering" {
 		t.Errorf("Department = %q, want the function label %q", first.Department, "Engineering")
 	}
-	if first.Remote {
-		t.Errorf("Remote = true, want false for location.remote=false")
+	// location.remote:false is NOT an on-site signal — it degrades to unspecified.
+	if first.WorkArrangement != crawler.WorkArrangementUnspecified {
+		t.Errorf("WorkArrangement = %q, want unspecified for location.remote=false (never onsite)", first.WorkArrangement)
 	}
 	wantDesc := "Company Description\nThe Bosch Group is a leading global supplier.\n" +
 		"Job Description\nDevelop semiconductor process technology.\n" +
@@ -199,8 +201,8 @@ func TestSmartRecruitersFetchMapsBoard(t *testing.T) {
 	if second.Department != "Design Team" {
 		t.Errorf("second.Department = %q, want the department label %q", second.Department, "Design Team")
 	}
-	if !second.Remote {
-		t.Errorf("second.Remote = false, want true for location.remote=true")
+	if second.WorkArrangement != crawler.WorkArrangementRemote {
+		t.Errorf("second.WorkArrangement = %q, want remote for location.remote=true", second.WorkArrangement)
 	}
 
 	// The ingest lane (#127) stamps Company/CompanyKey from the page Owner; the
@@ -415,6 +417,39 @@ func TestSmartRecruitersMalformedReleasedDate(t *testing.T) {
 	}
 	if !got[0].FirstPublished.IsZero() {
 		t.Errorf("FirstPublished = %v, want zero for a malformed timestamp (fail-safe)", got[0].FirstPublished)
+	}
+}
+
+func TestSmartRecruitersWorkArrangement(t *testing.T) {
+	// location.remote is a bare boolean, so only remote:true is a positive signal.
+	// remote:false and an omitted remote both degrade to unspecified — a bare
+	// "not remote" is never an on-site signal (ADR-0030's headline case).
+	cases := []struct {
+		name   string
+		detail string
+		want   crawler.WorkArrangement
+	}{
+		{"remote true", `{"name":"X","postingUrl":"https://jobs.smartrecruiters.com/acme/one","location":{"remote":true}}`, crawler.WorkArrangementRemote},
+		{"remote false is unspecified not onsite", `{"name":"X","postingUrl":"https://jobs.smartrecruiters.com/acme/one","location":{"remote":false}}`, crawler.WorkArrangementUnspecified},
+		{"remote omitted is unspecified", `{"name":"X","postingUrl":"https://jobs.smartrecruiters.com/acme/one","location":{"city":"Berlin"}}`, crawler.WorkArrangementUnspecified},
+	}
+	list := `{"offset":0,"limit":100,"totalFound":1,"content":[{"id":"one"}]}`
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := srConst(list, map[string]string{"one": tc.detail})
+			fetcher := newSmartRecruitersFetcher(t, rec.handler())
+
+			got, err := fetcher.Fetch(t.Context(), "acme")
+			if err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("got %d listings, want 1", len(got))
+			}
+			if got[0].WorkArrangement != tc.want {
+				t.Errorf("WorkArrangement = %q, want %q", got[0].WorkArrangement, tc.want)
+			}
+		})
 	}
 }
 

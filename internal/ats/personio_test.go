@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/ats"
 )
 
@@ -138,12 +139,17 @@ func TestPersonioFetchMapsBoard(t *testing.T) {
 
 	// The ingest lane (#127) stamps Company/CompanyKey from the page Owner; the
 	// mapper must leave both empty on every returned listing — never from <subcompany>.
+	// The feed exposes no working mode, so WorkArrangement is unspecified — never
+	// onsite (ADR-0030).
 	for i, l := range got {
 		if l.Company != "" {
 			t.Errorf("listing[%d].Company = %q, want empty (lane stamps it)", i, l.Company)
 		}
 		if l.CompanyKey != "" {
 			t.Errorf("listing[%d].CompanyKey = %q, want empty (lane stamps it)", i, l.CompanyKey)
+		}
+		if l.WorkArrangement != crawler.WorkArrangementUnspecified {
+			t.Errorf("listing[%d].WorkArrangement = %q, want unspecified (silent provider, never onsite)", i, l.WorkArrangement)
 		}
 	}
 }

@@ -114,7 +114,8 @@ func TestExtractParsesVerdict(t *testing.T) {
 				t.Errorf("Listing.URL = %q, want %q", got.Listing.URL, raw.URL.RawURL)
 			}
 			if tc.wantEmptyish {
-				if got.Listing.Company != "" || got.Listing.Location != "" || got.Listing.Remote {
+				if got.Listing.Company != "" || got.Listing.Location != "" ||
+					got.Listing.WorkArrangement != crawler.WorkArrangementUnspecified {
 					t.Errorf("want empty listing fields on abstain, got %+v", got.Listing)
 				}
 			}
@@ -163,5 +164,91 @@ func TestExtractPromptOmitsTechStack(t *testing.T) {
 
 	if strings.Contains(captured, "tech_stack") {
 		t.Errorf("extractor request should not mention tech_stack, got:\n%s", captured)
+	}
+}
+
+// TestExtractParsesWorkArrangement asserts the LLM's work_arrangement string is
+// unmarshaled and folded onto the enum (ADR-0030): the four canonical values pass
+// through, case/separator variants normalize, and an off-enum or omitted value
+// degrades to Unspecified — never Onsite.
+func TestExtractParsesWorkArrangement(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    crawler.WorkArrangement
+	}{
+		{"remote", `{"title":"X","work_arrangement":"remote","is_job_posting":true}`, crawler.WorkArrangementRemote},
+		{"onsite", `{"title":"X","work_arrangement":"onsite","is_job_posting":true}`, crawler.WorkArrangementOnsite},
+		{"hybrid", `{"title":"X","work_arrangement":"hybrid","is_job_posting":true}`, crawler.WorkArrangementHybrid},
+		{"unspecified", `{"title":"X","work_arrangement":"unspecified","is_job_posting":true}`, crawler.WorkArrangementUnspecified},
+		{"uppercase folds", `{"title":"X","work_arrangement":"REMOTE","is_job_posting":true}`, crawler.WorkArrangementRemote},
+		{"separator folds on-site", `{"title":"X","work_arrangement":"on-site","is_job_posting":true}`, crawler.WorkArrangementOnsite},
+		{"off-enum degrades to unspecified", `{"title":"X","work_arrangement":"office","is_job_posting":true}`, crawler.WorkArrangementUnspecified},
+		{"omitted degrades to unspecified", `{"title":"X","is_job_posting":true}`, crawler.WorkArrangementUnspecified},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ext := newExtractorServer(t, tc.content)
+			raw := crawler.RawJobListing{
+				URL:     newURL(t, "https://careers.acme.com/jobs/1"),
+				Content: crawler.Content{MainContent: "some page text"},
+			}
+
+			got, err := ext.Extract(t.Context(), raw)
+			if err != nil {
+				t.Fatalf("Extract returned error: %v", err)
+			}
+			if got.Listing.WorkArrangement != tc.want {
+				t.Errorf("WorkArrangement = %q, want %q", got.Listing.WorkArrangement, tc.want)
+			}
+		})
+	}
+}
+
+// TestExtractPromptMentionsWorkArrangement asserts the request the extractor sends
+// names work_arrangement (the enum field) and no longer carries the old "remote"
+// boolean bullet. It uses a local server that records the raw request body.
+func TestExtractPromptMentionsWorkArrangement(t *testing.T) {
+	var captured string
+
+	var env chatEnvelope
+	env.Choices = make([]struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}, 1)
+	env.Choices[0].Message.Content = `{"title":"X","is_job_posting":true}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		captured = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(env); err != nil {
+			t.Errorf("encode envelope: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	ext := openrouter.NewJobListingExtractor(openrouter.Config{BaseURL: srv.URL, APIKey: "test"})
+	raw := crawler.RawJobListing{
+		URL:     newURL(t, "https://careers.acme.com/jobs/1"),
+		Content: crawler.Content{MainContent: "some page text"},
+	}
+
+	if _, err := ext.Extract(t.Context(), raw); err != nil {
+		t.Fatalf("Extract returned error: %v", err)
+	}
+
+	if !strings.Contains(captured, "work_arrangement") {
+		t.Errorf("extractor request should name work_arrangement, got:\n%s", captured)
+	}
+	// The old boolean bullet ("remote": if this job is available remotely) must be
+	// gone; a bare mention of the word "remote" as an enum value is expected.
+	if strings.Contains(captured, "available remotely") {
+		t.Errorf("extractor request should not carry the old remote boolean bullet, got:\n%s", captured)
 	}
 }

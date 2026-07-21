@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/ats"
 )
 
@@ -78,8 +79,8 @@ func TestLeverFetchMapsBoard(t *testing.T) {
 	if first.Department != "Engineering" {
 		t.Errorf("Department = %q, want %q", first.Department, "Engineering")
 	}
-	if !first.Remote {
-		t.Errorf("Remote = false, want true for workplaceType remote")
+	if first.WorkArrangement != crawler.WorkArrangementRemote {
+		t.Errorf("WorkArrangement = %q, want remote for workplaceType remote", first.WorkArrangement)
 	}
 	if first.Description != "Build services" {
 		t.Errorf("Description = %q, want %q", first.Description, "Build services")
@@ -93,8 +94,8 @@ func TestLeverFetchMapsBoard(t *testing.T) {
 	if second.Title != "Product Designer" || second.Department != "Design" || second.Location != "Lisbon" {
 		t.Errorf("second listing = %+v, want the Product Designer / Design / Lisbon mapping", second)
 	}
-	if second.Remote {
-		t.Errorf("second.Remote = true, want false for workplaceType on-site")
+	if second.WorkArrangement != crawler.WorkArrangementOnsite {
+		t.Errorf("second.WorkArrangement = %q, want onsite for workplaceType on-site", second.WorkArrangement)
 	}
 	if !second.FirstPublished.IsZero() {
 		t.Errorf("second.FirstPublished = %v, want zero for an omitted createdAt", second.FirstPublished)
@@ -180,17 +181,20 @@ func TestLeverDescriptionPreservesEntityEncodedAngleBrackets(t *testing.T) {
 	}
 }
 
-func TestLeverWorkplaceTypeRemote(t *testing.T) {
+func TestLeverWorkplaceTypeArrangement(t *testing.T) {
+	// workplaceType is Lever's positive signal, folded onto the enum: "on-site" -> onsite
+	// (a positive on-site signal, not discarded), "hybrid" -> hybrid, and an absent or
+	// unrecognized value -> unspecified, never onsite (ADR-0030).
 	cases := []struct {
 		workplaceType string
-		wantRemote    bool
+		want          crawler.WorkArrangement
 	}{
-		{"remote", true},
-		{"Remote", true}, // matched case-insensitively
-		{"on-site", false},
-		{"hybrid", false},
-		{"unspecified", false},
-		{"", false},
+		{"remote", crawler.WorkArrangementRemote},
+		{"Remote", crawler.WorkArrangementRemote}, // folded case-insensitively
+		{"on-site", crawler.WorkArrangementOnsite},
+		{"hybrid", crawler.WorkArrangementHybrid},
+		{"unspecified", crawler.WorkArrangementUnspecified},
+		{"", crawler.WorkArrangementUnspecified},
 	}
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("%q", tc.workplaceType), func(t *testing.T) {
@@ -204,8 +208,8 @@ func TestLeverWorkplaceTypeRemote(t *testing.T) {
 			if len(got) != 1 {
 				t.Fatalf("got %d listings, want 1", len(got))
 			}
-			if got[0].Remote != tc.wantRemote {
-				t.Errorf("Remote = %v for workplaceType %q, want %v", got[0].Remote, tc.workplaceType, tc.wantRemote)
+			if got[0].WorkArrangement != tc.want {
+				t.Errorf("WorkArrangement = %q for workplaceType %q, want %q", got[0].WorkArrangement, tc.workplaceType, tc.want)
 			}
 		})
 	}

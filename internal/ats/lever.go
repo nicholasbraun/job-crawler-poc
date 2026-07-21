@@ -139,13 +139,15 @@ type leverList struct {
 // the embedding/seed page's Owner (ADR-0022, #127) — never from a Lever field.
 func mapLeverPosting(p leverPosting) *crawler.JobListing {
 	return &crawler.JobListing{
-		Title:          p.Text,
-		URL:            p.HostedURL,
-		Location:       p.Categories.Location,
-		Description:    leverDescription(p),
-		Remote:         strings.EqualFold(p.WorkplaceType, "remote"),
-		Department:     p.Categories.Department,
-		FirstPublished: leverFirstPublished(p.CreatedAt),
+		Title:       p.Text,
+		URL:         p.HostedURL,
+		Location:    p.Categories.Location,
+		Description: leverDescription(p),
+		// workplaceType is Lever's positive signal ("remote"/"on-site"/"hybrid"); the
+		// normalizer folds "on-site" -> onsite, and an absent value -> unspecified.
+		WorkArrangement: crawler.NormalizeWorkArrangement(p.WorkplaceType),
+		Department:      p.Categories.Department,
+		FirstPublished:  leverFirstPublished(p.CreatedAt),
 	}
 }
 
