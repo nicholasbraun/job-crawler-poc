@@ -83,6 +83,15 @@ func TestRecruiteeFetchMapsBoard(t *testing.T) {
 	if first.Location != "Remote job" {
 		t.Errorf("Location = %q, want the flat location string", first.Location)
 	}
+	// CountryHint surfaces the structured locations[0].country_code (ISO) for the
+	// ingest lane to resolve at save (ADR-0029).
+	if first.CountryHint != "PT" {
+		t.Errorf("CountryHint = %q, want %q (locations[0].country_code)", first.CountryHint, "PT")
+	}
+	// The second offer has an empty locations[], so no structured hint is surfaced.
+	if got[1].CountryHint != "" {
+		t.Errorf("got[1].CountryHint = %q, want empty (no structured location)", got[1].CountryHint)
+	}
 	if first.Department != "Engineering" {
 		t.Errorf("Department = %q, want %q", first.Department, "Engineering")
 	}
@@ -100,13 +109,17 @@ func TestRecruiteeFetchMapsBoard(t *testing.T) {
 	}
 
 	// The ingest lane (#127) stamps Company/CompanyKey from the page Owner; the
-	// mapper must leave both empty on every returned listing.
+	// mapper must leave both empty on every returned listing. The offer's remote flag
+	// is not mapped, so WorkArrangement is unspecified — never onsite (ADR-0030).
 	for i, l := range got {
 		if l.Company != "" {
 			t.Errorf("listing[%d].Company = %q, want empty (lane stamps it)", i, l.Company)
 		}
 		if l.CompanyKey != "" {
 			t.Errorf("listing[%d].CompanyKey = %q, want empty (lane stamps it)", i, l.CompanyKey)
+		}
+		if l.WorkArrangement != crawler.WorkArrangementUnspecified {
+			t.Errorf("listing[%d].WorkArrangement = %q, want unspecified (silent provider, never onsite)", i, l.WorkArrangement)
 		}
 	}
 }
@@ -216,6 +229,49 @@ func TestRecruiteeLocationFallback(t *testing.T) {
 			}
 			if got[0].Location != tc.want {
 				t.Errorf("Location = %q, want %q", got[0].Location, tc.want)
+			}
+		})
+	}
+}
+
+// TestRecruiteeCountryHint asserts the structured country signal the mapper
+// surfaces for the ingest lane to resolve at save (ADR-0029): the ISO country_code
+// is preferred, falling back to the country name, and empty when neither the code,
+// the name, nor a structured location is present.
+func TestRecruiteeCountryHint(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "country_code (ISO) preferred",
+			body: `{"offers":[{"careers_url":"https://careers.hostaway.com/o/1","locations":[{"country":"Portugal","country_code":"PT"}]}]}`,
+			want: "PT",
+		},
+		{
+			name: "falls back to country name when code empty",
+			body: `{"offers":[{"careers_url":"https://careers.hostaway.com/o/1","locations":[{"country":"Germany","country_code":""}]}]}`,
+			want: "Germany",
+		},
+		{
+			name: "empty when no structured location",
+			body: `{"offers":[{"careers_url":"https://careers.hostaway.com/o/1","location":"Remote job","locations":[]}]}`,
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fetcher := newRecruiteeFetcher(t, serveJSON(tc.body))
+			got, err := fetcher.Fetch(t.Context(), "hostaway")
+			if err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("got %d listings, want 1", len(got))
+			}
+			if got[0].CountryHint != tc.want {
+				t.Errorf("CountryHint = %q, want %q", got[0].CountryHint, tc.want)
 			}
 		})
 	}

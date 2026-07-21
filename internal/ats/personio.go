@@ -181,16 +181,18 @@ type personioJobDescription struct {
 // mapPersonioPosition maps one <position> to a Job Listing. Company and CompanyKey
 // are deliberately left empty: the ATS ingest lane stamps Company from the
 // embedding/seed page's Owner (ADR-0022, #127) — never from a Personio field such
-// as <subcompany>. Remote is not exposed by the feed and stays false; TechStack is
-// not set (dropped in #125/ADR-0023). The URL is synthesized from base + id, since
-// the feed carries no per-posting URL.
+// as <subcompany>. The feed exposes no working mode, so WorkArrangement is
+// Unspecified — a silent provider is never Onsite (ADR-0030); TechStack is not set
+// (dropped in #125/ADR-0023). The URL is synthesized from base + id, since the feed
+// carries no per-posting URL.
 func mapPersonioPosition(base string, pos personioPosition) *crawler.JobListing {
 	listing := &crawler.JobListing{
-		Title:       pos.Name,
-		URL:         base + "/job/" + pos.ID,
-		Location:    personioLocation(pos),
-		Department:  pos.Department,
-		Description: personioDescription(pos),
+		Title:           pos.Name,
+		URL:             base + "/job/" + pos.ID,
+		Location:        personioLocation(pos),
+		Department:      pos.Department,
+		Description:     personioDescription(pos),
+		WorkArrangement: crawler.WorkArrangementUnspecified,
 	}
 	if t, ok := parsePersonioTime(pos.CreatedAt); ok {
 		listing.FirstPublished = t

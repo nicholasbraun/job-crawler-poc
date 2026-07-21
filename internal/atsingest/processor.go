@@ -5,12 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/ats"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
+	"github.com/nicholasbraun/job-crawler-poc/internal/geo"
 	"github.com/nicholasbraun/job-crawler-poc/internal/processor"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // ProcessorConfig groups the ATS ingest processor's dependencies.
@@ -32,6 +37,9 @@ type ProcessorConfig struct {
 	// saved listing's Company is looked up here via the task's Owner; a nil map or a
 	// missing Owner yields "".
 	CompanyNames map[string]string
+	// Countries is the definition's Country Constraint (ADR-0028): the set of target
+	// ISO alpha-2 codes to keep listings for. Empty (or nil) keeps every Country.
+	Countries []string
 	// RateLimiter paces board-API calls per provider. Optional: nil disables pacing.
 	RateLimiter *HostLimiter
 	// OnSaved is called once per saved listing (e.g. a counter tap). Optional: nil
@@ -45,13 +53,15 @@ type ProcessorConfig struct {
 // supplies every field, so the processor holds no extractor. It implements
 // processor.Processor[FetchTask].
 type Processor struct {
-	resolveFetcher func(provider string) (ats.BoardFetcher, bool)
-	repository     crawler.JobListingRepository
-	definitionID   uuid.UUID
-	keywordCheck   filter.CheckFn[string]
-	companyNames   map[string]string
-	limiter        *HostLimiter
-	onSaved        func(ctx context.Context)
+	resolveFetcher   func(provider string) (ats.BoardFetcher, bool)
+	repository       crawler.JobListingRepository
+	definitionID     uuid.UUID
+	keywordCheck     filter.CheckFn[string]
+	companyNames     map[string]string
+	countries        []string
+	droppedByCountry metric.Int64Counter
+	limiter          *HostLimiter
+	onSaved          func(ctx context.Context)
 }
 
 var _ processor.Processor[FetchTask] = (*Processor)(nil)
@@ -59,14 +69,23 @@ var _ processor.Processor[FetchTask] = (*Processor)(nil)
 // NewProcessor builds an ATS ingest processor. The keyword matcher is compiled
 // once here (word-boundary, case-insensitive; ADR-0004) and reused across tasks.
 func NewProcessor(cfg *ProcessorConfig) *Processor {
+	// Same instrument name as the crawl lane, on this lane's own meter scope; the
+	// "lane" attribute distinguishes the two so Prometheus sums a cross-lane total.
+	name := "crawler.job_listings.dropped_by_country"
+	droppedByCountry, err := otel.Meter("ats_ingest").Int64Counter(name)
+	if err != nil {
+		slog.Error("atsingest: error setting up metrics", "err", err, "name", name)
+	}
 	return &Processor{
-		resolveFetcher: cfg.ResolveFetcher,
-		repository:     cfg.Repository,
-		definitionID:   cfg.DefinitionID,
-		keywordCheck:   filter.Contains(cfg.Keywords...),
-		companyNames:   cfg.CompanyNames,
-		limiter:        cfg.RateLimiter,
-		onSaved:        cfg.OnSaved,
+		resolveFetcher:   cfg.ResolveFetcher,
+		repository:       cfg.Repository,
+		definitionID:     cfg.DefinitionID,
+		keywordCheck:     filter.Contains(cfg.Keywords...),
+		companyNames:     cfg.CompanyNames,
+		countries:        cfg.Countries,
+		droppedByCountry: droppedByCountry,
+		limiter:          cfg.RateLimiter,
+		onSaved:          cfg.OnSaved,
 	}
 }
 
@@ -105,6 +124,17 @@ func (p *Processor) Process(ctx context.Context, task *FetchTask) error {
 		// yields "".
 		jl.CompanyKey = task.Owner
 		jl.Company = p.companyNames[task.Owner]
+		// Resolve the Country at save (ADR-0029): prefer the provider's structured
+		// country hint, else the composed Location. Unresolvable -> the empty Country,
+		// kept (ADR-0028).
+		jl.Country = resolveCountry(jl)
+		// Country Constraint gate (ADR-0028): discard before persistence unless the
+		// listing passes the definition's target Countries. A drop is a continue --
+		// not saved, OnSaved not fired, no saveErr -- matching the keyword-skip above.
+		if !crawler.KeepForCountry(p.countries, jl.Country, jl.WorkArrangement) {
+			p.droppedByCountry.Add(ctx, 1, metric.WithAttributes(attribute.String("lane", "ats")))
+			continue
+		}
 		if err := p.repository.Save(ctx, p.definitionID, jl); err != nil {
 			saveErr = errors.Join(saveErr, fmt.Errorf("atsingest: saving %s tenant %q listing %q: %w", task.Provider, task.TenantSlug, jl.URL, err))
 			continue
@@ -114,6 +144,25 @@ func (p *Processor) Process(ctx context.Context, task *FetchTask) error {
 		}
 	}
 	return saveErr
+}
+
+// resolveCountry feeds the Country Resolver the provider's structured country hint
+// when present (an ISO code like Recruitee's country_code or SmartRecruiters' country,
+// or a name like Workable's country / Ashby's addressCountry), else the composed
+// Location string (ADR-0029). A hint that is already a valid ISO code is used
+// directly (uppercased); a name-shaped hint is resolved; when the hint is empty or
+// unresolvable it falls back to the Location. Unresolvable throughout -> the empty
+// Country, which the Country Constraint keeps (ADR-0028).
+func resolveCountry(jl *crawler.JobListing) string {
+	if h := strings.TrimSpace(jl.CountryHint); h != "" {
+		if geo.Valid(h) {
+			return strings.ToUpper(h)
+		}
+		if c := geo.Resolve(h); c != "" {
+			return c
+		}
+	}
+	return geo.Resolve(jl.Location)
 }
 
 // matchesKeywords reports whether the listing's title or description contains a

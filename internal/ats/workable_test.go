@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/ats"
 )
 
@@ -99,11 +100,16 @@ func TestWorkableFetchMapsBoard(t *testing.T) {
 	if first.Location != "San Francisco, California, United States" {
 		t.Errorf("Location = %q, want %q", first.Location, "San Francisco, California, United States")
 	}
+	// CountryHint surfaces the top-level country name for the ingest lane to resolve
+	// at save (ADR-0029).
+	if first.CountryHint != "United States" {
+		t.Errorf("CountryHint = %q, want %q (top-level country)", first.CountryHint, "United States")
+	}
 	if first.Department != "Engineering" {
 		t.Errorf("Department = %q, want %q", first.Department, "Engineering")
 	}
-	if first.Remote {
-		t.Errorf("Remote = true, want false for telecommuting=false workplace_type=on-site")
+	if first.WorkArrangement != crawler.WorkArrangementOnsite {
+		t.Errorf("WorkArrangement = %q, want onsite for telecommuting=false workplace_type=on-site", first.WorkArrangement)
 	}
 	if first.Description != "Build Go services & ship." {
 		t.Errorf("Description = %q, want %q", first.Description, "Build Go services & ship.")
@@ -117,8 +123,11 @@ func TestWorkableFetchMapsBoard(t *testing.T) {
 	if second.Title != "Product Designer" || second.Department != "Design" || second.Location != "Berlin, Germany" {
 		t.Errorf("second listing = %+v, want the Product Designer / Design / Berlin, Germany mapping", second)
 	}
-	if !second.Remote {
-		t.Errorf("second.Remote = false, want true for telecommuting=true workplace_type=remote")
+	if second.CountryHint != "Germany" {
+		t.Errorf("second.CountryHint = %q, want %q (top-level country)", second.CountryHint, "Germany")
+	}
+	if second.WorkArrangement != crawler.WorkArrangementRemote {
+		t.Errorf("second.WorkArrangement = %q, want remote for telecommuting=true workplace_type=remote", second.WorkArrangement)
 	}
 
 	// The ingest lane (#127) stamps Company/CompanyKey from the page Owner; the
@@ -130,6 +139,48 @@ func TestWorkableFetchMapsBoard(t *testing.T) {
 		if l.CompanyKey != "" {
 			t.Errorf("listing[%d].CompanyKey = %q, want empty (lane stamps it)", i, l.CompanyKey)
 		}
+	}
+}
+
+// TestWorkableCountryHintFallback asserts the country hint the mapper surfaces
+// (ADR-0029): the top-level country is preferred, falling back to the first
+// locations[] entry's country, and empty when neither is present.
+func TestWorkableCountryHintFallback(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "top-level country preferred",
+			body: `{"jobs":[{"url":"https://u","country":"United States","locations":[{"country":"Germany"}]}]}`,
+			want: "United States",
+		},
+		{
+			name: "falls back to locations[0].country",
+			body: `{"jobs":[{"url":"https://u","country":"","locations":[{"country":"Germany","city":"Berlin"}]}]}`,
+			want: "Germany",
+		},
+		{
+			name: "empty when neither present",
+			body: `{"jobs":[{"url":"https://u","locations":[]}]}`,
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fetcher := newWorkableFetcher(t, serveJSON(tc.body))
+			got, err := fetcher.Fetch(t.Context(), "acme")
+			if err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("got %d listings, want 1", len(got))
+			}
+			if got[0].CountryHint != tc.want {
+				t.Errorf("CountryHint = %q, want %q", got[0].CountryHint, tc.want)
+			}
+		})
 	}
 }
 
@@ -300,19 +351,24 @@ func TestWorkableDescriptionEncoding(t *testing.T) {
 	}
 }
 
-func TestWorkableRemote(t *testing.T) {
+func TestWorkableWorkArrangement(t *testing.T) {
+	// workplace_type is Workable's positive signal, folded onto the enum: "on-site" ->
+	// onsite (a positive on-site signal, not discarded), "hybrid" -> hybrid. The bare
+	// telecommuting boolean only fills in when workplace_type says nothing; when neither
+	// signal is present the arrangement degrades to unspecified, never onsite (ADR-0030).
 	cases := []struct {
 		telecommuting bool
 		workplaceType string
-		wantRemote    bool
+		want          crawler.WorkArrangement
 	}{
-		{false, "on-site", false},
-		{false, "", false},
-		{false, "hybrid", false},
-		{true, "on-site", true}, // telecommuting alone flips it
-		{false, "remote", true}, // workplace_type alone flips it
-		{false, "Remote", true}, // matched case-insensitively
-		{true, "remote", true},  // both agree
+		{false, "on-site", crawler.WorkArrangementOnsite},
+		{false, "", crawler.WorkArrangementUnspecified}, // silent -> unspecified, not onsite
+		{false, "hybrid", crawler.WorkArrangementHybrid},
+		{true, "", crawler.WorkArrangementRemote},        // telecommuting fills in when workplace_type is absent
+		{true, "on-site", crawler.WorkArrangementOnsite}, // a positive on-site wins over the bare boolean
+		{false, "remote", crawler.WorkArrangementRemote}, // workplace_type alone
+		{false, "Remote", crawler.WorkArrangementRemote}, // folded case-insensitively
+		{true, "remote", crawler.WorkArrangementRemote},  // both agree
 	}
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("telecommuting=%v/workplace_type=%q", tc.telecommuting, tc.workplaceType), func(t *testing.T) {
@@ -326,8 +382,8 @@ func TestWorkableRemote(t *testing.T) {
 			if len(got) != 1 {
 				t.Fatalf("got %d listings, want 1", len(got))
 			}
-			if got[0].Remote != tc.wantRemote {
-				t.Errorf("Remote = %v for telecommuting=%v workplace_type=%q, want %v", got[0].Remote, tc.telecommuting, tc.workplaceType, tc.wantRemote)
+			if got[0].WorkArrangement != tc.want {
+				t.Errorf("WorkArrangement = %q for telecommuting=%v workplace_type=%q, want %q", got[0].WorkArrangement, tc.telecommuting, tc.workplaceType, tc.want)
 			}
 		})
 	}

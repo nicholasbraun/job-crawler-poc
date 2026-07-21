@@ -173,15 +173,22 @@ type workableLocationEntry struct {
 // the embedding/seed page's Owner (ADR-0022, #127) — never from a Workable field.
 // TechStack is not set (dropped in #125/ADR-0023).
 func mapWorkableJob(j workableJob, canonicalURL string) *crawler.JobListing {
+	// workplace_type is Workable's positive signal (Lever-style enum: remote/on-site/
+	// hybrid), so it maps straight through the normalizer. telecommuting is a bare
+	// remote boolean that only fills in when workplace_type says nothing; its absence
+	// degrades to Unspecified, never Onsite (ADR-0030).
+	arrangement := crawler.NormalizeWorkArrangement(j.WorkplaceType)
+	if arrangement == crawler.WorkArrangementUnspecified && j.Telecommuting {
+		arrangement = crawler.WorkArrangementRemote
+	}
 	listing := &crawler.JobListing{
-		Title:       j.Title,
-		URL:         canonicalURL,
-		Location:    workableLocation(j),
-		Description: htmlSingleEncodedToText(j.Description),
-		// telecommuting is Workable's explicit remote boolean; workplace_type is the
-		// Lever-style enum. OR-ing both is the safe union of the two remote signals.
-		Remote:     j.Telecommuting || strings.EqualFold(j.WorkplaceType, "remote"),
-		Department: j.Department,
+		Title:           j.Title,
+		URL:             canonicalURL,
+		Location:        workableLocation(j),
+		CountryHint:     workableCountryHint(j),
+		Description:     htmlSingleEncodedToText(j.Description),
+		WorkArrangement: arrangement,
+		Department:      j.Department,
 	}
 	// published_on is preferred; created_at is the fallback. A malformed or absent
 	// pair keeps the zero time so a bad timestamp never drops a real posting (parity
@@ -192,10 +199,24 @@ func mapWorkableJob(j workableJob, canonicalURL string) *crawler.JobListing {
 	return listing
 }
 
+// workableCountryHint surfaces the posting's structured country name for the
+// ingest lane to resolve at save (ADR-0029): the top-level country is preferred,
+// falling back to the first locations[] entry's country. Empty when neither is
+// present — the lane then resolves from the composed Location instead.
+func workableCountryHint(j workableJob) string {
+	if j.Country != "" {
+		return j.Country
+	}
+	if len(j.Locations) > 0 {
+		return j.Locations[0].Country
+	}
+	return ""
+}
+
 // workableLocation composes a single human-readable location line from the
 // top-level city/state/country trio, falling back to the first locations[] entry
 // composed the same way, else the empty string. It keeps no synthetic "Remote"
-// token — the Remote bool is the domain's remote signal.
+// token — the WorkArrangement enum is the domain's working-mode signal.
 func workableLocation(j workableJob) string {
 	if s := joinNonEmpty(j.City, j.State, j.Country); s != "" {
 		return s

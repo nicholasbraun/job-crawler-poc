@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/ats"
 )
 
@@ -104,11 +105,17 @@ func TestAshbyFetchMapsBoard(t *testing.T) {
 	if first.Location != "Europe" {
 		t.Errorf("Location = %q, want %q (the location string, not the address object)", first.Location, "Europe")
 	}
+	// CountryHint surfaces the structured address.postalAddress.addressCountry for the
+	// ingest lane to resolve at save (ADR-0029), independent of the Location string.
+	// "European Union" is a region the resolver will keep as the empty Country.
+	if first.CountryHint != "European Union" {
+		t.Errorf("CountryHint = %q, want %q (addressCountry)", first.CountryHint, "European Union")
+	}
 	if first.Department != "Product" {
 		t.Errorf("Department = %q, want %q", first.Department, "Product")
 	}
-	if !first.Remote {
-		t.Errorf("Remote = false, want true for isRemote:true")
+	if first.WorkArrangement != crawler.WorkArrangementRemote {
+		t.Errorf("WorkArrangement = %q, want remote for isRemote:true/workplaceType:Remote", first.WorkArrangement)
 	}
 	if first.Description != wantDesc {
 		t.Errorf("Description = %q, want the verbatim descriptionPlain %q", first.Description, wantDesc)
@@ -196,30 +203,43 @@ func TestAshbyLocationFallsBackToAddressCountry(t *testing.T) {
 	if got[0].Location != "United States" {
 		t.Errorf("Location = %q, want %q (address.postalAddress.addressCountry fallback)", got[0].Location, "United States")
 	}
+	// The same addressCountry is surfaced as the country hint (ADR-0029).
+	if got[0].CountryHint != "United States" {
+		t.Errorf("CountryHint = %q, want %q (addressCountry)", got[0].CountryHint, "United States")
+	}
 }
 
-func TestAshbyRemoteFallsBackToWorkplaceType(t *testing.T) {
-	// When isRemote is absent/false, workplaceType=="Remote" still marks the role
-	// remote (docs §Ashby field map: isRemote/workplaceType→Remote). A non-remote
-	// workplaceType must leave Remote false.
-	body := `{"jobs":[
-		{"jobUrl":"https://jobs.ashbyhq.com/acme/1","workplaceType":"Remote"},
-		{"jobUrl":"https://jobs.ashbyhq.com/acme/2","workplaceType":"Onsite"}
-	]}`
-	fetcher := newAshbyFetcher(t, serveJSON(body))
+func TestAshbyWorkArrangement(t *testing.T) {
+	// workplaceType is Ashby's positive signal and maps straight onto the enum:
+	// "Remote"/"Onsite"/"Hybrid" pass through, so an explicit Onsite reads onsite (not
+	// discarded). isRemote only fills in when workplaceType is absent; when both are
+	// absent the arrangement degrades to unspecified, never onsite (ADR-0030).
+	cases := []struct {
+		name string
+		job  string
+		want crawler.WorkArrangement
+	}{
+		{"workplaceType Remote", `{"jobUrl":"https://jobs.ashbyhq.com/acme/1","workplaceType":"Remote"}`, crawler.WorkArrangementRemote},
+		{"workplaceType Onsite", `{"jobUrl":"https://jobs.ashbyhq.com/acme/1","workplaceType":"Onsite"}`, crawler.WorkArrangementOnsite},
+		{"workplaceType Hybrid", `{"jobUrl":"https://jobs.ashbyhq.com/acme/1","workplaceType":"Hybrid"}`, crawler.WorkArrangementHybrid},
+		{"isRemote fills in when workplaceType absent", `{"jobUrl":"https://jobs.ashbyhq.com/acme/1","isRemote":true}`, crawler.WorkArrangementRemote},
+		{"neither signal is unspecified", `{"jobUrl":"https://jobs.ashbyhq.com/acme/1"}`, crawler.WorkArrangementUnspecified},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fetcher := newAshbyFetcher(t, serveJSON(`{"jobs":[`+tc.job+`]}`))
 
-	got, err := fetcher.Fetch(t.Context(), "acme")
-	if err != nil {
-		t.Fatalf("Fetch: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("got %d listings, want 2", len(got))
-	}
-	if !got[0].Remote {
-		t.Errorf("Remote = false, want true for workplaceType:%q with isRemote absent", "Remote")
-	}
-	if got[1].Remote {
-		t.Errorf("Remote = true, want false for workplaceType:%q", "Onsite")
+			got, err := fetcher.Fetch(t.Context(), "acme")
+			if err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("got %d listings, want 1", len(got))
+			}
+			if got[0].WorkArrangement != tc.want {
+				t.Errorf("WorkArrangement = %q, want %q", got[0].WorkArrangement, tc.want)
+			}
+		})
 	}
 }
 

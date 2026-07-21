@@ -3,25 +3,31 @@ import { useNavigate } from "react-router-dom";
 
 import { useCareerPages, useCreateCrawl, useDefinitionDefaults } from "../hooks";
 import { fmt } from "../lib/format";
+import { CountryMultiSelect } from "./CountryMultiSelect";
 import { Dialog } from "./Dialog";
 import { Icon } from "./primitives";
 
-// NewCrawlModal collects a name + keywords + editable crawl depth and fires the
-// fused create-and-start endpoint. Depth is prefilled from GET
-// /api/definitions/defaults?kind=keyword (default 4). A keyword crawl seeds from
-// the catalog (no seed URLs), so the copy reflects the current catalogued
-// career-page count. On success it navigates to the new crawl's detail view. The
-// backdrop/focus-trap/Escape scaffolding lives in the shared Dialog.
+// NewCrawlModal collects a name + keywords + optional Country Constraint +
+// editable crawl depth and fires the fused create-and-start endpoint. Depth and
+// the Country Constraint's known-country set are prefilled from GET
+// /api/definitions/defaults?kind=keyword (depth default 4; countries sourced
+// from the geo resolver, never hardcoded). A keyword crawl seeds from the
+// catalog (no seed URLs), so the copy reflects the current catalogued
+// career-page count. Selecting no country means anywhere (ADR-0028). On success
+// it navigates to the new crawl's detail view. The backdrop/focus-trap/Escape
+// scaffolding lives in the shared Dialog.
 export function NewCrawlModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [name, setName] = useState("");
   const [keywords, setKeywords] = useState("");
   const [depth, setDepth] = useState("4");
+  const [countries, setCountries] = useState<string[]>([]);
   const [prefilled, setPrefilled] = useState(false);
   const create = useCreateCrawl();
   const navigate = useNavigate();
   const careerPages = useCareerPages();
   const careerPageCount = careerPages.data?.length ?? 0;
   const defaults = useDefinitionDefaults("keyword", open);
+  const countryOptions = defaults.data?.countries ?? [];
 
   // Prefill the depth once from the keyword defaults endpoint (default 4) after
   // it loads; keep any edit the user has since made. Unlike DiscoveryStartModal
@@ -49,6 +55,7 @@ export function NewCrawlModal({ open, onClose }: { open: boolean; onClose: () =>
     setName("");
     setKeywords("");
     setDepth("4");
+    setCountries([]);
     setPrefilled(false);
     create.reset();
   };
@@ -61,7 +68,7 @@ export function NewCrawlModal({ open, onClose }: { open: boolean; onClose: () =>
     e.preventDefault();
     if (!canSubmit) return;
     create.mutate(
-      { name: name.trim() || parsedKeywords[0], kind: "keyword", keywords: parsedKeywords, maxDepth: depthNum },
+      { name: name.trim() || parsedKeywords[0], kind: "keyword", keywords: parsedKeywords, countries, maxDepth: depthNum },
       {
         onSuccess: (run) => {
           reset();
@@ -94,6 +101,17 @@ export function NewCrawlModal({ open, onClose }: { open: boolean; onClose: () =>
             placeholder="React, TypeScript, Senior, Remote"
             value={keywords}
             onChange={(e) => setKeywords(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label>
+            Countries <span style={{ color: "var(--color-neutral-500)" }}>— optional; leave empty for anywhere</span>
+          </label>
+          <CountryMultiSelect
+            options={countryOptions}
+            selected={countries}
+            onChange={setCountries}
+            disabled={countryOptions.length === 0}
           />
         </div>
         <div className="field">

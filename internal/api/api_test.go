@@ -677,6 +677,47 @@ func TestCreateKeywordCrawl(t *testing.T) {
 		}
 	})
 
+	t.Run("country constraint is validated and stored uppercased", func(t *testing.T) {
+		defs := &fakeDefRepo{}
+		srv := newHandler(api.Config{Definitions: defs})
+
+		body, _ := json.Marshal(map[string]any{
+			"name":      "go-de-at",
+			"kind":      "keyword",
+			"keywords":  []string{"golang"},
+			"countries": []string{"de", "AT"},
+		})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status: got %d, want 201; body=%s", rec.Code, rec.Body)
+		}
+		if defs.created == nil {
+			t.Fatal("expected a definition to be created")
+		}
+		if want := []string{"DE", "AT"}; !slices.Equal(defs.created.Countries, want) {
+			t.Errorf("countries: got %v, want %v (uppercased, order preserved)", defs.created.Countries, want)
+		}
+	})
+
+	t.Run("unknown country code is rejected", func(t *testing.T) {
+		srv := newHandler(api.Config{})
+
+		body, _ := json.Marshal(map[string]any{
+			"name":      "bad-country",
+			"kind":      "keyword",
+			"keywords":  []string{"golang"},
+			"countries": []string{"DE", "ZZ"},
+		})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status: got %d, want 400 for an unknown country code", rec.Code)
+		}
+	})
+
 	t.Run("unknown kind is rejected", func(t *testing.T) {
 		srv := newHandler(api.Config{})
 
@@ -759,6 +800,32 @@ func TestDefinitionDefaults(t *testing.T) {
 		}
 		if got["seedUrls"] != nil {
 			t.Errorf("keyword template should not carry seedUrls, got %v", got["seedUrls"])
+		}
+
+		// The known-country set backs the Country Constraint multi-select: a
+		// non-empty array of {code,name} options, sourced from the geo gazetteer.
+		countries, ok := got["countries"].([]any)
+		if !ok {
+			t.Fatalf("countries should be an array (not null), got %T", got["countries"])
+		}
+		if len(countries) == 0 {
+			t.Fatal("countries should be the non-empty known-country set")
+		}
+		foundDE := false
+		for _, raw := range countries {
+			opt, ok := raw.(map[string]any)
+			if !ok {
+				t.Fatalf("country option should be an object, got %T", raw)
+			}
+			if opt["code"] == "DE" {
+				foundDE = true
+				if opt["name"] != "Germany" {
+					t.Errorf("DE name: got %v, want Germany", opt["name"])
+				}
+			}
+		}
+		if !foundDE {
+			t.Error("known-country set should contain {code:DE, name:Germany}")
 		}
 	})
 
@@ -1517,7 +1584,7 @@ func TestCatalogHistory(t *testing.T) {
 func TestListListings(t *testing.T) {
 	defID := uuid.New()
 	listings := &fakeListingRepo{byDefinition: []*crawler.JobListing{
-		{URL: "https://jobs/1", Title: "Go Engineer"},
+		{URL: "https://jobs/1", Title: "Go Engineer", Country: "DE"},
 	}}
 	srv := newHandler(api.Config{Listings: listings})
 
@@ -1545,6 +1612,10 @@ func TestListListings(t *testing.T) {
 		_ = json.Unmarshal(rec.Body.Bytes(), &got)
 		if len(got) != 1 || got[0]["title"] != "Go Engineer" {
 			t.Errorf("unexpected listings body: %v", got)
+		}
+		// The listing DTO surfaces the resolved Country (ADR-0029).
+		if got[0]["country"] != "DE" {
+			t.Errorf("listing DTO should surface country=DE, got %v", got[0]["country"])
 		}
 		// tech_stack was dropped end-to-end (ADR-0023); the DTO must not carry it.
 		if _, ok := got[0]["techStack"]; ok {

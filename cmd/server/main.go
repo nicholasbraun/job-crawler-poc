@@ -547,6 +547,7 @@ func newFactory(
 					DefinitionID:         def.ID,
 					Recorder:             llmRecorder,
 					CompanyNames:         companySnapshot,
+					Countries:            def.Countries,
 					// A saved listing increments ListingsFound (#119). Counting on
 					// save -- not on enqueue below -- means the header reflects the
 					// LLM-confirmed, saved rows shown in the listings table, not the
@@ -586,6 +587,7 @@ func newFactory(
 					Repository:     jobListingRepository,
 					DefinitionID:   def.ID,
 					Keywords:       def.Keywords,
+					Countries:      def.Countries,
 					CompanyNames:   companySnapshot,
 					RateLimiter:    atsLimiter,
 					// A saved posting increments ListingsFound. Unlike the crawl

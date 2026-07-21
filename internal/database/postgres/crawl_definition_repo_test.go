@@ -49,6 +49,56 @@ func TestSingleDiscoveryDefinition(t *testing.T) {
 	}
 }
 
+// TestCountryConstraintRoundTrip drives the Country Constraint column (ADR-0028,
+// migration 0016) through Create/Get: the target Countries survive the round trip,
+// and a definition created with no Countries reads back as an empty (non-nil,
+// non-panicking) slice via the NOT NULL DEFAULT '{}' column.
+func TestCountryConstraintRoundTrip(t *testing.T) {
+	pool := newTestPool(t)
+	defs := postgres.NewCrawlDefinitionRepository(pool)
+
+	t.Run("countries survive the round trip", func(t *testing.T) {
+		def := &crawler.CrawlDefinition{
+			Name:      "go-de-at",
+			Kind:      crawler.CrawlKindKeyword,
+			Keywords:  []string{"go"},
+			Countries: []string{"DE", "AT"},
+			MaxDepth:  1,
+		}
+		if err := defs.Create(t.Context(), def); err != nil {
+			t.Fatalf("creating definition: %v", err)
+		}
+
+		got, err := defs.Get(t.Context(), def.ID)
+		if err != nil {
+			t.Fatalf("getting definition: %v", err)
+		}
+		if want := []string{"DE", "AT"}; !slices.Equal(got.Countries, want) {
+			t.Errorf("countries: got %v, want %v", got.Countries, want)
+		}
+	})
+
+	t.Run("no countries reads back as an empty slice", func(t *testing.T) {
+		def := &crawler.CrawlDefinition{
+			Name:     "go-anywhere",
+			Kind:     crawler.CrawlKindKeyword,
+			Keywords: []string{"go"},
+			MaxDepth: 1,
+		}
+		if err := defs.Create(t.Context(), def); err != nil {
+			t.Fatalf("creating definition: %v", err)
+		}
+
+		got, err := defs.Get(t.Context(), def.ID)
+		if err != nil {
+			t.Fatalf("getting definition: %v", err)
+		}
+		if len(got.Countries) != 0 {
+			t.Errorf("countries: got %v, want empty (anywhere)", got.Countries)
+		}
+	})
+}
+
 // TestAppendSeedURL drives the additive Seed mutation (ADR-0018): a new Seed is
 // appended, re-adding one is an idempotent no-op (no error, no duplicate), and an
 // unknown definition maps to crawler.ErrNotFound.

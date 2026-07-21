@@ -3,6 +3,8 @@ package atsingest_test
 import (
 	"context"
 	"errors"
+	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/google/uuid"
@@ -127,6 +129,114 @@ func TestProcessorAttributesOwner(t *testing.T) {
 			t.Errorf("CompanyKey = %q, want %q (the Owner)", got.CompanyKey, "acme.com")
 		}
 	})
+}
+
+// TestProcessorResolvesCountryAtSave asserts the ATS-lane country resolution
+// (ADR-0029): at save the processor resolves each listing's Country via the real
+// Country Resolver, preferring the provider's structured CountryHint (a valid ISO
+// code used directly, else a country name resolved) and falling back to the
+// composed Location. An unresolvable hint and location yield the empty Country,
+// and the listing is still saved (kept; ADR-0028).
+func TestProcessorResolvesCountryAtSave(t *testing.T) {
+	tests := []struct {
+		name        string
+		hint        string
+		location    string
+		wantCountry string
+	}{
+		{"no hint falls back to composed location", "", "Berlin, Germany", "DE"},
+		{"valid iso code hint wins", "PT", "Remote job", "PT"},
+		{"country-name hint resolves", "United States", "", "US"},
+		{"unresolvable hint kept as empty", "European Union", "", ""},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fetcher := &stubFetcher{listings: []*crawler.JobListing{
+				{
+					Title:       "Go Engineer",
+					URL:         "https://board/" + strconv.Itoa(i),
+					Description: "build services",
+					CountryHint: tt.hint,
+					Location:    tt.location,
+				},
+			}}
+			repo := &spyRepo{}
+			proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
+				ResolveFetcher: resolveTo(fetcher),
+				Repository:     repo,
+				DefinitionID:   uuid.New(),
+				Keywords:       []string{"go"},
+			})
+
+			if err := proc.Process(t.Context(), &atsingest.FetchTask{Provider: "greenhouse", TenantSlug: "acme"}); err != nil {
+				t.Fatalf("Process: %v", err)
+			}
+			if len(repo.saved) != 1 {
+				t.Fatalf("saved %d listings, want 1 (kept even when unresolved)", len(repo.saved))
+			}
+			if got := repo.saved[0].Country; got != tt.wantCountry {
+				t.Errorf("Country = %q, want %q", got, tt.wantCountry)
+			}
+		})
+	}
+}
+
+// TestProcessorCountryConstraintGate asserts the ATS-lane Country Constraint
+// (ADR-0028): with a target set of {DE}, a keyword-matching posting is saved only
+// when its resolved Country is DE, its Country is unresolved, or its Work
+// Arrangement is Remote; any other resolved Country is discarded before save.
+// Country is driven via the provider CountryHint / Location the resolver reads.
+func TestProcessorCountryConstraintGate(t *testing.T) {
+	all := []*crawler.JobListing{
+		{Title: "Go DE", URL: "https://board/de", Location: "Berlin, Germany"},
+		{Title: "Go FR", URL: "https://board/fr", Location: "Paris, France"},
+		{Title: "Go unresolved", URL: "https://board/unknown", Location: "European Union"},
+		{Title: "Go FR remote", URL: "https://board/fr-remote", Location: "Paris, France", WorkArrangement: crawler.WorkArrangementRemote},
+	}
+
+	tests := []struct {
+		name       string
+		countries  []string
+		wantTitles []string
+	}{
+		{
+			name:       "DE constraint keeps DE, unresolved and remote; drops FR onsite",
+			countries:  []string{"DE"},
+			wantTitles: []string{"Go DE", "Go unresolved", "Go FR remote"},
+		},
+		{
+			name:       "empty constraint keeps every country",
+			countries:  nil,
+			wantTitles: []string{"Go DE", "Go FR", "Go unresolved", "Go FR remote"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fetcher := &stubFetcher{listings: all}
+			repo := &spyRepo{}
+			proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
+				ResolveFetcher: resolveTo(fetcher),
+				Repository:     repo,
+				DefinitionID:   uuid.New(),
+				Keywords:       []string{"go"},
+				Countries:      tt.countries,
+			})
+
+			if err := proc.Process(t.Context(), &atsingest.FetchTask{Provider: "greenhouse", TenantSlug: "acme"}); err != nil {
+				t.Fatalf("Process: %v", err)
+			}
+
+			gotTitles := make([]string, 0, len(repo.saved))
+			for _, jl := range repo.saved {
+				gotTitles = append(gotTitles, jl.Title)
+			}
+			if !slices.Equal(gotTitles, tt.wantTitles) {
+				t.Errorf("saved titles = %v, want %v", gotTitles, tt.wantTitles)
+			}
+		})
+	}
 }
 
 // TestProcessorUnregisteredProviderIsNoOp asserts the clientless-provider
