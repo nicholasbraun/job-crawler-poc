@@ -47,4 +47,4 @@ step.
   crawler's shape (a perpetual Discovery plus occasional bounded Keyword Crawls);
   evicting a finished run's series in `DeleteRun` is a deferred hardening.
 - The `visited`-set growth that dominates a perpetual run's footprint is
-  untouched here; bounding it remains #75.
+  untouched here; bounding it is #75, decided in ADR-0027.
