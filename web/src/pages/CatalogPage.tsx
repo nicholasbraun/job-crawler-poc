@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import type { CareerPage, Company } from "../api";
-import { useCareerPages, useCompanies } from "../hooks";
+import { useCareerPages, useCompanies, useIsMobile } from "../hooks";
 import { fmt, hostOf, prettyUrl, relativeTime } from "../lib/format";
 import type { NameTier } from "../lib/model";
 import {
@@ -35,6 +35,7 @@ export function CatalogPage() {
   const [importOpen, setImportOpen] = useState(false);
   const companiesQ = useCompanies();
   const pagesQ = useCareerPages();
+  const isMobile = useIsMobile();
 
   const companies = companiesQ.data ?? [];
   const pages = pagesQ.data ?? [];
@@ -165,6 +166,14 @@ export function CatalogPage() {
               title={companies.length === 0 ? "Nothing catalogued yet" : "No companies match this filter"}
               hint={companies.length === 0 ? "The discovery run catalogues companies as it confirms career pages." : undefined}
             />
+          ) : isMobile ? (
+            // Phone-portrait: the 5-column table can't fit, so each company
+            // renders as a stacked card instead of a sideways-scrolling row.
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+              {filtered.map((c) => (
+                <CompanyCard key={c.id} company={c} pages={pagesByCompany.get(c.id) ?? []} />
+              ))}
+            </div>
           ) : (
             <div style={{ overflowX: "auto" }}>
               <table className="table" style={{ minWidth: 560 }}>
@@ -355,5 +364,122 @@ function CompanyRow({ company, pages }: { company: Company; pages: CareerPage[] 
         </tr>
       )}
     </>
+  );
+}
+
+// CompanyCard is the phone-portrait rendering of a CompanyRow: the same company
+// as a stacked label:value card — a darker inset panel on the surface-toned
+// section card — instead of a table row, so nothing needs sideways scrolling. It
+// keeps the row's tap-to-expand career-page list.
+function CompanyCard({ company, pages }: { company: Company; pages: CareerPage[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const isAts = company.atsProvider !== "";
+  const tier = nameTier(company);
+  const expandable = pages.length > 0;
+  return (
+    <div className="card" style={{ background: "var(--color-bg)", gap: "var(--space-3)" }}>
+      <div
+        onClick={expandable ? () => setExpanded((e) => !e) : undefined}
+        onKeyDown={
+          expandable
+            ? (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setExpanded((v) => !v);
+                }
+              }
+            : undefined
+        }
+        role={expandable ? "button" : undefined}
+        tabIndex={expandable ? 0 : undefined}
+        aria-expanded={expandable ? expanded : undefined}
+        style={{ display: "flex", alignItems: "flex-start", gap: "var(--space-3)", cursor: expandable ? "pointer" : undefined }}
+      >
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div
+            style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", fontSize: 15 }}
+            title={nameSourceLabel(company.nameSource)}
+          >
+            <Dot color={dotColor(tier)} size={8} />
+            <span
+              style={{
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                ...(tier === "fallback" ? { color: "var(--color-neutral-500)", fontStyle: "italic" } : {}),
+              }}
+            >
+              {company.name || company.displayDomain}
+            </span>
+          </div>
+          {company.website ? (
+            <a
+              href={company.website}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                fontSize: 11,
+                color: "var(--color-neutral-500)",
+                textDecoration: "none",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                marginTop: 2,
+                width: "fit-content",
+              }}
+            >
+              {company.displayDomain || hostOf(company.website)}
+              <Icon name="ph-arrow-square-out" size={10} />
+            </a>
+          ) : (
+            <div style={{ fontSize: 11, color: "var(--color-neutral-500)", marginTop: 2 }}>{company.displayDomain}</div>
+          )}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", flex: "none" }}>
+          <span className={isAts ? "tag tag-accent-2" : "tag tag-neutral"}>{companySource(company)}</span>
+          {expandable && (
+            <Icon name={expanded ? "ph-caret-down" : "ph-caret-right"} size={13} color="var(--color-neutral-500)" />
+          )}
+        </div>
+      </div>
+
+      {/* Identity key on its own line — keys are domain-derived and can be long,
+          so let them wrap rather than force the card wider. */}
+      <code style={{ fontSize: 11, color: "var(--color-neutral-300)", fontFamily: "ui-monospace, monospace", wordBreak: "break-all" }}>
+        {company.companyKey}
+      </code>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-1) var(--space-4)", fontSize: 12, color: "var(--color-neutral-500)" }}>
+        <span style={{ color: "var(--color-neutral-400)", fontVariantNumeric: "tabular-nums" }}>
+          <b style={{ color: "var(--color-text)" }}>{pages.length}</b> career pages
+        </span>
+        <span>seen {relativeTime(company.lastSeen)}</span>
+      </div>
+
+      {expanded && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)", paddingTop: "var(--space-1)" }}>
+          {pages.map((p) => (
+            <a
+              key={p.id}
+              href={p.url}
+              target="_blank"
+              rel="noreferrer"
+              style={{
+                fontSize: 13,
+                textDecoration: "none",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                width: "fit-content",
+              }}
+            >
+              <Icon name="ph-arrow-square-out" size={13} />
+              {prettyUrl(p.url)}
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
