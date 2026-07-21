@@ -159,15 +159,17 @@ type recruiteeOfferLocation struct {
 // mapRecruiteeOffer maps one board-API offer to a Job Listing. Company and
 // CompanyKey are deliberately left empty: the ATS ingest lane stamps Company from
 // the embedding/seed page's Owner (ADR-0022, #127) — never from the offer's own
-// company_name field. Remote is not mapped (out of ticket scope) and stays false;
+// company_name field. The offer's remote flag is not mapped (out of ticket scope),
+// so WorkArrangement is Unspecified — a silent provider is never Onsite (ADR-0030);
 // TechStack is not set (dropped in #125/ADR-0023).
 func mapRecruiteeOffer(o recruiteeOffer) *crawler.JobListing {
 	listing := &crawler.JobListing{
-		Title:       o.Title,
-		URL:         o.CareersURL,
-		Location:    recruiteeLocation(o),
-		Department:  o.Department,
-		Description: recruiteeDescription(o),
+		Title:           o.Title,
+		URL:             o.CareersURL,
+		Location:        recruiteeLocation(o),
+		Department:      o.Department,
+		Description:     recruiteeDescription(o),
+		WorkArrangement: crawler.WorkArrangementUnspecified,
 	}
 	if t, ok := parseRecruiteeTime(o.PublishedAt); ok {
 		listing.FirstPublished = t

@@ -138,14 +138,16 @@ type greenhouseDepartment struct {
 
 // mapGreenhouseJob maps one board-API posting to a Job Listing. Company and
 // CompanyKey are deliberately left empty: the ATS ingest lane stamps Company from
-// the embedding/seed page's Owner (ADR-0022, #127). Remote is not exposed by the
-// board API and stays false; TechStack is not set (dropped in #125/ADR-0023).
+// the embedding/seed page's Owner (ADR-0022, #127). The board API exposes no
+// working mode, so WorkArrangement is Unspecified — a silent provider is never
+// Onsite (ADR-0030); TechStack is not set (dropped in #125/ADR-0023).
 func mapGreenhouseJob(j greenhouseJob) *crawler.JobListing {
 	listing := &crawler.JobListing{
-		Title:       j.Title,
-		URL:         j.AbsoluteURL, // canonical posting URL; the lane keys upserts on it (#127)
-		Location:    j.Location.Name,
-		Description: htmlDoubleEncodedToText(j.Content),
+		Title:           j.Title,
+		URL:             j.AbsoluteURL, // canonical posting URL; the lane keys upserts on it (#127)
+		Location:        j.Location.Name,
+		Description:     htmlDoubleEncodedToText(j.Content),
+		WorkArrangement: crawler.WorkArrangementUnspecified,
 	}
 	if len(j.Departments) > 0 {
 		listing.Department = j.Departments[0].Name

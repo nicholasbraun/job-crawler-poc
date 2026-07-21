@@ -148,11 +148,28 @@ function ListingsCard({ definitionId }: { definitionId: string }) {
   );
 }
 
+// workArrangementLabel maps a listing's Work Arrangement to its display tag.
+// "unspecified" returns null so honest silence shows nothing rather than a
+// misleading tag (ADR-0030).
+function workArrangementLabel(arrangement: Listing["workArrangement"]): string | null {
+  switch (arrangement) {
+    case "remote":
+      return "Remote";
+    case "onsite":
+      return "In-office";
+    case "hybrid":
+      return "Hybrid";
+    default:
+      return null;
+  }
+}
+
 function ListingRow({ listing }: { listing: Listing }) {
   const host = hostOf(listing.url);
   // Extraction sometimes yields no title; fall back to the host so the row
   // always has clickable link text pointing at listing.url.
   const label = listing.title.trim() || host;
+  const arrangement = workArrangementLabel(listing.workArrangement);
   return (
     <tr>
       <td>
@@ -171,9 +188,9 @@ function ListingRow({ listing }: { listing: Listing }) {
       <td style={{ fontSize: 13 }}>{listing.company}</td>
       <td style={{ fontSize: 13 }}>
         <span style={{ color: "var(--color-neutral-400)" }}>{listing.location}</span>
-        {listing.remote && (
+        {arrangement && (
           <span className="tag tag-accent-2" style={{ fontSize: 10, padding: "2px 7px", marginLeft: 4 }}>
-            Remote
+            {arrangement}
           </span>
         )}
       </td>

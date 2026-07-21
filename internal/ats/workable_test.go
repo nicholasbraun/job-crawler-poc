@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/ats"
 )
 
@@ -102,8 +103,8 @@ func TestWorkableFetchMapsBoard(t *testing.T) {
 	if first.Department != "Engineering" {
 		t.Errorf("Department = %q, want %q", first.Department, "Engineering")
 	}
-	if first.Remote {
-		t.Errorf("Remote = true, want false for telecommuting=false workplace_type=on-site")
+	if first.WorkArrangement != crawler.WorkArrangementOnsite {
+		t.Errorf("WorkArrangement = %q, want onsite for telecommuting=false workplace_type=on-site", first.WorkArrangement)
 	}
 	if first.Description != "Build Go services & ship." {
 		t.Errorf("Description = %q, want %q", first.Description, "Build Go services & ship.")
@@ -117,8 +118,8 @@ func TestWorkableFetchMapsBoard(t *testing.T) {
 	if second.Title != "Product Designer" || second.Department != "Design" || second.Location != "Berlin, Germany" {
 		t.Errorf("second listing = %+v, want the Product Designer / Design / Berlin, Germany mapping", second)
 	}
-	if !second.Remote {
-		t.Errorf("second.Remote = false, want true for telecommuting=true workplace_type=remote")
+	if second.WorkArrangement != crawler.WorkArrangementRemote {
+		t.Errorf("second.WorkArrangement = %q, want remote for telecommuting=true workplace_type=remote", second.WorkArrangement)
 	}
 
 	// The ingest lane (#127) stamps Company/CompanyKey from the page Owner; the
@@ -300,19 +301,24 @@ func TestWorkableDescriptionEncoding(t *testing.T) {
 	}
 }
 
-func TestWorkableRemote(t *testing.T) {
+func TestWorkableWorkArrangement(t *testing.T) {
+	// workplace_type is Workable's positive signal, folded onto the enum: "on-site" ->
+	// onsite (a positive on-site signal, not discarded), "hybrid" -> hybrid. The bare
+	// telecommuting boolean only fills in when workplace_type says nothing; when neither
+	// signal is present the arrangement degrades to unspecified, never onsite (ADR-0030).
 	cases := []struct {
 		telecommuting bool
 		workplaceType string
-		wantRemote    bool
+		want          crawler.WorkArrangement
 	}{
-		{false, "on-site", false},
-		{false, "", false},
-		{false, "hybrid", false},
-		{true, "on-site", true}, // telecommuting alone flips it
-		{false, "remote", true}, // workplace_type alone flips it
-		{false, "Remote", true}, // matched case-insensitively
-		{true, "remote", true},  // both agree
+		{false, "on-site", crawler.WorkArrangementOnsite},
+		{false, "", crawler.WorkArrangementUnspecified}, // silent -> unspecified, not onsite
+		{false, "hybrid", crawler.WorkArrangementHybrid},
+		{true, "", crawler.WorkArrangementRemote},        // telecommuting fills in when workplace_type is absent
+		{true, "on-site", crawler.WorkArrangementOnsite}, // a positive on-site wins over the bare boolean
+		{false, "remote", crawler.WorkArrangementRemote}, // workplace_type alone
+		{false, "Remote", crawler.WorkArrangementRemote}, // folded case-insensitively
+		{true, "remote", crawler.WorkArrangementRemote},  // both agree
 	}
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("telecommuting=%v/workplace_type=%q", tc.telecommuting, tc.workplaceType), func(t *testing.T) {
@@ -326,8 +332,8 @@ func TestWorkableRemote(t *testing.T) {
 			if len(got) != 1 {
 				t.Fatalf("got %d listings, want 1", len(got))
 			}
-			if got[0].Remote != tc.wantRemote {
-				t.Errorf("Remote = %v for telecommuting=%v workplace_type=%q, want %v", got[0].Remote, tc.telecommuting, tc.workplaceType, tc.wantRemote)
+			if got[0].WorkArrangement != tc.want {
+				t.Errorf("WorkArrangement = %q for telecommuting=%v workplace_type=%q, want %q", got[0].WorkArrangement, tc.telecommuting, tc.workplaceType, tc.want)
 			}
 		})
 	}

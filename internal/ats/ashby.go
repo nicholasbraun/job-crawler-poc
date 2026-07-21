@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
@@ -153,19 +152,26 @@ type ashbyAddress struct {
 func mapAshbyJob(j ashbyJob) *crawler.JobListing {
 	// location is the primary human-readable string; the structured
 	// address.postalAddress.addressCountry is the documented fallback when it is
-	// empty. isRemote is the primary remote flag; workplaceType=="Remote" is the
-	// documented fallback (docs/research/ats-providers.md §Ashby field map).
+	// empty.
 	location := j.Location
 	if location == "" {
 		location = j.Address.PostalAddress.AddressCountry
 	}
+	// workplaceType is Ashby's positive signal ("Remote"/"Hybrid"/"Onsite"), so it
+	// maps straight through the normalizer. isRemote only fills in when
+	// workplaceType is absent: a bare isRemote never overrides a stated Onsite/Hybrid,
+	// and its absence degrades to Unspecified, never Onsite (ADR-0030).
+	arrangement := crawler.NormalizeWorkArrangement(j.WorkplaceType)
+	if arrangement == crawler.WorkArrangementUnspecified && j.IsRemote {
+		arrangement = crawler.WorkArrangementRemote
+	}
 	listing := &crawler.JobListing{
-		Title:       j.Title,
-		URL:         j.JobURL,
-		Location:    location,
-		Description: j.DescriptionPlain,
-		Remote:      j.IsRemote || strings.EqualFold(j.WorkplaceType, "remote"),
-		Department:  j.Department,
+		Title:           j.Title,
+		URL:             j.JobURL,
+		Location:        location,
+		Description:     j.DescriptionPlain,
+		WorkArrangement: arrangement,
+		Department:      j.Department,
 	}
 	if t, ok := parseAshbyTime(j.PublishedAt); ok {
 		listing.FirstPublished = t
