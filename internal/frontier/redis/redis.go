@@ -298,6 +298,7 @@ type Frontier struct {
 	domainsSize    metric.Int64Gauge       // crawler.frontier.domains.size, run_id-labeled
 	visitedSize    metric.Int64Gauge       // crawler.frontier.visited.size, run_id-labeled (ADR-0027 / #162)
 	visitedEvicted metric.Int64Counter     // crawler.frontier.visited.evicted, run_id-labeled (ADR-0027 / #162)
+	visitedCapG    metric.Int64Gauge       // crawler.frontier.visited.cap, run_id-labeled effective cap (ADR-0027 / #162)
 }
 
 var _ frontier.Frontier = &Frontier{}
@@ -369,6 +370,7 @@ func New(client *redis.Client, runID uuid.UUID, opts ...Option) *Frontier {
 	f.domainsSize = newDomainsSizeGauge()
 	f.visitedSize = newVisitedSizeGauge()
 	f.visitedEvicted = newVisitedEvictedCounter()
+	f.visitedCapG = newVisitedCapGauge()
 
 	return f
 }
@@ -489,6 +491,11 @@ func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 		if evicted, perr := strconv.ParseInt(fmt.Sprint(r[1]), 10, 64); perr == nil {
 			f.visitedEvicted.Add(ctx, evicted, attrs)
 		}
+		// The effective per-run cap is static, so re-recording it on every NEW
+		// only refreshes the last-value; recording it here (never on the DUP
+		// path) pins it to the same NEW cadence and run_id series as
+		// visited.size, so the vs-cap panel always has both to align.
+		f.visitedCapG.Record(ctx, int64(f.visitedCap), attrs)
 		return nil
 	default:
 		return fmt.Errorf("frontier: unexpected add result %v", res)

@@ -70,6 +70,33 @@ func visitedEvictedValue(t *testing.T, rm *metricdata.ResourceMetrics, runID str
 	return 0, false
 }
 
+// visitedCapValue returns the crawler.frontier.visited.cap gauge value for the
+// given run_id and whether such a series exists. A gauge is last-value; the cap
+// is static per run, so every NEW insert records the same configured ceiling.
+func visitedCapValue(t *testing.T, rm *metricdata.ResourceMetrics, runID string) (int64, bool) {
+	t.Helper()
+	for _, sm := range rm.ScopeMetrics {
+		if sm.Scope.Name != "frontier" {
+			continue
+		}
+		for _, m := range sm.Metrics {
+			if m.Name != "crawler.frontier.visited.cap" {
+				continue
+			}
+			g, ok := m.Data.(metricdata.Gauge[int64])
+			if !ok {
+				t.Fatalf("visited.cap: unexpected data type %T", m.Data)
+			}
+			for _, dp := range g.DataPoints {
+				if v, ok := dp.Attributes.Value("run_id"); ok && v.AsString() == runID {
+					return dp.Value, true
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
 // TestVisitedMetrics drives the Frontier through its public API against a real
 // testcontainer Redis and asserts the two visited instruments through an OTEL SDK
 // ManualReader (never Lua shape or key names). Non-parallel because the manual
@@ -147,6 +174,22 @@ func TestVisitedMetrics(t *testing.T) {
 		// The gauge is pinned at the cap = post-eviction ZCARD.
 		if v, ok := visitedSizeValue(t, rm, runID.String()); !ok || v != 3 {
 			t.Errorf("visited.size: got %d (ok=%v), want 3", v, ok)
+		}
+	})
+
+	t.Run("cap gauge reflects the configured per-run cap, run_id-labeled", func(t *testing.T) {
+		// A non-default cap proves the gauge tracks the effective per-run visitedCap
+		// rather than the fixed DefaultVisitedCap the dashboard used to hard-code.
+		runID := uuid.New()
+		const wantCap = 1_000_000
+		f := redisfrontier.New(client, runID, redisfrontier.WithVisitedCap(wantCap))
+		if err := f.AddURL(t.Context(), url("a", "http://a/1", 0)); err != nil {
+			t.Fatalf("AddURL: %v", err)
+		}
+
+		rm := collectFrontier(t, reader)
+		if v, ok := visitedCapValue(t, rm, runID.String()); !ok || v != wantCap {
+			t.Errorf("visited.cap: got %d (ok=%v), want %d", v, ok, wantCap)
 		}
 	})
 }

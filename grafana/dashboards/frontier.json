@@ -22,24 +22,14 @@
   "schemaVersion": 39,
   "tags": ["frontier", "crawler"],
   "templating": {
-    "list": [
-      {
-        "name": "visited_cap",
-        "type": "constant",
-        "label": "Visited cap",
-        "query": "5000000",
-        "current": { "text": "5000000", "value": "5000000" },
-        "hide": 2,
-        "skipUrlSync": false
-      }
-    ]
+    "list": []
   },
   "time": { "from": "now-1h", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
   "title": "Frontier",
   "uid": "frontier",
-  "version": 2,
+  "version": 3,
   "panels": [
     {
       "type": "row",
@@ -403,7 +393,7 @@
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "vector($visited_cap)",
+          "expr": "max(crawler_frontier_visited_cap)",
           "legendFormat": "cap",
           "refId": "B"
         }

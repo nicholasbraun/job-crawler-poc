@@ -84,6 +84,26 @@ func newVisitedSizeGauge() metric.Int64Gauge {
 	return g
 }
 
+// newVisitedCapGauge registers crawler.frontier.visited.cap, the effective
+// per-run visited-ZSET ceiling (the Frontier's configured visitedCap), labeled
+// by run_id. It exists so the visited.size-vs-cap panel plots the run's real cap
+// rather than a dashboard-side constant that goes stale when an operator
+// overrides CRAWL_VISITED_CAP. run_id-labeled for the same reason as visited.size
+// (ADR-0026): a gauge is last-value, so concurrent runs with different caps would
+// clobber one unlabeled series. The value is static for a run, so re-recording it
+// on every NEW insert only refreshes the last-value; the same per-run cardinality
+// caveat as domains.size applies.
+func newVisitedCapGauge() metric.Int64Gauge {
+	g, err := otel.Meter("frontier").Int64Gauge(
+		"crawler.frontier.visited.cap",
+		metric.WithDescription("Effective per-run Frontier visited-ZSET cap (configured visitedCap), by run_id (ADR-0027)."),
+	)
+	if err != nil {
+		slog.Error("frontier: error setting up visited-cap gauge", "err", err)
+	}
+	return g
+}
+
 // newVisitedEvictedCounter registers crawler.frontier.visited.evicted, the count
 // of visited entries FIFO-evicted by NEW inserts, labeled by run_id. Unlike the
 // no-run_id transient-retry counter, this one carries run_id deliberately: an
