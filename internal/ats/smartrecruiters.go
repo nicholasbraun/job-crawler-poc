@@ -268,9 +268,13 @@ func mapSmartRecruitersPosting(p smartRecruitersPosting) *crawler.JobListing {
 		arrangement = crawler.WorkArrangementRemote
 	}
 	listing := &crawler.JobListing{
-		Title:           p.Name,
-		URL:             p.PostingURL, // canonical posting URL; the lane keys upserts on it (#127)
-		Location:        smartRecruitersLocationText(p.Location),
+		Title:    p.Name,
+		URL:      p.PostingURL, // canonical posting URL; the lane keys upserts on it (#127)
+		Location: smartRecruitersLocationText(p.Location),
+		// location.country is the structured country name (e.g. "de"); the ingest lane
+		// resolves it to an ISO Country at save in preference to the composed Location
+		// (ADR-0029).
+		CountryHint:     p.Location.Country,
 		Description:     smartRecruitersDescription(p.JobAd.Sections),
 		WorkArrangement: arrangement,
 		Department:      smartRecruitersDepartment(p),

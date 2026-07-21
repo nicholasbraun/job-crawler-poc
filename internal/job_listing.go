@@ -59,6 +59,19 @@ type JobListing struct {
 	// with no resolved Owner.
 	CompanyKey string `json:"-"`
 	Location   string `json:"location"`
+	// Country is the ISO 3166-1 alpha-2 Country the listing's raw Location resolves
+	// to via the deterministic Country Resolver (ADR-0029), uppercase and empty when
+	// the location cannot be placed (kept, never dropped). Both lanes set it at save
+	// from Location (crawl lane) or the provider hint (ATS lane); the LLM never emits
+	// it, so no json tag drives unmarshaling into it. Raw Location is left unchanged.
+	Country string `json:"-"`
+	// CountryHint is the provider's structured country signal on the ATS lane — an
+	// ISO code (Recruitee country_code) or a country name (SmartRecruiters/Workable
+	// country, Ashby addressCountry) — that the ingest processor feeds the Resolver
+	// in preference to the composed Location (ADR-0029). Transient: never persisted,
+	// and the json:"-" tag keeps LLM-response unmarshaling from ever reaching it
+	// (mirrors Department/FirstPublished).
+	CountryHint string `json:"-"`
 	// WorkArrangement is the posting's working mode (ADR-0030). On the crawl lane
 	// the LLM emits it (validated to the enum); on the ATS lane each provider mapper
 	// derives it from its structured signal. The json tag drives LLM-response

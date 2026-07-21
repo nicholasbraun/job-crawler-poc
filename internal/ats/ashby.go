@@ -166,9 +166,14 @@ func mapAshbyJob(j ashbyJob) *crawler.JobListing {
 		arrangement = crawler.WorkArrangementRemote
 	}
 	listing := &crawler.JobListing{
-		Title:           j.Title,
-		URL:             j.JobURL,
-		Location:        location,
+		Title:    j.Title,
+		URL:      j.JobURL,
+		Location: location,
+		// address.postalAddress.addressCountry is the structured country signal; the
+		// ingest lane resolves it to an ISO Country at save in preference to the
+		// composed Location (ADR-0029). A region like "European Union" resolves to the
+		// empty Country and is kept — the safe under-filtering direction.
+		CountryHint:     j.Address.PostalAddress.AddressCountry,
 		Description:     j.DescriptionPlain,
 		WorkArrangement: arrangement,
 		Department:      j.Department,

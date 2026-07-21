@@ -3,6 +3,7 @@ package atsingest_test
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 
 	"github.com/google/uuid"
@@ -127,6 +128,57 @@ func TestProcessorAttributesOwner(t *testing.T) {
 			t.Errorf("CompanyKey = %q, want %q (the Owner)", got.CompanyKey, "acme.com")
 		}
 	})
+}
+
+// TestProcessorResolvesCountryAtSave asserts the ATS-lane country resolution
+// (ADR-0029): at save the processor resolves each listing's Country via the real
+// Country Resolver, preferring the provider's structured CountryHint (a valid ISO
+// code used directly, else a country name resolved) and falling back to the
+// composed Location. An unresolvable hint and location yield the empty Country,
+// and the listing is still saved (kept; ADR-0028).
+func TestProcessorResolvesCountryAtSave(t *testing.T) {
+	tests := []struct {
+		name        string
+		hint        string
+		location    string
+		wantCountry string
+	}{
+		{"no hint falls back to composed location", "", "Berlin, Germany", "DE"},
+		{"valid iso code hint wins", "PT", "Remote job", "PT"},
+		{"country-name hint resolves", "United States", "", "US"},
+		{"unresolvable hint kept as empty", "European Union", "", ""},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fetcher := &stubFetcher{listings: []*crawler.JobListing{
+				{
+					Title:       "Go Engineer",
+					URL:         "https://board/" + strconv.Itoa(i),
+					Description: "build services",
+					CountryHint: tt.hint,
+					Location:    tt.location,
+				},
+			}}
+			repo := &spyRepo{}
+			proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
+				ResolveFetcher: resolveTo(fetcher),
+				Repository:     repo,
+				DefinitionID:   uuid.New(),
+				Keywords:       []string{"go"},
+			})
+
+			if err := proc.Process(t.Context(), &atsingest.FetchTask{Provider: "greenhouse", TenantSlug: "acme"}); err != nil {
+				t.Fatalf("Process: %v", err)
+			}
+			if len(repo.saved) != 1 {
+				t.Fatalf("saved %d listings, want 1 (kept even when unresolved)", len(repo.saved))
+			}
+			if got := repo.saved[0].Country; got != tt.wantCountry {
+				t.Errorf("Country = %q, want %q", got, tt.wantCountry)
+			}
+		})
+	}
 }
 
 // TestProcessorUnregisteredProviderIsNoOp asserts the clientless-provider

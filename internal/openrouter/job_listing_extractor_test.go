@@ -252,3 +252,50 @@ func TestExtractPromptMentionsWorkArrangement(t *testing.T) {
 		t.Errorf("extractor request should not carry the old remote boolean bullet, got:\n%s", captured)
 	}
 }
+
+// TestExtractPromptNudgesCountryName asserts the location bullet nudges the model
+// to name the country in the location text and forbids emitting a code, keeping the
+// deterministic resolver the sole normalization authority (ADR-0029). The match is
+// deliberately loose to avoid coupling to the prompt's exact wording.
+func TestExtractPromptNudgesCountryName(t *testing.T) {
+	var captured string
+
+	var env chatEnvelope
+	env.Choices = make([]struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}, 1)
+	env.Choices[0].Message.Content = `{"title":"X","is_job_posting":true}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		captured = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(env); err != nil {
+			t.Errorf("encode envelope: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	ext := openrouter.NewJobListingExtractor(openrouter.Config{BaseURL: srv.URL, APIKey: "test"})
+	raw := crawler.RawJobListing{
+		URL:     newURL(t, "https://careers.acme.com/jobs/1"),
+		Content: crawler.Content{MainContent: "some page text"},
+	}
+
+	if _, err := ext.Extract(t.Context(), raw); err != nil {
+		t.Fatalf("Extract returned error: %v", err)
+	}
+
+	lower := strings.ToLower(captured)
+	if !strings.Contains(lower, "country") {
+		t.Errorf("extractor prompt should nudge the model to name the country, got:\n%s", captured)
+	}
+	if !strings.Contains(lower, "code") {
+		t.Errorf("extractor prompt should mention not emitting a country code, got:\n%s", captured)
+	}
+}

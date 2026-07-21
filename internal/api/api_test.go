@@ -1517,7 +1517,7 @@ func TestCatalogHistory(t *testing.T) {
 func TestListListings(t *testing.T) {
 	defID := uuid.New()
 	listings := &fakeListingRepo{byDefinition: []*crawler.JobListing{
-		{URL: "https://jobs/1", Title: "Go Engineer"},
+		{URL: "https://jobs/1", Title: "Go Engineer", Country: "DE"},
 	}}
 	srv := newHandler(api.Config{Listings: listings})
 
@@ -1545,6 +1545,10 @@ func TestListListings(t *testing.T) {
 		_ = json.Unmarshal(rec.Body.Bytes(), &got)
 		if len(got) != 1 || got[0]["title"] != "Go Engineer" {
 			t.Errorf("unexpected listings body: %v", got)
+		}
+		// The listing DTO surfaces the resolved Country (ADR-0029).
+		if got[0]["country"] != "DE" {
+			t.Errorf("listing DTO should surface country=DE, got %v", got[0]["country"])
 		}
 		// tech_stack was dropped end-to-end (ADR-0023); the DTO must not carry it.
 		if _, ok := got[0]["techStack"]; ok {

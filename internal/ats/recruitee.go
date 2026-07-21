@@ -167,6 +167,7 @@ func mapRecruiteeOffer(o recruiteeOffer) *crawler.JobListing {
 		Title:           o.Title,
 		URL:             o.CareersURL,
 		Location:        recruiteeLocation(o),
+		CountryHint:     recruiteeCountryHint(o),
 		Department:      o.Department,
 		Description:     recruiteeDescription(o),
 		WorkArrangement: crawler.WorkArrangementUnspecified,
@@ -199,6 +200,22 @@ func recruiteeLocation(o recruiteeOffer) string {
 		return strings.Join(parts, ", ")
 	}
 	return ""
+}
+
+// recruiteeCountryHint surfaces the offer's structured country signal for the
+// ingest lane to resolve at save (ADR-0029): the first structured location's
+// country_code (an ISO code) is preferred, falling back to its country name.
+// Empty when the offer carries no structured location — the lane then resolves
+// from the composed Location instead.
+func recruiteeCountryHint(o recruiteeOffer) string {
+	if len(o.Locations) == 0 {
+		return ""
+	}
+	loc := o.Locations[0]
+	if loc.CountryCode != "" {
+		return loc.CountryCode
+	}
+	return loc.Country
 }
 
 // recruiteeDescription reduces an offer's HTML body (description + requirements) to

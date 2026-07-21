@@ -29,8 +29,8 @@ func NewJobListingRepository(pool *pgxpool.Pool) *JobListingRepository {
 func (r *JobListingRepository) Save(ctx context.Context, definitionID uuid.UUID, jl *crawler.JobListing) error {
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO job_listing
-			(definition_id, url, company, title, description, location, work_arrangement, content_hash, company_key)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			(definition_id, url, company, title, description, location, work_arrangement, content_hash, company_key, country)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (definition_id, url) DO UPDATE SET
 			company = EXCLUDED.company,
 			title = EXCLUDED.title,
@@ -39,12 +39,13 @@ func (r *JobListingRepository) Save(ctx context.Context, definitionID uuid.UUID,
 			work_arrangement = EXCLUDED.work_arrangement,
 			content_hash = EXCLUDED.content_hash,
 			company_key = EXCLUDED.company_key,
+			country = EXCLUDED.country,
 			last_seen = now()
 		`,
 		definitionID, jl.URL, jl.Company, jl.Title, jl.Description,
 		// Pass the underlying string, not the named WorkArrangement type, to avoid
 		// any pgx encode ambiguity for a named string type.
-		jl.Location, string(jl.WorkArrangement), contentHash(jl), jl.CompanyKey,
+		jl.Location, string(jl.WorkArrangement), contentHash(jl), jl.CompanyKey, jl.Country,
 	)
 	if err != nil {
 		return fmt.Errorf("postgres: error saving job listing: %w", err)
@@ -55,7 +56,7 @@ func (r *JobListingRepository) Save(ctx context.Context, definitionID uuid.UUID,
 
 func (r *JobListingRepository) Find(ctx context.Context) ([]*crawler.JobListing, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT company, url, title, description, location, work_arrangement, company_key
+		SELECT company, url, title, description, location, work_arrangement, company_key, country
 		FROM job_listing
 		`)
 	if err != nil {
@@ -72,7 +73,7 @@ func (r *JobListingRepository) Find(ctx context.Context) ([]*crawler.JobListing,
 		var wa string
 		if err := rows.Scan(
 			&jl.Company, &jl.URL, &jl.Title, &jl.Description,
-			&jl.Location, &wa, &jl.CompanyKey,
+			&jl.Location, &wa, &jl.CompanyKey, &jl.Country,
 		); err != nil {
 			return nil, fmt.Errorf("postgres: error scanning job listing: %w", err)
 		}
@@ -91,7 +92,7 @@ func (r *JobListingRepository) FindByDefinition(ctx context.Context, definitionI
 	// The keyword branches the WHERE clause rather than always binding a
 	// pattern, so the common "no keyword" case is a plain definition_id scan.
 	query := `
-		SELECT company, url, title, description, location, work_arrangement, company_key
+		SELECT company, url, title, description, location, work_arrangement, company_key, country
 		FROM job_listing
 		WHERE definition_id = $1`
 	args := []any{definitionID}
@@ -116,7 +117,7 @@ func (r *JobListingRepository) FindByDefinition(ctx context.Context, definitionI
 		var wa string
 		if err := rows.Scan(
 			&jl.Company, &jl.URL, &jl.Title, &jl.Description,
-			&jl.Location, &wa, &jl.CompanyKey,
+			&jl.Location, &wa, &jl.CompanyKey, &jl.Country,
 		); err != nil {
 			return nil, fmt.Errorf("postgres: error scanning job listing: %w", err)
 		}

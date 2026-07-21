@@ -185,6 +185,7 @@ func mapWorkableJob(j workableJob, canonicalURL string) *crawler.JobListing {
 		Title:           j.Title,
 		URL:             canonicalURL,
 		Location:        workableLocation(j),
+		CountryHint:     workableCountryHint(j),
 		Description:     htmlSingleEncodedToText(j.Description),
 		WorkArrangement: arrangement,
 		Department:      j.Department,
@@ -196,6 +197,20 @@ func mapWorkableJob(j workableJob, canonicalURL string) *crawler.JobListing {
 		listing.FirstPublished = t
 	}
 	return listing
+}
+
+// workableCountryHint surfaces the posting's structured country name for the
+// ingest lane to resolve at save (ADR-0029): the top-level country is preferred,
+// falling back to the first locations[] entry's country. Empty when neither is
+// present — the lane then resolves from the composed Location instead.
+func workableCountryHint(j workableJob) string {
+	if j.Country != "" {
+		return j.Country
+	}
+	if len(j.Locations) > 0 {
+		return j.Locations[0].Country
+	}
+	return ""
 }
 
 // workableLocation composes a single human-readable location line from the

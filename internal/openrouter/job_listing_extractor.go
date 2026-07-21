@@ -53,7 +53,7 @@ const (
 	- "title": title of the document. Usually the first prominent heading on the page (type: string)
 	- "description": a short description of the job listing (type: string)
 	- "company": the name of the company that this job listing is for (type: string)
-	- "location": the location of the office were that job is available at (type: string)
+	- "location": the office location where the job is available; always name the country in plain words within this text (e.g. "Berlin, Germany"). Never output a country code -- just the country name (type: string)
 	- "work_arrangement": the working mode. Exactly one of "remote", "onsite", "hybrid", or "unspecified". Use "unspecified" when the posting does not clearly state the mode; never guess "onsite" when the mode is not stated (type: string)
 	- "is_job_posting": true if this page is a single job posting (the full details of
 ONE role); false if it is not one specific posting -- a careers index or hub listing

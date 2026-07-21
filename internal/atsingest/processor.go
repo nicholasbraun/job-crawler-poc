@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/ats"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
+	"github.com/nicholasbraun/job-crawler-poc/internal/geo"
 	"github.com/nicholasbraun/job-crawler-poc/internal/processor"
 )
 
@@ -105,6 +107,10 @@ func (p *Processor) Process(ctx context.Context, task *FetchTask) error {
 		// yields "".
 		jl.CompanyKey = task.Owner
 		jl.Company = p.companyNames[task.Owner]
+		// Resolve the Country at save (ADR-0029): prefer the provider's structured
+		// country hint, else the composed Location. Unresolvable -> the empty Country,
+		// kept (ADR-0028).
+		jl.Country = resolveCountry(jl)
 		if err := p.repository.Save(ctx, p.definitionID, jl); err != nil {
 			saveErr = errors.Join(saveErr, fmt.Errorf("atsingest: saving %s tenant %q listing %q: %w", task.Provider, task.TenantSlug, jl.URL, err))
 			continue
@@ -114,6 +120,25 @@ func (p *Processor) Process(ctx context.Context, task *FetchTask) error {
 		}
 	}
 	return saveErr
+}
+
+// resolveCountry feeds the Country Resolver the provider's structured country hint
+// when present (an ISO code like Recruitee's country_code, or a name like
+// SmartRecruiters/Workable country / Ashby addressCountry), else the composed
+// Location string (ADR-0029). A hint that is already a valid ISO code is used
+// directly (uppercased); a name-shaped hint is resolved; when the hint is empty or
+// unresolvable it falls back to the Location. Unresolvable throughout -> the empty
+// Country, which the Country Constraint keeps (ADR-0028).
+func resolveCountry(jl *crawler.JobListing) string {
+	if h := strings.TrimSpace(jl.CountryHint); h != "" {
+		if geo.Valid(h) {
+			return strings.ToUpper(h)
+		}
+		if c := geo.Resolve(h); c != "" {
+			return c
+		}
+	}
+	return geo.Resolve(jl.Location)
 }
 
 // matchesKeywords reports whether the listing's title or description contains a

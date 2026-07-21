@@ -110,6 +110,11 @@ func TestLeverFetchMapsBoard(t *testing.T) {
 		if l.CompanyKey != "" {
 			t.Errorf("listing[%d].CompanyKey = %q, want empty (lane stamps it)", i, l.CompanyKey)
 		}
+		// Lever exposes no structured country field, so no hint is surfaced and the
+		// ingest lane resolves the Country from the composed Location (ADR-0029).
+		if l.CountryHint != "" {
+			t.Errorf("listing[%d].CountryHint = %q, want empty (no structured country field)", i, l.CountryHint)
+		}
 	}
 }
 

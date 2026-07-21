@@ -246,6 +246,54 @@ func TestJobListingProcessorAttributesOwnerFromSnapshot(t *testing.T) {
 	})
 }
 
+// TestJobListingProcessorResolvesCountryAtSave asserts the crawl-lane country
+// resolution (ADR-0029): at save the processor sets Country from the extractor's
+// free-text Location via the real Country Resolver, leaving the raw Location
+// unchanged. An unresolvable or empty location yields the empty Country, and the
+// listing is still saved (kept, never dropped; ADR-0028).
+func TestJobListingProcessorResolvesCountryAtSave(t *testing.T) {
+	tests := []struct {
+		name        string
+		location    string
+		wantCountry string
+	}{
+		{"city and country", "Berlin, Germany", "DE"},
+		{"city safety-net diacritic", "München", "DE"},
+		{"region only is unresolved but kept", "Remote - EU", ""},
+		{"empty location is unresolved but kept", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &spyJobListingRepo{}
+			proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
+				JobListingRepository: repo,
+				JobListingExtractor:  &stubExtractor{result: crawler.JobListing{Title: "Engineer", Location: tt.location}, isPosting: true},
+				DefinitionID:         uuid.New(),
+			})
+
+			raw := &crawler.RawJobListing{
+				URL:     newURL(t, "https://careers.acme.com/jobs/1"),
+				Content: crawler.Content{MainContent: "we are hiring"},
+			}
+			if err := proc.Process(t.Context(), raw); err != nil {
+				t.Fatalf("Process returned error: %v", err)
+			}
+
+			if len(repo.saved) != 1 {
+				t.Fatalf("want 1 listing saved (kept even when unresolved), got %d", len(repo.saved))
+			}
+			got := repo.saved[0]
+			if got.Country != tt.wantCountry {
+				t.Errorf("Country = %q, want %q", got.Country, tt.wantCountry)
+			}
+			if got.Location != tt.location {
+				t.Errorf("Location = %q, want the raw location %q unchanged", got.Location, tt.location)
+			}
+		})
+	}
+}
+
 // TestJobListingProcessorExtractErrorNotAbstain guards the err==nil half of the
 // abstain classification. On an extraction failure the extractor returns the zero
 // Extraction (IsJobPosting=false); without the err==nil guard the false verdict

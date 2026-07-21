@@ -178,6 +178,7 @@ export type Listing = {
   title: string;
   company: string;
   location: string;
+  country: string;
   workArrangement: "remote" | "onsite" | "hybrid" | "unspecified";
   description: string;
 };

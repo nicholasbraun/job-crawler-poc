@@ -100,7 +100,9 @@ function ListingsCard({ definitionId }: { definitionId: string }) {
     const q = filter.trim().toLowerCase();
     if (!q) return all;
     return all.filter((l) =>
-      `${l.title} ${l.company} ${l.location}`.toLowerCase().includes(q),
+      `${l.title} ${l.company} ${l.location} ${l.country}`
+        .toLowerCase()
+        .includes(q),
     );
   }, [all, filter]);
 
@@ -188,6 +190,11 @@ function ListingRow({ listing }: { listing: Listing }) {
       <td style={{ fontSize: 13 }}>{listing.company}</td>
       <td style={{ fontSize: 13 }}>
         <span style={{ color: "var(--color-neutral-400)" }}>{listing.location}</span>
+        {listing.country && (
+          <span className="tag" style={{ fontSize: 10, padding: "2px 7px", marginLeft: 4 }}>
+            {listing.country}
+          </span>
+        )}
         {arrangement && (
           <span className="tag tag-accent-2" style={{ fontSize: 10, padding: "2px 7px", marginLeft: 4 }}>
             {arrangement}

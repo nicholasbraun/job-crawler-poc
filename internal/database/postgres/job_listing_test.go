@@ -26,6 +26,7 @@ func TestJobListingRepository(t *testing.T) {
 		Company:         "netflix",
 		CompanyKey:      "netflix.com",
 		Location:        "Germany",
+		Country:         "DE",
 		WorkArrangement: crawler.WorkArrangementRemote,
 	}
 
@@ -60,6 +61,9 @@ func TestJobListingRepository(t *testing.T) {
 		}
 		if got.WorkArrangement != crawler.WorkArrangementRemote {
 			t.Errorf("want work_arrangement %q, got %q", crawler.WorkArrangementRemote, got.WorkArrangement)
+		}
+		if got.Country != listing.Country {
+			t.Errorf("want country %q, got %q", listing.Country, got.Country)
 		}
 	})
 
@@ -129,6 +133,9 @@ func TestJobListingRepository(t *testing.T) {
 		}
 		if got[0].WorkArrangement != crawler.WorkArrangementRemote {
 			t.Errorf("work_arrangement should round-trip via FindByDefinition: want %q, got %q", crawler.WorkArrangementRemote, got[0].WorkArrangement)
+		}
+		if got[0].Country != listing.Country {
+			t.Errorf("country should round-trip via FindByDefinition: want %q, got %q", listing.Country, got[0].Country)
 		}
 	})
 
@@ -205,6 +212,49 @@ func TestJobListingWorkArrangementRoundTrip(t *testing.T) {
 			}
 			if found.WorkArrangement != arr {
 				t.Errorf("work_arrangement round-trip: want %q, got %q", arr, found.WorkArrangement)
+			}
+		})
+	}
+}
+
+// TestJobListingCountryRoundTrip asserts the resolved Country (ADR-0029) survives
+// Save -> the country column -> Find/FindByDefinition unchanged, including the
+// empty (unresolved) Country, which is stored and read back as "".
+func TestJobListingCountryRoundTrip(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewJobListingRepository(pool)
+	def := createDefinition(t, pool, "country round-trip definition")
+
+	cases := []struct {
+		name    string
+		country string
+	}{
+		{"resolved", "DE"},
+		{"unresolved is empty", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			url := "https://example.com/jobs/country/" + tc.name
+			if err := repo.Save(t.Context(), def, &crawler.JobListing{URL: url, Country: tc.country}); err != nil {
+				t.Fatalf("error saving listing: %v", err)
+			}
+
+			got, err := repo.FindByDefinition(t.Context(), def, "")
+			if err != nil {
+				t.Fatalf("error finding by definition: %v", err)
+			}
+			var found *crawler.JobListing
+			for _, l := range got {
+				if l.URL == url {
+					found = l
+					break
+				}
+			}
+			if found == nil {
+				t.Fatalf("saved listing %q not found", url)
+			}
+			if found.Country != tc.country {
+				t.Errorf("country round-trip: want %q, got %q", tc.country, found.Country)
 			}
 		})
 	}

@@ -173,6 +173,11 @@ func TestSmartRecruitersFetchMapsBoard(t *testing.T) {
 	if first.Location != "Changsha, cn" {
 		t.Errorf("Location = %q, want %q (city, country)", first.Location, "Changsha, cn")
 	}
+	// CountryHint surfaces the structured location.country for the ingest lane to
+	// resolve at save (ADR-0029).
+	if first.CountryHint != "cn" {
+		t.Errorf("CountryHint = %q, want %q (location.country)", first.CountryHint, "cn")
+	}
 	// department is an empty object on this posting, so function.label is the value.
 	if first.Department != "Engineering" {
 		t.Errorf("Department = %q, want the function label %q", first.Department, "Engineering")
@@ -196,6 +201,9 @@ func TestSmartRecruitersFetchMapsBoard(t *testing.T) {
 	second := got[1]
 	if second.Title != "Product Designer" || second.Location != "Berlin, de" {
 		t.Errorf("second listing = %+v, want the Product Designer / Berlin, de mapping", second)
+	}
+	if second.CountryHint != "de" {
+		t.Errorf("second.CountryHint = %q, want %q (location.country)", second.CountryHint, "de")
 	}
 	// department.label is present here, so it wins over the function label.
 	if second.Department != "Design Team" {

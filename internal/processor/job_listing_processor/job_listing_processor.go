@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
+	"github.com/nicholasbraun/job-crawler-poc/internal/geo"
 	"github.com/nicholasbraun/job-crawler-poc/internal/llmobs"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -116,6 +117,11 @@ func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.Raw
 	owner := workload.URL.Owner
 	extraction.Listing.CompanyKey = owner
 	extraction.Listing.Company = w.companyNames[owner]
+
+	// Resolve the Country from the LLM's free-text location at save (ADR-0029): the
+	// resolver is the sole authority on the ISO code, and Location is left verbatim.
+	// An unresolvable location yields the empty Country, which is kept (ADR-0028).
+	extraction.Listing.Country = geo.Resolve(extraction.Listing.Location)
 
 	if err := w.jobListingRepository.Save(ctx, w.definitionID, &extraction.Listing); err != nil {
 		return fmt.Errorf("job_listing_processor: error saving processed job listing %v: %w", *workload, err)

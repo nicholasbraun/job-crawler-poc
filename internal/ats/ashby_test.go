@@ -105,6 +105,12 @@ func TestAshbyFetchMapsBoard(t *testing.T) {
 	if first.Location != "Europe" {
 		t.Errorf("Location = %q, want %q (the location string, not the address object)", first.Location, "Europe")
 	}
+	// CountryHint surfaces the structured address.postalAddress.addressCountry for the
+	// ingest lane to resolve at save (ADR-0029), independent of the Location string.
+	// "European Union" is a region the resolver will keep as the empty Country.
+	if first.CountryHint != "European Union" {
+		t.Errorf("CountryHint = %q, want %q (addressCountry)", first.CountryHint, "European Union")
+	}
 	if first.Department != "Product" {
 		t.Errorf("Department = %q, want %q", first.Department, "Product")
 	}
@@ -196,6 +202,10 @@ func TestAshbyLocationFallsBackToAddressCountry(t *testing.T) {
 	}
 	if got[0].Location != "United States" {
 		t.Errorf("Location = %q, want %q (address.postalAddress.addressCountry fallback)", got[0].Location, "United States")
+	}
+	// The same addressCountry is surfaced as the country hint (ADR-0029).
+	if got[0].CountryHint != "United States" {
+		t.Errorf("CountryHint = %q, want %q (addressCountry)", got[0].CountryHint, "United States")
 	}
 }
 

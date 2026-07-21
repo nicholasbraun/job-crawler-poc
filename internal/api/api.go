@@ -265,6 +265,7 @@ type listingDTO struct {
 	Title           string `json:"title"`
 	Company         string `json:"company"`
 	Location        string `json:"location"`
+	Country         string `json:"country"`
 	WorkArrangement string `json:"workArrangement"`
 	Description     string `json:"description"`
 }
@@ -275,6 +276,7 @@ func toListingDTO(jl *crawler.JobListing) listingDTO {
 		Title:           jl.Title,
 		Company:         jl.Company,
 		Location:        jl.Location,
+		Country:         jl.Country,
 		WorkArrangement: string(jl.WorkArrangement),
 		Description:     jl.Description,
 	}
