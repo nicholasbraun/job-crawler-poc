@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { Link, NavLink, Outlet, useOutletContext } from "react-router-dom";
 
-import { useDefinitions, useRuns } from "../hooks";
+import { useDefinitions, useIsMobile, useRuns } from "../hooks";
 import { buildDiscovery, buildKeywordCrawls, crawlLabel } from "../lib/model";
 import { statusMeta } from "../lib/status";
 import { Dot, Icon } from "./primitives";
@@ -64,9 +64,52 @@ function NavItem({ item }: { item: NavDef }) {
   );
 }
 
+// MobileTopBar is the slim app bar shown only on phone-portrait: the brand plus
+// a hamburger that opens the nav drawer. On desktop the sidebar is always in
+// view, so this never renders.
+function MobileTopBar({ onMenu }: { onMenu: () => void }) {
+  return (
+    <div
+      style={{
+        flex: "none",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: "var(--space-3)",
+        padding: "var(--space-3) var(--space-4)",
+        background: "var(--color-surface)",
+        boxShadow: "0 1px 0 var(--color-divider)",
+        zIndex: 30,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+        <span
+          style={{
+            display: "grid",
+            placeItems: "center",
+            width: 28,
+            height: 28,
+            borderRadius: 8,
+            background: "var(--color-accent-800)",
+            color: "var(--color-accent-200)",
+          }}
+        >
+          <Icon name="ph-broadcast" size={16} />
+        </span>
+        <span style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 16 }}>Prospect</span>
+      </div>
+      <button type="button" className="btn btn-secondary btn-icon" onClick={onMenu} aria-label="Open navigation">
+        <Icon name="ph-list" size={18} />
+      </button>
+    </div>
+  );
+}
+
 export function Layout() {
   const [modalOpen, setModalOpen] = useState(false);
   const [discoveryOpen, setDiscoveryOpen] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
+  const isMobile = useIsMobile();
 
   const runs = useRuns();
   const definitions = useDefinitions();
@@ -78,19 +121,86 @@ export function Layout() {
   const totalListings = crawls.reduce((sum, c) => sum + c.listingsFound, 0);
   const discoveryMeta = discovery ? statusMeta(discovery.status) : null;
 
+  // Growing the viewport back to desktop retires the drawer, so one left open on
+  // rotate/resize never lingers as a fixed overlay across the in-flow sidebar.
+  useEffect(() => {
+    if (!isMobile) setNavOpen(false);
+  }, [isMobile]);
+
+  // Escape closes the open drawer, mirroring a scrim tap.
+  useEffect(() => {
+    if (!isMobile || !navOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setNavOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isMobile, navOpen]);
+
+  // On mobile the sidebar becomes a fixed drawer that slides in over a scrim; on
+  // desktop it is the in-flow 240px column. The inner markup is identical — only
+  // its positioning and the slide transform differ.
+  const asideStyle: CSSProperties = isMobile
+    ? {
+        position: "fixed",
+        top: 0,
+        left: 0,
+        height: "100dvh",
+        width: "min(280px, 82vw)",
+        zIndex: 45,
+        transform: navOpen ? "translateX(0)" : "translateX(-100%)",
+        transition: "transform 0.22s ease",
+        boxShadow: navOpen ? "var(--shadow-lg)" : "none",
+        background: "var(--color-surface)",
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-8)",
+        padding: "var(--space-6) var(--space-4)",
+      }
+    : {
+        width: 240,
+        flex: "none",
+        background: "var(--color-surface)",
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-8)",
+        padding: "var(--space-6) var(--space-4)",
+        boxShadow: "1px 0 0 var(--color-divider)",
+      };
+
   return (
-    <div style={{ display: "flex", height: "100vh", overflow: "hidden", background: "var(--color-bg)", color: "var(--color-text)" }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: isMobile ? "column" : "row",
+        height: "100dvh",
+        overflow: "hidden",
+        background: "var(--color-bg)",
+        color: "var(--color-text)",
+      }}
+    >
+      {isMobile && <MobileTopBar onMenu={() => setNavOpen(true)} />}
+
+      {/* Scrim: a tap outside the open drawer dismisses it. Mounted only while
+          open, so it never intercepts clicks on desktop. */}
+      {isMobile && navOpen && (
+        <div
+          aria-hidden
+          onClick={() => setNavOpen(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 40,
+            background: "color-mix(in srgb, var(--color-neutral-900) 55%, transparent)",
+          }}
+        />
+      )}
+
       <aside
-        style={{
-          width: 240,
-          flex: "none",
-          background: "var(--color-surface)",
-          display: "flex",
-          flexDirection: "column",
-          gap: "var(--space-8)",
-          padding: "var(--space-6) var(--space-4)",
-          boxShadow: "1px 0 0 var(--color-divider)",
-        }}
+        // A tap on any nav link inside the drawer navigates and closes it; taps
+        // on non-link chrome (the brand) leave it open.
+        onClick={isMobile ? (e) => { if ((e.target as HTMLElement).closest("a")) setNavOpen(false); } : undefined}
+        style={asideStyle}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 var(--space-2)" }}>
           <span
@@ -171,7 +281,7 @@ export function Layout() {
         </div>
       </aside>
 
-      <main className="app-scroll" style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" }}>
+      <main className="app-scroll" style={{ flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column" }}>
         <Outlet
           context={
             {

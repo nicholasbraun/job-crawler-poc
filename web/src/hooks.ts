@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -31,6 +32,32 @@ const CATALOG_POLL_MS = 8000;
 // (a concurrent submission, a boot-time restart sweep). Completion also
 // invalidates it directly, so it can afford to be lazy.
 const IMPORT_JOBS_POLL_MS = 4000;
+
+// MOBILE_QUERY is the shared phone-portrait breakpoint: below 640px CSS width
+// the dashboard switches to its mobile layout (drawer nav, stacked grids). It
+// catches every iPhone portrait width plus small tablets.
+export const MOBILE_QUERY = "(max-width: 640px)";
+
+// useMediaQuery tracks a CSS media query and re-renders when it flips. It reads
+// the initial value synchronously from matchMedia so the very first paint
+// already matches the viewport (no desktop-then-mobile flash).
+export function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mql = window.matchMedia(query);
+    const onChange = () => setMatches(mql.matches);
+    onChange();
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
+}
+
+// useIsMobile is the dashboard's one phone-portrait check, so every component
+// branches on the same breakpoint.
+export function useIsMobile(): boolean {
+  return useMediaQuery(MOBILE_QUERY);
+}
 
 export const keys = {
   crawls: ["crawls"] as const,

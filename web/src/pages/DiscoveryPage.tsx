@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { useAddSeed, useCareerPages, useCompanies, useDefinitions, useRuns } from "../hooks";
+import { useAddSeed, useCareerPages, useCompanies, useDefinitions, useIsMobile, useRuns } from "../hooks";
 import { fmt, prettyUrl, relativeTime } from "../lib/format";
 import { buildDiscovery, type Discovery } from "../lib/model";
 import { useLayout } from "../components/Layout";
@@ -14,6 +14,7 @@ export function DiscoveryPage() {
   const companiesQ = useCompanies();
   const pagesQ = useCareerPages();
   const { openStartDiscovery } = useLayout();
+  const isMobile = useIsMobile();
 
   const discovery = buildDiscovery(definitions.data ?? [], runs.data ?? []);
 
@@ -49,14 +50,17 @@ export function DiscoveryPage() {
       back={{ to: "/", label: "Overview" }}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "var(--space-4)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "var(--space-4)" }}>
           <StatCard size="md" label="Pages crawled" value={fmt(discovery.pagesCrawled)} sub={`since ${relativeTime(discovery.startedAt)}`} />
           <StatCard size="md" label="Frontier size" value={fmt(discovery.frontierSize)} sub="URLs queued + in-flight" />
           <StatCard size="md" label="Career pages" value={fmt(pagesQ.data?.length ?? 0)} sub="catalogued (hits)" />
           <StatCard size="md" label="Companies" value={fmt(companiesQ.data?.length ?? 0)} sub="ATS-aware identity" />
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: "var(--space-4)", alignItems: "start" }}>
+        {/* minmax(0, …) pins the flexible track's minimum to 0 so the seed
+            table's min-width can't grow the column past the viewport — the
+            table's own overflow-x wrapper scrolls instead. */}
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : "minmax(0, 1fr) 300px", gap: "var(--space-4)", alignItems: "start" }}>
           <SeedDomains discovery={discovery} />
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
             <RunControlCard discovery={discovery} />
@@ -95,7 +99,7 @@ function SeedDomains({ discovery }: { discovery: Discovery }) {
         crawl draws from.
       </p>
       <div style={{ overflowX: "auto" }}>
-        <table className="table">
+        <table className="table" style={{ minWidth: 480 }}>
           <thead>
             <tr>
               <th>Seed domain</th>

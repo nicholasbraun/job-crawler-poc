@@ -119,7 +119,7 @@ function ListingsCard({ definitionId }: { definitionId: string }) {
       </div>
 
       <div style={{ overflowX: "auto" }}>
-        <table className="table">
+        <table className="table" style={{ minWidth: 440 }}>
           <thead>
             <tr>
               <th>Role</th>

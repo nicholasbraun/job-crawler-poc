@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 
-import { useCareerPages, useCatalogHistory, useCompanies, useDefinitions, useRuns } from "../hooks";
+import { useCareerPages, useCatalogHistory, useCompanies, useDefinitions, useIsMobile, useRuns } from "../hooks";
 import { fmt, prettyUrl, relativeTime } from "../lib/format";
 import {
   atsSplit,
@@ -31,6 +31,7 @@ export function OverviewPage() {
   const running = crawls.filter((c) => c.status === "running").length;
   const split = atsSplit(companies);
   const atsProviders = new Set(companies.filter((c) => c.atsProvider).map((c) => c.atsProvider)).size;
+  const isMobile = useIsMobile();
 
   return (
     <PageShell
@@ -38,7 +39,7 @@ export function OverviewPage() {
       subtitle={`${discovery ? "One perpetual discovery run" : "No discovery run"} · ${crawls.length} keyword crawls`}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "var(--space-4)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "var(--space-4)" }}>
           <StatCard
             label="Companies catalogued"
             value={fmt(companies.length)}
@@ -61,7 +62,7 @@ export function OverviewPage() {
           />
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: "var(--space-4)", alignItems: "start" }}>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1.35fr 1fr", gap: "var(--space-4)", alignItems: "start" }}>
           <DiscoveryPanel discovery={discovery} careerPages={pages.length} companies={companies.length} split={split} />
           <RecentlyCatalogued pages={pages} companies={companies} />
         </div>
@@ -246,6 +247,7 @@ function RecentlyCatalogued({ pages, companies }: { pages: CareerPage[]; compani
 }
 
 function KeywordCrawlsSection({ crawls }: { crawls: ReturnType<typeof buildKeywordCrawls> }) {
+  const isMobile = useIsMobile();
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
@@ -260,7 +262,7 @@ function KeywordCrawlsSection({ crawls }: { crawls: ReturnType<typeof buildKeywo
       {crawls.length === 0 ? (
         <EmptyState icon="ph-magnifying-glass" title="No keyword crawls yet" hint="Create one from the header — it seeds from the catalog and gates pages by your keywords." />
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "var(--space-4)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(2, 1fr)", gap: "var(--space-4)" }}>
           {crawls.slice(0, 6).map((c) => (
             <CrawlCard key={c.definitionId} crawl={c} />
           ))}

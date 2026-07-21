@@ -1,4 +1,4 @@
-import { useDefinitions, useRuns } from "../hooks";
+import { useDefinitions, useIsMobile, useRuns } from "../hooks";
 import { buildKeywordCrawls } from "../lib/model";
 import { CrawlCard } from "../components/CrawlCard";
 import { PageShell } from "../components/PageShell";
@@ -12,6 +12,7 @@ export function CrawlsPage() {
   const running = crawls.filter((c) => c.status === "running").length;
   const loading = definitions.isLoading || runs.isLoading;
   const error = definitions.error ?? runs.error;
+  const isMobile = useIsMobile();
 
   return (
     <PageShell
@@ -29,7 +30,7 @@ export function CrawlsPage() {
           hint="A keyword crawl seeds from the catalogued career pages and gates them by your keywords. Create one from the header."
         />
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "var(--space-4)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(2, 1fr)", gap: "var(--space-4)" }}>
           {crawls.map((c) => (
             <CrawlCard key={c.definitionId} crawl={c} />
           ))}

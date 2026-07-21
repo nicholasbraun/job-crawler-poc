@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
+import { useIsMobile } from "../hooks";
 import { useLayout } from "./Layout";
 import { Icon } from "./primitives";
 
@@ -23,6 +24,7 @@ export function PageShell({
   children: ReactNode;
 }) {
   const { openNewCrawl } = useLayout();
+  const isMobile = useIsMobile();
 
   return (
     <>
@@ -32,10 +34,15 @@ export function PageShell({
           top: 0,
           zIndex: 5,
           display: "flex",
-          alignItems: "flex-end",
+          // Mobile stacks the title over a wrapping actions row; desktop keeps
+          // title and actions on one baseline-aligned row.
+          flexDirection: isMobile ? "column" : "row",
+          alignItems: isMobile ? "stretch" : "flex-end",
           justifyContent: "space-between",
-          gap: "var(--space-6)",
-          padding: "var(--space-6) var(--space-8) var(--space-4)",
+          gap: isMobile ? "var(--space-3)" : "var(--space-6)",
+          padding: isMobile
+            ? "var(--space-4) var(--space-4) var(--space-3)"
+            : "var(--space-6) var(--space-8) var(--space-4)",
           background: "linear-gradient(var(--color-bg) 78%, transparent)",
         }}
       >
@@ -56,19 +63,26 @@ export function PageShell({
               <Icon name="ph-arrow-left" size={12} /> {back.label}
             </Link>
           )}
-          <h2 style={{ margin: 0, fontSize: 27 }}>{title}</h2>
+          <h2 style={{ margin: 0, fontSize: isMobile ? 21 : 27 }}>{title}</h2>
           {subtitle != null && (
             <div style={{ fontSize: 13, color: "var(--color-neutral-400)", marginTop: 3 }}>{subtitle}</div>
           )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)", flex: "none" }}>
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "var(--space-3)", flex: "none" }}>
           {actions}
           <button className="btn btn-primary" onClick={openNewCrawl}>
             <Icon name="ph-plus" size={14} /> New keyword crawl
           </button>
         </div>
       </header>
-      <div style={{ padding: "0 var(--space-8) var(--space-8)", flex: 1 }}>{children}</div>
+      <div
+        style={{
+          padding: isMobile ? "0 var(--space-4) var(--space-6)" : "0 var(--space-8) var(--space-8)",
+          flex: 1,
+        }}
+      >
+        {children}
+      </div>
     </>
   );
 }

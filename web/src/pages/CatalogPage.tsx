@@ -88,7 +88,7 @@ export function CatalogPage() {
       }
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "var(--space-4)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "var(--space-4)" }}>
           <StatCard size="md" label="Companies" value={fmt(companies.length)} sub="globally-unique keys" />
           <StatCard size="md" label="Career pages" value={fmt(pages.length)} sub={`${avgPerCompany} avg per company`} />
           <StatCard size="md" label="Self-hosted" value={`${split.selfPct}%`} sub={`${fmt(split.selfCount)} companies`} />
@@ -167,7 +167,7 @@ export function CatalogPage() {
             />
           ) : (
             <div style={{ overflowX: "auto" }}>
-              <table className="table">
+              <table className="table" style={{ minWidth: 560 }}>
                 <thead>
                   <tr>
                     <th>Company</th>
