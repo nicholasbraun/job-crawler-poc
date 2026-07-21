@@ -34,6 +34,18 @@ func TestResolve(t *testing.T) {
 		{"georgia alone is the country", "Georgia", "GE"},
 		{"rightmost country wins", "Atlanta, Georgia, USA", "US"},
 
+		// Overlapping-token disambiguation: a multi-word name beats the bare
+		// token nested inside it (rightmost-ending match wins, not rightmost-start).
+		{"north korea beats bare korea", "North Korea", "KP"},
+		{"south korea", "Seoul, South Korea", "KR"},
+
+		// Ambiguous bare tokens are deliberately not US synonyms: a stray "us"
+		// pronoun or "america" the continent must never override a named or
+		// city-derived country, nor resolve on its own — keep-on-doubt (ADR-0028).
+		{"stray us pronoun keeps city country", "Munich — join us!", "DE"},
+		{"stray us pronoun keeps named country", "Vienna, Austria — join us", "AT"},
+		{"continent america is not a country", "Latin America", ""},
+
 		// Region-only and undeterminable strings resolve to the empty Country.
 		{"region with remote prefix", "Remote - EU", ""},
 		{"region name", "Europe", ""},

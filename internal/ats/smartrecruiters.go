@@ -271,9 +271,9 @@ func mapSmartRecruitersPosting(p smartRecruitersPosting) *crawler.JobListing {
 		Title:    p.Name,
 		URL:      p.PostingURL, // canonical posting URL; the lane keys upserts on it (#127)
 		Location: smartRecruitersLocationText(p.Location),
-		// location.country is the structured country name (e.g. "de"); the ingest lane
-		// resolves it to an ISO Country at save in preference to the composed Location
-		// (ADR-0029).
+		// location.country is a structured ISO alpha-2 country code (e.g. "de"), not a
+		// name; the ingest lane treats it as a valid code at save (uppercased) in
+		// preference to resolving the composed Location (ADR-0029).
 		CountryHint:     p.Location.Country,
 		Description:     smartRecruitersDescription(p.JobAd.Sections),
 		WorkArrangement: arrangement,

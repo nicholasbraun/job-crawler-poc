@@ -58,11 +58,16 @@ func Valid(code string) bool {
 }
 
 // matchRightmost slides an n-gram window (widest phrase first, from each start)
-// over tokens and returns the code of the rightmost match in table, tie-broken
-// toward the longer phrase. "" means no window matched — table values are never
-// empty, so "" is unambiguously "not found".
+// over tokens and returns the code of the rightmost-ending match in table,
+// tie-broken toward the longer phrase. Ranking by end position (not start) lets
+// a multi-word name beat a bare token nested inside it — "north korea" ends
+// where "korea" does but is longer, so it wins (KP, not KR) — while still
+// preferring the last country in the "City, Region, Country" convention (e.g.
+// "Atlanta, Georgia, USA" -> US, whose token ends furthest right). "" means no
+// window matched — table values are never empty, so "" is unambiguously
+// "not found".
 func matchRightmost(tokens []string, table map[string]string) string {
-	bestStart, bestLen, bestCode := -1, 0, ""
+	bestEnd, bestLen, bestCode := -1, 0, ""
 	n := len(tokens)
 	for start := 0; start < n; start++ {
 		width := maxPhraseWords
@@ -72,8 +77,8 @@ func matchRightmost(tokens []string, table map[string]string) string {
 		for w := width; w >= 1; w-- {
 			phrase := strings.Join(tokens[start:start+w], " ")
 			if code, ok := table[phrase]; ok {
-				if start > bestStart || (start == bestStart && w > bestLen) {
-					bestStart, bestLen, bestCode = start, w, code
+				if end := start + w; end > bestEnd || (end == bestEnd && w > bestLen) {
+					bestEnd, bestLen, bestCode = end, w, code
 				}
 				break // longest phrase from this start found; advance the start
 			}

@@ -129,7 +129,12 @@ func buildNames() map[string]string {
 	b.add("RU", "russia", "russian federation", "russian")
 
 	// --- Americas ---
-	b.add("US", "united states", "united states of america", "usa", "us", "america", "american")
+	// Bare "us"/"america"/"american" are deliberately omitted: "us" is the
+	// ubiquitous English pronoun ("join us") and "america" also names the
+	// continents ("Latin America"), so as country synonyms they mis-resolve
+	// unrelated locations to US and — via the Country Constraint — false-drop
+	// real non-US listings, inverting the keep-on-doubt invariant (ADR-0028).
+	b.add("US", "united states", "united states of america", "usa")
 	b.add("CA", "canada", "canadian")
 	b.add("MX", "mexico", "méxico", "mexican")
 	b.add("BR", "brazil", "brasil", "brazilian")

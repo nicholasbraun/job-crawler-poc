@@ -147,8 +147,8 @@ func (p *Processor) Process(ctx context.Context, task *FetchTask) error {
 }
 
 // resolveCountry feeds the Country Resolver the provider's structured country hint
-// when present (an ISO code like Recruitee's country_code, or a name like
-// SmartRecruiters/Workable country / Ashby addressCountry), else the composed
+// when present (an ISO code like Recruitee's country_code or SmartRecruiters' country,
+// or a name like Workable's country / Ashby's addressCountry), else the composed
 // Location string (ADR-0029). A hint that is already a valid ISO code is used
 // directly (uppercased); a name-shaped hint is resolved; when the hint is empty or
 // unresolvable it falls back to the Location. Unresolvable throughout -> the empty
