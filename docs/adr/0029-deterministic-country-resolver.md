@@ -45,3 +45,17 @@ direction. Ambiguous tokens (`"Georgia"` the country vs. the US state) are the s
 edge, mitigated by word-boundary matching and preferring an explicit country token
 over a city. And the extract prompt gains a country nudge — a small, low-risk change
 to an otherwise tuned prompt (the raw location string is still stored verbatim).
+
+## Update (2026-07-21): the gazetteer is generated, not hand-curated
+
+This decision is intact — the resolver stays deterministic and the sole authority on
+the code, with no runtime geo dependency. What changed is the *provenance* of its
+backing data. The hand-typed tables described above — "the demonyms, synonyms, and
+city safety-net are curated for the countries the Catalog actually contains" — are
+replaced by a build-time generator over published reference data (GeoNames + ISO
+3166). This closes the blind spot that let US listings ("Austin, TX", "Remote, US")
+resolve to the empty Country and leak into a Country-constrained crawl, and it extends
+coverage to the DACH long-tail and global cities. Demonyms are dropped; the city set
+is now global rather than Catalog-scoped, arbitrated by a dominance policy. The
+generated table is still vendored and embedded (no runtime download, still
+deterministic). See ADR-0031 for the generator and its collision/dominance policy.
