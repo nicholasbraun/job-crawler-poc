@@ -147,7 +147,7 @@ func TestProcessorResolvesCountryAtSave(t *testing.T) {
 		{"no hint falls back to composed location", "", "Berlin, Germany", "DE"},
 		{"valid iso code hint wins", "PT", "Remote job", "PT"},
 		{"country-name hint resolves", "United States", "", "US"},
-		{"unresolvable hint kept as empty", "European Union", "", ""},
+		{"unresolvable region hint kept as empty", "European Union", "", ""},
 	}
 
 	for i, tt := range tests {

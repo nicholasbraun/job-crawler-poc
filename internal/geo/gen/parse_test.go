@@ -1,0 +1,96 @@
+package main
+
+import (
+	"strings"
+	"testing"
+)
+
+// cityLine builds a 19-field GeoNames geoname row, placing the four fields the
+// parser reads (name=1, asciiname=2, countryCode=8, population=14) and leaving
+// the rest blank — so the test pins the indices, not an incidental layout.
+func cityLine(name, asciiname, countryCode, population string) string {
+	f := make([]string, 19)
+	f[1] = name
+	f[2] = asciiname
+	f[8] = countryCode
+	f[14] = population
+	return strings.Join(f, "\t")
+}
+
+func TestParseCities5000(t *testing.T) {
+	data := strings.Join([]string{
+		cityLine("Berlin", "Berlin", "DE", "3644826"),
+		cityLine("Düsseldorf", "Duesseldorf", "DE", "618685"), // UTF-8 name captured for the alias
+		cityLine("Springfield", "Springfield", "US", ""),      // blank population -> 0
+		cityLine("Paris", "", "FR", "1000"),                   // blank asciiname -> dropped
+		cityLine("Nowhere", "Nowhere", "", "1000"),            // blank country -> dropped
+		"# a comment line",
+		"",               // blank line
+		"too\tfew\tcols", // under-length -> dropped
+	}, "\n")
+
+	got := parseCities5000([]byte(data))
+	want := []cityRow{
+		{name: "Berlin", altName: "Berlin", countryCode: "DE", population: 3644826},
+		{name: "Duesseldorf", altName: "Düsseldorf", countryCode: "DE", population: 618685},
+		{name: "Springfield", altName: "Springfield", countryCode: "US", population: 0},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("parseCities5000 returned %d rows, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("row %d = %+v, want %+v", i, got[i], w)
+		}
+	}
+}
+
+func TestParseCountryInfo(t *testing.T) {
+	data := strings.Join([]string{
+		"# ISO\tISO3\t...header...",
+		"#",
+		"DE\tDEU\t276\tGM\tGermany\tBerlin",
+		"GE\tGEO\t268\tGG\tGeorgia\tTbilisi",
+		"\tXXX\t000\t\t\tNowhere",                  // blank code -> dropped
+		"AN\tANT\t530\tNT\tNetherlands Antilles\t", // withdrawn code still parsed; build drops it
+	}, "\n")
+
+	got := parseCountryInfo([]byte(data))
+	want := []countryRow{
+		{code: "DE", name: "Germany"},
+		{code: "GE", name: "Georgia"},
+		{code: "AN", name: "Netherlands Antilles"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("parseCountryInfo returned %d rows, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("row %d = %+v, want %+v", i, got[i], w)
+		}
+	}
+}
+
+func TestParseAdmin1US(t *testing.T) {
+	data := strings.Join([]string{
+		"US.TX\tTexas\tTexas\t4736286",
+		"US.NY\tNew York\tNew York\t5128638",
+		"DE.BY\tBavaria\tBavaria\t2951839", // non-US -> dropped
+		"CA.ON\tOntario\tOntario\t6093822", // non-US -> dropped
+		"# comment",
+	}, "\n")
+
+	got := parseAdmin1US([]byte(data))
+	want := []admin1Row{
+		{code: "TX", name: "Texas"},
+		{code: "NY", name: "New York"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("parseAdmin1US returned %d rows, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("row %d = %+v, want %+v", i, got[i], w)
+		}
+	}
+}
