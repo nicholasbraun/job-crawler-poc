@@ -66,7 +66,11 @@ func (r *CompanyRepository) Upsert(ctx context.Context, c *crawler.Company) erro
 // (self-hosted), and an explicit empty website is stored as NULL. On first
 // insert first_seen is clamped to last_seen, so a record carrying only a past
 // lastSeen (first_seen would default to now()) cannot create an inverted
-// first_seen > last_seen interval. Writes the merged row's id back into m.ID.
+// first_seen > last_seen interval. When a present name actually changes the
+// stored value, name_source is reset to NULL (ADR-0025): the import carries no
+// ladder rung, so a stale Discovery-derived source must not outlive the name it
+// described; a same-valued or absent name leaves the source intact. Writes the
+// merged row's id back into m.ID.
 func (r *CompanyRepository) MergeImport(ctx context.Context, m *crawler.CompanyMerge) error {
 	var atsProvider *string
 	if m.ATSProvider != "" {
@@ -86,6 +90,7 @@ func (r *CompanyRepository) MergeImport(ctx context.Context, m *crawler.CompanyM
 			ats_provider   = CASE WHEN $8  THEN EXCLUDED.ats_provider   ELSE company.ats_provider   END,
 			display_domain = CASE WHEN $9  THEN EXCLUDED.display_domain ELSE company.display_domain END,
 			name           = CASE WHEN $10 THEN EXCLUDED.name           ELSE company.name           END,
+			name_source    = CASE WHEN $10 AND EXCLUDED.name IS DISTINCT FROM company.name THEN NULL ELSE company.name_source END,
 			website        = CASE WHEN $11 THEN EXCLUDED.website        ELSE company.website        END,
 			first_seen     = LEAST(company.first_seen, $6),
 			last_seen      = GREATEST(company.last_seen, $7)

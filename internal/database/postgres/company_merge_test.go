@@ -360,3 +360,86 @@ func TestCompanyMergeImportWebsite(t *testing.T) {
 		}
 	})
 }
+
+// TestCompanyMergeImportNameSource proves the Name Ladder rung (ADR-0025, #152)
+// tracks the imported name: a merge that actually changes the stored name resets
+// name_source to NULL (the import carries no rung, so a stale Discovery source
+// must not outlive the name it described), while a same-valued or absent name
+// leaves the catalogued source intact. Discovery writes name_source only via
+// Upsert, so each case seeds with Upsert (NameSourceJSONLD) and merges over it.
+func TestCompanyMergeImportNameSource(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCompanyRepository(pool)
+
+	// nameSource reads the nullable name_source column: nil == SQL NULL (the
+	// legacy/unknown/imported rung), matching how Upsert encodes an empty Source.
+	nameSource := func(key string) *string {
+		t.Helper()
+		var s *string
+		if err := pool.QueryRow(t.Context(),
+			`SELECT name_source FROM company WHERE company_key = $1`, key,
+		).Scan(&s); err != nil {
+			t.Fatalf("read company name_source: %v", err)
+		}
+		return s
+	}
+
+	seedJSONLD := func(key, name string) {
+		t.Helper()
+		if err := repo.Upsert(t.Context(), &crawler.Company{
+			CompanyKey: key, DisplayDomain: key, Name: name, NameSource: crawler.NameSourceJSONLD,
+		}); err != nil {
+			t.Fatalf("seed upsert: %v", err)
+		}
+		if got := nameSource(key); got == nil || *got != string(crawler.NameSourceJSONLD) {
+			t.Fatalf("precondition: seeded name_source should be jsonld, got %v", got)
+		}
+	}
+
+	t.Run("a changed name clears the stale source to NULL", func(t *testing.T) {
+		key := "changed.com"
+		seedJSONLD(key, "Acme GmbH")
+
+		if err := repo.MergeImport(t.Context(), &crawler.CompanyMerge{
+			CompanyKey: key, Name: "Acme Corporation", NamePresent: true,
+		}); err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		_, name, _ := companyFields(t, pool, key)
+		if name != "Acme Corporation" {
+			t.Errorf("name should update to Acme Corporation, got %q", name)
+		}
+		if got := nameSource(key); got != nil {
+			t.Errorf("a changed name should reset name_source to NULL, got %q", *got)
+		}
+	})
+
+	t.Run("a same-valued name keeps the existing source", func(t *testing.T) {
+		key := "samename.com"
+		seedJSONLD(key, "Acme GmbH")
+
+		// A re-import of the identical name changes nothing, so the accurate
+		// Discovery-derived source must survive.
+		if err := repo.MergeImport(t.Context(), &crawler.CompanyMerge{
+			CompanyKey: key, Name: "Acme GmbH", NamePresent: true,
+		}); err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		if got := nameSource(key); got == nil || *got != string(crawler.NameSourceJSONLD) {
+			t.Errorf("a same-valued name should keep name_source jsonld, got %v", got)
+		}
+	})
+
+	t.Run("an absent name keeps the existing source", func(t *testing.T) {
+		key := "absent.com"
+		seedJSONLD(key, "Acme GmbH")
+
+		// A sparse merge that never mentions name must not touch name_source.
+		if err := repo.MergeImport(t.Context(), &crawler.CompanyMerge{CompanyKey: key}); err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		if got := nameSource(key); got == nil || *got != string(crawler.NameSourceJSONLD) {
+			t.Errorf("an absent name should keep name_source jsonld, got %v", got)
+		}
+	})
+}

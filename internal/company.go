@@ -94,8 +94,10 @@ type CompanyRepository interface {
 	// lastSeen cannot create an inverted interval.
 	// Each mutable field is written only when its Present flag is set (an
 	// explicit empty ATSProvider sets self-hosted; an explicit empty Website
-	// clears it to NULL). It writes the merged row's id into m.ID. Re-merging the
-	// same instruction changes no data.
+	// clears it to NULL). A present Name that actually changes the stored value
+	// also resets name_source to NULL, since an import carries no Name Ladder rung
+	// (ADR-0025). It writes the merged row's id into m.ID. Re-merging the same
+	// instruction changes no data.
 	MergeImport(ctx context.Context, m *CompanyMerge) error
 
 	// ListPagelessSeeds returns each Pageless Company's Website paired with its
