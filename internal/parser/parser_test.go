@@ -194,6 +194,53 @@ Engineer</h1>
 		}
 	})
 
+	t.Run("trims surrounding whitespace from hrefs and embed srcs", func(t *testing.T) {
+		html := `
+<html><body>
+	<main>
+		<a href="
+  https://cybertalents.com/about
+">About</a>
+		<script src="  https://boards.greenhouse.io/embed/job_board/js?for=acme  "></script>
+		<iframe src="
+https://acme.jobs.personio.de/search
+"></iframe>
+	</main>
+</body></html>`
+		content, err := parser.NewHTMLParser().Parse([]byte(html))
+		if err != nil {
+			t.Fatalf("error parsing content: %v", err)
+		}
+
+		const (
+			trimmedHref   = "https://cybertalents.com/about"
+			trimmedScript = "https://boards.greenhouse.io/embed/job_board/js?for=acme"
+			trimmedFrame  = "https://acme.jobs.personio.de/search"
+		)
+
+		// The trimmed href lands in URLs; the padded raw form never does (it would
+		// fail url.Parse downstream and get dropped).
+		if !slices.Contains(content.URLs, trimmedHref) {
+			t.Errorf("trimmed href missing from URLs: %v", content.URLs)
+		}
+		for _, got := range content.URLs {
+			if strings.TrimSpace(got) != got {
+				t.Errorf("URL retained surrounding whitespace: %q", got)
+			}
+		}
+
+		// Embed srcs are trimmed too, so the Gate's embedHost url.Parse matches.
+		wantEmbeds := []crawler.Embed{
+			{Src: trimmedFrame, IsFrame: true},
+			{Src: trimmedScript, IsFrame: false},
+		}
+		for _, want := range wantEmbeds {
+			if !slices.Contains(content.Embeds, want) {
+				t.Errorf("Embeds missing trimmed %v; got %v", want, content.Embeds)
+			}
+		}
+	})
+
 	t.Run("extracts og:site_name into SiteName", func(t *testing.T) {
 		html := `
 <html>

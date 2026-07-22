@@ -76,9 +76,13 @@ func getUrls(doc *goquery.Document) []string {
 	urls := []string{}
 
 	doc.Find("a[href]").Each(func(i int, s *goquery.Selection) {
-		url, exists := s.Attr("href")
-		if exists {
-			urls = append(urls, url)
+		if url, exists := s.Attr("href"); exists {
+			// Trim surrounding whitespace/newlines: a padded href fails url.Parse
+			// ("first path segment ... cannot contain colon") downstream, so the
+			// link would be dropped and ERROR-logged instead of enqueued.
+			if url = strings.TrimSpace(url); url != "" {
+				urls = append(urls, url)
+			}
 		}
 	})
 
@@ -93,13 +97,19 @@ func getUrls(doc *goquery.Document) []string {
 func getEmbeds(doc *goquery.Document) []crawler.Embed {
 	embeds := []crawler.Embed{}
 	doc.Find("iframe[src]").Each(func(i int, s *goquery.Selection) {
+		// Trim surrounding whitespace: a padded src fails url.Parse in the Gate's
+		// embedHost, silently dropping an otherwise-matching ATS board host.
 		if src, ok := s.Attr("src"); ok {
-			embeds = append(embeds, crawler.Embed{Src: src, IsFrame: true})
+			if src = strings.TrimSpace(src); src != "" {
+				embeds = append(embeds, crawler.Embed{Src: src, IsFrame: true})
+			}
 		}
 	})
 	doc.Find("script[src]").Each(func(i int, s *goquery.Selection) {
 		if src, ok := s.Attr("src"); ok {
-			embeds = append(embeds, crawler.Embed{Src: src, IsFrame: false})
+			if src = strings.TrimSpace(src); src != "" {
+				embeds = append(embeds, crawler.Embed{Src: src, IsFrame: false})
+			}
 		}
 	})
 	return embeds
