@@ -33,6 +33,17 @@ services:
     # swapped Go heap hangs on GC page-faults, so kill + resume from preserved
     # Redis/Postgres state is the better failure mode than a hung crawler.
     memswap_limit: 2g
+    # If the seatbelt above is still breached -- or the crawler crashes for any
+    # other reason -- restart on non-zero exit (137/OOM included) so a transient
+    # spike self-heals instead of leaving the service down with runs stuck
+    # `running` (the 2026-07-22 failure mode). on-failure, not always/
+    # unless-stopped: a deliberate `compose down` stays down and a clean exit is
+    # not resurrected. Caveat: runner Reconcile auto-resumes the `running` run
+    # from Redis on boot, so a run that genuinely cannot fit in mem_limit will
+    # crash-loop -- mark it failed or stop the container to break the loop.
+    # (docker compose honors this field; deploy.restart_policy max_attempts is
+    # swarm-only, so retries cannot be capped here.)
+    restart: on-failure
     ports:
       - "8080:8080"
     # Forward external DNS to fast public resolvers instead of the embedded
