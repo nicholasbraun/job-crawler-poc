@@ -38,7 +38,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("gen: create %s: %v", *out, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if err := writeTSV(f, entries); err != nil {
 		log.Fatalf("gen: write %s: %v", *out, err)
