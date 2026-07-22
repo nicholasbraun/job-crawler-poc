@@ -11,6 +11,28 @@ services:
   crawler:
     build: .
     logging: *default-logging
+    # Memory seatbelt (ADR-0032 follow-up, incident 2026-07-22, #182). The crawler
+    # was OOM-killed (SIGKILL/137) when its heap grew into the VM: with no limit the
+    # kernel was the only backstop, and the killed run was left stuck `running` with
+    # no terminal status. Two knobs, sized for the 6 GiB Docker Desktop VM this
+    # stack shares -- Redis (<=2 GB), Postgres, and the Prometheus/Grafana/Loki
+    # observability stack together claim ~3.5 GiB, leaving ~2.5 GiB for the crawler:
+    #   mem_limit   hard cgroup cap. A runaway now kills only the crawler (contained
+    #               blast radius -- Redis/Postgres survive with state intact for
+    #               resume), not the whole VM. (An 8 GiB VM could afford 4g.)
+    #   GOMEMLIMIT  soft limit Go's GC respects (read natively, no code change), set
+    #               to ~83% of mem_limit. As the heap approaches it GC applies
+    #               backpressure, turning a transient goquery-worker spike into a
+    #               slowdown instead of a kill. Re-derive if mem_limit changes.
+    # This complements -- does not replace -- bounding data structures (ADR-0032);
+    # it guards the transient reclaimable floor, not a leak. If the crawler ever
+    # GC-thrashes at the soft limit, lower CRAWL_MAX_WORKERS or grow the VM.
+    mem_limit: 2g
+    # Pin swap to the RAM cap (memswap_limit == mem_limit disables container swap)
+    # so a runaway is killed cleanly at 2 GiB rather than thrashing into swap: a
+    # swapped Go heap hangs on GC page-faults, so kill + resume from preserved
+    # Redis/Postgres state is the better failure mode than a hung crawler.
+    memswap_limit: 2g
     ports:
       - "8080:8080"
     # Forward external DNS to fast public resolvers instead of the embedded
@@ -22,6 +44,9 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     environment:
+      # Soft heap ceiling Go's GC respects (~83% of mem_limit above). See the
+      # memory-seatbelt comment on mem_limit for rationale and re-derivation.
+      - GOMEMLIMIT=1700MiB
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_BASE_URL=${LLM_BASE_URL}
       - LLM_MODEL=${LLM_MODEL}
