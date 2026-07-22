@@ -4,7 +4,7 @@ package main
 // not themselves yield, mapped to an ISO 3166-1 alpha-2 country code. kind is
 // kindCountry (an endonym, abbreviation, or common English synonym) or kindCity
 // (an English city exonym the ASCII name won't produce). Keys are written in
-// natural spelling; build runs each through normalizeKey before storing.
+// natural spelling; build runs each through geo.NormalizeKey before storing.
 type synonym struct {
 	kind string
 	key  string

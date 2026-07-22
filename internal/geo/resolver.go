@@ -10,7 +10,6 @@ package geo
 import (
 	"regexp"
 	"strings"
-	"unicode"
 )
 
 // Resolve maps a Job Listing's raw, free-text location to its ISO 3166-1
@@ -33,7 +32,7 @@ import (
 // outrank a state or city reading — yet it must not override an explicitly named
 // rightmost country, which the country layer, running first, has already placed.
 func Resolve(location string) string {
-	tokens := tokenize(fold(location))
+	tokens := tokenize(Fold(location))
 	if len(tokens) == 0 {
 		return ""
 	}
@@ -118,46 +117,5 @@ func matchRightmost(tokens []string, table map[string]string, maxWords int) stri
 	return bestCode
 }
 
-// fold normalizes a string for gazetteer lookup: lowercased, with the common
-// European diacritics that appear in place names mapped to ASCII (so "München"
-// and "Munchen" both become "munchen"). Gazetteer keys are stored folded, so
-// this is applied identically to inputs and to the curated data.
-func fold(s string) string {
-	s = strings.ToLower(s)
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch r {
-		case 'ä', 'à', 'á', 'â', 'ã', 'å':
-			b.WriteByte('a')
-		case 'æ':
-			b.WriteString("ae")
-		case 'ç':
-			b.WriteByte('c')
-		case 'é', 'è', 'ê', 'ë':
-			b.WriteByte('e')
-		case 'í', 'ì', 'î', 'ï':
-			b.WriteByte('i')
-		case 'ñ':
-			b.WriteByte('n')
-		case 'ö', 'ò', 'ó', 'ô', 'õ', 'ø':
-			b.WriteByte('o')
-		case 'ü', 'ù', 'ú', 'û':
-			b.WriteByte('u')
-		case 'ß':
-			b.WriteString("ss")
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
-// tokenize splits a folded string into word tokens on runs of non-alphanumeric
-// characters (commas, spaces, hyphens, slashes, parentheses). Splitting on word
-// boundaries is what keeps "Georgia" from matching inside "Georgian".
-func tokenize(s string) []string {
-	return strings.FieldsFunc(s, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
-	})
-}
+// Fold and tokenize (the normalization surface shared with the gazetteer
+// generator) live in normalize.go.

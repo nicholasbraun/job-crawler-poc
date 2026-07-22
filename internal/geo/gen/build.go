@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"log"
 	"slices"
+
+	"github.com/nicholasbraun/job-crawler-poc/internal/geo"
 )
 
 // The three gazetteer layers, in descending precedence. A lookup key is emitted
@@ -99,11 +101,11 @@ func build(p policy, countries []countryRow, cities []cityRow, states []admin1Ro
 			continue
 		}
 		validCountry[c.code] = struct{}{}
-		addCountry(normalizeKey(c.name), c.code)
+		addCountry(geo.NormalizeKey(c.name), c.code)
 	}
 	for _, s := range syn {
 		if s.kind == kindCountry {
-			addCountry(normalizeKey(s.key), s.code)
+			addCountry(geo.NormalizeKey(s.key), s.code)
 		}
 	}
 
@@ -113,13 +115,13 @@ func build(p policy, countries []countryRow, cities []cityRow, states []admin1Ro
 	// data, not a hardcoded ISO list.
 	isoCodes := map[string]struct{}{}
 	for _, c := range countries {
-		isoCodes[fold(c.code)] = struct{}{}
+		isoCodes[geo.Fold(c.code)] = struct{}{}
 	}
 
 	// --- State layer: US state codes and names, minus country-key collisions. ---
 	stateMap := map[string]string{}
 	for _, st := range states {
-		if cc := fold(st.code); isTwoLetter(cc) {
+		if cc := geo.Fold(st.code); isTwoLetter(cc) {
 			_, iso := isoCodes[cc]
 			_, stop := p.stoplist[cc]
 			_, country := countryMap[cc]
@@ -129,7 +131,7 @@ func build(p policy, countries []countryRow, cities []cityRow, states []admin1Ro
 		}
 		// A subdivision name equal to a country name/synonym ("georgia") stays in
 		// the country layer; only distinct names enter the state layer.
-		if nk := normalizeKey(st.name); nk != "" {
+		if nk := geo.NormalizeKey(st.name); nk != "" {
 			if _, country := countryMap[nk]; !country {
 				stateMap[nk] = "US"
 			}
@@ -183,7 +185,7 @@ func build(p policy, countries []countryRow, cities []cityRow, states []admin1Ro
 		if s.kind != kindCity {
 			continue
 		}
-		key := normalizeKey(s.key)
+		key := geo.NormalizeKey(s.key)
 		if key == "" {
 			continue
 		}
@@ -265,8 +267,8 @@ func dominant(p policy, pop map[string]int64) (string, bool) {
 // higher-layer suppression, and keep-on-doubt dominance, so an ambiguous umlaut
 // name shared across countries still drops to the empty Country.
 func cityKeys(c cityRow) []string {
-	ascii := normalizeKey(c.name)
-	alias := normalizeKey(c.altName)
+	ascii := geo.NormalizeKey(c.name)
+	alias := geo.NormalizeKey(c.altName)
 	if alias == "" || alias == ascii {
 		return []string{ascii}
 	}
