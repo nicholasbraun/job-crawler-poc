@@ -46,6 +46,11 @@ func Setup(ctx context.Context) (func(context.Context), error) {
 	// 3. Set as global
 	otel.SetMeterProvider(provider)
 
+	// 3b. Register the GOMEMLIMIT gauge. The Go/process collectors are already
+	// in the default Prometheus registry this exporter shares, but none of them
+	// export GOMEMLIMIT, so wire it explicitly (ADR-0033).
+	registerGoMemLimitGauge(provider.Meter("runtime"))
+
 	// 4. Serve metrics endpoint (in background)
 	go func() {
 		mux := http.NewServeMux()
