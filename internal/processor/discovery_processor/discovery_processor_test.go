@@ -1,25 +1,32 @@
 package discoveryprocessor_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
+	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 	discoveryprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/discovery_processor"
 )
 
 // --- inline test doubles ---
 
 type spyFrontier struct {
+	addErr   error
 	added    []crawler.URL
 	markDone []string
 }
 
 func (f *spyFrontier) AddURL(ctx context.Context, u crawler.URL) error {
 	f.added = append(f.added, u)
-	return nil
+	return f.addErr
 }
 func (f *spyFrontier) Next(ctx context.Context) (crawler.URL, error) { return crawler.URL{}, nil }
 func (f *spyFrontier) MarkDone(ctx context.Context, u string) error {
@@ -164,5 +171,82 @@ func TestDiscoveryProcessorSkipsNonCareerPage(t *testing.T) {
 
 	if emitted != 0 {
 		t.Errorf("non-career page should not emit a candidate, emitted %d", emitted)
+	}
+}
+
+// captureLogs installs a JSON slog handler writing into buf for the duration of
+// fn, then restores the previous default logger.
+func captureLogs(t *testing.T, buf *bytes.Buffer, fn func()) {
+	t.Helper()
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	slog.SetDefault(slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	fn()
+}
+
+// hasErrorLevel reports whether any captured log line was emitted at ERROR.
+func hasErrorLevel(t *testing.T, buf *bytes.Buffer) bool {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("could not parse log line %q: %v", line, err)
+		}
+		if entry["level"] == "ERROR" {
+			return true
+		}
+	}
+	return false
+}
+
+// A max-depth rejection from the frontier is an expected client-side outcome, so
+// discovery must not log it at ERROR — a deep hub page would otherwise flood the
+// logs with thousands of identical lines. Any other AddURL error still logs at
+// ERROR. Mirrors url_processor's TestProcessAddURLRejections.
+func TestDiscoveryProcessorAddURLRejections(t *testing.T) {
+	tests := []struct {
+		name         string
+		addErr       error
+		wantErrorLog bool
+	}{
+		{name: "max depth is not an error", addErr: frontier.ErrMaxDepth, wantErrorLog: false},
+		{name: "unexpected error is logged at error", addErr: errors.New("boom"), wantErrorLog: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := &crawler.Content{
+				Title:       "Our Blog",
+				MainContent: "latest product news",
+				URLs:        []string{"/next"},
+			}
+
+			proc := discoveryprocessor.NewProcessor(&discoveryprocessor.Config{
+				Frontier:         &spyFrontier{addErr: tt.addErr},
+				Downloader:       &stubDownloader{html: []byte("<html></html>")},
+				Parser:           &stubParser{content: content},
+				ContentFilter:    filter.Chain[*crawler.Content](),
+				URLFilter:        filter.Chain[string](),
+				RobotsTxtChecker: allowAllRobots{},
+				GateConfig:       crawler.DefaultLLMGateConfig(),
+				OnCareerPage:     func(context.Context, *crawler.RawCareerPage) error { return nil },
+			})
+
+			seed := newURL(t, "https://acme.com/blog/hello")
+
+			var buf bytes.Buffer
+			captureLogs(t, &buf, func() {
+				if err := proc.Process(t.Context(), &seed); err != nil {
+					t.Fatalf("Process returned error: %v", err)
+				}
+			})
+
+			if got := hasErrorLevel(t, &buf); got != tt.wantErrorLog {
+				t.Errorf("error-level log present = %v, want %v; logs:\n%s", got, tt.wantErrorLog, buf.String())
+			}
+		})
 	}
 }

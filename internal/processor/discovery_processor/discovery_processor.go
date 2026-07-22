@@ -7,6 +7,7 @@ package discoveryprocessor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -140,8 +141,16 @@ func (w *discoveryWorker) Process(ctx context.Context, nextURL *crawler.URL) err
 		// AddURL fuses dedup with enqueue: an already-seen URL is a silent
 		// no-op, so there is no separate visited check to race against.
 		err = w.frontier.AddURL(ctx, parsed)
-		if err != nil {
-			slog.Error("discovery_worker: error adding url", "err", err)
+		switch {
+		case errors.Is(err, frontier.ErrMaxDepth):
+			// Reaching maxDepth is an expected client-side rejection during
+			// normal crawling, not an error worth flagging per URL. A single
+			// deep hub page otherwise floods the logs with thousands of
+			// identical ERROR lines (mirrors url_processor).
+			slog.Debug("discovery_worker: max depth reached, dropping url", "url", parsed.RawURL)
+			continue
+		case err != nil:
+			slog.Error("discovery_worker: error adding url", "err", err, "url", parsed.RawURL)
 			continue
 		}
 	}
