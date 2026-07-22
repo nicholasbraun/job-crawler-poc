@@ -49,9 +49,21 @@ func (a disallowAll) CrawlDelay() time.Duration {
 	return 0
 }
 
+const (
+	// DefaultCacheTTL bounds how long parsed robots.txt Rules are served from
+	// cache before a re-fetch. Robots rules change on the order of days, so an
+	// hour keeps a hot host's checks off the network while bounding staleness.
+	DefaultCacheTTL = time.Hour
+	// DefaultCacheSize bounds how many hosts' Rules are cached, so the cache
+	// cannot grow without limit across a discovery crawl that touches tens of
+	// thousands of hosts. Sized to match the DNS cache (internal/downloader): a
+	// host in one is generally a host in the other.
+	DefaultCacheSize = 16384
+)
+
 // Checker decides whether URLs are allowed by the target host's robots.txt.
-// Rules are cached per hostname; concurrent fetches to the same host are
-// deduplicated via singleflight.
+// Rules are cached per hostname (bounded in size and age, see cache);
+// concurrent fetches to the same host are deduplicated via singleflight.
 type Checker struct {
 	parser     Parser
 	downloader Getter
@@ -59,13 +71,36 @@ type Checker struct {
 	sf         *singleflight.Group
 }
 
+type checkerConfig struct {
+	cacheTTL  time.Duration
+	cacheSize int
+}
+
+// CheckerOption configures a Checker.
+type CheckerOption func(*checkerConfig)
+
+// WithCacheTTL sets how long parsed robots.txt Rules are served from cache
+// before a re-fetch (default 1h).
+func WithCacheTTL(d time.Duration) CheckerOption {
+	return func(c *checkerConfig) { c.cacheTTL = d }
+}
+
+// WithCacheSize bounds how many hosts' Rules the cache holds (default 16384).
+func WithCacheSize(n int) CheckerOption {
+	return func(c *checkerConfig) { c.cacheSize = n }
+}
+
 // NewChecker constructs a Checker that uses parser to interpret robots.txt
 // content and downloader to fetch it.
-func NewChecker(parser Parser, downloader Getter) *Checker {
+func NewChecker(parser Parser, downloader Getter, opts ...CheckerOption) *Checker {
+	cfg := checkerConfig{cacheTTL: DefaultCacheTTL, cacheSize: DefaultCacheSize}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	return &Checker{
 		parser:     parser,
 		downloader: downloader,
-		cache:      newCache(),
+		cache:      newCache(cfg.cacheTTL, cfg.cacheSize),
 		sf:         new(singleflight.Group),
 	}
 }

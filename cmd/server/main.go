@@ -168,6 +168,19 @@ func main() {
 		log.Fatalf("error parsing CRAWL_VISITED_CAP: must be a positive integer, got %q", os.Getenv("CRAWL_VISITED_CAP"))
 	}
 
+	// ROBOTS_CACHE_SIZE / ROBOTS_CACHE_TTL bound the shared robots.txt Rules cache
+	// (ADR-0032): how many hosts' parsed rules are held and for how long before a
+	// re-fetch, so the cache cannot grow without limit across a discovery crawl
+	// that touches tens of thousands of hosts.
+	robotsCacheSize, err := strconv.Atoi(envOr("ROBOTS_CACHE_SIZE", strconv.Itoa(robotstxt.DefaultCacheSize)))
+	if err != nil || robotsCacheSize < 1 {
+		log.Fatalf("error parsing ROBOTS_CACHE_SIZE: must be a positive integer, got %q", os.Getenv("ROBOTS_CACHE_SIZE"))
+	}
+	robotsCacheTTL, err := time.ParseDuration(envOr("ROBOTS_CACHE_TTL", robotstxt.DefaultCacheTTL.String()))
+	if err != nil || robotsCacheTTL <= 0 {
+		log.Fatalf("error parsing ROBOTS_CACHE_TTL: must be a positive duration, got %q", os.Getenv("ROBOTS_CACHE_TTL"))
+	}
+
 	var logLevel slog.LevelVar
 	if err := logLevel.UnmarshalText([]byte(envOr("LOG_LEVEL", defaultLogLevel))); err != nil {
 		log.Fatalf("error parsing LOG_LEVEL: %v", err)
@@ -217,7 +230,7 @@ func main() {
 	runRepository := postgres.NewCrawlRunRepository(pgPool)
 	importJobRepository := postgres.NewImportJobRepository(pgPool)
 
-	factory := newFactory(crawlMaxWorkers, visitedCap, llmMaxWorkers, llmConfig, redisClient,
+	factory := newFactory(crawlMaxWorkers, visitedCap, robotsCacheTTL, robotsCacheSize, llmMaxWorkers, llmConfig, redisClient,
 		jobListingRepository, companyRepository, careerPageRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory,
 		// One cleaner sweeps all of a run's transient Redis state on a terminal
@@ -322,6 +335,8 @@ func main() {
 func newFactory(
 	maxWorkers int,
 	visitedCap int,
+	robotsCacheTTL time.Duration,
+	robotsCacheSize int,
 	llmMaxWorkers int,
 	llmConfig openrouter.Config,
 	redisClient *redis.Client,
@@ -339,7 +354,8 @@ func newFactory(
 
 	robotsTxtParser := temoto.NewRobotsTxtParser(userAgent)
 	robotsTxtDownloader := robotstxt.NewRobotsTxtDownloader(userAgent, sharedTransport)
-	robotsTxtChecker := robotstxt.NewChecker(robotsTxtParser, robotsTxtDownloader)
+	robotsTxtChecker := robotstxt.NewChecker(robotsTxtParser, robotsTxtDownloader,
+		robotstxt.WithCacheTTL(robotsCacheTTL), robotstxt.WithCacheSize(robotsCacheSize))
 
 	jobListingExtractor := openrouter.NewJobListingExtractor(llmConfig)
 	careerPageConfirmer := openrouter.NewCareerPageClassifier(llmConfig)

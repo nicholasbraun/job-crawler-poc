@@ -287,3 +287,66 @@ func TestCheckerPropagatesCtxCancellation(t *testing.T) {
 		t.Fatalf("expected getter to observe cancelled ctx, got nil")
 	}
 }
+
+func TestCheckerEvictsAtCacheSize(t *testing.T) {
+	allowed := &fakeRules{allowed: map[string]bool{"/a": true}}
+	getter := &fakeGetter{response: &robotstxt.Response{StatusCode: 200, Content: []byte("body")}}
+	checker := robotstxt.NewChecker(&fakeParser{rules: allowed}, getter, robotstxt.WithCacheSize(1))
+
+	check := func(u string) {
+		if err := checker.Check(t.Context(), u); err != nil {
+			t.Fatalf("unexpected err for %s: %v", u, err)
+		}
+	}
+
+	// A single-host cache: the first check fetches, the second is a cache hit.
+	check("http://a.example.com/a")
+	check("http://a.example.com/a")
+	if got := getter.callCount(); got != 1 {
+		t.Fatalf("same-host recheck: got %d calls, want 1", got)
+	}
+
+	// A second distinct host overflows the cap of 1 and evicts the first.
+	check("http://b.example.com/a")
+	if got := getter.callCount(); got != 2 {
+		t.Fatalf("second host: got %d calls, want 2", got)
+	}
+
+	// The first host was evicted, so re-checking it fetches again rather than
+	// serving a stale-but-resident entry — the cache stayed bounded.
+	check("http://a.example.com/a")
+	if got := getter.callCount(); got != 3 {
+		t.Fatalf("re-check of evicted host: got %d calls, want 3", got)
+	}
+}
+
+func TestCheckerRefetchesAfterTTL(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		allowed := &fakeRules{allowed: map[string]bool{"/path": true}}
+		getter := &fakeGetter{response: &robotstxt.Response{StatusCode: 200, Content: []byte("body")}}
+		checker := robotstxt.NewChecker(&fakeParser{rules: allowed}, getter, robotstxt.WithCacheTTL(time.Hour))
+
+		const u = "http://example.com/path"
+
+		// Two checks within the TTL: the second is served from cache.
+		if err := checker.Check(t.Context(), u); err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if err := checker.Check(t.Context(), u); err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if got := getter.callCount(); got != 1 {
+			t.Fatalf("within TTL: got %d calls, want 1", got)
+		}
+
+		// Advance past the TTL; the entry is now stale and must be re-fetched.
+		time.Sleep(time.Hour + time.Minute)
+
+		if err := checker.Check(t.Context(), u); err != nil {
+			t.Fatalf("unexpected err after TTL: %v", err)
+		}
+		if got := getter.callCount(); got != 2 {
+			t.Fatalf("after TTL expiry: got %d calls, want 2", got)
+		}
+	})
+}
