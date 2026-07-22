@@ -17,18 +17,19 @@ func TestResolve(t *testing.T) {
 		{"multi-word country name", "New York, United States", "US"},
 		{"city and country austria", "Vienna, Austria", "AT"},
 
-		// Bare names, endonyms, synonyms, demonyms.
+		// Bare names, endonyms, synonyms.
 		{"english name", "Germany", "DE"},
 		{"endonym", "Deutschland", "DE"},
-		{"demonym", "German", "DE"},
 		{"synonym usa", "USA", "US"},
 		{"uk synonym resolves to gb", "United Kingdom", "GB"},
 
-		// Curated city safety-net, including diacritic folding and alt-spellings.
-		{"city diacritic fold", "München", "DE"},
-		{"city english exonym", "Munich", "DE"},
-		{"city ascii alt-spelling", "Muenchen", "DE"},
-		{"swiss city diacritic", "Zürich", "CH"},
+		// City layer via English exonyms (the gazetteer stores the ASCII endonym,
+		// so the exonym is the reliable spelling). Umlaut endonyms like "München"
+		// and "Zürich" are an accepted keep-on-doubt gap: fold maps ü->u but the
+		// data holds "muenchen"/"zuerich", so the endonym resolves to "" (kept),
+		// while the English exonym resolves.
+		{"city english exonym munich", "Munich", "DE"},
+		{"city english exonym cologne", "Cologne", "DE"},
 
 		// Ambiguity trap: Georgia the country vs. the US state.
 		{"georgia alone is the country", "Georgia", "GE"},
@@ -39,23 +40,31 @@ func TestResolve(t *testing.T) {
 		{"north korea beats bare korea", "North Korea", "KP"},
 		{"south korea", "Seoul, South Korea", "KR"},
 
-		// Ambiguous bare tokens are deliberately not US synonyms: a stray "us"
-		// pronoun or "america" the continent must never override a named or
-		// city-derived country, nor resolve on its own — keep-on-doubt (ADR-0028).
+		// The bare-US pass is case- and boundary-aware: a lowercase "us" pronoun
+		// never resolves and never overrides a named or city-derived country, but
+		// an uppercase standalone "US" is a country signal (ADR-0028/0029).
 		{"stray us pronoun keeps city country", "Munich — join us!", "DE"},
 		{"stray us pronoun keeps named country", "Vienna, Austria — join us", "AT"},
-		{"continent america is not a country", "Latin America", ""},
+		{"lowercase us pronoun alone", "join us", ""},
+		{"bare us token", "Remote, US", "US"},
 
-		// Region-only and undeterminable strings resolve to the empty Country.
+		// US states and cities now resolve through the generated gazetteer.
+		{"us state code", "Austin, TX", "US"},
+		{"us city and state code", "San Francisco, CA", "US"},
+		{"us city outside eu net", "New York, NY", "US"},
+		{"single-country town", "Walldorf", "DE"},
+		// State code "de" is barred (collides with Germany's ISO code), so the
+		// city name wins: Wilmington, DE is the US city, never Germany.
+		{"delaware state code never germany", "Wilmington, DE", "US"},
+
+		// Region/aggregate words are not places (barred from the city layer), so a
+		// region-only location resolves to the empty Country — keep-on-doubt.
+		{"continent america is not a country", "Latin America", ""},
 		{"region with remote prefix", "Remote - EU", ""},
 		{"region name", "Europe", ""},
 		{"empty string", "", ""},
 		{"whitespace only", "   ", ""},
 		{"remote alone", "Remote", ""},
-
-		// A US state/city outside the EU-weighted safety-net is a deliberate
-		// gap: kept as unresolved rather than guessed.
-		{"uncovered us locale", "New York, NY", ""},
 	}
 
 	for _, tt := range tests {

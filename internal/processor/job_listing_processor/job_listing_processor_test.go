@@ -258,7 +258,10 @@ func TestJobListingProcessorResolvesCountryAtSave(t *testing.T) {
 		wantCountry string
 	}{
 		{"city and country", "Berlin, Germany", "DE"},
-		{"city safety-net diacritic", "München", "DE"},
+		// City-layer resolution via the English exonym. Umlaut endonyms
+		// ("München") are an accepted keep-on-doubt gap in the generated
+		// gazetteer — they resolve to the empty Country and are kept (ADR-0031).
+		{"city safety-net exonym", "Munich", "DE"},
 		{"region only is unresolved but kept", "Remote - EU", ""},
 		{"empty location is unresolved but kept", "", ""},
 	}

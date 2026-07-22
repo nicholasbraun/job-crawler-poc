@@ -23,13 +23,14 @@ type entry struct {
 	code string
 }
 
-// policy holds the ADR-0031 keep-on-doubt dominance thresholds and the state-code
-// stoplist. Thresholds are integers so the transform is float-free and
+// policy holds the ADR-0031 keep-on-doubt dominance thresholds and the two
+// stoplists. Thresholds are integers so the transform is float-free and
 // byte-identical across runs.
 type policy struct {
 	floor    int64               // min top-country max-population for a contested city name
 	ratio    int64               // top must beat the runner-up by this factor
 	stoplist map[string]struct{} // folded 2-letter English words barred as US state codes
+	cityStop map[string]struct{} // folded region/aggregate words barred from the city layer
 }
 
 var defaultPolicy = policy{
@@ -41,6 +42,21 @@ var defaultPolicy = policy{
 	// by the iso check and need no stoplist entry.
 	stoplist: map[string]struct{}{
 		"or": {}, "hi": {}, "ok": {}, "oh": {},
+	},
+	// Region/continent/HR-aggregate words are not places: an obscure GeoNames
+	// town happens to carry the name ("america"->AR, "eu"->FR, "apac"->UG), so
+	// without this bar the city layer would resolve a region-only location to a
+	// single country and — via the Country Constraint — false-drop the rest of
+	// the region, inverting keep-on-doubt (ADR-0028/0029). Barring them here
+	// mirrors how region words are already kept out of the country layer, so a
+	// region-only string lands at the empty Country. Also covers the common
+	// English words ("man", "to") that shadow obscure towns.
+	cityStop: map[string]struct{}{
+		"america": {}, "americas": {}, "asia": {}, "apac": {},
+		"eu": {}, "europe": {}, "africa": {}, "oceania": {}, "antarctica": {},
+		"emea": {}, "emeia": {}, "mena": {}, "latam": {},
+		"benelux": {}, "nordics": {}, "nordic": {}, "scandinavia": {},
+		"dach": {}, "anz": {}, "man": {}, "to": {},
 	},
 }
 
@@ -124,6 +140,9 @@ func build(p policy, countries []countryRow, cities []cityRow, states []admin1Ro
 		if key == "" {
 			continue
 		}
+		if _, stop := p.cityStop[key]; stop {
+			continue
+		}
 		if _, country := countryMap[key]; country {
 			continue
 		}
@@ -153,6 +172,9 @@ func build(p policy, countries []countryRow, cities []cityRow, states []admin1Ro
 		}
 		key := normalizeKey(s.key)
 		if key == "" {
+			continue
+		}
+		if _, stop := p.cityStop[key]; stop {
 			continue
 		}
 		if _, country := countryMap[key]; country {

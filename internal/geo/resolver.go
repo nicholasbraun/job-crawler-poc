@@ -1,11 +1,14 @@
 // Package geo is the deterministic Country Resolver: the sole authority on the
 // ISO 3166-1 alpha-2 Country a Job Listing's free-text location resolves to
-// (ADR-0029). It is hand-rolled over a curated gazetteer — no geo dependency —
-// and it never guesses: a location it cannot place resolves to the empty
-// Country, which the Country Constraint keeps rather than drops (ADR-0028).
+// (ADR-0029). It matches free text against a generated gazetteer — built offline
+// from GeoNames + ISO 3166 (internal/geo/gen) and embedded, parsed once at init —
+// so it carries no runtime geo dependency and stays byte-deterministic (ADR-0031).
+// It never guesses: a location it cannot place resolves to the empty Country,
+// which the Country Constraint keeps rather than drops (ADR-0028).
 package geo
 
 import (
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -17,25 +20,53 @@ import (
 // (ADR-0028, ADR-0029).
 //
 // Matching is on whole word tokens, so "Georgia" resolves to the country GE
-// only as a standalone token, never inside "Georgian". A country token is
-// preferred over a city, and when several countries appear the rightmost wins —
-// encoding the real-world "City, Region, Country" convention, so
-// "Atlanta, Georgia, USA" resolves to US (the US-state reading) while a bare
-// "Georgia" resolves to GE.
+// only as a standalone token, never inside "Georgian". The gazetteer's three
+// layers are tried in descending precedence and the rightmost match within a
+// layer wins, encoding the real-world "City, State, Country" convention: an
+// explicit country token beats a US-state or city reading, so "Vienna, Austria"
+// resolves to AT and "Atlanta, Georgia, USA" resolves to US (the rightmost
+// country) while a bare "Georgia" resolves to GE.
+//
+// The bare-US pass runs second, between the country and state/city layers. A
+// standalone "US"/"U.S."/"USA" is a country-level signal the country layer
+// deliberately omits (folding corrupts "US" into the pronoun "us"), so it must
+// outrank a state or city reading — yet it must not override an explicitly named
+// rightmost country, which the country layer, running first, has already placed.
 func Resolve(location string) string {
 	tokens := tokenize(fold(location))
 	if len(tokens) == 0 {
 		return ""
 	}
-	// Country pass first (an explicit country token beats a city), then the
-	// city safety-net; both return the rightmost match.
-	if code := matchRightmost(tokens, countryByName); code != "" {
+	if code := matchRightmost(tokens, gaz.country, gaz.maxWords); code != "" {
 		return code
 	}
-	if code := matchRightmost(tokens, countryByCity); code != "" {
+	if matchUSToken(location) {
+		return "US"
+	}
+	if code := matchRightmost(tokens, gaz.state, gaz.maxWords); code != "" {
+		return code
+	}
+	if code := matchRightmost(tokens, gaz.city, gaz.maxWords); code != "" {
 		return code
 	}
 	return ""
+}
+
+// usToken matches a bare United States token — "US", "U.S.", "USA", "U.S.A." —
+// as a standalone, UPPERCASE token. matchUSToken runs it on the original,
+// unfolded string on purpose: folding lowercases "US" into the English pronoun
+// "us" ("join us"), which must never resolve. The required uppercasing plus the
+// non-letter boundaries are what separate the country signal from the pronoun
+// ("join us") and from substrings ("Belarus", "campus", "AUSTIN").
+var usToken = regexp.MustCompile(`(?:^|[^A-Za-z])(?:USA|U\.S\.A\.|U\.S\.|US)(?:[^A-Za-z]|$)`)
+
+// matchUSToken reports whether location contains a bare United States token as an
+// uppercase, boundary-delimited word (see usToken). Accepted edges, both
+// improbable in a location field: an all-caps CTA ("JOIN US") matches, and a
+// bare rightmost "US" after an already-named country yields the earlier country
+// because the country layer resolves first.
+func matchUSToken(location string) bool {
+	return usToken.MatchString(location)
 }
 
 // Valid reports whether code is a real, officially assigned ISO 3166-1 alpha-2
@@ -57,20 +88,20 @@ func Valid(code string) bool {
 	return ok
 }
 
-// matchRightmost slides an n-gram window (widest phrase first, from each start)
-// over tokens and returns the code of the rightmost-ending match in table,
-// tie-broken toward the longer phrase. Ranking by end position (not start) lets
-// a multi-word name beat a bare token nested inside it — "north korea" ends
-// where "korea" does but is longer, so it wins (KP, not KR) — while still
-// preferring the last country in the "City, Region, Country" convention (e.g.
-// "Atlanta, Georgia, USA" -> US, whose token ends furthest right). "" means no
-// window matched — table values are never empty, so "" is unambiguously
-// "not found".
-func matchRightmost(tokens []string, table map[string]string) string {
+// matchRightmost slides an n-gram window up to maxWords wide (widest phrase
+// first, from each start) over tokens and returns the code of the
+// rightmost-ending match in table, tie-broken toward the longer phrase. Ranking
+// by end position (not start) lets a multi-word name beat a bare token nested
+// inside it — "north korea" ends where "korea" does but is longer, so it wins
+// (KP, not KR) — while still preferring the last country in the
+// "City, Region, Country" convention (e.g. "Atlanta, Georgia, USA" -> US, whose
+// token ends furthest right). "" means no window matched — table values are
+// never empty, so "" is unambiguously "not found".
+func matchRightmost(tokens []string, table map[string]string, maxWords int) string {
 	bestEnd, bestLen, bestCode := -1, 0, ""
 	n := len(tokens)
 	for start := 0; start < n; start++ {
-		width := maxPhraseWords
+		width := maxWords
 		if start+width > n {
 			width = n - start
 		}

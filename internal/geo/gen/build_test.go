@@ -59,6 +59,28 @@ func TestBuildCityDominance(t *testing.T) {
 	}
 }
 
+func TestBuildCityStoplist(t *testing.T) {
+	// Obscure GeoNames towns shadow region/aggregate words; the city stoplist bars
+	// the region words so a region-only location stays at the empty Country, while
+	// a real city (Berlin) is unaffected.
+	cities := []cityRow{
+		{name: "America", countryCode: "AR", population: 5000},
+		{name: "Asia", countryCode: "PH", population: 5000},
+		{name: "Eu", countryCode: "FR", population: 5000},
+		{name: "Berlin", countryCode: "DE", population: 3644826},
+	}
+	got := build(defaultPolicy, baseCountries(), cities, nil, nil)
+
+	for _, key := range []string{"america", "asia", "eu"} {
+		if code, ok := codeOf(got, kindCity, key); ok {
+			t.Errorf("%s: got (%q,true), want barred by city stoplist (region word)", key, code)
+		}
+	}
+	if code, ok := codeOf(got, kindCity, "berlin"); !ok || code != "DE" {
+		t.Errorf("berlin: got (%q,%v), want (DE,true) — a real city is unaffected by the stoplist", code, ok)
+	}
+}
+
 func TestBuildStateLayer(t *testing.T) {
 	states := []admin1Row{
 		{"TX", "Texas"}, {"NY", "New York"},
