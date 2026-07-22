@@ -59,6 +59,22 @@ func TestBuildCityDominance(t *testing.T) {
 	}
 }
 
+func TestDominantDropsUnknownRunnerUp(t *testing.T) {
+	// A multi-country name whose runner-up population is 0 (unknown) must drop to
+	// the empty Country, not be assigned on the floor alone: the ratio test
+	// "top >= ratio*0" is vacuously true, so without the runner-up positivity
+	// guard the name would land in the wrong country (keep-on-doubt violation).
+	// Tested on dominant directly: the grouping loop never inserts a pop-0 entry
+	// (0 > 0 is false), so the guard is a contract on dominant itself.
+	if code, ok := dominant(defaultPolicy, map[string]int64{"DE": 200000, "US": 0}); ok {
+		t.Errorf("dominant with a pop-0 runner-up: got (%q,true), want dropped", code)
+	}
+	// A known, positive runner-up that clears floor and ratio still resolves.
+	if code, ok := dominant(defaultPolicy, map[string]int64{"DE": 200000, "US": 1000}); !ok || code != "DE" {
+		t.Errorf("dominant with a positive dominated runner-up: got (%q,%v), want (DE,true)", code, ok)
+	}
+}
+
 func TestBuildCityStoplist(t *testing.T) {
 	// Obscure GeoNames towns shadow region/aggregate words; the city stoplist bars
 	// the region words so a region-only location stays at the empty Country, while
@@ -78,6 +94,33 @@ func TestBuildCityStoplist(t *testing.T) {
 	}
 	if code, ok := codeOf(got, kindCity, "berlin"); !ok || code != "DE" {
 		t.Errorf("berlin: got (%q,%v), want (DE,true) — a real city is unaffected by the stoplist", code, ok)
+	}
+}
+
+func TestBuildUmlautAlias(t *testing.T) {
+	// GeoNames' asciiname spells ü as "ue" (Duesseldorf) but the runtime fold maps
+	// ü->u (dusseldorf); build derives an alias key from the UTF-8 primary name so
+	// the endonym input matches. Both the asciiname key and the alias must be
+	// emitted for the same country. An ambiguous umlaut name shared across
+	// countries must still drop to the empty Country (keep-on-doubt not bypassed).
+	cities := []cityRow{
+		{name: "Duesseldorf", altName: "Düsseldorf", countryCode: "DE", population: 618685},
+		// Same folded alias ("ambigburg") in two countries with comparable
+		// population -> the alias group is contested and dropped, exactly as the
+		// asciiname path would be.
+		{name: "Ambigburg", altName: "Ambigbürg", countryCode: "DE", population: 120000},
+		{name: "Ambigburg", altName: "Ambigbürg", countryCode: "FR", population: 120000},
+	}
+	got := build(defaultPolicy, baseCountries(), cities, nil, nil)
+
+	if code, ok := codeOf(got, kindCity, "duesseldorf"); !ok || code != "DE" {
+		t.Errorf("duesseldorf (asciiname key): got (%q,%v), want (DE,true)", code, ok)
+	}
+	if code, ok := codeOf(got, kindCity, "dusseldorf"); !ok || code != "DE" {
+		t.Errorf("dusseldorf (umlaut alias key): got (%q,%v), want (DE,true)", code, ok)
+	}
+	if code, ok := codeOf(got, kindCity, "ambigburg"); ok {
+		t.Errorf("ambigburg alias: got (%q,true), want dropped (shared across countries)", code)
 	}
 }
 

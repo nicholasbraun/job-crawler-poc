@@ -112,7 +112,12 @@ var supplement = []synonym{
 	// Praha, Warszawa, ...); these curated exonyms complement it and, where the
 	// raw dominance would place the exonym elsewhere (e.g. "rome" the US towns),
 	// take precedence in the city layer.
-	{kindCity, "munich", "DE"}, {kindCity, "cologne", "DE"},
+	// München is the one DACH endonym the field-1 umlaut alias cannot recover:
+	// GeoNames stores Munich's primary name as the English "Munich", so the alias
+	// key equals the asciiname and no "munchen" key is derived. Curate both the
+	// folded ("münchen"->"munchen") and ASCII-alt ("muenchen") spellings here.
+	{kindCity, "munich", "DE"}, {kindCity, "münchen", "DE"}, {kindCity, "muenchen", "DE"},
+	{kindCity, "cologne", "DE"},
 	{kindCity, "vienna", "AT"},
 	{kindCity, "geneva", "CH"},
 	{kindCity, "rome", "IT"}, {kindCity, "milan", "IT"}, {kindCity, "turin", "IT"},

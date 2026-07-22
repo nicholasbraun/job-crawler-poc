@@ -23,13 +23,20 @@ func TestResolve(t *testing.T) {
 		{"synonym usa", "USA", "US"},
 		{"uk synonym resolves to gb", "United Kingdom", "GB"},
 
-		// City layer via English exonyms (the gazetteer stores the ASCII endonym,
-		// so the exonym is the reliable spelling). Umlaut endonyms like "München"
-		// and "Zürich" are an accepted keep-on-doubt gap: fold maps ü->u but the
-		// data holds "muenchen"/"zuerich", so the endonym resolves to "" (kept),
-		// while the English exonym resolves.
+		// City layer. English exonyms resolve (the gazetteer stores the ASCII
+		// endonym as one key), and umlaut endonyms now resolve too: the generator
+		// derives an alias from each city's UTF-8 name through the same fold the
+		// runtime uses (ü->u), so "Düsseldorf"/"Zürich"/"Köln" match. München is
+		// additionally curated in the supplement because GeoNames anglicizes its
+		// name to "Munich", which the alias mechanism cannot reach (ADR-0031).
 		{"city english exonym munich", "Munich", "DE"},
 		{"city english exonym cologne", "Cologne", "DE"},
+		{"umlaut endonym dusseldorf", "Düsseldorf", "DE"},
+		{"umlaut endonym wurzburg", "Würzburg", "DE"},
+		{"umlaut endonym cologne", "Köln", "DE"},
+		{"umlaut endonym munich", "München", "DE"},
+		{"ascii alt-spelling muenchen", "Muenchen", "DE"},
+		{"swiss umlaut endonym zurich", "Zürich", "CH"},
 
 		// Ambiguity trap: Georgia the country vs. the US state.
 		{"georgia alone is the country", "Georgia", "GE"},

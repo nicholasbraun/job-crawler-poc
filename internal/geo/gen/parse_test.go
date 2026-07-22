@@ -5,11 +5,12 @@ import (
 	"testing"
 )
 
-// cityLine builds a 19-field GeoNames geoname row, placing the three fields the
-// parser reads (asciiname=2, countryCode=8, population=14) and leaving the rest
-// blank — so the test pins the indices, not an incidental layout.
-func cityLine(asciiname, countryCode, population string) string {
+// cityLine builds a 19-field GeoNames geoname row, placing the four fields the
+// parser reads (name=1, asciiname=2, countryCode=8, population=14) and leaving
+// the rest blank — so the test pins the indices, not an incidental layout.
+func cityLine(name, asciiname, countryCode, population string) string {
 	f := make([]string, 19)
+	f[1] = name
 	f[2] = asciiname
 	f[8] = countryCode
 	f[14] = population
@@ -18,10 +19,11 @@ func cityLine(asciiname, countryCode, population string) string {
 
 func TestParseCities5000(t *testing.T) {
 	data := strings.Join([]string{
-		cityLine("Berlin", "DE", "3644826"),
-		cityLine("Springfield", "US", ""), // blank population -> 0
-		cityLine("", "FR", "1000"),        // blank asciiname -> dropped
-		cityLine("Nowhere", "", "1000"),   // blank country -> dropped
+		cityLine("Berlin", "Berlin", "DE", "3644826"),
+		cityLine("Düsseldorf", "Duesseldorf", "DE", "618685"), // UTF-8 name captured for the alias
+		cityLine("Springfield", "Springfield", "US", ""),      // blank population -> 0
+		cityLine("Paris", "", "FR", "1000"),                   // blank asciiname -> dropped
+		cityLine("Nowhere", "Nowhere", "", "1000"),            // blank country -> dropped
 		"# a comment line",
 		"",               // blank line
 		"too\tfew\tcols", // under-length -> dropped
@@ -29,8 +31,9 @@ func TestParseCities5000(t *testing.T) {
 
 	got := parseCities5000([]byte(data))
 	want := []cityRow{
-		{name: "Berlin", countryCode: "DE", population: 3644826},
-		{name: "Springfield", countryCode: "US", population: 0},
+		{name: "Berlin", altName: "Berlin", countryCode: "DE", population: 3644826},
+		{name: "Duesseldorf", altName: "Düsseldorf", countryCode: "DE", population: 618685},
+		{name: "Springfield", altName: "Springfield", countryCode: "US", population: 0},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("parseCities5000 returned %d rows, want %d: %+v", len(got), len(want), got)

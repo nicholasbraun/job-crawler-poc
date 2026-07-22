@@ -147,7 +147,7 @@ func TestProcessorResolvesCountryAtSave(t *testing.T) {
 		{"no hint falls back to composed location", "", "Berlin, Germany", "DE"},
 		{"valid iso code hint wins", "PT", "Remote job", "PT"},
 		{"country-name hint resolves", "United States", "", "US"},
-		{"unresolvable region hint kept as empty", "Europe", "", ""},
+		{"unresolvable region hint kept as empty", "European Union", "", ""},
 	}
 
 	for i, tt := range tests {
@@ -192,7 +192,7 @@ func TestProcessorCountryConstraintGate(t *testing.T) {
 	all := []*crawler.JobListing{
 		{Title: "Go DE", URL: "https://board/de", Location: "Berlin, Germany"},
 		{Title: "Go FR", URL: "https://board/fr", Location: "Paris, France"},
-		{Title: "Go unresolved", URL: "https://board/unknown", Location: "Europe"},
+		{Title: "Go unresolved", URL: "https://board/unknown", Location: "European Union"},
 		{Title: "Go FR remote", URL: "https://board/fr-remote", Location: "Paris, France", WorkArrangement: crawler.WorkArrangementRemote},
 	}
 

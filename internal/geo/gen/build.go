@@ -57,6 +57,11 @@ var defaultPolicy = policy{
 		"emea": {}, "emeia": {}, "mena": {}, "latam": {},
 		"benelux": {}, "nordics": {}, "nordic": {}, "scandinavia": {},
 		"dach": {}, "anz": {}, "man": {}, "to": {},
+		// "union" shadows a US town, so without this bar "European Union" and a
+		// bare "Union" resolve to US (the city layer's rightmost match) and the
+		// Country Constraint then false-drops EU-wide listings. Barring the bare
+		// key keeps the region reading; compound keys ("union city") are unaffected.
+		"union": {},
 	},
 }
 
@@ -67,10 +72,13 @@ var defaultPolicy = policy{
 var unassigned = map[string]struct{}{"AN": {}, "CS": {}, "XK": {}}
 
 // build applies the ADR-0031 keep-on-doubt policy to the reference rows and the
-// hand supplement, returning gazetteer entries sorted by (kind, key). It is pure
-// and deterministic: no I/O, integer-only comparisons, and a total order over
-// globally unique keys. Layer precedence country > state > city is baked into the
-// data here, so the emitted table needs no runtime precedence logic.
+// hand supplement, returning gazetteer entries sorted by (kind, key). It is
+// deterministic: integer-only comparisons and a total order over globally unique
+// keys. Layer precedence country > state > city is baked into the data here, so
+// the emitted table needs no runtime precedence logic. It is otherwise
+// side-effect free, but aborts via log.Fatalf if the reference data is internally
+// inconsistent — a single country or city-synonym key claimed by two different
+// codes — since such data cannot yield a table the resolver can trust.
 func build(p policy, countries []countryRow, cities []cityRow, states []admin1Row, syn []synonym) []entry {
 	// --- Country layer: ISO names plus the supplement's country synonyms. ---
 	countryMap := map[string]string{}
@@ -136,26 +144,27 @@ func build(p policy, countries []countryRow, cities []cityRow, states []admin1Ro
 		if _, ok := validCountry[city.countryCode]; !ok {
 			continue
 		}
-		key := normalizeKey(city.name)
-		if key == "" {
-			continue
-		}
-		if _, stop := p.cityStop[key]; stop {
-			continue
-		}
-		if _, country := countryMap[key]; country {
-			continue
-		}
-		if _, state := stateMap[key]; state {
-			continue
-		}
-		g := groups[key]
-		if g == nil {
-			g = map[string]int64{}
-			groups[key] = g
-		}
-		if city.population > g[city.countryCode] {
-			g[city.countryCode] = city.population
+		for _, key := range cityKeys(city) {
+			if key == "" {
+				continue
+			}
+			if _, stop := p.cityStop[key]; stop {
+				continue
+			}
+			if _, country := countryMap[key]; country {
+				continue
+			}
+			if _, state := stateMap[key]; state {
+				continue
+			}
+			g := groups[key]
+			if g == nil {
+				g = map[string]int64{}
+				groups[key] = g
+			}
+			if city.population > g[city.countryCode] {
+				g[city.countryCode] = city.population
+			}
 		}
 	}
 	cityMap := map[string]string{}
@@ -166,6 +175,10 @@ func build(p policy, countries []countryRow, cities []cityRow, states []admin1Ro
 	}
 	// Supplement city exonyms take precedence over the raw dominance result
 	// (curated intent wins among cities) but never over a country or state key.
+	// synCity tracks keys claimed BY the supplement so two supplement entries
+	// disagreeing on a key fail loudly (symmetric with addCountry), while the
+	// intended override of a dominance-derived code stays silent.
+	synCity := map[string]string{}
 	for _, s := range syn {
 		if s.kind != kindCity {
 			continue
@@ -183,6 +196,10 @@ func build(p policy, countries []countryRow, cities []cityRow, states []admin1Ro
 		if _, state := stateMap[key]; state {
 			continue
 		}
+		if prev, ok := synCity[key]; ok && prev != s.code {
+			log.Fatalf("gen: city synonym key %q claimed by both %s and %s", key, prev, s.code)
+		}
+		synCity[key] = s.code
 		cityMap[key] = s.code
 	}
 
@@ -206,10 +223,14 @@ func build(p policy, countries []countryRow, cities []cityRow, states []admin1Ro
 // dominant applies the keep-on-doubt population rule to one name's per-country
 // max populations. A name in exactly one country is assigned to it with no floor
 // (recovering the long-tail of small European towns). A name in several is
-// assigned to the top country only when it clears the floor and beats the
-// runner-up by the ratio; otherwise the name is dropped to the empty Country.
-// The (population desc, code asc) ordering makes every tie deterministic; an
-// exactly equal top pair fails the ratio (ratio > 1) and is dropped.
+// assigned to the top country only when the runner-up population is known and
+// positive AND the top clears the floor AND beats the runner-up by the ratio;
+// otherwise the name is dropped to the empty Country. The runner-up positivity
+// guard matters: with a runner-up of 0 (unknown population) the ratio test
+// "top >= ratio*0" is vacuously true, so the name would be assigned on the floor
+// alone — the one path that can place it in the wrong country. The
+// (population desc, code asc) ordering makes every tie deterministic; an exactly
+// equal top pair fails the ratio (ratio > 1) and is dropped.
 func dominant(p policy, pop map[string]int64) (string, bool) {
 	type countryPop struct {
 		code string
@@ -229,10 +250,27 @@ func dominant(p policy, pop map[string]int64) (string, bool) {
 		return ranked[0].code, true
 	}
 	top, runner := ranked[0], ranked[1]
-	if top.pop >= p.floor && top.pop >= p.ratio*runner.pop {
+	if runner.pop > 0 && top.pop >= p.floor && top.pop >= p.ratio*runner.pop {
 		return top.code, true
 	}
 	return "", false
+}
+
+// cityKeys returns the distinct lookup keys a city contributes: its asciiname
+// key always, plus an alias derived from the UTF-8 primary name when the two
+// differ. The alias closes the umlaut recall gap — GeoNames' asciiname spells ü
+// as "ue" ("Duesseldorf") while the runtime fold maps ü->u ("dusseldorf"), so
+// without the primary-name alias the endonym input never matches the stored key.
+// The alias is an ordinary city key: build feeds it through the same stoplist,
+// higher-layer suppression, and keep-on-doubt dominance, so an ambiguous umlaut
+// name shared across countries still drops to the empty Country.
+func cityKeys(c cityRow) []string {
+	ascii := normalizeKey(c.name)
+	alias := normalizeKey(c.altName)
+	if alias == "" || alias == ascii {
+		return []string{ascii}
+	}
+	return []string{ascii, alias}
 }
 
 // isTwoLetter reports whether s is exactly two ASCII lowercase letters — the

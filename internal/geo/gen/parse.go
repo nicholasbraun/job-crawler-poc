@@ -9,10 +9,13 @@ import (
 // countryInfo table. Field indices below are fixed by those published layouts;
 // parse_test.go guards the easy-to-get-wrong ones against synthetic rows.
 
-// cityRow is one populated place from GeoNames cities5000: its ASCII name, the
-// ISO 3166-1 alpha-2 country it sits in, and its population (0 when unknown).
+// cityRow is one populated place from GeoNames cities5000: its ASCII name, its
+// UTF-8 primary name (used only to recover an umlaut alias key — see build's
+// cityKeys), the ISO 3166-1 alpha-2 country it sits in, and its population
+// (0 when unknown).
 type cityRow struct {
 	name        string
+	altName     string
 	countryCode string
 	population  int64
 }
@@ -31,12 +34,15 @@ type admin1Row struct {
 }
 
 // parseCities5000 reads the GeoNames "geoname" table layout (19 tab-separated
-// fields, no header). It uses asciiname (field 2) rather than name (field 1)
-// because asciiname is guaranteed ASCII, sidestepping non-Latin scripts; fold
-// then lowercases it. Rows with a blank asciiname or country code are dropped;
-// a blank population parses to 0.
+// fields, no header). It reads asciiname (field 2) as the primary key source
+// because asciiname is guaranteed ASCII, sidestepping non-Latin scripts, and
+// also the UTF-8 name (field 1) as altName: build folds the latter into an alias
+// key so umlaut endonyms whose asciiname spells "ue" ("Duesseldorf") still match
+// the runtime fold that maps ü->u ("dusseldorf"). Rows with a blank asciiname or
+// country code are dropped; a blank population parses to 0.
 func parseCities5000(data []byte) []cityRow {
 	const (
+		fieldName        = 1
 		fieldAsciiName   = 2
 		fieldCountryCode = 8
 		fieldPopulation  = 14
@@ -52,12 +58,13 @@ func parseCities5000(data []byte) []cityRow {
 			continue
 		}
 		name := strings.TrimSpace(f[fieldAsciiName])
+		altName := strings.TrimSpace(f[fieldName])
 		cc := strings.TrimSpace(f[fieldCountryCode])
 		if name == "" || cc == "" {
 			continue
 		}
 		pop, _ := strconv.ParseInt(strings.TrimSpace(f[fieldPopulation]), 10, 64)
-		rows = append(rows, cityRow{name: name, countryCode: cc, population: pop})
+		rows = append(rows, cityRow{name: name, altName: altName, countryCode: cc, population: pop})
 	}
 	return rows
 }
