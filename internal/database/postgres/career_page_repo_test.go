@@ -474,6 +474,55 @@ func TestCareerPageRepositoryDelete(t *testing.T) {
 	})
 }
 
+// TestCareerPageRepositoryDeleteWithListings asserts the job_listing.career_page_id
+// FK is ON DELETE SET NULL (migration 0017): deleting a Career Page that owns Corpus
+// listings orphans them (career_page_id -> NULL) instead of raising an FK violation.
+func TestCareerPageRepositoryDeleteWithListings(t *testing.T) {
+	pool := newTestPool(t)
+	companyRepo := postgres.NewCompanyRepository(pool)
+	repo := postgres.NewCareerPageRepository(pool)
+	corpus := postgres.NewCorpusRepository(pool)
+
+	acme := &crawler.Company{CompanyKey: "greenhouse:acme", ATSProvider: "greenhouse", DisplayDomain: "boards.greenhouse.io", Name: "Acme"}
+	if err := companyRepo.Upsert(t.Context(), acme); err != nil {
+		t.Fatalf("seeding company: %v", err)
+	}
+	const url = "https://boards.greenhouse.io/acme/jobs/1"
+	if err := repo.Upsert(t.Context(), &crawler.CareerPage{
+		CompanyID:        acme.ID,
+		URL:              url,
+		PolitenessDomain: "boards.greenhouse.io",
+	}); err != nil {
+		t.Fatalf("seeding career page: %v", err)
+	}
+	id := careerPageIDByURL(t, repo, url)
+
+	listing := &crawler.JobListing{
+		CanonicalURL: url,
+		URL:          url,
+		Source:       crawler.SourceLaneCrawl,
+		CareerPageID: id,
+		Title:        "Backend Engineer",
+	}
+	if err := corpus.Save(t.Context(), listing); err != nil {
+		t.Fatalf("seeding listing: %v", err)
+	}
+
+	if err := repo.Delete(t.Context(), id); err != nil {
+		t.Fatalf("deleting a page that owns a listing should not FK-violate: %v", err)
+	}
+
+	var careerPageID *uuid.UUID
+	if err := pool.QueryRow(t.Context(),
+		`SELECT career_page_id FROM job_listing WHERE canonical_url = $1`, url,
+	).Scan(&careerPageID); err != nil {
+		t.Fatalf("listing should survive the page delete: %v", err)
+	}
+	if careerPageID != nil {
+		t.Errorf("career_page_id should be NULL after the page delete, got %v", *careerPageID)
+	}
+}
+
 func TestCareerPageRepositoryReattribute(t *testing.T) {
 	pool := newTestPool(t)
 	companyRepo := postgres.NewCompanyRepository(pool)

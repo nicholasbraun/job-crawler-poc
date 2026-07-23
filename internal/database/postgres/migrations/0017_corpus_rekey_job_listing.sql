@@ -15,7 +15,10 @@ ALTER TABLE job_listing ADD CONSTRAINT job_listing_canonical_url_key UNIQUE (can
 ALTER TABLE job_listing ADD COLUMN source         text NOT NULL CHECK (source IN ('ats', 'crawl'));
 ALTER TABLE job_listing ADD COLUMN source_id      text NOT NULL DEFAULT '';
 ALTER TABLE job_listing ADD COLUMN source_hash    text NOT NULL DEFAULT '';
-ALTER TABLE job_listing ADD COLUMN career_page_id uuid REFERENCES career_page (id);
+-- career_page_id is provenance, not identity, and is already nullable (pageless
+-- companies leave it NULL). ON DELETE SET NULL so deleting a Career Page orphans
+-- its Corpus listings rather than FK-violating; the listings survive the page.
+ALTER TABLE job_listing ADD COLUMN career_page_id uuid REFERENCES career_page (id) ON DELETE SET NULL;
 ALTER TABLE job_listing ADD COLUMN closed_at      timestamptz;
 
 -- source_hash replaces the write-only output content_hash (ADR-0035).
