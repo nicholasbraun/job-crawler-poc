@@ -738,17 +738,18 @@ func TestIsHubOrRootURL(t *testing.T) {
 		url  string
 		want bool
 	}{
-		{"https://karriere.hanwag.de/", true},               // bare root
-		{"https://www.demecan.de", true},                    // bare root, no trailing slash
-		{"https://acme.com/en", true},                       // locale-only root
-		{"https://acme.com/de-de", true},                    // locale-region root
-		{"https://careers.greentube.com/job-offers", true},  // terminal jobs-index word
-		{"https://firma.de/stellenangebote.html", true},     // terminal index served as .html
-		{"https://acme.com/careers/openings", true},         // posting-path but terminal hub
-		{"https://acme.com/careers/senior-engineer", false}, // real posting
-		{"https://acme.com/o/senior-engineer", false},       // real posting
-		{"https://acme.com/en/o/senior-engineer", false},    // locale-prefixed real posting
-		{"https://acme.com/hr", false},                      // a 2-letter dept, not a locale root
+		{"https://karriere.hanwag.de/", true},                          // bare root
+		{"https://www.demecan.de", true},                               // bare root, no trailing slash
+		{"https://acme.com/en", true},                                  // locale-only root
+		{"https://acme.com/de-de", true},                               // locale-region root
+		{"https://careers.greentube.com/job-offers", true},             // terminal jobs-index word
+		{"https://firma.de/stellenangebote.html", true},                // terminal index served as .html
+		{"https://acme.com/careers/openings", true},                    // posting-path but terminal hub
+		{"https://acme.com/careers/senior-engineer", false},            // real posting
+		{"https://acme.com/o/senior-engineer", false},                  // real posting
+		{"https://acme.com/en/o/senior-engineer", false},               // locale-prefixed real posting
+		{"https://acme.com/hr", false},                                 // a 2-letter dept, not a locale root
+		{"https://job-boards.greenhouse.io/acme/jobs/openings", false}, // ATS posting: exempt though terminal is a hub word
 	}
 	for _, tt := range tests {
 		t.Run(tt.url, func(t *testing.T) {

@@ -346,6 +346,13 @@ func countJobPostingLinks(base crawler.URL, content *crawler.Content) int {
 // replays IsPostingPath. ShouldExtract applies these two rungs to a freshly-walked
 // page; this exports their union for the retroactive check.
 func IsHubOrRootURL(u crawler.URL) bool {
+	// Mirror ShouldExtract's rung ordering: a catalog-classified ATS posting is a
+	// single posting regardless of its URL shape, so it is exempt from the URL rungs
+	// (never re-gated). This keeps the invariant that the re-gate closes only what the
+	// live gate would reject.
+	if catalog.Classify(u) == catalog.RoleJobListing {
+		return false
+	}
 	return isBareOrLocaleRoot(u.RawURL) || isExtractIndexTerminal(u.RawURL)
 }
 
