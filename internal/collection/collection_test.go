@@ -149,6 +149,7 @@ func TestCollectionRefetchLifecycleAcrossCycles(t *testing.T) {
 		Parser:            fakeParser{},
 		Liveness:          corpus,
 		Dormancy:          newStubDormancy(corpus),
+		Classifier:        newFakeClassifier(), // reachable page still classifies → Alive
 		SourceHash:        identityHash,
 		EnqueueExtract:    enqueue,
 		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
@@ -213,6 +214,7 @@ func TestCollectionDormancyTransitionAcrossCycles(t *testing.T) {
 		Parser:            fakeParser{},
 		Liveness:          corpus,
 		Dormancy:          newStubDormancy(corpus),
+		Classifier:        newFakeClassifier(), // page 404s → classifier not consulted
 		SourceHash:        identityHash,
 		EnqueueExtract:    (&captureExtract{}).enqueue,
 		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
@@ -235,5 +237,54 @@ func TestCollectionDormancyTransitionAcrossCycles(t *testing.T) {
 	}
 	if corpus.isOpen("d-1") || corpus.isOpen("d-2") {
 		t.Error("cycle 2: a dormant page must close its remaining open listings")
+	}
+}
+
+// TestCollectionNonClassifyingPageGoesDormantAcrossCycles is the #190 regression
+// end-to-end: a Career Page that keeps returning 200 but NO LONGER classifies as a
+// careers page (redesigned into a marketing/landing page listing no jobs) is
+// whole-page death. Across enough Cycles it must accrue dormancy through the real
+// NextDormancy reducer and eventually cascade its remaining Open listings closed —
+// exactly as a 404 board does. Before the fix a reachable 200 always probed Alive, so
+// the counter reset every Cycle and the stale listings never closed.
+func TestCollectionNonClassifyingPageGoesDormantAcrossCycles(t *testing.T) {
+	page := uuid.New()
+	corpus := newStubCorpus()
+	corpus.add(crawler.JobListing{CanonicalURL: "m-1", URL: "https://redesign.com/j/1", SourceHash: "h1", CareerPageID: page, CompanyKey: "redesign.com"})
+	corpus.add(crawler.JobListing{CanonicalURL: "m-2", URL: "https://redesign.com/j/2", SourceHash: "h2", CareerPageID: page, CompanyKey: "redesign.com"})
+
+	const threshold = 2
+	dl := newFakeDownloader()
+	dl.ok("https://redesign.com/careers", "we are a great place to work") // 200 every cycle
+	classifier := newFakeClassifier()
+	classifier.verdicts["https://redesign.com/careers"] = false // but no longer a careers page
+	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
+		Downloader:        dl,
+		Parser:            fakeParser{},
+		Liveness:          corpus,
+		Dormancy:          newStubDormancy(corpus),
+		Classifier:        classifier,
+		SourceHash:        identityHash,
+		EnqueueExtract:    (&captureExtract{}).enqueue,
+		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+		DormancyThreshold: threshold,
+	})
+	seed := &crawler.CollectionSeed{URL: "https://redesign.com/careers", CompanyKey: "redesign.com", CareerPageID: page}
+
+	// Cycle 1: first hard-dead (no-longer-classifies) probe — not yet dormant, listings
+	// stay open. A reachable page that still classified would reset here and never dorm.
+	if err := proc.Process(t.Context(), seed); err != nil {
+		t.Fatalf("cycle 1: %v", err)
+	}
+	if !corpus.isOpen("m-1") || !corpus.isOpen("m-2") {
+		t.Fatal("cycle 1: listings should stay open before the page is dormant")
+	}
+
+	// Cycle 2: second no-longer-classifies probe tips the page dormant → cascade closes both.
+	if err := proc.Process(t.Context(), seed); err != nil {
+		t.Fatalf("cycle 2: %v", err)
+	}
+	if corpus.isOpen("m-1") || corpus.isOpen("m-2") {
+		t.Error("cycle 2: a page that no longer classifies must go dormant and close its listings")
 	}
 }

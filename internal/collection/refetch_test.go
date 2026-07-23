@@ -39,6 +39,7 @@ func TestRefetchPerListingLiveness(t *testing.T) {
 		Parser:            fakeParser{},
 		Liveness:          live,
 		Dormancy:          &fakeDormancy{}, // Alive result (BecameDormant=false)
+		Classifier:        newFakeClassifier(),
 		SourceHash:        identityHash,
 		EnqueueExtract:    extract.enqueue,
 		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
@@ -102,6 +103,7 @@ func TestRefetchDormantPageSkipsRefetch(t *testing.T) {
 		Parser:            fakeParser{},
 		Liveness:          live,
 		Dormancy:          &fakeDormancy{result: crawler.DormancyResult{BecameDormant: true, ClosedListings: 4}},
+		Classifier:        newFakeClassifier(),
 		SourceHash:        identityHash,
 		EnqueueExtract:    extract.enqueue,
 		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
@@ -137,6 +139,7 @@ func TestRefetchRecordsPageDormancyOutcome(t *testing.T) {
 		Parser:            fakeParser{},
 		Liveness:          live,
 		Dormancy:          dorm,
+		Classifier:        newFakeClassifier(), // reachable page still classifies → Alive
 		SourceHash:        identityHash,
 		EnqueueExtract:    (&captureExtract{}).enqueue,
 		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
@@ -150,5 +153,40 @@ func TestRefetchRecordsPageDormancyOutcome(t *testing.T) {
 	probes := dorm.recorded()
 	if len(probes) != 1 || probes[0].outcome != crawler.ProbeAlive || probes[0].careerPageID != page {
 		t.Fatalf("dormancy probes = %+v, want one Alive for page %v", probes, page)
+	}
+}
+
+// TestRefetchPageNoLongerClassifiesRecordsDead is the #190 regression at the
+// processor seam: a reachable 200-OK Career Page that no longer classifies as a
+// careers page (redesigned into a marketing/landing page listing no jobs) must record
+// a Dead dormancy probe, not Alive. Before the fix a reachable 200 always mapped to
+// Alive, so whole-page death reset the counter and never accrued dormancy.
+func TestRefetchPageNoLongerClassifiesRecordsDead(t *testing.T) {
+	page := uuid.New()
+	dl := newFakeDownloader()
+	dl.ok("https://acme.com/careers", "we are a great place to work") // 200, marketing copy
+	classifier := newFakeClassifier()
+	classifier.verdicts["https://acme.com/careers"] = false // no longer a careers page
+
+	dorm := &fakeDormancy{}
+	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
+		Downloader:        dl,
+		Parser:            fakeParser{},
+		Liveness:          newFakeLiveness(),
+		Dormancy:          dorm,
+		Classifier:        classifier,
+		SourceHash:        identityHash,
+		EnqueueExtract:    (&captureExtract{}).enqueue,
+		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+		DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+	})
+
+	seed := &crawler.CollectionSeed{URL: "https://acme.com/careers", CompanyKey: "acme.com", CareerPageID: page}
+	if err := proc.Process(t.Context(), seed); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	probes := dorm.recorded()
+	if len(probes) != 1 || probes[0].outcome != crawler.ProbeDead || probes[0].careerPageID != page {
+		t.Fatalf("dormancy probes = %+v, want one Dead for page %v (page no longer classifies)", probes, page)
 	}
 }

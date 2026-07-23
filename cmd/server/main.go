@@ -666,10 +666,13 @@ func newFactory(
 			refetchLane := pool.NewPool(ctx, "collection_refetch_pool",
 				func() processor.Processor[crawler.CollectionSeed] {
 					return collection.NewRefetchProcessor(&collection.RefetchConfig{
-						Downloader:        retryHTTPClient,
-						Parser:            htmlParser,
-						Liveness:          corpusRepository,
-						Dormancy:          careerPageRepository,
+						Downloader: retryHTTPClient,
+						Parser:     htmlParser,
+						Liveness:   corpusRepository,
+						Dormancy:   careerPageRepository,
+						// Same career-page classifier Discovery uses (ADR-0035): a reachable
+						// page that no longer lists openings accrues dormancy like a 404.
+						Classifier:        careerPageConfirmer,
 						SourceHash:        func(mc string) string { return openrouter.SourceHash(mc, llmConfig.ExtractMaxChars) },
 						EnqueueExtract:    extractStage.Enqueue,
 						StaleThreshold:    crawler.DefaultCrawlStaleThreshold,

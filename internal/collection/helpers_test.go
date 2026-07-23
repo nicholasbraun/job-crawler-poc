@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
+	careerpageprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/career_page_processor"
 )
 
 // errNotConfigured is returned by fakeDownloader for a URL the test did not stub,
@@ -67,6 +68,34 @@ func (fakeParser) Parse(b []byte) (*crawler.Content, error) {
 // identityHash is the test SourceHash: it returns the content unchanged, so
 // "unchanged" means the stubbed page body equals the listing's stored SourceHash.
 func identityHash(mainContent string) string { return mainContent }
+
+// fakeClassifier is an inline careerpageprocessor.Confirmer for the page dormancy
+// probe's reclassification step. It maps a URL to a canned verdict (still a careers
+// page, or not) or a canned error; an unstubbed URL defaults to still-a-careers-page,
+// so tests that don't exercise reclassification keep a reachable page Alive.
+type fakeClassifier struct {
+	mu       sync.Mutex
+	verdicts map[string]bool
+	errs     map[string]error
+	def      bool
+}
+
+func newFakeClassifier() *fakeClassifier {
+	return &fakeClassifier{verdicts: map[string]bool{}, errs: map[string]error{}, def: true}
+}
+
+func (c *fakeClassifier) Confirm(_ context.Context, url string, _ *crawler.Content) (careerpageprocessor.Verdict, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err, ok := c.errs[url]; ok {
+		return careerpageprocessor.Verdict{}, err
+	}
+	still, ok := c.verdicts[url]
+	if !ok {
+		still = c.def
+	}
+	return careerpageprocessor.Verdict{IsCareerPage: still}, nil
+}
 
 // crawlProbe records one ApplyCrawlProbe invocation.
 type crawlProbe struct {

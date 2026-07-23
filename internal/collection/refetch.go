@@ -10,6 +10,7 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
 	"github.com/nicholasbraun/job-crawler-poc/internal/processor"
+	careerpageprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/career_page_processor"
 )
 
 // RefetchConfig groups the crawl-lane refetch processor's dependencies (ADR-0035).
@@ -22,6 +23,14 @@ type RefetchConfig struct {
 	// Dormancy records the Career-Page reach probe and cascades a close when the
 	// page tips dormant.
 	Dormancy DormancyRecorder
+	// Classifier re-classifies a reachable Career Page on the dormancy probe: a
+	// 200-OK page that no longer lists open positions (redesigned into a
+	// marketing/landing page) is whole-page death (ProbeDead) and accrues dormancy
+	// like a 404 board (ADR-0035). It is the same career-page classifier Discovery
+	// runs, gated behind the 200 branch so it fires at most once per page per Cycle
+	// (bounded by Catalog size, not listing count); only its IsCareerPage verdict is
+	// read here (the employer name Discovery reads is irrelevant to liveness).
+	Classifier careerpageprocessor.Confirmer
 	// SourceHash computes the extraction-cache key over a page's main content —
 	// bound to openrouter.SourceHash with the extractor's ExtractMaxChars so the key
 	// is byte-identical to the one the extractor stored (ADR-0035).
@@ -57,6 +66,7 @@ type RefetchProcessor struct {
 	parser            parser.Parser
 	liveness          crawler.CorpusLivenessRepository
 	dormancy          DormancyRecorder
+	classifier        careerpageprocessor.Confirmer
 	sourceHash        func(mainContent string) string
 	enqueueExtract    func(ctx context.Context, raw *crawler.RawJobListing) error
 	staleThreshold    int
@@ -74,6 +84,7 @@ func NewRefetchProcessor(cfg *RefetchConfig) *RefetchProcessor {
 		parser:            cfg.Parser,
 		liveness:          cfg.Liveness,
 		dormancy:          cfg.Dormancy,
+		classifier:        cfg.Classifier,
 		sourceHash:        cfg.SourceHash,
 		enqueueExtract:    cfg.EnqueueExtract,
 		staleThreshold:    cfg.StaleThreshold,
@@ -88,10 +99,12 @@ func NewRefetchProcessor(cfg *RefetchConfig) *RefetchProcessor {
 // refetched. Per-listing refetch errors are joined so one bad posting neither drops
 // the rest nor aborts the pool.
 func (p *RefetchProcessor) Process(ctx context.Context, page *crawler.CollectionSeed) error {
-	// 1. Dormancy probe of the page URL. A reachable page is Alive; a 404/410 is Dead;
-	//    a transient failure is Inconclusive (never counts toward dormancy).
-	_, perr := p.downloader.Get(ctx, page.URL)
-	res, derr := p.dormancy.RecordProbe(ctx, page.CareerPageID, classifyStatus(perr), p.dormancyThreshold)
+	// 1. Dormancy probe of the page URL. Whole-page death is hard-dead — a 404/410
+	//    board OR a reachable 200 that no longer classifies as a careers page (a
+	//    redesign into a marketing/landing page listing no openings) — and both accrue
+	//    dormancy. A transient GET, or a parse/classify blip on a reachable page, is
+	//    Inconclusive and never counts.
+	res, derr := p.dormancy.RecordProbe(ctx, page.CareerPageID, p.probePage(ctx, page), p.dormancyThreshold)
 	if derr != nil {
 		return fmt.Errorf("collection: recording dormancy probe for %q: %w", page.URL, derr)
 	}
@@ -117,6 +130,43 @@ func (p *RefetchProcessor) Process(ctx context.Context, page *crawler.Collection
 		}
 	}
 	return errs
+}
+
+// probePage classifies one Career-Page dormancy probe (ADR-0035): it GETs the page
+// and, only on a reachable 200, re-classifies it to catch whole-page death — a
+// redesign into a page that no longer lists openings. The re-classification is the
+// LLM career-page classifier Discovery runs; gating it behind the 200 branch keeps it
+// to one classify per crawled Career Page per Cycle (bounded by Catalog size, not
+// listing count) — the added cost ADR-0035 accepts by naming "no-longer-classifies" a
+// dormancy trigger. A 404/410/transient GET skips classification entirely; a parse or
+// classify failure on a reached page folds to Inconclusive so a blip never counts.
+func (p *RefetchProcessor) probePage(ctx context.Context, page *crawler.CollectionSeed) crawler.ProbeOutcome {
+	resp, getErr := p.downloader.Get(ctx, page.URL)
+	if getErr != nil {
+		return classifyPageProbe(getErr, false, nil)
+	}
+	still, classifyErr := p.stillCareerPage(ctx, page.URL, resp)
+	if classifyErr != nil {
+		slog.Warn("collection: page reclassification failed; dormancy probe inconclusive",
+			"url", page.URL, "err", classifyErr)
+	}
+	return classifyPageProbe(nil, still, classifyErr)
+}
+
+// stillCareerPage parses a reached page and asks the classifier whether it STILL
+// lists open positions. A parse failure or a classifier error returns a non-nil
+// error, which probePage folds into an Inconclusive probe (never counts toward
+// dormancy); the returned bool is meaningful only when err is nil.
+func (p *RefetchProcessor) stillCareerPage(ctx context.Context, url string, resp *downloader.Response) (bool, error) {
+	content, perr := p.parser.Parse(resp.Content)
+	if perr != nil {
+		return false, fmt.Errorf("collection: parsing page %q for reclassification: %w", url, perr)
+	}
+	verdict, cerr := p.classifier.Confirm(ctx, url, content)
+	if cerr != nil {
+		return false, fmt.Errorf("collection: reclassifying page %q: %w", url, cerr)
+	}
+	return verdict.IsCareerPage, nil
 }
 
 // refetchOne refetches one open posting and applies its Liveness Outcome (ADR-0035):
