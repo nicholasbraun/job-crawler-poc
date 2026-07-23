@@ -102,6 +102,9 @@ func TestAshbyFetchMapsBoard(t *testing.T) {
 	if first.URL != "https://jobs.ashbyhq.com/linear/d3bc1ced-3ce4-4086-a050-555055dbb1ff" {
 		t.Errorf("URL = %q, want the jobUrl", first.URL)
 	}
+	if first.SourceID != "d3bc1ced-3ce4-4086-a050-555055dbb1ff" {
+		t.Errorf("SourceID = %q, want the posting id", first.SourceID)
+	}
 	if first.Location != "Europe" {
 		t.Errorf("Location = %q, want %q (the location string, not the address object)", first.Location, "Europe")
 	}

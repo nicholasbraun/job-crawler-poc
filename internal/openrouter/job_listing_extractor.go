@@ -6,6 +6,8 @@ package openrouter
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -212,11 +214,15 @@ func NewJobListingExtractor(cfg Config) *JobListingExtractor {
 // single job posting (a false verdict is an Extractor Abstain). The returned
 // Listing.URL is set to the source page URL.
 func (jle *JobListingExtractor) Extract(ctx context.Context, raw crawler.RawJobListing) (crawler.Extraction, error) {
+	// The cap lives here, so the extractor is the single source of truth for the
+	// exact input the model saw. The same capped string feeds both the prompt and
+	// the SourceHash extraction-cache key (ADR-0035).
+	capped := capChars(raw.Content.MainContent, jle.extractMaxChars)
 	reqBody := chatRequest{
 		Model: jle.model,
 		Messages: []message{
 			{"system", openrouterPrompt},
-			{"user", fmt.Sprintf("%s\n%s\n%s", untrustedOpen, sealUntrusted(capChars(raw.Content.MainContent, jle.extractMaxChars)), untrustedClose)},
+			{"user", fmt.Sprintf("%s\n%s\n%s", untrustedOpen, sealUntrusted(capped), untrustedClose)},
 		},
 		ResponseFormat: jsonObjectFormat,
 		Temperature:    0,
@@ -274,6 +280,14 @@ func (jle *JobListingExtractor) Extract(ctx context.Context, raw crawler.RawJobL
 
 	listing := sanitizeJobListing(result.JobListing)
 	listing.URL = raw.URL.RawURL
+	listing.SourceHash = sourceHash(capped)
 
 	return crawler.Extraction{Listing: listing, IsJobPosting: isPosting}, nil
+}
+
+// sourceHash is the SHA-256 (hex) of the exact capped MainContent fed to the
+// extractor — the extraction-cache key the crawl-lane refetch pass compares (ADR-0035).
+func sourceHash(capped string) string {
+	sum := sha256.Sum256([]byte(capped))
+	return hex.EncodeToString(sum[:])
 }

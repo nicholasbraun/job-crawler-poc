@@ -13,9 +13,8 @@ import (
 // TestSingleDiscoveryDefinition drives the singleton-discovery partial unique
 // index (migration 0010) through the repository: at most one discovery
 // definition, translated to crawler.ErrDiscoveryDefinitionExists (ADR-0017),
-// while non-discovery definitions remain unconstrained. The "keyword" kind is
-// retired (the Keyword Crawl lane was removed) but its rows still round-trip
-// through the retained column until the Corpus schema cutover.
+// while non-discovery definitions remain unconstrained. The kind value on the
+// non-discovery fixtures is immaterial — only "discovery" is index-constrained.
 func TestSingleDiscoveryDefinition(t *testing.T) {
 	pool := newTestPool(t)
 	defs := postgres.NewCrawlDefinitionRepository(pool)
@@ -39,67 +38,16 @@ func TestSingleDiscoveryDefinition(t *testing.T) {
 	}
 
 	// Non-discovery definitions are outside the index predicate and accumulate
-	// freely; the retired "keyword" kind still round-trips through the column.
-	for _, name := range []string{"keyword-a", "keyword-b"} {
+	// freely; the kind value is immaterial to the index.
+	for _, name := range []string{"non-discovery-a", "non-discovery-b"} {
 		if err := defs.Create(t.Context(), &crawler.CrawlDefinition{
 			Name:     name,
-			Kind:     crawler.CrawlKind("keyword"),
-			Keywords: []string{"go"},
+			Kind:     crawler.CrawlKind("test"),
 			MaxDepth: 1,
 		}); err != nil {
 			t.Fatalf("non-discovery definition %q should insert: %v", name, err)
 		}
 	}
-}
-
-// TestCountryConstraintRoundTrip drives the Country Constraint column (ADR-0028,
-// migration 0016) through Create/Get: the target Countries survive the round trip,
-// and a definition created with no Countries reads back as an empty (non-nil,
-// non-panicking) slice via the NOT NULL DEFAULT '{}' column.
-func TestCountryConstraintRoundTrip(t *testing.T) {
-	pool := newTestPool(t)
-	defs := postgres.NewCrawlDefinitionRepository(pool)
-
-	t.Run("countries survive the round trip", func(t *testing.T) {
-		def := &crawler.CrawlDefinition{
-			Name:      "go-de-at",
-			Kind:      crawler.CrawlKind("keyword"),
-			Keywords:  []string{"go"},
-			Countries: []string{"DE", "AT"},
-			MaxDepth:  1,
-		}
-		if err := defs.Create(t.Context(), def); err != nil {
-			t.Fatalf("creating definition: %v", err)
-		}
-
-		got, err := defs.Get(t.Context(), def.ID)
-		if err != nil {
-			t.Fatalf("getting definition: %v", err)
-		}
-		if want := []string{"DE", "AT"}; !slices.Equal(got.Countries, want) {
-			t.Errorf("countries: got %v, want %v", got.Countries, want)
-		}
-	})
-
-	t.Run("no countries reads back as an empty slice", func(t *testing.T) {
-		def := &crawler.CrawlDefinition{
-			Name:     "go-anywhere",
-			Kind:     crawler.CrawlKind("keyword"),
-			Keywords: []string{"go"},
-			MaxDepth: 1,
-		}
-		if err := defs.Create(t.Context(), def); err != nil {
-			t.Fatalf("creating definition: %v", err)
-		}
-
-		got, err := defs.Get(t.Context(), def.ID)
-		if err != nil {
-			t.Fatalf("getting definition: %v", err)
-		}
-		if len(got.Countries) != 0 {
-			t.Errorf("countries: got %v, want empty (anywhere)", got.Countries)
-		}
-	})
 }
 
 // TestAppendSeedURL drives the additive Seed mutation (ADR-0018): a new Seed is

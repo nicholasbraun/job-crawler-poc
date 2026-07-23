@@ -219,16 +219,10 @@ func DefaultLLMGateConfig() LLMGateConfig {
 // how. A definition is immutable once created; each execution of it is a
 // CrawlRun.
 type CrawlDefinition struct {
-	ID       uuid.UUID
-	Name     string
-	Kind     CrawlKind
-	SeedURLs []string
-	// Keywords gate pages for keyword crawls. Unused for discovery crawls.
-	Keywords []string
-	// Countries is the Country Constraint (ADR-0028): the set of target ISO 3166-1
-	// alpha-2 codes (uppercase) a Keyword Crawl keeps Job Listings for. Empty means
-	// anywhere (today's behavior). Immutable, like Keywords; unused for discovery.
-	Countries []string
+	ID        uuid.UUID
+	Name      string
+	Kind      CrawlKind
+	SeedURLs  []string
 	MaxDepth  int
 	URLFilter URLFilterConfig
 	CreatedAt time.Time

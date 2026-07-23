@@ -6,25 +6,23 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/atsingest"
+	"github.com/nicholasbraun/job-crawler-poc/internal/listingid"
 )
 
-// TestProcessorSavesOnlyKeywordMatches asserts the relevance gate and that the
-// saved record carries the fetcher's canonical posting URL under the crawl
-// definition — the (definitionID, URL) upsert key.
+// TestProcessorSavesOnlyKeywordMatches asserts the relevance gate, that the
+// saved record carries the fetcher's canonical posting URL, and that the ATS
+// lane stamps the Corpus identity from the provider posting id (ADR-0034).
 func TestProcessorSavesOnlyKeywordMatches(t *testing.T) {
 	fetcher := &stubFetcher{listings: []*crawler.JobListing{
-		{Title: "Go Engineer", URL: "https://boards.greenhouse.io/acme/jobs/1", Description: "build services"},
-		{Title: "Sales Rep", URL: "https://boards.greenhouse.io/acme/jobs/2", Description: "close deals"},
+		{Title: "Go Engineer", URL: "https://boards.greenhouse.io/acme/jobs/1", SourceID: "1", Description: "build services"},
+		{Title: "Sales Rep", URL: "https://boards.greenhouse.io/acme/jobs/2", SourceID: "2", Description: "close deals"},
 	}}
 	repo := &spyRepo{}
-	defID := uuid.New()
 	proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
 		ResolveFetcher: resolveTo(fetcher),
 		Repository:     repo,
-		DefinitionID:   defID,
 		Keywords:       []string{"go"},
 		CompanyNames:   map[string]string{"acme.com": "Acme Inc"},
 	})
@@ -47,8 +45,37 @@ func TestProcessorSavesOnlyKeywordMatches(t *testing.T) {
 	if got.URL != "https://boards.greenhouse.io/acme/jobs/1" {
 		t.Errorf("saved URL = %q, want the canonical posting URL", got.URL)
 	}
-	if repo.lastDefID != defID {
-		t.Errorf("saved under definition %v, want %v", repo.lastDefID, defID)
+	if got.Source != crawler.SourceLaneATS {
+		t.Errorf("Source = %q, want %q", got.Source, crawler.SourceLaneATS)
+	}
+	if want := listingid.FromATS("greenhouse", "acme", got.SourceID); got.CanonicalURL != want {
+		t.Errorf("CanonicalURL = %q, want %q (identity from provider posting id)", got.CanonicalURL, want)
+	}
+}
+
+// TestProcessorFallsBackToURLIdentityWithoutSourceID asserts the keep-distinct
+// fallback (ADR-0034): a posting the fetcher could not id keys on its
+// canonicalized URL rather than collapsing the whole tenant to one key.
+func TestProcessorFallsBackToURLIdentityWithoutSourceID(t *testing.T) {
+	fetcher := &stubFetcher{listings: []*crawler.JobListing{
+		{Title: "Go Engineer", URL: "https://boards.greenhouse.io/acme/jobs/1", Description: "build services"},
+	}}
+	repo := &spyRepo{}
+	proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
+		ResolveFetcher: resolveTo(fetcher),
+		Repository:     repo,
+		Keywords:       []string{"go"},
+	})
+
+	if err := proc.Process(t.Context(), &atsingest.FetchTask{Provider: "greenhouse", TenantSlug: "acme"}); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if len(repo.saved) != 1 {
+		t.Fatalf("saved %d listings, want 1", len(repo.saved))
+	}
+	got := repo.saved[0]
+	if want := listingid.FromURL(got.URL); got.CanonicalURL != want {
+		t.Errorf("CanonicalURL = %q, want the URL-derived identity %q", got.CanonicalURL, want)
 	}
 }
 
@@ -63,7 +90,6 @@ func TestProcessorMatchesOnDescription(t *testing.T) {
 	proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
 		ResolveFetcher: resolveTo(fetcher),
 		Repository:     repo,
-		DefinitionID:   uuid.New(),
 		Keywords:       []string{"go"},
 	})
 
@@ -87,7 +113,6 @@ func TestProcessorAttributesOwner(t *testing.T) {
 		proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
 			ResolveFetcher: resolveTo(fetcher),
 			Repository:     repo,
-			DefinitionID:   uuid.New(),
 			Keywords:       []string{"go"},
 			CompanyNames:   map[string]string{"acme.com": "Acme Inc"},
 		})
@@ -112,7 +137,6 @@ func TestProcessorAttributesOwner(t *testing.T) {
 		proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
 			ResolveFetcher: resolveTo(fetcher),
 			Repository:     repo,
-			DefinitionID:   uuid.New(),
 			Keywords:       []string{"go"},
 			CompanyNames:   map[string]string{"other.com": "Other Inc"},
 		})
@@ -164,7 +188,6 @@ func TestProcessorResolvesCountryAtSave(t *testing.T) {
 			proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
 				ResolveFetcher: resolveTo(fetcher),
 				Repository:     repo,
-				DefinitionID:   uuid.New(),
 				Keywords:       []string{"go"},
 			})
 
@@ -190,7 +213,6 @@ func TestProcessorUnregisteredProviderIsNoOp(t *testing.T) {
 	proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
 		ResolveFetcher: resolveNone,
 		Repository:     repo,
-		DefinitionID:   uuid.New(),
 		Keywords:       []string{"go"},
 	})
 
@@ -214,7 +236,6 @@ func TestProcessorFetchErrorIsReturned(t *testing.T) {
 	proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
 		ResolveFetcher: resolveTo(fetcher),
 		Repository:     repo,
-		DefinitionID:   uuid.New(),
 		Keywords:       []string{"go"},
 	})
 
@@ -243,7 +264,6 @@ func TestProcessorContinuesAfterSaveError(t *testing.T) {
 	proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
 		ResolveFetcher: resolveTo(fetcher),
 		Repository:     repo,
-		DefinitionID:   uuid.New(),
 		Keywords:       []string{"go"},
 		OnSaved:        func(context.Context) { savedTaps++ },
 	})
@@ -271,7 +291,6 @@ func TestProcessorEmptyKeywordsSaveNothing(t *testing.T) {
 	proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
 		ResolveFetcher: resolveTo(fetcher),
 		Repository:     repo,
-		DefinitionID:   uuid.New(),
 		Keywords:       nil,
 	})
 

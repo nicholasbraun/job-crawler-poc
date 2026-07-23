@@ -1,5 +1,5 @@
 // Package joblistingprocessor converts raw job listings into structured
-// JobListing records and persists them via the JobListingRepository.
+// JobListing records and persists them into the Corpus (CorpusRepository).
 package joblistingprocessor
 
 import (
@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/geo"
+	"github.com/nicholasbraun/job-crawler-poc/internal/listingid"
 	"github.com/nicholasbraun/job-crawler-poc/internal/llmobs"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -26,11 +26,10 @@ type JobListingExtractor interface {
 }
 
 type Config struct {
-	JobListingRepository crawler.JobListingRepository
-	JobListingExtractor  JobListingExtractor
-	// DefinitionID identifies the crawl definition whose run produced these
-	// listings; it is passed through to Save as the listing key's first half.
-	DefinitionID uuid.UUID
+	// Corpus persists the extracted listings, upserted on their canonical URL
+	// identity (ADR-0034).
+	Corpus              crawler.CorpusRepository
+	JobListingExtractor JobListingExtractor
 	// Recorder instruments the LLM extractor (calls, content dedup) for the
 	// ADR-0007 measurement. Optional: a nil Recorder records nothing.
 	Recorder llmobs.Recorder
@@ -48,11 +47,10 @@ type Config struct {
 // JobListingProcessor extracts structured job data from raw crawled pages
 // and persists the results. It implements processor.Processor[crawler.RawJobListing].
 type JobListingProcessor struct {
-	jobListingRepository        crawler.JobListingRepository
+	corpus                      crawler.CorpusRepository
 	jobListingsProcessedCounter metric.Int64Counter
 	jobListingExtractor         JobListingExtractor
 	recorder                    llmobs.Recorder
-	definitionID                uuid.UUID
 	companyNames                map[string]string
 	onSaved                     func(ctx context.Context)
 }
@@ -71,11 +69,10 @@ func NewProcessor(cfg *Config) *JobListingProcessor {
 	}
 
 	return &JobListingProcessor{
-		jobListingRepository:        cfg.JobListingRepository,
+		corpus:                      cfg.Corpus,
 		jobListingsProcessedCounter: jobListingsProcessedCounter,
 		jobListingExtractor:         cfg.JobListingExtractor,
 		recorder:                    recorder,
-		definitionID:                cfg.DefinitionID,
 		companyNames:                cfg.CompanyNames,
 		onSaved:                     cfg.OnSaved,
 	}
@@ -125,7 +122,13 @@ func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.Raw
 	// with the Keyword Crawl lane, ADR-0038).
 	extraction.Listing.Country = geo.Resolve(extraction.Listing.Location)
 
-	if err := w.jobListingRepository.Save(ctx, w.definitionID, &extraction.Listing); err != nil {
+	// Stamp the Corpus identity (ADR-0034): the crawl lane keys on the canonicalized
+	// source URL. SourceID stays empty (crawl lane); SourceHash was set by the
+	// extractor from the exact capped input it saw.
+	extraction.Listing.Source = crawler.SourceLaneCrawl
+	extraction.Listing.CanonicalURL = listingid.FromURL(workload.URL.RawURL)
+
+	if err := w.corpus.Save(ctx, &extraction.Listing); err != nil {
 		return fmt.Errorf("job_listing_processor: error saving processed job listing %v: %w", *workload, err)
 	}
 

@@ -6,7 +6,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/ats"
 	"github.com/nicholasbraun/job-crawler-poc/internal/atsingest"
@@ -72,34 +71,20 @@ func (f *stubFetcher) lastTenant() string {
 // can't rewrite history). failOn, when set, forces a Save error for a matching
 // listing so save-error handling can be exercised.
 type spyRepo struct {
-	mu        sync.Mutex
-	saved     []*crawler.JobListing
-	lastDefID uuid.UUID
-	failOn    func(*crawler.JobListing) bool
+	mu     sync.Mutex
+	saved  []*crawler.JobListing
+	failOn func(*crawler.JobListing) bool
 }
 
-func (r *spyRepo) Save(ctx context.Context, definitionID uuid.UUID, jl *crawler.JobListing) error {
+func (r *spyRepo) Save(ctx context.Context, jl *crawler.JobListing) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.lastDefID = definitionID
 	if r.failOn != nil && r.failOn(jl) {
 		return errSaveFailed
 	}
 	saved := *jl
 	r.saved = append(r.saved, &saved)
 	return nil
-}
-
-func (r *spyRepo) Find(ctx context.Context) ([]*crawler.JobListing, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.saved, nil
-}
-
-func (r *spyRepo) FindByDefinition(ctx context.Context, definitionID uuid.UUID, keyword string) ([]*crawler.JobListing, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.saved, nil
 }
 
 // resolveTo builds a ResolveFetcher that always returns f, ok=true.
@@ -112,7 +97,7 @@ func resolveNone(string) (ats.BoardFetcher, bool) { return nil, false }
 
 // newTestLane builds a Lane whose workers all share fetcher and repo, so tests
 // can count Fetch/Save calls across the pool.
-func newTestLane(t *testing.T, fetcher ats.BoardFetcher, repo crawler.JobListingRepository, workers int) *atsingest.Lane {
+func newTestLane(t *testing.T, fetcher ats.BoardFetcher, repo crawler.CorpusRepository, workers int) *atsingest.Lane {
 	t.Helper()
 	return atsingest.NewLane(t.Context(), atsingest.Config{
 		MaxWorkers: workers,
@@ -120,7 +105,6 @@ func newTestLane(t *testing.T, fetcher ats.BoardFetcher, repo crawler.JobListing
 			return atsingest.NewProcessor(&atsingest.ProcessorConfig{
 				ResolveFetcher: resolveTo(fetcher),
 				Repository:     repo,
-				DefinitionID:   uuid.New(),
 				Keywords:       []string{"go"},
 			})
 		},

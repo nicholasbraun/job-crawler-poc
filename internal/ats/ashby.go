@@ -122,6 +122,7 @@ type ashbyJobsResponse struct {
 }
 
 type ashbyJob struct {
+	ID               string       `json:"id"` // stable posting id (Corpus SourceID)
 	Title            string       `json:"title"`
 	Location         string       `json:"location"` // human-readable string, e.g. "Europe"
 	Address          ashbyAddress `json:"address"`  // structured fallback when location is empty
@@ -168,6 +169,7 @@ func mapAshbyJob(j ashbyJob) *crawler.JobListing {
 	listing := &crawler.JobListing{
 		Title:    j.Title,
 		URL:      j.JobURL,
+		SourceID: j.ID,
 		Location: location,
 		// address.postalAddress.addressCountry is the structured country signal; the
 		// ingest lane resolves it to an ISO Country at save in preference to the

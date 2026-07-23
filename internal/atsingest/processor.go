@@ -7,11 +7,11 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/ats"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
 	"github.com/nicholasbraun/job-crawler-poc/internal/geo"
+	"github.com/nicholasbraun/job-crawler-poc/internal/listingid"
 	"github.com/nicholasbraun/job-crawler-poc/internal/processor"
 )
 
@@ -21,11 +21,10 @@ type ProcessorConfig struct {
 	// ok=false when the provider has no board-API client. main.go passes the
 	// Registry's Fetcher method.
 	ResolveFetcher func(provider string) (ats.BoardFetcher, bool)
-	// Repository persists the fetched Job Listings, keyed and upserted on
-	// (DefinitionID, URL) so re-fetching a tenant refreshes rather than duplicates.
-	Repository crawler.JobListingRepository
-	// DefinitionID is the crawl definition the fetched listings are saved under.
-	DefinitionID uuid.UUID
+	// Repository persists the fetched Job Listings into the Corpus, upserted on
+	// their canonical identity (ADR-0034) so re-fetching a tenant refreshes rather
+	// than duplicates.
+	Repository crawler.CorpusRepository
 	// Keywords is the crawl's relevance keyword set; a fetched posting is saved
 	// only when its title or description matches one (ADR-0004, the same matcher the
 	// crawl lane uses). Empty keywords save nothing.
@@ -48,8 +47,7 @@ type ProcessorConfig struct {
 // processor.Processor[FetchTask].
 type Processor struct {
 	resolveFetcher func(provider string) (ats.BoardFetcher, bool)
-	repository     crawler.JobListingRepository
-	definitionID   uuid.UUID
+	repository     crawler.CorpusRepository
 	keywordCheck   filter.CheckFn[string]
 	companyNames   map[string]string
 	limiter        *HostLimiter
@@ -64,7 +62,6 @@ func NewProcessor(cfg *ProcessorConfig) *Processor {
 	return &Processor{
 		resolveFetcher: cfg.ResolveFetcher,
 		repository:     cfg.Repository,
-		definitionID:   cfg.DefinitionID,
 		keywordCheck:   filter.Contains(cfg.Keywords...),
 		companyNames:   cfg.CompanyNames,
 		limiter:        cfg.RateLimiter,
@@ -112,7 +109,17 @@ func (p *Processor) Process(ctx context.Context, task *FetchTask) error {
 		// The Country is recorded for downstream querying; it no longer gates the save
 		// (the Country Constraint died with the Keyword Crawl lane, ADR-0038).
 		jl.Country = resolveCountry(jl)
-		if err := p.repository.Save(ctx, p.definitionID, jl); err != nil {
+		// Stamp the Corpus identity (ADR-0034): the ATS lane keys on the provider's
+		// stable posting id so a URL re-slug never forges a new posting. A posting the
+		// fetcher could not id (empty SourceID) falls back to the canonicalized URL —
+		// keep-distinct rather than collapse the whole tenant to one key.
+		jl.Source = crawler.SourceLaneATS
+		if jl.SourceID != "" {
+			jl.CanonicalURL = listingid.FromATS(task.Provider, task.TenantSlug, jl.SourceID)
+		} else {
+			jl.CanonicalURL = listingid.FromURL(jl.URL)
+		}
+		if err := p.repository.Save(ctx, jl); err != nil {
 			saveErr = errors.Join(saveErr, fmt.Errorf("atsingest: saving %s tenant %q listing %q: %w", task.Provider, task.TenantSlug, jl.URL, err))
 			continue
 		}

@@ -4,7 +4,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/postgres"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -54,4 +56,22 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Cleanup(pool.Close)
 
 	return pool
+}
+
+// createDefinition inserts a minimal crawl definition and returns its generated
+// ID, for the crawl_run tests whose rows FK it. It uses a non-discovery kind so
+// repeated calls within one test do not trip the singleton discovery index
+// (migration 0010); the kind value is immaterial to those FK-only run tests.
+func createDefinition(t *testing.T, pool *pgxpool.Pool, name string) uuid.UUID {
+	t.Helper()
+	defRepo := postgres.NewCrawlDefinitionRepository(pool)
+	def := &crawler.CrawlDefinition{
+		Name:     name,
+		Kind:     crawler.CrawlKind("test"),
+		MaxDepth: 1,
+	}
+	if err := defRepo.Create(t.Context(), def); err != nil {
+		t.Fatalf("error creating crawl definition: %v", err)
+	}
+	return def.ID
 }

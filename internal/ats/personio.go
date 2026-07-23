@@ -189,6 +189,7 @@ func mapPersonioPosition(base string, pos personioPosition) *crawler.JobListing 
 	listing := &crawler.JobListing{
 		Title:           pos.Name,
 		URL:             base + "/job/" + pos.ID,
+		SourceID:        pos.ID,
 		Location:        personioLocation(pos),
 		Department:      pos.Department,
 		Description:     personioDescription(pos),

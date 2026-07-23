@@ -1,6 +1,8 @@
 package openrouter_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -297,5 +299,28 @@ func TestExtractPromptNudgesCountryName(t *testing.T) {
 	}
 	if !strings.Contains(lower, "code") {
 		t.Errorf("extractor prompt should mention not emitting a country code, got:\n%s", captured)
+	}
+}
+
+// TestExtractSetsSourceHash asserts the extractor stamps SourceHash with the
+// SHA-256 (hex) of the exact input it fed the model (ADR-0035). The test content
+// is short (below the extract cap), so the hash is over the content verbatim.
+func TestExtractSetsSourceHash(t *testing.T) {
+	const content = "some page text"
+	ext := newExtractorServer(t, `{"title":"X","is_job_posting":true}`)
+	raw := crawler.RawJobListing{
+		URL:     newURL(t, "https://careers.acme.com/jobs/1"),
+		Content: crawler.Content{MainContent: content},
+	}
+
+	got, err := ext.Extract(t.Context(), raw)
+	if err != nil {
+		t.Fatalf("Extract returned error: %v", err)
+	}
+
+	sum := sha256.Sum256([]byte(content))
+	want := hex.EncodeToString(sum[:])
+	if got.Listing.SourceHash != want {
+		t.Errorf("SourceHash = %q, want %q (sha256 of the exact capped input)", got.Listing.SourceHash, want)
 	}
 }

@@ -161,35 +161,23 @@ type definitionDTO struct {
 	Name      string                  `json:"name"`
 	Kind      string                  `json:"kind"`
 	SeedURLs  []string                `json:"seedUrls"`
-	Keywords  []string                `json:"keywords"`
-	Countries []string                `json:"countries"`
 	MaxDepth  int                     `json:"maxDepth"`
 	URLFilter crawler.URLFilterConfig `json:"urlFilter"`
 	CreatedAt time.Time               `json:"createdAt"`
 }
 
 func toDefinitionDTO(def *crawler.CrawlDefinition) definitionDTO {
-	// Coalesce nil slices so the JSON is [] rather than null, keeping the
+	// Coalesce a nil slice so the JSON is [] rather than null, keeping the
 	// frontend's array handling uniform.
 	seedURLs := def.SeedURLs
 	if seedURLs == nil {
 		seedURLs = []string{}
-	}
-	keywords := def.Keywords
-	if keywords == nil {
-		keywords = []string{}
-	}
-	countries := def.Countries
-	if countries == nil {
-		countries = []string{}
 	}
 	return definitionDTO{
 		ID:        def.ID.String(),
 		Name:      def.Name,
 		Kind:      string(def.Kind),
 		SeedURLs:  seedURLs,
-		Keywords:  keywords,
-		Countries: countries,
 		MaxDepth:  def.MaxDepth,
 		URLFilter: def.URLFilter,
 		CreatedAt: def.CreatedAt,

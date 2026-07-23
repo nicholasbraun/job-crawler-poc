@@ -80,6 +80,9 @@ func TestRecruiteeFetchMapsBoard(t *testing.T) {
 	if first.URL != "https://careers.hostaway.com/o/senior-frontend-engineer-100-remote-emea-1" {
 		t.Errorf("URL = %q, want the custom-domain careers_url", first.URL)
 	}
+	if first.SourceID != "100" {
+		t.Errorf("SourceID = %q, want the stringified offer id %q", first.SourceID, "100")
+	}
 	if first.Location != "Remote job" {
 		t.Errorf("Location = %q, want the flat location string", first.Location)
 	}

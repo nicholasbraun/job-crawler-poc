@@ -97,6 +97,9 @@ func TestWorkableFetchMapsBoard(t *testing.T) {
 	if first.URL != "https://apply.workable.com/acme/j/ABC123DEF/" {
 		t.Errorf("URL = %q, want the canonical url", first.URL)
 	}
+	if first.SourceID != "ABC123DEF" {
+		t.Errorf("SourceID = %q, want the shortcode %q", first.SourceID, "ABC123DEF")
+	}
 	if first.Location != "San Francisco, California, United States" {
 		t.Errorf("Location = %q, want %q", first.Location, "San Francisco, California, United States")
 	}

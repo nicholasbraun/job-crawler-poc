@@ -215,6 +215,7 @@ type smartRecruitersListItem struct {
 // smartRecruitersPosting is a single posting's detail object. Only the fields the
 // mapper reads are declared; any others in the JSON are ignored by the decoder.
 type smartRecruitersPosting struct {
+	ID           string                  `json:"id"` // stable posting id (Corpus SourceID)
 	Name         string                  `json:"name"`
 	PostingURL   string                  `json:"postingUrl"`   // canonical posting URL (upsert key)
 	ReleasedDate string                  `json:"releasedDate"` // RFC3339 (with fractional seconds)
@@ -270,6 +271,7 @@ func mapSmartRecruitersPosting(p smartRecruitersPosting) *crawler.JobListing {
 	listing := &crawler.JobListing{
 		Title:    p.Name,
 		URL:      p.PostingURL, // canonical posting URL; the lane keys upserts on it (#127)
+		SourceID: p.ID,         // the re-slug-stable posting id (ADR-0034)
 		Location: smartRecruitersLocationText(p.Location),
 		// location.country is a structured ISO alpha-2 country code (e.g. "de"), not a
 		// name; the ingest lane treats it as a valid code at save (uppercased) in

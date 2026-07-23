@@ -111,6 +111,9 @@ func TestPersonioFetchMapsBoard(t *testing.T) {
 	if want := baseURL + "/job/101"; first.URL != want {
 		t.Errorf("URL = %q, want the synthesized %q", first.URL, want)
 	}
+	if first.SourceID != "101" {
+		t.Errorf("SourceID = %q, want the position id %q", first.SourceID, "101")
+	}
 	// Each <jobDescription> section's heading and CDATA-HTML body become a
 	// plain-text line: tags stripped, &amp; decoded, list items space-joined.
 	wantDesc := "Your Tasks\nBuild & ship Go services.\nYour Profile\n5+ years Go REST APIs"

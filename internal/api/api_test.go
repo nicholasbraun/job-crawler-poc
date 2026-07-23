@@ -1076,9 +1076,9 @@ func TestListAndGetDefinitions(t *testing.T) {
 		if len(got) != 1 || got[0]["name"] != "discovery-1" {
 			t.Errorf("unexpected list body: %v", got)
 		}
-		// nil slices must serialize as [] not null.
-		if _, ok := got[0]["keywords"].([]any); !ok {
-			t.Errorf("keywords should be an array, got %T", got[0]["keywords"])
+		// A nil seedUrls slice must serialize as [] not null.
+		if _, ok := got[0]["seedUrls"].([]any); !ok {
+			t.Errorf("seedUrls should be an array, got %T", got[0]["seedUrls"])
 		}
 	})
 
@@ -1206,9 +1206,9 @@ func TestAddSeed(t *testing.T) {
 	})
 
 	t.Run("non-discovery definition is refused", func(t *testing.T) {
-		// A retired "keyword" row can still exist until the schema cutover; adding a
-		// seed to any non-discovery definition is refused.
-		def := &crawler.CrawlDefinition{ID: uuid.New(), Kind: crawler.CrawlKind("keyword"), Keywords: []string{"go"}}
+		// Adding a seed to any non-discovery definition is refused; the kind value
+		// is immaterial so long as it is not "discovery".
+		def := &crawler.CrawlDefinition{ID: uuid.New(), Kind: crawler.CrawlKind("test")}
 		defs := &fakeDefRepo{get: def}
 		var seededRun []uuid.UUID
 		seeder := func(ctx context.Context, runID uuid.UUID, u crawler.URL) error {

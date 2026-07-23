@@ -170,6 +170,9 @@ func TestSmartRecruitersFetchMapsBoard(t *testing.T) {
 	if first.URL != "https://jobs.smartrecruiters.com/BoschGroup/744000138449489--process-development-engineer-em" {
 		t.Errorf("URL = %q, want the detail postingUrl", first.URL)
 	}
+	if first.SourceID != "744000138449489" {
+		t.Errorf("SourceID = %q, want the posting id (URL re-slug stable, ADR-0034)", first.SourceID)
+	}
 	if first.Location != "Changsha, cn" {
 		t.Errorf("Location = %q, want %q (city, country)", first.Location, "Changsha, cn")
 	}

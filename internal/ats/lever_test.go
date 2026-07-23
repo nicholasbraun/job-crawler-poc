@@ -41,6 +41,7 @@ const leverRichPosting = `[
 func TestLeverFetchMapsBoard(t *testing.T) {
 	const body = `[
 		{
+			"id": "abc-id",
 			"text": "Backend Engineer",
 			"hostedUrl": "https://jobs.lever.co/acme/abc",
 			"categories": {"department": "Engineering", "location": "Berlin"},
@@ -72,6 +73,9 @@ func TestLeverFetchMapsBoard(t *testing.T) {
 	}
 	if first.URL != "https://jobs.lever.co/acme/abc" {
 		t.Errorf("URL = %q, want the hostedUrl", first.URL)
+	}
+	if first.SourceID != "abc-id" {
+		t.Errorf("SourceID = %q, want the posting id %q", first.SourceID, "abc-id")
 	}
 	if first.Location != "Berlin" {
 		t.Errorf("Location = %q, want %q", first.Location, "Berlin")
