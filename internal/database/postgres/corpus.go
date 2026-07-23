@@ -19,6 +19,7 @@ type CorpusRepository struct {
 var (
 	_ crawler.CorpusRepository         = &CorpusRepository{}
 	_ crawler.CorpusLivenessRepository = &CorpusRepository{}
+	_ crawler.CorpusSearchRepository   = &CorpusRepository{}
 )
 
 func NewCorpusRepository(pool *pgxpool.Pool) *CorpusRepository {
