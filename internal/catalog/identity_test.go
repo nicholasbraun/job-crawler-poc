@@ -198,6 +198,50 @@ func TestIdentify(t *testing.T) {
 			wantPoliteness: "career.softgarden.de",
 		},
 		{
+			name:           "manatal subdomain tenant",
+			url:            "https://acme.careers-page.com/",
+			wantKey:        "manatal:acme",
+			wantProvider:   "manatal",
+			wantPoliteness: "acme.careers-page.com",
+		},
+		{
+			name:           "manatal legacy path tenant",
+			url:            "https://www.careers-page.com/acme",
+			wantKey:        "manatal:acme",
+			wantProvider:   "manatal",
+			wantPoliteness: "www.careers-page.com",
+		},
+		{
+			name:           "manatal posting on subdomain attributes to tenant",
+			url:            "https://acme.careers-page.com/jobs/2b1c-uuid",
+			wantKey:        "manatal:acme",
+			wantProvider:   "manatal",
+			wantPoliteness: "acme.careers-page.com",
+		},
+		{
+			// www is the legacy board host (recovered by the pathRule), not a tenant
+			// label, so the bare host mints no tenant while the path tenant above resolves.
+			name:           "manatal bare www is not a tenant",
+			url:            "https://www.careers-page.com/",
+			wantKey:        "careers-page.com",
+			wantProvider:   "",
+			wantPoliteness: "www.careers-page.com",
+		},
+		{
+			name:           "manatal api host is not a tenant",
+			url:            "https://api.careers-page.com/open/v1/career-pages/acme/job-posts",
+			wantKey:        "careers-page.com",
+			wantProvider:   "",
+			wantPoliteness: "api.careers-page.com",
+		},
+		{
+			name:           "manatal customer CNAME host is not a tenant",
+			url:            "https://customer.careers-page.com/",
+			wantKey:        "careers-page.com",
+			wantProvider:   "",
+			wantPoliteness: "customer.careers-page.com",
+		},
+		{
 			name:           "self-hosted falls back to eTLD+1",
 			url:            "https://careers.acme.com/jobs/senior-go",
 			wantKey:        "acme.com",
@@ -263,6 +307,10 @@ func TestClassify(t *testing.T) {
 		{"haileyhr posting is a job listing", "https://acme.careers.haileyhr.app/jobs/123", catalog.RoleJobListing},
 		{"softgarden root is a career page", "https://demo.career.softgarden.de/", catalog.RoleCareerPage},
 		{"softgarden posting is a job listing", "https://demo.career.softgarden.de/jobs/32701543/Communications-Manager-f-m-d-/", catalog.RoleJobListing},
+		{"manatal subdomain root is a career page", "https://acme.careers-page.com/", catalog.RoleCareerPage},
+		{"manatal subdomain posting is a job listing", "https://acme.careers-page.com/jobs/123", catalog.RoleJobListing},
+		{"manatal legacy path root is a career page", "https://www.careers-page.com/acme", catalog.RoleCareerPage},
+		{"manatal legacy path posting is a job listing", "https://www.careers-page.com/acme/jobs/123", catalog.RoleJobListing},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -294,6 +342,8 @@ func TestCareerPageURL(t *testing.T) {
 		{"hibob posting collapses to host root", "https://acme.careers.hibob.com/jobs/999", "https://acme.careers.hibob.com", true},
 		{"haileyhr posting collapses to host root", "https://acme.careers.haileyhr.app/jobs/999", "https://acme.careers.haileyhr.app", true},
 		{"softgarden posting collapses to host root", "https://demo.career.softgarden.de/jobs/32701543/x/", "https://demo.career.softgarden.de", true},
+		{"manatal subdomain posting collapses to host root", "https://acme.careers-page.com/jobs/999", "https://acme.careers-page.com", true},
+		{"manatal legacy path posting collapses to path root", "https://www.careers-page.com/acme/jobs/999", "https://www.careers-page.com/acme", true},
 		{"self-hosted has no canonical ATS url", "https://careers.acme.com/jobs", "", false},
 	}
 	for _, tt := range tests {
@@ -344,6 +394,12 @@ func TestATSProviderForHost(t *testing.T) {
 		{"softgarden tenant subdomain", "demo.career.softgarden.de", "softgarden", true},
 		// Custom-domain CNAME tenants aren't host-recognizable (pins the limitation).
 		{"softgarden custom domain is not an ATS host", "career.nuvisan.com", "", false},
+		{"manatal subdomain tenant host", "acme.careers-page.com", "manatal", true},
+		// The legacy board host is recognized via the pathRule (it is a board host),
+		// even though Identify declines to mint a tenant for the bare host.
+		{"manatal legacy path host", "www.careers-page.com", "manatal", true},
+		{"manatal api host is not a tenant board host", "api.careers-page.com", "", false},
+		{"manatal customer CNAME host is not a tenant board host", "customer.careers-page.com", "", false},
 		{"match is case-insensitive", "BOARDS.GREENHOUSE.IO", "greenhouse", true},
 		{"a company's own host is not an ATS host", "www.acme.com", "", false},
 		{"empty host is not an ATS host", "", "", false},

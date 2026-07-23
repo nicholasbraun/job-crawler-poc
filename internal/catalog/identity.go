@@ -71,6 +71,21 @@ type pathRule struct {
 type subdomainRule struct {
 	provider string
 	suffix   string
+	// excludeLabels are leftmost host labels that are provider infrastructure, not
+	// tenants (Manatal's www/api/customer under careers-page.com). A host whose
+	// tenant label is excluded is left to the eTLD+1 fallback, not slugged.
+	excludeLabels []string
+}
+
+// isExcluded reports whether label is a provider-infrastructure label the rule
+// must not slug as a tenant.
+func (r subdomainRule) isExcluded(label string) bool {
+	for _, e := range r.excludeLabels {
+		if strings.EqualFold(label, e) {
+			return true
+		}
+	}
+	return false
 }
 
 // pathRules are checked before subdomainRules so a path-based board host that
@@ -94,6 +109,13 @@ var pathRules = []pathRule{
 	// prefix segment shifts the tenant slug right by one. Splitting this out is the
 	// #46 fix that stops 20+ real employers collapsing into one fake "join.com".
 	{provider: "join", hosts: []string{"join.com"}, prefix: "companies"},
+	// Manatal (careers-page.com) has DUAL tenancy: the legacy path host
+	// www.careers-page.com/{slug} (greenhouse/lever shape, tenant = first path
+	// segment) and the per-tenant subdomain {slug}.careers-page.com (subdomainRules
+	// below). pathRules are consulted before subdomainRules, so www.careers-page.com
+	// is resolved here as the legacy board host — its tenant comes from the path,
+	// which is why the subdomain rule's www exclusion never mis-slugs it.
+	{provider: "manatal", hosts: []string{"www.careers-page.com"}},
 }
 
 var subdomainRules = []subdomainRule{
@@ -125,6 +147,15 @@ var subdomainRules = []subdomainRule{
 	// serve the identical feed but aren't host-recognizable — they fall to eTLD+1 (accepted,
 	// same as Recruitee careers_url).
 	{provider: "softgarden", suffix: "career.softgarden.de"},
+	// Manatal (careers-page.com) subdomain tenancy: each employer at
+	// <tenant>.careers-page.com; slug = leftmost host label. Tenancy is dual (this
+	// subdomain form and the legacy www.careers-page.com/<slug> path pathRule above);
+	// both resolve the same slug. www/api/customer are provider infrastructure, not
+	// tenants: www is the legacy board host (recovered by the pathRule), api is the
+	// Open API host, and custom-domain CNAMEs land on customer.careers-page.com
+	// (recovered elsewhere from a posting apply link — out of scope here). Excluding
+	// them leaves those hosts to the eTLD+1 fallback rather than minting a fake tenant.
+	{provider: "manatal", suffix: "careers-page.com", excludeLabels: []string{"www", "api", "customer"}},
 }
 
 // ATSProviderForHost reports the ATS provider family that operates host as a
@@ -149,9 +180,17 @@ func ATSProviderForHost(host string) (provider string, ok bool) {
 		}
 	}
 	for _, r := range subdomainRules {
-		if host == r.suffix || strings.HasSuffix(host, "."+r.suffix) {
-			return r.provider, true
+		if host == r.suffix {
+			return r.provider, true // bare provider domain: no tenant label to exclude
 		}
+		label, ok := subdomainLabel(host, r.suffix)
+		if !ok {
+			continue
+		}
+		if r.isExcluded(label) {
+			continue // www/api/customer.careers-page.com is infra, not a tenant board host
+		}
+		return r.provider, true
 	}
 	return "", false
 }
@@ -215,6 +254,9 @@ func matchHost(u crawler.URL) (atsMatch, bool) {
 	}
 	for _, r := range subdomainRules {
 		if label, ok := subdomainLabel(host, r.suffix); ok {
+			if r.isExcluded(label) {
+				continue // www/api/customer.careers-page.com is infra, not a tenant
+			}
 			return atsMatch{provider: r.provider, kind: ruleSubdomain, slug: label}, true
 		}
 	}
