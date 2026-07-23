@@ -20,9 +20,14 @@ ALTER TABLE job_listing
 
 CREATE INDEX job_listing_search_tsv_idx ON job_listing USING gin (search_tsv);
 
--- Trigram indexes power the pg_trgm fuzzy tail. Only title (strongest signal) and
--- company are indexed; description is intentionally excluded (large text, low fuzzy
--- value, oversized index).
+-- Trigram indexes power the pg_trgm fuzzy tail. gin_trgm_ops serves the word-similarity
+-- operator (title %> kw / company %> kw), so SearchListings uses these via a BitmapOr with
+-- the tsvector index above — provided the fuzzy branch is written as the %> operator, not
+-- the word_similarity(...) >= const function form, which is opaque to the planner and
+-- forces a seqscan. The operator tests pg_trgm.word_similarity_threshold, which
+-- SearchListings pins per query with SET LOCAL. Only title (strongest signal) and company
+-- are indexed; description is intentionally excluded (large text, low fuzzy value,
+-- oversized index).
 CREATE INDEX job_listing_title_trgm_idx   ON job_listing USING gin (title gin_trgm_ops);
 CREATE INDEX job_listing_company_trgm_idx ON job_listing USING gin (company gin_trgm_ops);
 

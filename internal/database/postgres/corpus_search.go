@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 )
 
@@ -14,22 +15,32 @@ const (
 	// Limit, so a keywordless browse can never scan the whole Corpus into memory.
 	defaultSearchLimit = 100
 
-	// fuzzyMatchThreshold is the minimum pg_trgm word_similarity for a keyword to
-	// fuzzily match a title/company. It trades recall against noise: lower admits more
+	// fuzzyMatchThreshold is the minimum pg_trgm word similarity for a keyword to
+	// fuzzily match a title/company. A keyword search pins it as
+	// pg_trgm.word_similarity_threshold (SET LOCAL) so the index-backed %> operator
+	// matches at exactly this cutoff. It trades recall against noise: lower admits more
 	// near-miss hits (and more false positives), higher tightens toward exact match.
 	// 0.3 clears a realistic single-typo miss ("enginer" -> "Engineer") while rejecting
 	// unrelated terms.
 	fuzzyMatchThreshold = 0.3
 )
 
+// rowQuerier is the read surface SearchListings needs from either the pool (a
+// keywordless browse) or a transaction (a keyword search, which first pins the
+// pg_trgm threshold via SET LOCAL). Both *pgxpool.Pool and pgx.Tx satisfy it.
+type rowQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 // SearchListings implements crawler.CorpusSearchRepository over Postgres FTS (ADR-0037):
 // it composes a keyword predicate (the weighted title/description/company tsvector via
-// websearch_to_tsquery, OR-ed with a pg_trgm word_similarity fuzzy tail on title/company)
-// with the structured country / work-arrangement / open-closed filters, then orders by
-// q.Sort (ts_rank relevance with a last_seen recency tiebreak by default; strict recency
-// for SortRecent or a keywordless browse) and pages by q.Limit/q.Offset. The predicates
-// and ordering are assembled dynamically with $n placeholders so an absent filter adds
-// neither SQL nor an argument. Never returns nil.
+// websearch_to_tsquery, OR-ed with an index-backed pg_trgm word-similarity fuzzy tail on
+// title/company — the %> operator, matched at fuzzyMatchThreshold via a SET LOCAL GUC so
+// gin_trgm_ops serves it) with the structured country / work-arrangement / open-closed
+// filters, then orders by q.Sort (ts_rank relevance with a last_seen recency tiebreak by
+// default; strict recency for SortRecent or a keywordless browse) and pages by
+// q.Limit/q.Offset. The predicates and ordering are assembled dynamically with $n
+// placeholders so an absent filter adds neither SQL nor an argument. Never returns nil.
 func (r *CorpusRepository) SearchListings(ctx context.Context, q crawler.ListingQuery) ([]*crawler.CorpusListing, error) {
 	// Effective keywords: trimmed, blanks dropped. A query of only-blank keywords
 	// degrades to a pure recency browse (no keyword predicate, no relevance ordering).
@@ -58,20 +69,24 @@ func (r *CorpusRepository) SearchListings(ctx context.Context, q crawler.Listing
 		predicates = append(predicates, "closed_at IS NULL")
 	}
 
-	// Keyword predicate: each keyword is an OR-group (exact tsquery OR fuzzy title/company),
-	// and the groups are AND-ed so every keyword must match. word_similarity(query, target)
-	// with the keyword first finds the best contiguous fuzzy window; company may be NULL and
-	// NULL >= threshold is NULL (not true), so a NULL company never spuriously matches.
+	// Keyword predicate: each keyword is an OR-group (exact tsquery OR fuzzy title OR fuzzy
+	// company), and the groups are AND-ed so every keyword must match. The fuzzy branch uses
+	// the pg_trgm word-similarity operator (title %> kw is word_similarity(kw, title) >=
+	// pg_trgm.word_similarity_threshold), which the title/company gin_trgm_ops indexes serve
+	// via a BitmapOr with the tsvector index — unlike the old word_similarity(...) >= const
+	// function form, which was opaque to the planner and forced a per-row seqscan.
+	// searchWithFuzzyThreshold pins the GUC to fuzzyMatchThreshold so the >= boundary matches
+	// the former inline 0.3 exactly. company may be NULL and NULL %> kw is NULL (not true),
+	// so a NULL company never spuriously matches.
 	if len(keywords) > 0 {
-		thresh := next(fuzzyMatchThreshold)
 		groups := make([]string, 0, len(keywords))
 		for _, k := range keywords {
 			kw := next(k)
 			groups = append(groups, fmt.Sprintf(
 				"(search_tsv @@ websearch_to_tsquery('simple', %s)"+
-					" OR word_similarity(%s, title) >= %s"+
-					" OR word_similarity(%s, company) >= %s)",
-				kw, kw, thresh, kw, thresh,
+					" OR title %%> %s"+
+					" OR company %%> %s)",
+				kw, kw, kw,
 			))
 		}
 		predicates = append(predicates, strings.Join(groups, " AND "))
@@ -136,7 +151,50 @@ func (r *CorpusRepository) SearchListings(ctx context.Context, q crawler.Listing
 	sb.WriteString(orderBy)
 	fmt.Fprintf(&sb, "\n\t\tLIMIT %s OFFSET %s", next(limit), next(offset))
 
-	rows, err := r.pool.Query(ctx, sb.String(), args...)
+	// A keywordless browse has no %> operator, so it needs no threshold GUC and runs
+	// directly on the pool. A keyword search runs inside a transaction that pins the
+	// pg_trgm threshold first (see searchWithFuzzyThreshold).
+	if len(keywords) == 0 {
+		return scanListings(ctx, r.pool, sb.String(), args)
+	}
+	return r.searchWithFuzzyThreshold(ctx, sb.String(), args)
+}
+
+// searchWithFuzzyThreshold runs a keyword search SELECT inside a transaction that pins
+// pg_trgm.word_similarity_threshold via SET LOCAL, so the title %> kw / company %> kw
+// operators match at exactly fuzzyMatchThreshold — a GUC-scoped setting the operator
+// honors, not an inline arg. SET takes no bind parameters, so the value is inlined from
+// the package constant (never user input). SET LOCAL is transaction-scoped, so the pooled
+// connection is never left with a mutated threshold.
+func (r *CorpusRepository) searchWithFuzzyThreshold(ctx context.Context, query string, args []any) ([]*crawler.CorpusListing, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: error beginning search tx: %w", err)
+	}
+	// Rollback is a no-op once Commit has succeeded; the error is not actionable.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, fmt.Sprintf(
+		"SET LOCAL pg_trgm.word_similarity_threshold = %v", fuzzyMatchThreshold,
+	)); err != nil {
+		return nil, fmt.Errorf("postgres: error setting word-similarity threshold: %w", err)
+	}
+
+	results, err := scanListings(ctx, tx, query, args)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("postgres: error committing search tx: %w", err)
+	}
+	return results, nil
+}
+
+// scanListings runs the assembled search query against q (a pool for a browse, a
+// transaction for a keyword search) and projects the rows into CorpusListings. Never
+// returns nil — no match yields an empty slice.
+func scanListings(ctx context.Context, q rowQuerier, query string, args []any) ([]*crawler.CorpusListing, error) {
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: error searching listings: %w", err)
 	}
