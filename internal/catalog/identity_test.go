@@ -165,6 +165,39 @@ func TestIdentify(t *testing.T) {
 			wantPoliteness: "acme.careers.haileyhr.app",
 		},
 		{
+			name:           "softgarden tenant slug from subdomain",
+			url:            "https://demo.career.softgarden.de/jobs/32701543/Communications-Manager-f-m-d-/",
+			wantKey:        "softgarden:demo",
+			wantProvider:   "softgarden",
+			wantPoliteness: "demo.career.softgarden.de",
+		},
+		{
+			// The .softgarden.io form is not confirmed to serve the feed, so it is not
+			// recognized and falls to eTLD+1 with an empty provider.
+			name:           "softgarden .io form is not recognized",
+			url:            "https://demo.softgarden.io/",
+			wantKey:        "softgarden.io",
+			wantProvider:   "",
+			wantPoliteness: "demo.softgarden.io",
+		},
+		{
+			// Custom-domain CNAME tenants serve the identical feed but aren't
+			// host-recognizable, so they fall to eTLD+1 (accepted, like Recruitee).
+			name:           "softgarden custom domain falls to eTLD+1",
+			url:            "https://career.nuvisan.com/",
+			wantKey:        "nuvisan.com",
+			wantProvider:   "",
+			wantPoliteness: "career.nuvisan.com",
+		},
+		{
+			// The bare suffix carries no tenant label, so it is not slugged.
+			name:           "softgarden bare suffix has no tenant",
+			url:            "https://career.softgarden.de/",
+			wantKey:        "softgarden.de",
+			wantProvider:   "",
+			wantPoliteness: "career.softgarden.de",
+		},
+		{
 			name:           "self-hosted falls back to eTLD+1",
 			url:            "https://careers.acme.com/jobs/senior-go",
 			wantKey:        "acme.com",
@@ -228,6 +261,8 @@ func TestClassify(t *testing.T) {
 		{"hibob posting is a job listing", "https://acme.careers.hibob.com/jobs/123", catalog.RoleJobListing},
 		{"haileyhr root is a career page", "https://acme.careers.haileyhr.app/", catalog.RoleCareerPage},
 		{"haileyhr posting is a job listing", "https://acme.careers.haileyhr.app/jobs/123", catalog.RoleJobListing},
+		{"softgarden root is a career page", "https://demo.career.softgarden.de/", catalog.RoleCareerPage},
+		{"softgarden posting is a job listing", "https://demo.career.softgarden.de/jobs/32701543/Communications-Manager-f-m-d-/", catalog.RoleJobListing},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -258,6 +293,7 @@ func TestCareerPageURL(t *testing.T) {
 		{"indigo posting collapses to host root", "https://acme.indigo.jobs/jobs/999", "https://acme.indigo.jobs", true},
 		{"hibob posting collapses to host root", "https://acme.careers.hibob.com/jobs/999", "https://acme.careers.hibob.com", true},
 		{"haileyhr posting collapses to host root", "https://acme.careers.haileyhr.app/jobs/999", "https://acme.careers.haileyhr.app", true},
+		{"softgarden posting collapses to host root", "https://demo.career.softgarden.de/jobs/32701543/x/", "https://demo.career.softgarden.de", true},
 		{"self-hosted has no canonical ATS url", "https://careers.acme.com/jobs", "", false},
 	}
 	for _, tt := range tests {
@@ -305,6 +341,9 @@ func TestATSProviderForHost(t *testing.T) {
 		{"personio tenant subdomain (.de)", "globex.jobs.personio.de", "personio", true},
 		{"personio tenant subdomain (.com)", "globex.jobs.personio.com", "personio", true},
 		{"recruitee tenant subdomain", "acme.recruitee.com", "recruitee", true},
+		{"softgarden tenant subdomain", "demo.career.softgarden.de", "softgarden", true},
+		// Custom-domain CNAME tenants aren't host-recognizable (pins the limitation).
+		{"softgarden custom domain is not an ATS host", "career.nuvisan.com", "", false},
 		{"match is case-insensitive", "BOARDS.GREENHOUSE.IO", "greenhouse", true},
 		{"a company's own host is not an ATS host", "www.acme.com", "", false},
 		{"empty host is not an ATS host", "", "", false},

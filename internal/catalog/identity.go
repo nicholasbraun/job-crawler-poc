@@ -118,6 +118,13 @@ var subdomainRules = []subdomainRule{
 	{provider: "indigo", suffix: "indigo.jobs"},
 	{provider: "hibob", suffix: "careers.hibob.com"},
 	{provider: "haileyhr", suffix: "careers.haileyhr.app"},
+	// softgarden (R3, top crawl-lane leaker). Tenants live at
+	// <tenant>.career.softgarden.de; slug = leftmost host label. The <tenant>.softgarden.io
+	// form was NOT confirmed to serve /jobs.feed.json (demo → 404), so ONLY .career.softgarden.de
+	// is recognized. Custom-domain CNAME tenants (career.nuvisan.com, karriere.betasystems.com)
+	// serve the identical feed but aren't host-recognizable — they fall to eTLD+1 (accepted,
+	// same as Recruitee careers_url).
+	{provider: "softgarden", suffix: "career.softgarden.de"},
 }
 
 // ATSProviderForHost reports the ATS provider family that operates host as a
