@@ -145,3 +145,30 @@ type CorpusRepository interface {
 	// It stamps the Source Lane, source_id, source_hash, and career_page_id.
 	Save(ctx context.Context, jl *JobListing) error
 }
+
+// CorpusLivenessRepository is the set of Corpus operations a Collection Cycle drives
+// to keep Job Listing Liveness current (ADR-0035): the ATS absence-sweep, the
+// crawl-lane refetch application, and the query of a board's Open listings. It is
+// implemented by the same store as CorpusRepository; kept separate so the extraction
+// pipeline (which only Saves) depends on the narrower port.
+type CorpusLivenessRepository interface {
+	// ListOpen returns every currently-Open (closed_at IS NULL) Job Listing collected
+	// under careerPageID, so a Cycle can refetch them for liveness. Each carries
+	// CanonicalURL, URL, Source, SourceID, SourceHash, and CareerPageID (the fields a
+	// refetch needs); never returns nil (an empty board yields an empty slice).
+	ListOpen(ctx context.Context, careerPageID uuid.UUID) ([]*JobListing, error)
+
+	// CloseAbsent runs the ATS-lane absence-sweep for ONE board (ADR-0035): when
+	// boardComplete, it Closes every Open ATS listing under careerPageID whose last_seen
+	// predates notSeenSince (not seen in this Cycle's complete fetch); when boardComplete
+	// is false it closes nothing (a partial/failed fetch must never mass-close a board).
+	// Scoped strictly to careerPageID — never the whole Company. Returns the count closed.
+	CloseAbsent(ctx context.Context, careerPageID uuid.UUID, notSeenSince time.Time, boardComplete bool) (int, error)
+
+	// ApplyCrawlProbe applies one crawl-lane refetch Outcome to the listing keyed on
+	// canonicalURL via the pure NextLiveness reducer: Alive advances last_seen and clears
+	// the streak; Dead closes it; Inconclusive increments the streak and closes only once
+	// it reaches staleThreshold. Attempt-gated by construction — only a probed listing is
+	// touched, so a down collector closes nothing. Returns the resulting LifecycleState.
+	ApplyCrawlProbe(ctx context.Context, canonicalURL string, outcome ProbeOutcome, staleThreshold int) (LifecycleState, error)
+}
