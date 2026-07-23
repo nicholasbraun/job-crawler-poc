@@ -117,9 +117,10 @@ func (h *Handler) listSavedSearches(w http.ResponseWriter, r *http.Request) {
 }
 
 // createSavedSearch validates and persists a new SavedSearch: the name is required
-// (trimmed), keywords are trimmed with blanks dropped, countries are uppercased, and
-// each work-arrangement string must be one of remote/onsite/hybrid (an unknown value
-// is a 400 rather than a facet that silently matches nothing).
+// (trimmed), keywords are trimmed with blanks dropped, each country must be an
+// ISO-3166-1 alpha-2 code, and each work-arrangement string must be one of
+// remote/onsite/hybrid. A malformed country or arrangement is a 400 rather than a
+// facet that silently matches nothing (the corpus stores alpha-2 country codes).
 func (h *Handler) createSavedSearch(w http.ResponseWriter, r *http.Request) {
 	var req savedSearchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -133,6 +134,12 @@ func (h *Handler) createSavedSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	countries, ok := parseCountries(req.Countries)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid country code")
+		return
+	}
+
 	arrangements, ok := parseWorkArrangements(req.WorkArrangements)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "unknown work arrangement")
@@ -142,7 +149,7 @@ func (h *Handler) createSavedSearch(w http.ResponseWriter, r *http.Request) {
 	ss := &crawler.SavedSearch{
 		Name:             name,
 		Keywords:         normalizeKeywords(req.Keywords),
-		Countries:        normalizeCountries(req.Countries),
+		Countries:        countries,
 		WorkArrangements: arrangements,
 	}
 	if err := h.cfg.SavedSearches.Create(r.Context(), ss); err != nil {
@@ -266,16 +273,39 @@ func normalizeKeywords(raw []string) []string {
 	return out
 }
 
-// normalizeCountries trims, drops blanks, and uppercases each country to the stored
-// ISO-3166-1 alpha-2 form. Never nil.
-func normalizeCountries(raw []string) []string {
+// parseCountries validates each country is an ISO-3166-1 alpha-2 code (two ASCII
+// letters), returning ok=false on the first malformed value so a typo like "Germany"
+// or "GER" is a 400 rather than a facet that silently matches nothing — the corpus
+// stores alpha-2. This is a shape check (two letters), not a lookup against the real
+// ISO set, matching parseWorkArrangements' positively-stated-facet reasoning. Blanks
+// are dropped; codes are uppercased to the stored form. Non-nil when ok.
+func parseCountries(raw []string) ([]string, bool) {
 	out := []string{}
 	for _, c := range raw {
-		if c = strings.TrimSpace(c); c != "" {
-			out = append(out, strings.ToUpper(c))
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		if !isAlpha2(c) {
+			return nil, false
+		}
+		out = append(out, strings.ToUpper(c))
+	}
+	return out, true
+}
+
+// isAlpha2 reports whether s is exactly two ASCII letters (an ISO-3166-1 alpha-2
+// country code's shape).
+func isAlpha2(s string) bool {
+	if len(s) != 2 {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
+			return false
 		}
 	}
-	return out
+	return true
 }
 
 // parseWorkArrangements validates each string against the filterable arrangements

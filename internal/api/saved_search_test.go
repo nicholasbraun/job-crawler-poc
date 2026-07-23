@@ -170,6 +170,29 @@ func TestCreateSavedSearch(t *testing.T) {
 			t.Error("no saved search should be created with an unknown work arrangement")
 		}
 	})
+
+	t.Run("non-alpha-2 country is 400", func(t *testing.T) {
+		// "Germany" is a name, not the alpha-2 code the corpus stores, so it would
+		// silently match nothing; reject it like an unknown arrangement.
+		for _, bad := range []string{"Germany", "GER", "d"} {
+			repo := newFakeSavedSearchRepo()
+			srv := newHandler(api.Config{SavedSearches: repo})
+
+			body, _ := json.Marshal(map[string]any{
+				"name":      "bad",
+				"countries": []string{"DE", bad},
+			})
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/saved-searches", bytes.NewReader(body)))
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("country %q: status got %d, want 400; body=%s", bad, rec.Code, rec.Body)
+			}
+			if repo.created != nil {
+				t.Errorf("country %q: no saved search should be created", bad)
+			}
+		}
+	})
 }
 
 func TestListSavedSearches(t *testing.T) {
