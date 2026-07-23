@@ -193,6 +193,7 @@ func TestRefetchRecordsPageDormancyOutcome(t *testing.T) {
 		Liveness:          live,
 		Dormancy:          dorm,
 		Classifier:        newFakeClassifier(), // reachable page still classifies → Alive
+		GateConfig:        crawler.DefaultLLMGateConfig(),
 		SourceHash:        identityHash,
 		EnqueueExtract:    (&captureExtract{}).enqueue,
 		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
@@ -213,13 +214,16 @@ func TestRefetchRecordsPageDormancyOutcome(t *testing.T) {
 // processor seam: a reachable 200-OK Career Page that no longer classifies as a
 // careers page (redesigned into a marketing/landing page listing no jobs) must record
 // a Dead dormancy probe, not Alive. Before the fix a reachable 200 always mapped to
-// Alive, so whole-page death reset the counter and never accrued dormancy.
+// Alive, so whole-page death reset the counter and never accrued dormancy. The page
+// URL is structurally AMBIGUOUS (a /careers sub-page, score 1.0 = uncertain), so the
+// verdict falls to the LLM classifier — the only case the LLM decides.
 func TestRefetchPageNoLongerClassifiesRecordsDead(t *testing.T) {
 	page := uuid.New()
+	const url = "https://acme.com/careers/overview"
 	dl := newFakeDownloader()
-	dl.ok("https://acme.com/careers", "we are a great place to work") // 200, marketing copy
+	dl.ok(url, "we are a great place to work") // 200, marketing copy
 	classifier := newFakeClassifier()
-	classifier.verdicts["https://acme.com/careers"] = false // no longer a careers page
+	classifier.verdicts[url] = false // no longer a careers page
 
 	dorm := &fakeDormancy{}
 	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
@@ -228,18 +232,56 @@ func TestRefetchPageNoLongerClassifiesRecordsDead(t *testing.T) {
 		Liveness:          newFakeLiveness(),
 		Dormancy:          dorm,
 		Classifier:        classifier,
+		GateConfig:        crawler.DefaultLLMGateConfig(),
 		SourceHash:        identityHash,
 		EnqueueExtract:    (&captureExtract{}).enqueue,
 		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
 		DormancyThreshold: crawler.DefaultPageDormancyThreshold,
 	})
 
-	seed := &crawler.CollectionSeed{URL: "https://acme.com/careers", CompanyKey: "acme.com", CareerPageID: page}
+	seed := &crawler.CollectionSeed{URL: url, CompanyKey: "acme.com", CareerPageID: page}
 	if err := proc.Process(t.Context(), seed); err != nil {
 		t.Fatalf("Process: %v", err)
 	}
 	probes := dorm.recorded()
 	if len(probes) != 1 || probes[0].outcome != crawler.ProbeDead || probes[0].careerPageID != page {
 		t.Fatalf("dormancy probes = %+v, want one Dead for page %v (page no longer classifies)", probes, page)
+	}
+}
+
+// TestRefetchStructurallyCertainPageStaysAliveDespiteLLM guards the review fix: a
+// page discovery certain-accepted on STRUCTURE alone (a /careers hub root) is
+// re-classified WITHOUT the LLM, so a repeatable LLM false-negative can never
+// deterministically dormant-close it. The classifier is wired to say "no", yet the
+// probe must be Alive because the structural pre-gate certain-accepts first.
+func TestRefetchStructurallyCertainPageStaysAliveDespiteLLM(t *testing.T) {
+	page := uuid.New()
+	const url = "https://acme.com/careers" // careerHubRoot → structurally certain
+	dl := newFakeDownloader()
+	dl.ok(url, "we are a great place to work")
+	classifier := newFakeClassifier()
+	classifier.verdicts[url] = false // the LLM would (wrongly) say no — must be ignored
+
+	dorm := &fakeDormancy{}
+	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
+		Downloader:        dl,
+		Parser:            fakeParser{},
+		Liveness:          newFakeLiveness(),
+		Dormancy:          dorm,
+		Classifier:        classifier,
+		GateConfig:        crawler.DefaultLLMGateConfig(),
+		SourceHash:        identityHash,
+		EnqueueExtract:    (&captureExtract{}).enqueue,
+		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+		DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+	})
+
+	seed := &crawler.CollectionSeed{URL: url, CompanyKey: "acme.com", CareerPageID: page}
+	if err := proc.Process(t.Context(), seed); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	probes := dorm.recorded()
+	if len(probes) != 1 || probes[0].outcome != crawler.ProbeAlive {
+		t.Fatalf("dormancy probes = %+v, want one Alive (structural certain-accept beats the LLM)", probes)
 	}
 }

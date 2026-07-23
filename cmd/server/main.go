@@ -672,7 +672,10 @@ func newFactory(
 						Dormancy:   careerPageRepository,
 						// Same career-page classifier Discovery uses (ADR-0035): a reachable
 						// page that no longer lists openings accrues dormancy like a 404.
-						Classifier:        careerPageConfirmer,
+						Classifier: careerPageConfirmer,
+						// Structural pre-gate for the re-classification, so a page discovery
+						// certain-accepted on structure is not dormant-closed by an LLM blip.
+						GateConfig:        gateConfig,
 						SourceHash:        func(mc string) string { return openrouter.SourceHash(mc, llmConfig.ExtractMaxChars) },
 						EnqueueExtract:    extractStage.Enqueue,
 						StaleThreshold:    crawler.DefaultCrawlStaleThreshold,

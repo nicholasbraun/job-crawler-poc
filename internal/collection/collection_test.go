@@ -254,22 +254,26 @@ func TestCollectionNonClassifyingPageGoesDormantAcrossCycles(t *testing.T) {
 	corpus.add(crawler.JobListing{CanonicalURL: "m-2", URL: "https://redesign.com/j/2", SourceHash: "h2", CareerPageID: page, CompanyKey: "redesign.com"})
 
 	const threshold = 2
+	// A structurally-AMBIGUOUS career sub-page (score 1.0 = uncertain), so the
+	// no-longer-classifies verdict falls to the LLM — the case the LLM decides.
+	const url = "https://redesign.com/careers/overview"
 	dl := newFakeDownloader()
-	dl.ok("https://redesign.com/careers", "we are a great place to work") // 200 every cycle
+	dl.ok(url, "we are a great place to work") // 200 every cycle
 	classifier := newFakeClassifier()
-	classifier.verdicts["https://redesign.com/careers"] = false // but no longer a careers page
+	classifier.verdicts[url] = false // but no longer a careers page
 	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
 		Downloader:        dl,
 		Parser:            fakeParser{},
 		Liveness:          corpus,
 		Dormancy:          newStubDormancy(corpus),
 		Classifier:        classifier,
+		GateConfig:        crawler.DefaultLLMGateConfig(),
 		SourceHash:        identityHash,
 		EnqueueExtract:    (&captureExtract{}).enqueue,
 		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
 		DormancyThreshold: threshold,
 	})
-	seed := &crawler.CollectionSeed{URL: "https://redesign.com/careers", CompanyKey: "redesign.com", CareerPageID: page}
+	seed := &crawler.CollectionSeed{URL: url, CompanyKey: "redesign.com", CareerPageID: page}
 
 	// Cycle 1: first hard-dead (no-longer-classifies) probe — not yet dormant, listings
 	// stay open. A reachable page that still classified would reset here and never dorm.

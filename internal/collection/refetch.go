@@ -32,6 +32,12 @@ type RefetchConfig struct {
 	// (bounded by Catalog size, not listing count); only its IsCareerPage verdict is
 	// read here (the employer name Discovery reads is irrelevant to liveness).
 	Classifier careerpageprocessor.Confirmer
+	// GateConfig is the pre-LLM gate config. The dormancy re-classification consults
+	// pagegate.CareerPage first (parity with Discovery's acceptance rule): a
+	// structurally-certain verdict is taken WITHOUT the LLM, so a page discovery
+	// certain-accepted on structure alone can never be deterministically false-closed
+	// by an LLM blip, and the LLM runs only for a structurally-ambiguous page.
+	GateConfig crawler.LLMGateConfig
 	// SourceHash computes the extraction-cache key over a page's main content —
 	// bound to openrouter.SourceHash with the extractor's ExtractMaxChars so the key
 	// is byte-identical to the one the extractor stored (ADR-0035).
@@ -68,6 +74,7 @@ type RefetchProcessor struct {
 	liveness          crawler.CorpusLivenessRepository
 	dormancy          DormancyRecorder
 	classifier        careerpageprocessor.Confirmer
+	gateConfig        crawler.LLMGateConfig
 	sourceHash        func(mainContent string) string
 	enqueueExtract    func(ctx context.Context, raw *crawler.RawJobListing) error
 	staleThreshold    int
@@ -86,6 +93,7 @@ func NewRefetchProcessor(cfg *RefetchConfig) *RefetchProcessor {
 		liveness:          cfg.Liveness,
 		dormancy:          cfg.Dormancy,
 		classifier:        cfg.Classifier,
+		gateConfig:        cfg.GateConfig,
 		sourceHash:        cfg.SourceHash,
 		enqueueExtract:    cfg.EnqueueExtract,
 		staleThreshold:    cfg.StaleThreshold,
@@ -154,14 +162,25 @@ func (p *RefetchProcessor) probePage(ctx context.Context, page *crawler.Collecti
 	return classifyPageProbe(nil, still, classifyErr)
 }
 
-// stillCareerPage parses a reached page and asks the classifier whether it STILL
-// lists open positions. A parse failure or a classifier error returns a non-nil
-// error, which probePage folds into an Inconclusive probe (never counts toward
-// dormancy); the returned bool is meaningful only when err is nil.
+// stillCareerPage parses a reached page and decides whether it STILL reads as a
+// Career Page, mirroring Discovery's acceptance rule so the two never disagree: the
+// structural pre-gate (pagegate.CareerPage) runs first, and a CERTAIN verdict is
+// taken without the LLM — a structurally-obvious hub stays a Career Page (Alive), a
+// structurally-definite non-page is death (Dead). Only a structurally-ambiguous page
+// consults the LLM classifier. This closes the deterministic false-close class: a
+// page discovery certain-accepted on structure alone is never dormant-closed by a
+// repeatable LLM false-negative. A parse or classifier error returns a non-nil error,
+// which probePage folds into an Inconclusive probe (never counts toward dormancy);
+// the returned bool is meaningful only when err is nil.
 func (p *RefetchProcessor) stillCareerPage(ctx context.Context, url string, resp *downloader.Response) (bool, error) {
 	content, perr := p.parser.Parse(resp.Content)
 	if perr != nil {
 		return false, fmt.Errorf("collection: parsing page %q for reclassification: %w", url, perr)
+	}
+	if u, uerr := crawler.NewURL(url); uerr == nil {
+		if accept, certain := pagegate.CareerPage(u, content, p.gateConfig); certain {
+			return accept, nil // structurally definitive — no LLM call, matches Discovery
+		}
 	}
 	verdict, cerr := p.classifier.Confirm(ctx, url, content)
 	if cerr != nil {
