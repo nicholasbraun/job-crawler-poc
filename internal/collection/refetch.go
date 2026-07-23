@@ -8,6 +8,7 @@ import (
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
+	"github.com/nicholasbraun/job-crawler-poc/internal/pagegate"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
 	"github.com/nicholasbraun/job-crawler-poc/internal/processor"
 	careerpageprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/career_page_processor"
@@ -174,6 +175,19 @@ func (p *RefetchProcessor) stillCareerPage(ctx context.Context, url string, resp
 // keeps it open with no LLM call (source_hash matches); a changed 200 is re-enqueued
 // for re-extraction (which re-Saves, reopening/advancing it) with no probe.
 func (p *RefetchProcessor) refetchOne(ctx context.Context, listing *crawler.JobListing) error {
+	// Re-gate: a known listing whose URL the extract gate now rejects on structure
+	// alone -- a bare/locale root or a terminal jobs-index segment -- is a stale false
+	// positive saved before the gate tightened. Close it (Dead) instead of refetching,
+	// so the Corpus self-heals each Cycle with no network call and any future gate
+	// tightening cleans up retroactively. This also forecloses the changed-content
+	// re-extract path below from re-creating it.
+	if pagegate.IsHubOrRootURL(crawler.URL{RawURL: listing.URL}) {
+		if _, aerr := p.liveness.ApplyCrawlProbe(ctx, listing.CanonicalURL, crawler.ProbeDead, p.staleThreshold); aerr != nil {
+			return fmt.Errorf("collection: closing re-gated listing %q: %w", listing.CanonicalURL, aerr)
+		}
+		return nil
+	}
+
 	resp, err := p.downloader.Get(ctx, listing.URL)
 	if err != nil {
 		outcome := classifyStatus(err) // Dead (404/410) or Inconclusive

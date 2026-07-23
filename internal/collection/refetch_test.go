@@ -86,6 +86,59 @@ func TestRefetchPerListingLiveness(t *testing.T) {
 	}
 }
 
+// TestRefetchClosesReGatedListing asserts the crawl-lane refetch self-heals: a
+// known-open listing whose URL the extract gate now rejects on structure alone (a
+// bare/locale root or a terminal jobs-index segment) is closed (Dead) with NO
+// network call, rather than refetched or re-extracted. Neither URL is configured in
+// the downloader, so a GET would be a transient error -> Inconclusive; a recorded
+// Dead proves the re-gate short-circuited before the GET.
+func TestRefetchClosesReGatedListing(t *testing.T) {
+	page := uuid.New()
+	dl := newFakeDownloader()
+	live := newFakeLiveness()
+	extract := &captureExtract{}
+
+	dl.ok("https://acme.com/careers", "hub") // the page probe reaches (not dormant)
+
+	root := &crawler.JobListing{CanonicalURL: "c-root", URL: "https://acme.com/", CompanyKey: "acme.com"}
+	index := &crawler.JobListing{CanonicalURL: "c-index", URL: "https://acme.com/job-offers", CompanyKey: "acme.com"}
+	live.open[page] = []*crawler.JobListing{root, index}
+
+	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
+		Downloader:        dl,
+		Parser:            fakeParser{},
+		Liveness:          live,
+		Dormancy:          &fakeDormancy{},
+		Classifier:        newFakeClassifier(),
+		SourceHash:        identityHash,
+		EnqueueExtract:    extract.enqueue,
+		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+		DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+	})
+
+	seed := &crawler.CollectionSeed{URL: "https://acme.com/careers", CompanyKey: "acme.com", CareerPageID: page}
+	if err := proc.Process(t.Context(), seed); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	want := map[string]crawler.ProbeOutcome{
+		root.CanonicalURL:  crawler.ProbeDead,
+		index.CanonicalURL: crawler.ProbeDead,
+	}
+	probes := live.recordedProbes()
+	if len(probes) != len(want) {
+		t.Fatalf("recorded %d probes, want %d: %+v", len(probes), len(want), probes)
+	}
+	for _, p := range probes {
+		if want[p.canonicalURL] != p.outcome {
+			t.Errorf("re-gated %q outcome = %v, want Dead", p.canonicalURL, p.outcome)
+		}
+	}
+	if caps := extract.captured(); len(caps) != 0 {
+		t.Errorf("re-gated listings must not re-extract, got %d enqueued", len(caps))
+	}
+}
+
 // TestRefetchDormantPageSkipsRefetch asserts a page that tips dormant on its probe
 // closes its listings via the cascade and is NOT refetched (ADR-0035).
 func TestRefetchDormantPageSkipsRefetch(t *testing.T) {

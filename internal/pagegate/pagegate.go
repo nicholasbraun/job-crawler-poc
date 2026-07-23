@@ -338,6 +338,17 @@ func countJobPostingLinks(base crawler.URL, content *crawler.Content) int {
 	return len(seen)
 }
 
+// IsHubOrRootURL reports whether u is structurally a jobs hub or a bare/locale root
+// -- never a single Job Listing -- by the extract gate's URL-only reject rungs (a
+// bare/locale-only root, or a terminal jobs-index segment). It reads only the URL,
+// no page content, so the crawl-lane refetch can replay it over a stored listing to
+// self-heal the Corpus when the gate tightens -- the same way the Catalog Doctor
+// replays IsPostingPath. ShouldExtract applies these two rungs to a freshly-walked
+// page; this exports their union for the retroactive check.
+func IsHubOrRootURL(u crawler.URL) bool {
+	return isBareOrLocaleRoot(u.RawURL) || isExtractIndexTerminal(u.RawURL)
+}
+
 // IsPostingPath reports whether u's path is structurally a single Job Listing or
 // a deep career sub-page that the Discovery Gate deterministically rejects
 // (ADR-0010): a job-section segment ("careers", "jobs", …) followed by a further
