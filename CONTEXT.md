@@ -1,16 +1,17 @@
 # Job Crawler
 
-A long-running service that discovers company career pages across the web and extracts job
-listings from them by keyword. The domain has two phases: a broad **Discovery Crawl** that
-builds a Catalog of hiring companies, and targeted **Keyword Crawls** that extract matching
-job listings from that Catalog.
+A long-running service that discovers company career pages across the web and continuously
+collects their job listings into a queryable corpus. The domain has three parts: a broad
+**Discovery Crawl** that builds a Catalog of hiring companies, a perpetual **Collection Crawl**
+that harvests every open listing from that Catalog into the **Corpus**, and **SavedSearches**
+that query the Corpus by keyword, country, and work arrangement.
 
 ## Language
 
 ### Crawls
 
 **Crawl Definition**:
-A durable, re-runnable configuration for a crawl, of a *kind* — Discovery or Keyword. Immutable once created, except that Seeds may be appended to the Discovery Definition.
+A durable, re-runnable configuration for a crawl, of a *kind* — Discovery or Collection. Immutable once created, except that Seeds may be appended to the Discovery Definition.
 _Avoid_: crawl (bare), job, config
 
 **Crawl Run**:
@@ -21,9 +22,13 @@ _Avoid_: crawl (bare), session, task
 The single, perpetual Crawl Definition of kind Discovery: bounded-broad, it finds Career Pages and attributes them to Companies, filling the Catalog. Exactly one exists, and it runs continuously until a human Stops it.
 _Avoid_: spider, broad crawl
 
-**Keyword Crawl**:
-A Crawl Definition kind: seeded from the Catalog, it collects Job Listings matching a set of OR-matched keywords, each seed confined to its own Company by Scope and optionally narrowed to a set of target Countries by its Country Constraint. It acquires listings two ways — an ATS Fetch for a Company on a recognized ATS, otherwise by crawling and extracting posting pages.
-_Avoid_: search, filter crawl
+**Collection Crawl**:
+The single, perpetual Crawl Definition of kind Collection: seeded from the whole Catalog, each Cycle it harvests every open Job Listing from every Career Page into the Corpus — keyword and country no longer prune at collect time, they filter at query time. Each seed stays confined to its Company by Scope. It acquires listings two ways: an ATS Fetch for a Company on a recognized ATS, otherwise by crawling and extracting posting pages.
+_Avoid_: keyword crawl, harvest crawl, scrape
+
+**Collection Cycle**:
+One Crawl Run of the Collection Crawl — a single sweep over the whole Catalog, started on a cadence. Cycles never overlap: a new one is skipped while the last still runs.
+_Avoid_: pass, sweep (bare), batch
 
 ### Run lifecycle
 
@@ -58,15 +63,15 @@ The host the Frontier rate-limits against (e.g. `boards.greenhouse.io`). Deliber
 _Avoid_: domain, host (unqualified)
 
 **Career Page**:
-The index page that lists a Company's open jobs; may be paginated.
+The index page that lists a Company's open jobs; may be paginated. A Collection seed until it goes dormant (see Career-Page Dormancy).
 _Avoid_: jobs page, listings page
 
 **Job Listing**:
-A single job posting found under a Career Page, attributed to that Career Page's Company rather than to a name read off the page. Obtained either by extracting a crawled posting page or by an ATS Fetch.
+A single job posting collected under a Career Page and attributed to that Career Page's Company rather than to a name read off the page. It lives in the Corpus keyed by its canonical source URL, carries a Listing Lifecycle (Open or Closed), and is obtained on either Source Lane — an ATS Fetch or a crawled-and-extracted posting page.
 _Avoid_: job, posting, vacancy, ad
 
 **Catalog**:
-The durable collection of Companies and Career Pages, filled by Discovery and by Catalog Imports, consumed by Keyword Crawls.
+The durable collection of Companies and Career Pages, filled by Discovery and by Catalog Imports, consumed by the Collection Crawl.
 _Avoid_: index, database
 
 **Sighting**:
@@ -78,7 +83,7 @@ A multi-company job board, VC-portfolio board, or professional network — never
 _Avoid_: job board, directory, portal
 
 **Catalog Doctor**:
-An idempotent maintenance pass that replays the current URL-structural rules over the already-stored Catalog, hard-deleting or re-attributing rows the rules now reject. It corrects only URL-decidable errors — the Catalog stores no page content, so it cannot re-judge a page the way the Gate and LLM first did.
+An idempotent maintenance pass that replays the current URL-structural rules over the already-stored Catalog, hard-deleting or re-attributing rows the rules now reject. It corrects only URL-decidable *identity* errors — page liveness is the Collection Crawl's concern (see Career-Page Dormancy), not the Doctor's.
 _Avoid_: cleanup, migration, backfill
 
 **Catalog History**:
@@ -86,17 +91,47 @@ The Catalog's growth over time, reconstructed from when each surviving entry was
 _Avoid_: catalog snapshot, growth log, time series
 
 **Website**:
-A Company's declared homepage. Known only when imported — Discovery does not learn it — and the Keyword Crawl's seed of last resort for a Pageless Company.
+A Company's declared homepage. Known only when imported — Discovery does not learn it — and the Collection Crawl's seed of last resort for a Pageless Company.
 _Avoid_: homepage, url, company domain
 
 **Pageless Company**:
 A catalogued Company with no Career Page yet: employer known, page undiscovered.
 _Avoid_: prospect, stub, empty company
 
+### Corpus & search
+
+**Corpus**:
+The global, deduplicated store of collected Job Listings — one row per real-world posting, keyed by its canonical source URL and owned by no single Crawl. Collection Cycles fill and refresh it; SavedSearches query it.
+_Avoid_: index, results, listings table
+
+**SavedSearch**:
+A named, stored query over the Corpus — keywords, Countries, and Work Arrangement — rendered as a live dashboard panel of the matching Job Listings. Replaces the Keyword Crawl as how a user asks "which jobs match?"; it queries, it never crawls.
+_Avoid_: alert, saved query (bare), keyword crawl, filter
+
+**Listing Lifecycle**:
+A Job Listing's state in the Corpus: Open while its source still offers it, Closed once the source drops it — soft-deleted, never removed, so history survives — and reopened in place, keeping its original first-seen time, if it returns.
+_Avoid_: status, active/inactive, deleted
+
+**Liveness**:
+Whether a Job Listing is still Open, decided per Source Lane: an ATS posting by its Absence-from-Board, a crawled posting by re-fetching its page.
+_Avoid_: freshness, health, alive check
+
+**Absence-from-Board**:
+The ATS liveness signal: a posting the freshly-fetched board no longer lists is Closed. Trusted only when the board was fetched completely — a partial or failed fetch closes nothing.
+_Avoid_: gone, missing, delisted
+
+**Source Lane**:
+Which of the two paths collected a Job Listing — an ATS Fetch (structured board API, the primary lane) or a Crawl (fetch-and-extract the posting page, the fallback). It decides how the listing's Liveness is judged.
+_Avoid_: source type, method, channel
+
+**Career-Page Dormancy**:
+A Career Page repeatedly found dead — a 404 board, or a page that no longer classifies — goes dormant and drops out of the Collection seed set, Closing its remaining Open Job Listings. Reversible: re-discovery revives it.
+_Avoid_: dead page, disabled, removed
+
 ### Location
 
 **Country**:
-The ISO 3166-1 alpha-2 code a Job Listing resolves to (e.g. `DE`, `US`) — the unit a Keyword Crawl constrains by. Derived from the listing's raw, free-text location string, which is kept unchanged for display; the Country is the structured, filterable value, and is empty when nothing resolves.
+The ISO 3166-1 alpha-2 code a Job Listing resolves to (e.g. `DE`, `US`) — tagged on each listing at collection and the unit a SavedSearch filters by. Derived from the listing's raw, free-text location string, which is kept unchanged for display; the Country is the structured, filterable value, and is empty when nothing resolves.
 _Avoid_: location (for the code), region, geo, locale
 
 **Country Resolver**:
@@ -106,10 +141,6 @@ _Avoid_: geocoder, normalizer, geo lookup
 **Work Arrangement**:
 A Job Listing's working mode — Remote, Onsite, Hybrid, or Unspecified — extracted per listing and shown as a tag. Unspecified is the honest default: a source that does not positively state the mode never becomes Onsite. Replaces the former remote boolean.
 _Avoid_: remote (as a standalone flag), workplace type, remote status
-
-**Country Constraint**:
-The set of target Countries on a Keyword Crawl Definition, narrowing which Job Listings it keeps: a listing is kept when the set is empty (anywhere), its Country is in the set, or its Country is unresolved. The location counterpart to the crawl's keyword relevance. (Work Arrangement is not a gate input: a Remote listing is kept only when its Country is unknown or in the set — see ADR-0028.)
-_Avoid_: location filter, geo filter, country fence
 
 ### Import / Export
 
@@ -140,15 +171,15 @@ A URL the Frontier had already seen being crawled again because its seen-memory 
 _Avoid_: re-crawl, re-visit, duplicate
 
 **Seed**:
-A crawl's starting URLs. For a Discovery Crawl they are configured, and may also be added while it runs — appended to the Definition and injected into the live Frontier; for a Keyword Crawl they are resolved from the Catalog at run start — every Career Page, plus each Pageless Company's Website.
+A crawl's starting URLs. For a Discovery Crawl they are configured, and may also be added while it runs — appended to the Definition and injected into the live Frontier; for a Collection Cycle they are resolved from the Catalog at cycle start — every non-dormant Career Page, plus each Pageless Company's Website.
 _Avoid_: entry point, root URL
 
 **Scope**:
-The Company-identity boundary a Keyword Crawl stays within: a crawl seeded from one Career Page follows links only into that same Company — its own site and subdomains, or its single ATS tenant — never onto unrelated hosts. Derived from the seed's URL so any discovered link can be tested against it. The Discovery Crawl has no Scope; roaming is its job.
+The Company-identity boundary a Collection Crawl stays within: a crawl seeded from one Career Page follows links only into that same Company — its own site and subdomains, or its single ATS tenant — never onto unrelated hosts. Derived from the seed's URL so any discovered link can be tested against it. The Discovery Crawl has no Scope; roaming is its job.
 _Avoid_: domain limit, allowlist, fence
 
 **ATS Fetch**:
-A Keyword Crawl's acquisition of a Company's Job Listings straight from its ATS provider's board API in one call, rather than by crawling and extracting its posting pages. Available for a Company on — or embedding — a recognized ATS the crawler has an API client for; other ATS boards are crawled as a fallback.
+The Collection Crawl's primary acquisition of a Company's Job Listings straight from its ATS provider's board API in one call, rather than by crawling and extracting its posting pages. Available for a Company on — or embedding — a recognized ATS the crawler has an API client for; other ATS boards are crawled as a fallback. A complete Fetch is the sole trusted basis for Absence-from-Board.
 _Avoid_: board fetch, API scrape, direct ingest
 
 **Transient Frontier Error**:
@@ -174,7 +205,7 @@ A content-derived mark that a page is a Career Page hub — an ATS Embed, a stru
 _Avoid_: feature, heuristic, hint
 
 **ATS Embed**:
-A Company's own page that renders a third-party ATS board inline, via an iframe or a provider script. Structurally a Career Page even though its host is the Company's domain rather than the ATS, so identity still attributes it to the Company by that domain. In a Keyword Crawl it triggers an ATS Fetch of the embedded board, reaching postings the crawler cannot otherwise follow.
+A Company's own page that renders a third-party ATS board inline, via an iframe or a provider script. Structurally a Career Page even though its host is the Company's domain rather than the ATS, so identity still attributes it to the Company by that domain. In a Collection Crawl it triggers an ATS Fetch of the embedded board, reaching postings the crawler cannot otherwise follow.
 _Avoid_: iframe, widget, integration
 
 **Terminal-Hub Word**:
@@ -182,7 +213,7 @@ The last path segment of a deep career URL that keeps it a Career Page rather th
 _Avoid_: listing keyword, hub keyword
 
 **Extract Gate**:
-The Keyword Crawl's counterpart to the Gate: a deterministic, pre-LLM pass that decides whether a keyword-relevant page reaches the LLM extractor. It *rejects* the page shapes the Gate accepts as hubs — an ATS Embed, a structured-data openings index, a link-saturated page — reading the same Structural Signals with opposite polarity. Verdict is binary (extract or skip), not the Gate's three-way band, and it is tuned separately so its calibration never shifts the Gate.
+The collection lane's counterpart to the Gate: a deterministic, pre-LLM pass that decides whether a candidate posting page reaches the LLM extractor. It *rejects* the page shapes the Gate accepts as hubs — an ATS Embed, a structured-data openings index, a link-saturated page — reading the same Structural Signals with opposite polarity. Verdict is binary (extract or skip), not the Gate's three-way band, and it is tuned separately so its calibration never shifts the Gate.
 _Avoid_: extract filter, relevance gate, ShouldExtract (in prose)
 
 **Extractor Abstain**:
@@ -212,5 +243,5 @@ The curated collection of real HTML pages, each stored with its true URL, a huma
 _Avoid_: test set, fixtures (bare), corpus, sample
 
 **Extract Gold Set**:
-The Extract Gate's counterpart to the Gold Set: keyword-relevant real pages, each labelled single-posting **detail**, **hub/index**, or structurally-silent **residue**, scored on the binary extract-or-skip decision (a false-drop is the hard failure). Distinct from the Gold Set, which labels Career-Page-vs-not over a discovery sample.
+The Extract Gate's counterpart to the Gold Set: candidate real posting pages, each labelled single-posting **detail**, **hub/index**, or structurally-silent **residue**, scored on the binary extract-or-skip decision (a false-drop is the hard failure). Distinct from the Gold Set, which labels Career-Page-vs-not over a discovery sample.
 _Avoid_: extract test set, second gold set
