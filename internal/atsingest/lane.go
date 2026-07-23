@@ -3,12 +3,12 @@
 // saves them, instead of crawling and extracting the tenant's pages (ADR-0022).
 //
 // The lane owns a parallel worker pool of Processors, a per-run tenant dedup set
-// (a tenant is fetched at most once a run), and a per-provider rate limiter.
-// Seed-time routing (RouteSeeds) diverts a Keyword-Crawl Seed on a registered ATS
-// host into a FetchTask so its tenant never enters the Frontier; #129 adds a
-// second source — boards embedded on crawled pages — that submits through the same
-// Lane.Submit dedup point. Closing the lane waits for priming to finish and drains
-// the pool, so a run completes only once every in-flight fetch has finished.
+// (a tenant is fetched at most once a run), and a per-provider rate limiter. Its
+// FetchTasks come from two sources that share the Lane.Submit dedup point: the
+// Collection Cycle's seed routing (collection.RouteSeeds), primed via PrimeAsync,
+// and boards embedded on crawled pages (#129). Closing the lane waits for priming
+// to finish and drains the pool, so a run completes only once every in-flight
+// fetch has finished.
 package atsingest
 
 import (
