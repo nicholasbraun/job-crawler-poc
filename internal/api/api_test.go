@@ -427,6 +427,12 @@ func newHandler(cfg api.Config) http.Handler {
 	if cfg.ImportJobs == nil {
 		cfg.ImportJobs = newFakeImportJobRepo()
 	}
+	if cfg.SavedSearches == nil {
+		cfg.SavedSearches = newFakeSavedSearchRepo()
+	}
+	if cfg.Search == nil {
+		cfg.Search = &fakeSearchRepo{}
+	}
 	if cfg.Importer == nil {
 		// A real importer over the fake repo, so submit->poll->result exercises
 		// the executor end-to-end in the import handler tests.

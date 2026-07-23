@@ -49,6 +49,7 @@ type CorpusListing struct {
 	Description     string
 	Company         string
 	CompanyKey      string
+	Department      string // team/department from the ATS board API; "" on the crawl lane (ADR-0022)
 	Location        string // raw, unresolved location text (kept for display)
 	Country         string // resolved ISO-3166-1 alpha-2; "" when unresolved
 	WorkArrangement WorkArrangement

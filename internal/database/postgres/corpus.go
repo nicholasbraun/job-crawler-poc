@@ -31,7 +31,8 @@ func NewCorpusRepository(pool *pgxpool.Pool) *CorpusRepository {
 // closed_at is cleared so a returning posting reopens in place (ADR-0035);
 // first_seen is preserved. A re-seen posting is confirmed alive, so the crawl-lane
 // inconclusive_streak is reset to 0. career_page_id is written NULL when unknown
-// (uuid.Nil).
+// (uuid.Nil). department is a display-only ATS-lane attribute ("" on the crawl
+// lane, ADR-0022) — stamped here but deliberately absent from search_tsv.
 func (r *CorpusRepository) Save(ctx context.Context, jl *crawler.JobListing) error {
 	var careerPageID any
 	if jl.CareerPageID != uuid.Nil {
@@ -40,8 +41,8 @@ func (r *CorpusRepository) Save(ctx context.Context, jl *crawler.JobListing) err
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO job_listing
 			(canonical_url, url, source, source_id, source_hash, career_page_id,
-			 company, title, description, location, work_arrangement, company_key, country)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			 company, title, description, location, work_arrangement, company_key, country, department)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		ON CONFLICT (canonical_url) DO UPDATE SET
 			url              = EXCLUDED.url,
 			source           = EXCLUDED.source,
@@ -55,6 +56,7 @@ func (r *CorpusRepository) Save(ctx context.Context, jl *crawler.JobListing) err
 			work_arrangement = EXCLUDED.work_arrangement,
 			company_key         = EXCLUDED.company_key,
 			country             = EXCLUDED.country,
+			department          = EXCLUDED.department,
 			last_seen           = now(),
 			closed_at           = NULL,
 			inconclusive_streak = 0
@@ -63,7 +65,7 @@ func (r *CorpusRepository) Save(ctx context.Context, jl *crawler.JobListing) err
 		// avoid any pgx encode ambiguity for a named string type.
 		jl.CanonicalURL, jl.URL, string(jl.Source), jl.SourceID, jl.SourceHash, careerPageID,
 		jl.Company, jl.Title, jl.Description, jl.Location, string(jl.WorkArrangement),
-		jl.CompanyKey, jl.Country,
+		jl.CompanyKey, jl.Country, jl.Department,
 	)
 	if err != nil {
 		return fmt.Errorf("postgres: error saving job listing: %w", err)

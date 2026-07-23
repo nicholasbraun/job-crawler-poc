@@ -67,7 +67,11 @@ type Config struct {
 	// Importer starts Catalog Imports; required for POST /api/catalog/import.
 	Importer Importer
 	// ImportJobs serves the Import Job read endpoints (list + get by id).
-	ImportJobs    crawler.ImportJobRepository
+	ImportJobs crawler.ImportJobRepository
+	// SavedSearches backs the SavedSearch CRUD endpoints (ADR-0037).
+	SavedSearches crawler.SavedSearchRepository
+	// Search answers a SavedSearch's results endpoint against the Corpus (ADR-0037).
+	Search        crawler.CorpusSearchRepository
 	FrontierSizer FrontierSizer
 	// FrontierSeeder injects a runtime Seed into a Discovery Run's live Frontier;
 	// optional (nil → the Seed is still durably appended, injection is skipped).
@@ -112,6 +116,13 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /api/catalog/import", h.importCatalog)
 	mux.HandleFunc("GET /api/catalog/import-jobs", h.listImportJobs)
 	mux.HandleFunc("GET /api/catalog/import-jobs/{id}", h.getImportJob)
+
+	// SavedSearches (ADR-0037): named Corpus queries + their live results.
+	mux.HandleFunc("GET /api/saved-searches", h.listSavedSearches)
+	mux.HandleFunc("POST /api/saved-searches", h.createSavedSearch)
+	mux.HandleFunc("PATCH /api/saved-searches/{id}", h.renameSavedSearch)
+	mux.HandleFunc("DELETE /api/saved-searches/{id}", h.deleteSavedSearch)
+	mux.HandleFunc("GET /api/saved-searches/{id}/results", h.savedSearchResults)
 
 	return mux
 }

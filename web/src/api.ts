@@ -171,6 +171,50 @@ export function mintIdempotencyKey(): string {
   return `imp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+// WorkArrangement is a Job Listing's working mode (ADR-0030). The three
+// positively-stated modes are the filterable SavedSearch facets;
+// "unspecified" is only ever a listing's own honest default.
+export type WorkArrangement = "remote" | "onsite" | "hybrid" | "unspecified";
+
+// SavedSearch mirrors the server's savedSearchDTO: a named, stored Corpus query
+// (ADR-0037). The facet arrays are always present ([] not null).
+export type SavedSearch = {
+  id: string;
+  name: string;
+  keywords: string[];
+  countries: string[];
+  workArrangements: string[];
+  createdAt: string;
+};
+
+// CreateSavedSearchRequest is the create body — a name plus the three query
+// facets. The server normalizes them (trims keywords, uppercases countries,
+// validates arrangements).
+export type CreateSavedSearchRequest = {
+  name: string;
+  keywords: string[];
+  countries: string[];
+  workArrangements: string[];
+};
+
+// Listing mirrors the server's listingDTO: a full-detail Corpus listing a
+// SavedSearch panel renders. closedAt is null while the listing is Open.
+export type Listing = {
+  id: string;
+  title: string;
+  description: string;
+  company: string;
+  department: string;
+  location: string;
+  country: string;
+  workArrangement: WorkArrangement;
+  url: string;
+  source: "ats" | "crawl";
+  firstSeen: string;
+  lastSeen: string;
+  closedAt: string | null;
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -310,4 +354,36 @@ export function getImportJob(id: string): Promise<ImportJob> {
 
 export function listImportJobs(): Promise<ImportJob[]> {
   return request<ImportJob[]>("/catalog/import-jobs");
+}
+
+// --- Saved searches ---
+
+export function listSavedSearches(): Promise<SavedSearch[]> {
+  return request<SavedSearch[]>("/saved-searches");
+}
+
+export function createSavedSearch(req: CreateSavedSearchRequest): Promise<SavedSearch> {
+  return request<SavedSearch>("/saved-searches", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+// renameSavedSearch changes only the name (the stored query is fixed at creation
+// in v1) and returns the updated search.
+export function renameSavedSearch(id: string, name: string): Promise<SavedSearch> {
+  return request<SavedSearch>(`/saved-searches/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function deleteSavedSearch(id: string): Promise<void> {
+  return request<void>(`/saved-searches/${id}`, { method: "DELETE" });
+}
+
+// getSavedSearchResults runs the SavedSearch against the Corpus and returns the
+// matching listings, ranked and open-only (a query, never a crawl).
+export function getSavedSearchResults(id: string): Promise<Listing[]> {
+  return request<Listing[]>(`/saved-searches/${id}/results`);
 }

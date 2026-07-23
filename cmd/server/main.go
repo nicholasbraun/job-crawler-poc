@@ -248,6 +248,7 @@ func main() {
 	defRepository := postgres.NewCrawlDefinitionRepository(pgPool)
 	runRepository := postgres.NewCrawlRunRepository(pgPool)
 	importJobRepository := postgres.NewImportJobRepository(pgPool)
+	savedSearchRepository := postgres.NewSavedSearchRepository(pgPool)
 
 	factory := newFactory(crawlMaxWorkers, visitedCap, robotsCacheTTL, robotsCacheSize, llmMaxWorkers, llmConfig, redisClient,
 		companyRepository, careerPageRepository, corpusRepository)
@@ -306,6 +307,10 @@ func main() {
 		CareerPages: careerPageRepository,
 		Importer:    catalogImporter,
 		ImportJobs:  importJobRepository,
+		// SavedSearches CRUD + their Corpus results (ADR-0037). The corpus repository
+		// already satisfies CorpusSearchRepository (see its interface assertions).
+		SavedSearches: savedSearchRepository,
+		Search:        corpusRepository,
 		// Frontier size is a live Redis read, kept out of the api package so it
 		// stays decoupled from Redis (mirrors runner.WithFrontierCleaner).
 		FrontierSizer: func(ctx context.Context, runID uuid.UUID) (int64, error) {

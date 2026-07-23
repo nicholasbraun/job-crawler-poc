@@ -285,6 +285,39 @@ func TestSearchListingsEmptyAndBrowse(t *testing.T) {
 	})
 }
 
+// TestSearchListingsReturnsDepartment asserts the ATS-lane department attribute
+// (ADR-0022, migration 0021) is persisted at Save and returned on the projected
+// CorpusListing, so a SavedSearch panel can render it.
+func TestSearchListingsReturnsDepartment(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCorpusRepository(pool)
+
+	jl := &crawler.JobListing{
+		CanonicalURL:    "https://ex.com/dept/1",
+		URL:             "https://ex.com/dept/1",
+		Source:          crawler.SourceLaneATS,
+		Title:           "Platform Engineer",
+		Company:         "acme",
+		Country:         "DE",
+		Department:      "Platform",
+		WorkArrangement: crawler.WorkArrangementRemote,
+	}
+	if err := repo.Save(t.Context(), jl); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := repo.SearchListings(t.Context(), crawler.ListingQuery{Keywords: []string{"Platform"}})
+	if err != nil {
+		t.Fatalf("SearchListings: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 match, got %d (%v)", len(got), searchURLOrder(got))
+	}
+	if got[0].Department != "Platform" {
+		t.Errorf("department: got %q, want %q", got[0].Department, "Platform")
+	}
+}
+
 // TestSearchListingsPaging asserts Limit/Offset slice the ordered result set, and that a
 // negative Offset is clamped to zero.
 func TestSearchListingsPaging(t *testing.T) {

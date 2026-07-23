@@ -124,7 +124,8 @@ func (r *CorpusRepository) SearchListings(ctx context.Context, q crawler.Listing
 	sb.WriteString(`
 		SELECT id, canonical_url, url, title,
 		       coalesce(description, ''), coalesce(company, ''), company_key,
-		       coalesce(location, ''), country, work_arrangement, source,
+		       coalesce(department, ''), coalesce(location, ''), country,
+		       work_arrangement, source,
 		       career_page_id, first_seen, last_seen, closed_at
 		FROM job_listing`)
 	if len(predicates) > 0 {
@@ -152,7 +153,7 @@ func (r *CorpusRepository) SearchListings(ctx context.Context, q crawler.Listing
 		if err := rows.Scan(
 			&cl.ID, &cl.CanonicalURL, &cl.URL, &cl.Title,
 			&cl.Description, &cl.Company, &cl.CompanyKey,
-			&cl.Location, &cl.Country, &arrangement, &source,
+			&cl.Department, &cl.Location, &cl.Country, &arrangement, &source,
 			&careerPageID, &cl.FirstSeen, &cl.LastSeen, &cl.ClosedAt,
 		); err != nil {
 			return nil, fmt.Errorf("postgres: error scanning searched listing: %w", err)

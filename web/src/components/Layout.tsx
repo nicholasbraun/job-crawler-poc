@@ -223,6 +223,7 @@ export function Layout() {
           <NavItem item={{ to: "/", label: "Overview", icon: "ph-squares-four", end: true }} />
           <NavItem item={{ to: "/discovery", label: "Discovery", icon: "ph-broadcast" }} />
           <NavItem item={{ to: "/catalog", label: "Catalog", icon: "ph-stack" }} />
+          <NavItem item={{ to: "/searches", label: "Searches", icon: "ph-magnifying-glass" }} />
         </nav>
 
         <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
