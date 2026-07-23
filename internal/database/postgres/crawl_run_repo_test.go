@@ -101,6 +101,101 @@ func TestListByStatus(t *testing.T) {
 	}
 }
 
+// TestLatestByDefinition drives the collection scheduler's restart-safe due-check
+// read (ADR-0036): it returns the most-recently-started run for a definition (nil
+// when it has never run), projecting a non-terminal status as an active Cycle and
+// isolating one definition's history from another's.
+func TestLatestByDefinition(t *testing.T) {
+	pool := newTestPool(t)
+	runs := postgres.NewCrawlRunRepository(pool)
+
+	// Explicit, distinct StartedAt values so "latest" ordering is deterministic
+	// rather than resting on two same-instant time.Now() reads.
+	base := time.Now().Truncate(time.Second)
+	insert := func(t *testing.T, defID uuid.UUID, status crawler.RunStatus, startedAt time.Time) uuid.UUID {
+		t.Helper()
+		id := uuid.New()
+		if err := runs.Create(t.Context(), &crawler.CrawlRun{
+			ID:           id,
+			DefinitionID: defID,
+			Status:       status,
+			StartedAt:    startedAt,
+		}); err != nil {
+			t.Fatalf("seeding %s run: %v", status, err)
+		}
+		return id
+	}
+
+	t.Run("never run returns nil, nil", func(t *testing.T) {
+		defID := createDefinition(t, pool, "latest-none")
+		got, err := runs.LatestByDefinition(t.Context(), defID)
+		if err != nil {
+			t.Fatalf("LatestByDefinition: %v", err)
+		}
+		if got != nil {
+			t.Errorf("LatestByDefinition on a never-run definition = %+v, want nil", got)
+		}
+	})
+
+	t.Run("returns the latest by started_at", func(t *testing.T) {
+		defID := createDefinition(t, pool, "latest-by-time")
+		// Two terminal runs accumulate freely under one definition (outside the
+		// one-active index); the newer started_at must win.
+		insert(t, defID, crawler.RunStatusStopped, base.Add(-2*time.Hour))
+		newer := insert(t, defID, crawler.RunStatusCompleted, base.Add(-time.Hour))
+
+		got, err := runs.LatestByDefinition(t.Context(), defID)
+		if err != nil {
+			t.Fatalf("LatestByDefinition: %v", err)
+		}
+		if got == nil || got.ID != newer {
+			t.Fatalf("LatestByDefinition = %+v, want the newer run %s", got, newer)
+		}
+	})
+
+	t.Run("returns the active run and its anchor", func(t *testing.T) {
+		defID := createDefinition(t, pool, "latest-active")
+		insert(t, defID, crawler.RunStatusStopped, base.Add(-2*time.Hour))
+		running := insert(t, defID, crawler.RunStatusRunning, base.Add(-time.Hour))
+
+		got, err := runs.LatestByDefinition(t.Context(), defID)
+		if err != nil {
+			t.Fatalf("LatestByDefinition: %v", err)
+		}
+		if got == nil || got.ID != running {
+			t.Fatalf("LatestByDefinition = %+v, want the running run %s", got, running)
+		}
+		if got.Status.Terminal() {
+			t.Errorf("returned run status %q reports Terminal, want non-terminal (active Cycle)", got.Status)
+		}
+		if !got.StartedAt.Equal(base.Add(-time.Hour)) {
+			t.Errorf("returned StartedAt = %v, want the running run's anchor %v", got.StartedAt, base.Add(-time.Hour))
+		}
+	})
+
+	t.Run("isolates by definition", func(t *testing.T) {
+		defA := createDefinition(t, pool, "latest-iso-a")
+		defB := createDefinition(t, pool, "latest-iso-b")
+		runA := insert(t, defA, crawler.RunStatusStopped, base.Add(-time.Hour))
+		runB := insert(t, defB, crawler.RunStatusStopped, base.Add(-30*time.Minute))
+
+		gotA, err := runs.LatestByDefinition(t.Context(), defA)
+		if err != nil {
+			t.Fatalf("LatestByDefinition(A): %v", err)
+		}
+		if gotA == nil || gotA.ID != runA {
+			t.Errorf("LatestByDefinition(A) = %+v, want run %s (B's run must not leak)", gotA, runA)
+		}
+		gotB, err := runs.LatestByDefinition(t.Context(), defB)
+		if err != nil {
+			t.Fatalf("LatestByDefinition(B): %v", err)
+		}
+		if gotB == nil || gotB.ID != runB {
+			t.Errorf("LatestByDefinition(B) = %+v, want run %s", gotB, runB)
+		}
+	})
+}
+
 // TestOneActiveRunPerDefinition drives the one-active-run partial unique index
 // (migration 0010) through the repository: a definition may carry at most one
 // non-terminal run, while terminal runs accumulate freely. The repository

@@ -96,6 +96,13 @@ const (
 	llmMaxBacklog = 5000
 )
 
+// The collection scheduler's narrow ports are satisfied by the concrete runner
+// and Postgres run repository wired below (ADR-0036).
+var (
+	_ collection.Starter         = (*runner.Runner)(nil)
+	_ collection.LatestRunLookup = (*postgres.CrawlRunRepository)(nil)
+)
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -180,6 +187,19 @@ func main() {
 		log.Fatalf("error parsing ROBOTS_CACHE_TTL: must be a positive duration, got %q", os.Getenv("ROBOTS_CACHE_TTL"))
 	}
 
+	// COLLECTION_INTERVAL is the Collection Cycle cadence (ADR-0036): the minimum
+	// time between Cycle starts. Default daily. COLLECTION_ENABLED (default true)
+	// is the disable flag -- set it false to stop the scheduler from starting
+	// Cycles (manual starts via the API still work).
+	collectionInterval, err := time.ParseDuration(envOr("COLLECTION_INTERVAL", "24h"))
+	if err != nil || collectionInterval <= 0 {
+		log.Fatalf("error parsing COLLECTION_INTERVAL: must be a positive duration, got %q", os.Getenv("COLLECTION_INTERVAL"))
+	}
+	collectionEnabled, err := strconv.ParseBool(envOr("COLLECTION_ENABLED", "true"))
+	if err != nil {
+		log.Fatalf("error parsing COLLECTION_ENABLED: must be a boolean, got %q", os.Getenv("COLLECTION_ENABLED"))
+	}
+
 	var logLevel slog.LevelVar
 	if err := logLevel.UnmarshalText([]byte(envOr("LOG_LEVEL", defaultLogLevel))); err != nil {
 		log.Fatalf("error parsing LOG_LEVEL: %v", err)
@@ -257,6 +277,25 @@ func main() {
 	// (ADR-0014). Best-effort — a sweep failure must not stop the server.
 	if err := catalogImporter.Sweep(ctx); err != nil {
 		slog.Error("error sweeping interrupted import jobs", "err", err)
+	}
+
+	// Poll-based Collection scheduler (ADR-0036): starts a whole-Catalog Cycle on
+	// a cadence, deriving due-state from persisted run rows so it survives
+	// restarts. Overlap is prevented by the one-active-run invariant
+	// (ErrActiveRunExists). The ctx from signal.NotifyContext stops it on
+	// shutdown; running Cycles are drained by crawlRunner.Shutdown, so the loop
+	// needs no separate drain.
+	if collectionEnabled {
+		scheduler := collection.NewScheduler(collection.Config{
+			Runs:         runRepository,
+			Starter:      crawlRunner,
+			DefinitionID: crawler.CollectionDefinitionID,
+			Interval:     collectionInterval,
+		})
+		go scheduler.Run(ctx)
+		slog.Info("collection scheduler started", "interval", collectionInterval)
+	} else {
+		slog.Info("collection scheduler disabled (COLLECTION_ENABLED=false)")
 	}
 
 	apiHandler := api.New(api.Config{
