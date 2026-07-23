@@ -96,6 +96,61 @@ end
 return {'NEW', evicted, card - evicted}
 `)
 
+// markVisitedScript adds members to the visited ZSET without enqueuing them, so a
+// later AddURL of the same URL short-circuits as DUP. KEYS: visited. ARGV: now(ms),
+// cap, then the 8-byte hashed members. ZADD NX + the same FIFO-by-rank eviction as
+// addScript, so the visited-cap invariant (ADR-0027) still holds. It deliberately
+// touches neither the domains schedule nor the queues — a seeded URL is marked
+// seen, not scheduled to crawl. Returns the post-eviction ZCARD visited.
+var markVisitedScript = redis.NewScript(`
+local visited = KEYS[1]
+local now = tonumber(ARGV[1])
+local cap = tonumber(ARGV[2])
+for i = 3, #ARGV do
+  redis.call('ZADD', visited, 'NX', now, ARGV[i])
+end
+local card = redis.call('ZCARD', visited)
+local over = card - cap
+if over > 0 then
+  redis.call('ZREMRANGEBYRANK', visited, 0, over - 1)
+end
+return redis.call('ZCARD', visited)
+`)
+
+// markVisitedChunk bounds how many hashed members a single markVisitedScript call
+// carries, keeping each script's work sub-millisecond and the ARGV bounded.
+const markVisitedChunk = 1000
+
+// MarkVisited seeds rawURLs into the run's visited set so the discovery walk skips
+// them: the crawl-lane refetch pass owns liveness of known-open postings, so the
+// walk should only surface NEW postings (ADR-0035). Each URL is hashed to the same
+// 8-byte visited member AddURL uses, ZADDed NX under the same FIFO cap, so a later
+// AddURL of the same URL returns DUP. Idempotent (ZADD NX) and wrapped in withRetry
+// like AddURL, so a resumed Cycle re-seeds harmlessly. A no-op for an empty slice.
+func (f *Frontier) MarkVisited(ctx context.Context, rawURLs []string) error {
+	if len(rawURLs) == 0 {
+		return nil
+	}
+	keys := []string{f.key("visited")}
+	for start := 0; start < len(rawURLs); start += markVisitedChunk {
+		end := start + markVisitedChunk
+		if end > len(rawURLs) {
+			end = len(rawURLs)
+		}
+		args := make([]any, 0, 2+(end-start))
+		args = append(args, time.Now().UnixMilli(), f.visitedCap)
+		for _, u := range rawURLs[start:end] {
+			args = append(args, visitedMember(u))
+		}
+		if _, err := f.withRetry(ctx, opAdd, func() (any, error) {
+			return markVisitedScript.Run(ctx, f.client, keys, args...).Result()
+		}); err != nil {
+			return fmt.Errorf("frontier: mark visited: %w", err)
+		}
+	}
+	return nil
+}
+
 // nextScript reclaims expired leases, then hands out the earliest eligible URL.
 // It relies on the non-empty-domains invariant: the domains schedule holds a
 // domain only while its queue is non-empty (AddURL and lease-reclaim re-add it,

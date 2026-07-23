@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/geo"
 	"github.com/nicholasbraun/job-crawler-poc/internal/listingid"
@@ -38,6 +39,11 @@ type Config struct {
 	// source URL's Owner, discarding the extractor's own company. A nil map or a
 	// missing Owner leaves Company empty.
 	CompanyNames map[string]string
+	// AttributeCareerPage best-matches a crawled posting to the Career Page it was
+	// collected under (ADR-0035), keyed on the source URL's Owner (CompanyKey) and the
+	// posting URL, so the saved listing carries career_page_id for the crawl-lane
+	// refetch and dormancy scope. Optional: nil leaves CareerPageID uuid.Nil.
+	AttributeCareerPage func(companyKey, postingURL string) uuid.UUID
 	// OnSaved is called once per listing actually persisted -- after a successful
 	// Save, so an Extractor Abstain or an extraction/save error never fires it
 	// (e.g. the run's saved-listings counter tap, #119). Optional: nil is a no-op.
@@ -52,6 +58,7 @@ type JobListingProcessor struct {
 	jobListingExtractor         JobListingExtractor
 	recorder                    llmobs.Recorder
 	companyNames                map[string]string
+	attributeCareerPage         func(companyKey, postingURL string) uuid.UUID
 	onSaved                     func(ctx context.Context)
 }
 
@@ -74,6 +81,7 @@ func NewProcessor(cfg *Config) *JobListingProcessor {
 		jobListingExtractor:         cfg.JobListingExtractor,
 		recorder:                    recorder,
 		companyNames:                cfg.CompanyNames,
+		attributeCareerPage:         cfg.AttributeCareerPage,
 		onSaved:                     cfg.OnSaved,
 	}
 }
@@ -114,6 +122,13 @@ func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.Raw
 	owner := workload.URL.Owner
 	extraction.Listing.CompanyKey = owner
 	extraction.Listing.Company = w.companyNames[owner]
+
+	// Attribute the posting to its owning Career Page (ADR-0035) so the saved listing
+	// carries career_page_id for the crawl-lane refetch and dormancy scope. A nil hook
+	// (Discovery, or an un-scoped run) leaves CareerPageID uuid.Nil.
+	if w.attributeCareerPage != nil {
+		extraction.Listing.CareerPageID = w.attributeCareerPage(owner, workload.URL.RawURL)
+	}
 
 	// Resolve the Country from the LLM's free-text location at save (ADR-0029): the
 	// resolver is the sole authority on the ISO code, and Location is left verbatim.

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/ats"
 	"github.com/nicholasbraun/job-crawler-poc/internal/atsingest"
@@ -105,8 +107,73 @@ func newTestLane(t *testing.T, fetcher ats.BoardFetcher, repo crawler.CorpusRepo
 			return atsingest.NewProcessor(&atsingest.ProcessorConfig{
 				ResolveFetcher: resolveTo(fetcher),
 				Repository:     repo,
-				Keywords:       []string{"go"},
 			})
 		},
 	})
+}
+
+// closeAbsentCall records one CloseAbsent invocation so a test can assert the
+// absence-sweep interlock (scope, watermark, and the complete flag).
+type closeAbsentCall struct {
+	careerPageID uuid.UUID
+	notSeenSince time.Time
+	complete     bool
+}
+
+// spyLiveness is an inline crawler.CorpusLivenessRepository recording the
+// absence-sweep calls the ATS processor makes; ListOpen/ApplyCrawlProbe are unused
+// on the ATS lane and return zero values.
+type spyLiveness struct {
+	mu               sync.Mutex
+	closeAbsentCalls []closeAbsentCall
+	closeReturn      int
+}
+
+func (s *spyLiveness) ListOpen(context.Context, uuid.UUID) ([]*crawler.JobListing, error) {
+	return []*crawler.JobListing{}, nil
+}
+
+func (s *spyLiveness) CloseAbsent(_ context.Context, careerPageID uuid.UUID, notSeenSince time.Time, complete bool) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeAbsentCalls = append(s.closeAbsentCalls, closeAbsentCall{careerPageID, notSeenSince, complete})
+	return s.closeReturn, nil
+}
+
+func (s *spyLiveness) ApplyCrawlProbe(context.Context, string, crawler.ProbeOutcome, int) (crawler.LifecycleState, error) {
+	return crawler.LifecycleState{}, nil
+}
+
+func (s *spyLiveness) calls() []closeAbsentCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]closeAbsentCall{}, s.closeAbsentCalls...)
+}
+
+// dormancyProbe records one RecordProbe invocation.
+type dormancyProbe struct {
+	careerPageID uuid.UUID
+	outcome      crawler.ProbeOutcome
+	threshold    int
+}
+
+// spyDormancy is an inline atsingest.DormancyRecorder recording each probe and
+// returning a canned DormancyResult.
+type spyDormancy struct {
+	mu     sync.Mutex
+	probes []dormancyProbe
+	result crawler.DormancyResult
+}
+
+func (s *spyDormancy) RecordProbe(_ context.Context, careerPageID uuid.UUID, outcome crawler.ProbeOutcome, threshold int) (crawler.DormancyResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.probes = append(s.probes, dormancyProbe{careerPageID, outcome, threshold})
+	return s.result, nil
+}
+
+func (s *spyDormancy) recorded() []dormancyProbe {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]dormancyProbe{}, s.probes...)
 }

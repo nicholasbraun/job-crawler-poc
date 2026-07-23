@@ -249,8 +249,11 @@ func (f *fakeCareerPageRepo) Upsert(ctx context.Context, p *crawler.CareerPage) 
 	f.pages = append(f.pages, &saved)
 	return nil
 }
-func (f *fakeCareerPageRepo) ListSeeds(ctx context.Context) ([]crawler.CatalogSeed, error) {
+func (f *fakeCareerPageRepo) ListCollectionSeeds(ctx context.Context, dormancyThreshold int) ([]crawler.CollectionSeed, error) {
 	return nil, nil
+}
+func (f *fakeCareerPageRepo) RecordProbe(ctx context.Context, careerPageID uuid.UUID, outcome crawler.ProbeOutcome, threshold int) (crawler.DormancyResult, error) {
+	return crawler.DormancyResult{}, nil
 }
 func (f *fakeCareerPageRepo) List(ctx context.Context) ([]*crawler.CareerPage, error) {
 	if f.onList != nil {

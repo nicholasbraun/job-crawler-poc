@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -23,6 +24,10 @@ import (
 	"github.com/joho/godotenv"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/api"
+	"github.com/nicholasbraun/job-crawler-poc/internal/ats"
+	"github.com/nicholasbraun/job-crawler-poc/internal/atsingest"
+	"github.com/nicholasbraun/job-crawler-poc/internal/catalog"
+	"github.com/nicholasbraun/job-crawler-poc/internal/collection"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/postgres"
 	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
@@ -40,6 +45,8 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/processor"
 	careerpageprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/career_page_processor"
 	discoveryprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/discovery_processor"
+	joblistingprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/job_listing_processor"
+	urlprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/url_processor"
 	"github.com/nicholasbraun/job-crawler-poc/internal/robotstxt"
 	"github.com/nicholasbraun/job-crawler-poc/internal/robotstxt/temoto"
 	"github.com/nicholasbraun/job-crawler-poc/internal/runner"
@@ -72,6 +79,13 @@ const (
 	defaultLogLevel          = "INFO"
 	defaultDiscoveryMaxDepth = 10
 	defaultMaxWorkers        = 50
+
+	// ATS Fetch lane tuning (ADR-0022), shared by every Collection Cycle:
+	// defaultATSMaxWorkers sizes the ingest pool (how many tenants are fetched in
+	// parallel across providers), and defaultATSRateInterval is the minimum spacing
+	// between board-API calls to one provider (the per-provider HostLimiter).
+	defaultATSMaxWorkers   = 8
+	defaultATSRateInterval = 250 * time.Millisecond
 
 	// llmMaxBacklog is the high-water cap on a per-run LLM stream's outstanding
 	// entries. Past it, the crawl's Enqueue blocks until the classify/extract
@@ -210,12 +224,13 @@ func main() {
 
 	companyRepository := postgres.NewCompanyRepository(pgPool)
 	careerPageRepository := postgres.NewCareerPageRepository(pgPool)
+	corpusRepository := postgres.NewCorpusRepository(pgPool)
 	defRepository := postgres.NewCrawlDefinitionRepository(pgPool)
 	runRepository := postgres.NewCrawlRunRepository(pgPool)
 	importJobRepository := postgres.NewImportJobRepository(pgPool)
 
 	factory := newFactory(crawlMaxWorkers, visitedCap, robotsCacheTTL, robotsCacheSize, llmMaxWorkers, llmConfig, redisClient,
-		companyRepository, careerPageRepository)
+		companyRepository, careerPageRepository, corpusRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory,
 		// One cleaner sweeps all of a run's transient Redis state on a terminal
 		// status or factory error: the frontier keys and the LLM stage's streams
@@ -312,8 +327,9 @@ func main() {
 }
 
 // newFactory builds the per-run wiring closure. Stateless dependencies
-// (HTTP client, parser, robots checker, classifier, filters) are built once
-// here and shared across runs; per-run state (frontier, pools) is built inside.
+// (HTTP client, parser, robots checker, classifier, extractor, ATS registry,
+// filters) are built once here and shared across runs; per-run state (frontier,
+// pools) is built inside.
 func newFactory(
 	maxWorkers int,
 	visitedCap int,
@@ -324,6 +340,7 @@ func newFactory(
 	redisClient *redis.Client,
 	companyRepository crawler.CompanyRepository,
 	careerPageRepository crawler.CareerPageRepository,
+	corpusRepository *postgres.CorpusRepository,
 ) runner.Factory {
 	// One caching transport (DNS cache + bounded dial + connection pool) shared by
 	// page downloads and robots.txt fetches: a host resolved for its robots.txt is
@@ -339,6 +356,17 @@ func newFactory(
 		robotstxt.WithCacheTTL(robotsCacheTTL), robotstxt.WithCacheSize(robotsCacheSize))
 
 	careerPageConfirmer := openrouter.NewCareerPageClassifier(llmConfig)
+	jobListingExtractor := openrouter.NewJobListingExtractor(llmConfig)
+
+	// ATS Fetch lane (ADR-0022): the provider→board-API-client registry, shared
+	// across Collection Cycles. Its clients use their own board-API HTTP client
+	// (separate from the crawl downloader); the per-run lane paces them via a
+	// HostLimiter.
+	atsRegistry := ats.NewDefaultRegistry()
+
+	// Collection Crawl instruments (ADR-0036), shared across Cycles: found /
+	// refreshed / closed listings, boards fetched / incomplete, cycle duration.
+	collectionMetrics := collection.NewMetrics()
 
 	// LLM-stage observability (ADR-0007 step 1): the Prometheus instruments and
 	// the Redis content-duplication probe are shared across runs; each run gets
@@ -367,104 +395,336 @@ func newFactory(
 			urlfilter.BlockHostnames(uf.BlockedHostnames...),
 		)
 
-		// Discovery is the only live crawl kind; the Keyword Crawl lane was
-		// retired (ADR-0038). A stale keyword run left over from before the
-		// cutover surfaces here as an unsupported-kind error and fails to
-		// resume, which is the intended clean cutover.
-		if def.Kind != crawler.CrawlKindDiscovery {
+		// Two live crawl kinds: discovery (perpetual catalog walk) and collection
+		// (periodic whole-Catalog Corpus fill + liveness, ADR-0036). Any other kind
+		// — e.g. a stale keyword run left from before the cutover (ADR-0038) —
+		// surfaces here as an unsupported-kind error and fails to resume, the
+		// intended clean cutover.
+		switch def.Kind {
+		case crawler.CrawlKindDiscovery:
+			// Perpetual mode: the run stays alive after the frontier drains,
+			// waiting for URLs discovered later. It ends only on a desired-state
+			// stop. The Catalog (company + career_page) is filled by the
+			// career-page pool.
+			discoveryFrontier := redisfrontier.New(redisClient, runID,
+				redisfrontier.WithMaxDepth(def.MaxDepth),
+				redisfrontier.WithMode(frontier.Perpetual),
+				redisfrontier.WithVisitedCap(visitedCap),
+			)
+
+			// Durable LLM stage: gate-passing candidates are XADDed onto a per-run
+			// Redis Stream and drained by a consumer group into the career-page
+			// processor, so the crawl never blocks on the classifier and a crash or
+			// restart redelivers rather than loses the candidate (ADR-0007 step 4).
+			classifyStage := llmstream.NewStage(redisClient, runID, llmobs.KindClassify,
+				func() processor.Processor[crawler.RawCareerPage] {
+					return careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
+						CompanyRepository:    companyRepository,
+						CareerPageRepository: careerPageRepository,
+						Confirmer:            careerPageConfirmer,
+						Recorder:             llmRecorder,
+					})
+				},
+				llmstream.WithWorkers[crawler.RawCareerPage](llmMaxWorkers),
+				llmstream.WithRecorder[crawler.RawCareerPage](llmRecorder),
+				llmstream.WithMaxBacklog[crawler.RawCareerPage](llmMaxBacklog),
+				// The first-reclaim window must exceed the whole Process: a single
+				// Confirm is bounded by the http client's LLM_TIMEOUT, and the extra
+				// minute absorbs the follow-on catalog upsert, so a slow but alive
+				// worker still in flight is never reclaimed and double-called. Only a
+				// truly dead worker sits idle longer. Retries of an already-failed
+				// entry are paced by the shorter default reclaim interval.
+				llmstream.WithMinIdle[crawler.RawCareerPage](llmConfig.Timeout+time.Minute),
+			)
+			if err := classifyStage.Start(ctx); err != nil {
+				return nil, fmt.Errorf("starting classify stage: %w", err)
+			}
+
+			// Counter tap: a gate-passing page becomes a catalog candidate.
+			// ListingsFound is reused as "catalog entries found" in Step 5. Counted
+			// once here on enqueue (not per process) so a redelivery does not
+			// double-count.
+			onCareerPage := func(ctx context.Context, page *crawler.RawCareerPage) error {
+				counters.ListingsFound.Add(1)
+				return classifyStage.Enqueue(ctx, page)
+			}
+
+			discoveryWorkerPool := pool.NewPool(
+				ctx, "discovery_worker_pool", func() processor.Processor[crawler.URL] {
+					return discoveryprocessor.NewProcessor(&discoveryprocessor.Config{
+						Frontier:         discoveryFrontier,
+						Downloader:       retryHTTPClient,
+						Parser:           htmlParser,
+						ContentFilter:    contentFilter,
+						URLFilter:        urlFilter,
+						RobotsTxtChecker: robotsTxtChecker,
+						GateConfig:       gateConfig,
+						OnCareerPage:     onCareerPage,
+					})
+				}, pool.WithMaxWorkers[crawler.URL](maxWorkers))
+
+			onNextURL := func(ctx context.Context, u *crawler.URL) error {
+				counters.PagesCrawled.Add(1)
+				return discoveryWorkerPool.Enqueue(ctx, u)
+			}
+
+			o := orchestrator.NewOrchestrator(orchestrator.Config{
+				Frontier:   discoveryFrontier,
+				OnNextURL:  onNextURL,
+				ShouldStop: shouldStop,
+			})
+
+			return &runner.Engine{
+				Orchestrator: o,
+				// Discovery roams: seeds carry empty Scope/Owner provenance
+				// (ADR-0021), so no fence and no Catalog attribution is applied.
+				Seeds: crawler.SeedsFromURLs(def.SeedURLs),
+				// Close order: discovery pool first (the producer feeding the
+				// classify stage), then the stage. Closing the producer first means
+				// no new task is XADDed mid-drain; a clean finish then drains the
+				// stream to empty, while a stop/shutdown leaves the PEL for resume.
+				Close: func() {
+					discoveryWorkerPool.Close()
+					classifyStage.Close()
+					// All LLM calls for this run are done once the stage drains;
+					// emit the ADR-0007 measurement summary (ADR-0007 step 1).
+					slog.Info("runner: llm stage summary", append([]any{"run_id", runID}, llmStats.Summary()...)...)
+				},
+			}, nil
+
+		case crawler.CrawlKindCollection:
+			// One Collection Cycle (ADR-0035/0036): a bounded run that seeds from the
+			// whole Catalog, fills the Corpus via two lanes (ATS fetch + crawl walk),
+			// and keeps listings live (per-listing refetch + ATS absence-sweep +
+			// Career-Page dormancy). It reuses the CrawlRun machinery verbatim; only
+			// the engine wiring differs. Started via the existing startRun path against
+			// CollectionDefinitionID; pause/resume/reconcile are kind-agnostic.
+
+			// Seed from the Catalog: every non-dormant Career Page (carrying its
+			// career_page.id) plus each Pageless Company's Website (no page, Nil id).
+			pageSeeds, err := careerPageRepository.ListCollectionSeeds(ctx, crawler.DefaultPageDormancyThreshold)
+			if err != nil {
+				return nil, fmt.Errorf("resolving collection career-page seeds: %w", err)
+			}
+			pagelessSeeds, err := companyRepository.ListPagelessSeeds(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("resolving collection pageless seeds: %w", err)
+			}
+			allSeeds := make([]crawler.CollectionSeed, 0, len(pageSeeds)+len(pagelessSeeds))
+			allSeeds = append(allSeeds, pageSeeds...)
+			for _, s := range pagelessSeeds {
+				allSeeds = append(allSeeds, crawler.CollectionSeed{URL: s.URL, CompanyKey: s.CompanyKey})
+			}
+
+			// Route into the three lanes: crawl seeds (walk), ATS FetchTasks (direct
+			// board pull, carrying career_page_id), and the crawled Career Pages the
+			// refetch + dormancy lane owns.
+			hasATSFetcher := func(provider string) bool {
+				_, ok := atsRegistry.Fetcher(provider)
+				return ok
+			}
+			crawlSeeds, atsTasks, refetchPages := collection.RouteSeeds(allSeeds, hasATSFetcher)
+
+			// Per-run attribution snapshots (ADR-0021/0035): the CompanyKey → name map
+			// for Owner attribution, and the Owner → best-match Career Page attributor
+			// that stamps career_page_id onto crawled postings.
+			companies, err := companyRepository.List(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("resolving collection company snapshot: %w", err)
+			}
+			companySnapshot := catalog.NewCompanySnapshot(companies)
+			companyKeyByID := make(map[uuid.UUID]string, len(companies))
+			for _, c := range companies {
+				companyKeyByID[c.ID] = c.CompanyKey
+			}
+			pages, err := careerPageRepository.List(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("resolving collection career-page snapshot: %w", err)
+			}
+			attributor := collection.NewAttributor(pages, companyKeyByID)
+
+			// Bounded frontier: a Cycle finishes when the walk drains (unlike the
+			// perpetual Discovery frontier).
+			boundedFrontier := redisfrontier.New(redisClient, runID,
+				redisfrontier.WithMaxDepth(def.MaxDepth),
+				redisfrontier.WithVisitedCap(visitedCap),
+			)
+
+			// Visited pre-pass (ADR-0035): seed every known-open posting URL into the
+			// run's visited set so the walk surfaces only NEW postings; the refetch lane
+			// owns liveness of the known ones. Idempotent, so a resumed Cycle re-runs it
+			// harmlessly. Best-effort: a seeding error is logged, never fatal.
+			if err := collection.SeedVisited(ctx, boundedFrontier, corpusRepository, refetchPages); err != nil {
+				slog.Error("collection: seeding visited set", "err", err, "run_id", runID)
+			}
+
+			cycleStart := time.Now()
+
+			// Durable extract stage: changed/discovered pages are XADDed onto a per-run
+			// Redis Stream and drained into the job-listing extractor, so the Cycle never
+			// blocks on the model and a restart redelivers (ADR-0007 step 4).
+			extractStage := llmstream.NewStage(redisClient, runID, llmobs.KindExtract,
+				func() processor.Processor[crawler.RawJobListing] {
+					return joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
+						Corpus:              corpusRepository,
+						JobListingExtractor: jobListingExtractor,
+						Recorder:            llmRecorder,
+						CompanyNames:        companySnapshot,
+						AttributeCareerPage: attributor,
+						// A saved listing (found or refreshed) increments the reused
+						// ListingsFound run counter and the collection.found metric.
+						OnSaved: func(ctx context.Context) {
+							counters.ListingsFound.Add(1)
+							collectionMetrics.Found(ctx)
+						},
+					})
+				},
+				llmstream.WithWorkers[crawler.RawJobListing](llmMaxWorkers),
+				llmstream.WithRecorder[crawler.RawJobListing](llmRecorder),
+				llmstream.WithMaxBacklog[crawler.RawJobListing](llmMaxBacklog),
+				llmstream.WithMinIdle[crawler.RawJobListing](llmConfig.Timeout+time.Minute),
+			)
+			if err := extractStage.Start(ctx); err != nil {
+				return nil, fmt.Errorf("starting collection extract stage: %w", err)
+			}
+
+			// ATS Fetch lane (ADR-0022/0035): LLM-free board pulls that save presence,
+			// run the absence-sweep on a complete fetch, and fold board reach into
+			// Career-Page dormancy. Built after the last fallible setup so an early error
+			// never leaks its worker goroutines.
+			atsLimiter := atsingest.NewHostLimiter(defaultATSRateInterval)
+			atsLane := atsingest.NewLane(ctx, atsingest.Config{
+				MaxWorkers: defaultATSMaxWorkers,
+				NewWorker: func() processor.Processor[atsingest.FetchTask] {
+					return atsingest.NewProcessor(&atsingest.ProcessorConfig{
+						ResolveFetcher:    atsRegistry.Fetcher,
+						Repository:        corpusRepository,
+						Liveness:          corpusRepository,
+						Dormancy:          careerPageRepository,
+						DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+						CycleStart:        cycleStart,
+						CompanyNames:      companySnapshot,
+						RateLimiter:       atsLimiter,
+						OnSaved: func(ctx context.Context) {
+							counters.ListingsFound.Add(1)
+							collectionMetrics.Found(ctx)
+						},
+						OnBoardFetched:    collectionMetrics.BoardFetched,
+						OnBoardIncomplete: collectionMetrics.BoardIncomplete,
+						OnClosed:          collectionMetrics.Closed,
+					})
+				},
+			})
+
+			// Refetch + dormancy lane (ADR-0035): probes each crawled Career Page and
+			// refetches its known-open postings for liveness, re-enqueueing changed pages
+			// onto the extract stage.
+			refetchLane := pool.NewPool(ctx, "collection_refetch_pool",
+				func() processor.Processor[crawler.CollectionSeed] {
+					return collection.NewRefetchProcessor(&collection.RefetchConfig{
+						Downloader:        retryHTTPClient,
+						Parser:            htmlParser,
+						Liveness:          corpusRepository,
+						Dormancy:          careerPageRepository,
+						SourceHash:        func(mc string) string { return openrouter.SourceHash(mc, llmConfig.ExtractMaxChars) },
+						EnqueueExtract:    extractStage.Enqueue,
+						StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+						DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+						OnRefreshed:       collectionMetrics.Refreshed,
+						OnClosed:          collectionMetrics.Closed,
+					})
+				}, pool.WithMaxWorkers[crawler.CollectionSeed](maxWorkers))
+
+			onJobListing := func(ctx context.Context, jl *crawler.RawJobListing) error {
+				return extractStage.Enqueue(ctx, jl)
+			}
+
+			urlWorkerPool := pool.NewPool(ctx, "collection_url_pool",
+				func() processor.Processor[crawler.URL] {
+					return urlprocessor.NewProcessor(&urlprocessor.Config{
+						Frontier:         boundedFrontier,
+						Downloader:       retryHTTPClient,
+						Parser:           htmlParser,
+						ContentFilter:    contentFilter,
+						URLFilter:        urlFilter,
+						RobotsTxtChecker: robotsTxtChecker,
+						// Pass-all relevance: collection has no keyword pruning (ADR-0038);
+						// the Extract Gate still sheds hubs/indexes/reject-paths structurally.
+						RelevanceFilter: contentFilter,
+						GateConfig:      gateConfig,
+						OnJobListing:    onJobListing,
+						HasATSFetcher:   hasATSFetcher,
+						// An ATS board embedded on a crawled page is fetched through the same
+						// deduped lane, attributed to the page's Owner, with a Nil
+						// CareerPageID (save-only: no sweep/dormancy for an embed board).
+						OnATSEmbed: func(ctx context.Context, provider, tenant, owner string) error {
+							return atsLane.Submit(ctx, atsingest.FetchTask{Provider: provider, TenantSlug: tenant, Owner: owner})
+						},
+						Recorder: llmRecorder,
+					})
+				}, pool.WithMaxWorkers[crawler.URL](maxWorkers))
+
+			onNextURL := func(ctx context.Context, u *crawler.URL) error {
+				counters.PagesCrawled.Add(1)
+				return urlWorkerPool.Enqueue(ctx, u)
+			}
+
+			o := orchestrator.NewOrchestrator(orchestrator.Config{
+				Frontier:   boundedFrontier,
+				OnNextURL:  onNextURL,
+				ShouldStop: shouldStop,
+			})
+
+			// Prime the ATS and refetch lanes last, after all fallible setup: live
+			// priming goroutines feed the pools and Engine.Close reaps them.
+			atsLane.PrimeAsync(ctx, atsTasks)
+			refetchPriming := primeRefetchAsync(ctx, refetchLane, refetchPages)
+
+			return &runner.Engine{
+				Orchestrator: o,
+				// crawlSeeds, not the ATS tenants: routed tenants are fetched by the lane
+				// and must not enter the Frontier (ADR-0022).
+				Seeds: crawlSeeds,
+				// Close order: url pool first (stops walk pages + embed submits), then the
+				// refetch lane (wait its priming, drain — it feeds the extract stage), then
+				// the ATS lane (drains its board fetches), then the extract stage last (both
+				// refetch and walk feed it). A clean finish drains each stream to empty; a
+				// stop/shutdown leaves the PEL for resume.
+				Close: func() {
+					urlWorkerPool.Close()
+					refetchPriming.Wait()
+					refetchLane.Close()
+					atsLane.Close()
+					extractStage.Close()
+					collectionMetrics.RecordCycle(ctx, time.Since(cycleStart))
+					slog.Info("runner: llm stage summary", append([]any{"run_id", runID}, llmStats.Summary()...)...)
+				},
+			}, nil
+
+		default:
 			return nil, fmt.Errorf("unsupported crawl kind: %q", def.Kind)
 		}
-
-		// Perpetual mode: the run stays alive after the frontier drains,
-		// waiting for URLs discovered later. It ends only on a desired-state
-		// stop. The Catalog (company + career_page) is filled by the
-		// career-page pool.
-		discoveryFrontier := redisfrontier.New(redisClient, runID,
-			redisfrontier.WithMaxDepth(def.MaxDepth),
-			redisfrontier.WithMode(frontier.Perpetual),
-			redisfrontier.WithVisitedCap(visitedCap),
-		)
-
-		// Durable LLM stage: gate-passing candidates are XADDed onto a per-run
-		// Redis Stream and drained by a consumer group into the career-page
-		// processor, so the crawl never blocks on the classifier and a crash or
-		// restart redelivers rather than loses the candidate (ADR-0007 step 4).
-		classifyStage := llmstream.NewStage(redisClient, runID, llmobs.KindClassify,
-			func() processor.Processor[crawler.RawCareerPage] {
-				return careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
-					CompanyRepository:    companyRepository,
-					CareerPageRepository: careerPageRepository,
-					Confirmer:            careerPageConfirmer,
-					Recorder:             llmRecorder,
-				})
-			},
-			llmstream.WithWorkers[crawler.RawCareerPage](llmMaxWorkers),
-			llmstream.WithRecorder[crawler.RawCareerPage](llmRecorder),
-			llmstream.WithMaxBacklog[crawler.RawCareerPage](llmMaxBacklog),
-			// The first-reclaim window must exceed the whole Process: a single
-			// Confirm is bounded by the http client's LLM_TIMEOUT, and the extra
-			// minute absorbs the follow-on catalog upsert, so a slow but alive
-			// worker still in flight is never reclaimed and double-called. Only a
-			// truly dead worker sits idle longer. Retries of an already-failed
-			// entry are paced by the shorter default reclaim interval.
-			llmstream.WithMinIdle[crawler.RawCareerPage](llmConfig.Timeout+time.Minute),
-		)
-		if err := classifyStage.Start(ctx); err != nil {
-			return nil, fmt.Errorf("starting classify stage: %w", err)
-		}
-
-		// Counter tap: a gate-passing page becomes a catalog candidate.
-		// ListingsFound is reused as "catalog entries found" in Step 5. Counted
-		// once here on enqueue (not per process) so a redelivery does not
-		// double-count.
-		onCareerPage := func(ctx context.Context, page *crawler.RawCareerPage) error {
-			counters.ListingsFound.Add(1)
-			return classifyStage.Enqueue(ctx, page)
-		}
-
-		discoveryWorkerPool := pool.NewPool(
-			ctx, "discovery_worker_pool", func() processor.Processor[crawler.URL] {
-				return discoveryprocessor.NewProcessor(&discoveryprocessor.Config{
-					Frontier:         discoveryFrontier,
-					Downloader:       retryHTTPClient,
-					Parser:           htmlParser,
-					ContentFilter:    contentFilter,
-					URLFilter:        urlFilter,
-					RobotsTxtChecker: robotsTxtChecker,
-					GateConfig:       gateConfig,
-					OnCareerPage:     onCareerPage,
-				})
-			}, pool.WithMaxWorkers[crawler.URL](maxWorkers))
-
-		onNextURL := func(ctx context.Context, u *crawler.URL) error {
-			counters.PagesCrawled.Add(1)
-			return discoveryWorkerPool.Enqueue(ctx, u)
-		}
-
-		o := orchestrator.NewOrchestrator(orchestrator.Config{
-			Frontier:   discoveryFrontier,
-			OnNextURL:  onNextURL,
-			ShouldStop: shouldStop,
-		})
-
-		return &runner.Engine{
-			Orchestrator: o,
-			// Discovery roams: seeds carry empty Scope/Owner provenance
-			// (ADR-0021), so no fence and no Catalog attribution is applied.
-			Seeds: crawler.SeedsFromURLs(def.SeedURLs),
-			// Close order: discovery pool first (the producer feeding the
-			// classify stage), then the stage. Closing the producer first means
-			// no new task is XADDed mid-drain; a clean finish then drains the
-			// stream to empty, while a stop/shutdown leaves the PEL for resume.
-			Close: func() {
-				discoveryWorkerPool.Close()
-				classifyStage.Close()
-				// All LLM calls for this run are done once the stage drains;
-				// emit the ADR-0007 measurement summary (ADR-0007 step 1).
-				slog.Info("runner: llm stage summary", append([]any{"run_id", runID}, llmStats.Summary()...)...)
-			},
-		}, nil
 	}
+}
+
+// primeRefetchAsync submits the Cycle's refetch pages onto the refetch pool from a
+// background goroutine so the run's start path is never blocked by pool
+// backpressure. The returned WaitGroup lets Engine.Close wait for priming to finish
+// enqueuing before it drains the pool; priming stops early if an Enqueue fails (ctx
+// cancelled or pool closed). Mirrors atsingest.Lane.PrimeAsync for the generic pool.
+func primeRefetchAsync(ctx context.Context, p *pool.Pool[crawler.CollectionSeed], pages []crawler.CollectionSeed) *sync.WaitGroup {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := range pages {
+			page := pages[i]
+			if err := p.Enqueue(ctx, &page); err != nil {
+				return
+			}
+		}
+	}()
+	return &wg
 }
 
 // envOr returns the value of environment variable key, or fallback if it is

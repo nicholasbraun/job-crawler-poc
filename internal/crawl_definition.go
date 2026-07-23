@@ -17,17 +17,25 @@ var ErrNotFound = errors.New("crawler: not found")
 // invariant (ADR-0017) permits only one. Callers map it to 409 Conflict.
 var ErrDiscoveryDefinitionExists = errors.New("crawler: discovery definition already exists")
 
-// CrawlKind distinguishes the crawl strategies. discovery is the only live
-// kind: it walks a site following the URL filters, cataloguing career pages.
-// "keyword" is a retired kind (the Keyword Crawl lane was removed); rows with
-// that kind may still exist in the database until the Corpus schema cutover, so
-// callers must treat any non-discovery kind as unsupported rather than assume it
-// is absent.
+// CrawlKind distinguishes the crawl strategies. Two kinds are live: discovery
+// walks a site following the URL filters, cataloguing career pages; collection
+// (ADR-0036) is the periodic whole-Catalog Cycle that fills and keeps-live the
+// Corpus (ATS fetch + crawl walk + refetch). "keyword" is a retired kind (the
+// Keyword Crawl lane was removed); rows with that kind may still exist in the
+// database until the Corpus schema cutover, so callers must treat any unknown
+// kind as unsupported rather than assume it is absent.
 type CrawlKind string
 
 const (
-	CrawlKindDiscovery CrawlKind = "discovery"
+	CrawlKindDiscovery  CrawlKind = "discovery"
+	CrawlKindCollection CrawlKind = "collection"
 )
+
+// CollectionDefinitionID is the fixed id of the singleton Collection Crawl
+// definition seeded at migration 0019 (ADR-0036). Constant so the scheduler
+// (#191) and the startRun path resolve the one Collection definition without a
+// lookup.
+var CollectionDefinitionID = uuid.MustParse("00000000-0000-0000-0000-00000c011ec7")
 
 // URLFilterConfig captures the URL filtering rules for a crawl. A definition
 // carries its own filters; a create request that omits them is filled with the
@@ -338,6 +346,31 @@ func DefaultURLFilterConfig() URLFilterConfig {
 			"www.bing.com", "open.spotify",
 		},
 	}
+}
+
+// collectionBlockedEditorialPaths are the editorial/marketing path segments a
+// Collection Crawl blocks that Discovery deliberately leaves crawlable. Discovery
+// walks blogs/news for their outbound company links; a Collection Cycle already
+// knows its companies (it seeds from the Catalog) and only wants each Company's
+// careers/jobs subtree, so it sheds these editorial subtrees to keep the walk
+// narrow (ADR-0036). Both singular and plural forms, since the URL filter matches
+// per path segment exactly.
+var collectionBlockedEditorialPaths = []string{
+	"blog", "news", "press", "media", "articles", "article",
+	"stories", "story", "posts", "post", "magazine",
+}
+
+// DefaultCollectionURLFilterConfig returns the narrow URL filter for the
+// singleton Collection Crawl (ADR-0036): the discovery default plus the editorial
+// path segments Discovery leaves crawlable, so a Cycle stays on each Company's
+// careers/jobs subtrees instead of roaming its blog and press pages. It is
+// reference/parity only — the authoritative filter is the seeded definition row
+// (migration 0019); a testcontainers assertion pins the two together so they
+// cannot drift.
+func DefaultCollectionURLFilterConfig() URLFilterConfig {
+	cfg := DefaultURLFilterConfig()
+	cfg.BlockedPathSegments = append(cfg.BlockedPathSegments, collectionBlockedEditorialPaths...)
+	return cfg
 }
 
 // DefaultDiscoverySeeds returns the baseline Seed set for the singleton Discovery

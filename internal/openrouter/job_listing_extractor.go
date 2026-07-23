@@ -285,6 +285,15 @@ func (jle *JobListingExtractor) Extract(ctx context.Context, raw crawler.RawJobL
 	return crawler.Extraction{Listing: listing, IsJobPosting: isPosting}, nil
 }
 
+// SourceHash returns the extraction-cache key for content (ADR-0035): the SHA-256
+// (hex) of content capped to maxChars — byte-identical to the input Extract hashes.
+// The crawl-lane refetch pass calls this with the extractor's ExtractMaxChars to gate
+// the LLM on unchanged source content: a freshly-fetched page whose SourceHash equals
+// the stored one is confirmed alive with no model call.
+func SourceHash(content string, maxChars int) string {
+	return sourceHash(capChars(content, maxChars))
+}
+
 // sourceHash is the SHA-256 (hex) of the exact capped MainContent fed to the
 // extractor — the extraction-cache key the crawl-lane refetch pass compares (ADR-0035).
 func sourceHash(capped string) string {

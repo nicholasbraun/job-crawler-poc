@@ -20,6 +20,23 @@ type CareerPage struct {
 	PolitenessDomain string
 	FirstSeen        time.Time
 	LastSeen         time.Time
+	// ConsecutiveFailures is how many consecutive Cycles found this page hard-dead
+	// (a 404 board, or a page that no longer classifies); at or above the dormancy
+	// threshold the page is dormant (ADR-0035). Reset to 0 by re-discovery (Upsert).
+	ConsecutiveFailures int
+	// LastOK is when the page last probed reachable/alive. Zero until the first
+	// successful Cycle reach.
+	LastOK time.Time
+}
+
+// DormancyResult is the outcome of folding one dormancy probe into a Career Page
+// (ADR-0035): the resulting consecutive-failure count, whether this probe crossed
+// the page into dormant, and how many Open listings the dormancy cascade closed
+// (0 unless BecameDormant).
+type DormancyResult struct {
+	ConsecutiveFailures int
+	BecameDormant       bool
+	ClosedListings      int
 }
 
 // DayCount is a single UTC-day bucket of newly-catalogued Career Pages: Count
@@ -47,7 +64,9 @@ type CareerPageMerge struct {
 type CareerPageRepository interface {
 	// Upsert inserts p or, when a row with the same (CompanyID, URL) already
 	// exists, refreshes its mutable fields and advances last_seen while
-	// preserving first_seen.
+	// preserving first_seen. Re-discovery revives a dormant page: the conflict
+	// path resets consecutive_failures to 0 and stamps last_ok, so a re-classified
+	// page reappears in ListCollectionSeeds (ADR-0035).
 	Upsert(ctx context.Context, p *CareerPage) error
 
 	// MergeImport lands an imported Career Page keyed on (CompanyID, URL)
@@ -59,12 +78,19 @@ type CareerPageRepository interface {
 	// present, derived from the URL host) is refreshed. Re-merging changes no data.
 	MergeImport(ctx context.Context, m *CareerPageMerge) error
 
-	// ListSeeds returns every catalogued Career Page URL paired with its owning
-	// Company's stored CompanyKey. A Keyword Crawl calls this at run start to seed
-	// the Frontier from the Catalog, carrying each seed's Owner (the attribution
-	// key) so a saved Job Listing is attributed to the Catalog's Company, not the
-	// extractor's guess (ADR-0021).
-	ListSeeds(ctx context.Context) ([]CatalogSeed, error)
+	// ListCollectionSeeds returns every NON-dormant Career Page as a CollectionSeed
+	// (id + url + owning CompanyKey), for a Collection Cycle to seed from (ADR-0036).
+	// Dormant is derived, not stored: a page with consecutive_failures at or above
+	// dormancyThreshold is excluded, so re-discovery (which resets the counter) revives
+	// it. Never returns nil; an empty Catalog yields an empty slice.
+	ListCollectionSeeds(ctx context.Context, dormancyThreshold int) ([]CollectionSeed, error)
+
+	// RecordProbe folds one dormancy ProbeOutcome into a Career Page's counters via
+	// the pure NextDormancy reducer under FOR UPDATE (ADR-0035). When the probe crosses
+	// the page into dormant on THIS call, it Closes the page's remaining Open Job
+	// Listings (both lanes) in the SAME transaction and reports the count. A page
+	// already dormant re-closes nothing. Returns the resulting DormancyResult.
+	RecordProbe(ctx context.Context, careerPageID uuid.UUID, outcome ProbeOutcome, threshold int) (DormancyResult, error)
 
 	// List returns every catalogued Career Page as a full entity (including
 	// CompanyID so the dashboard can group pages under their Company),

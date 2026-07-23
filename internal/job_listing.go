@@ -154,8 +154,9 @@ type CorpusRepository interface {
 type CorpusLivenessRepository interface {
 	// ListOpen returns every currently-Open (closed_at IS NULL) Job Listing collected
 	// under careerPageID, so a Cycle can refetch them for liveness. Each carries
-	// CanonicalURL, URL, Source, SourceID, SourceHash, and CareerPageID (the fields a
-	// refetch needs); never returns nil (an empty board yields an empty slice).
+	// CanonicalURL, URL, Source, SourceID, SourceHash, CompanyKey, and CareerPageID
+	// (the fields a refetch needs — CompanyKey rebuilds the re-extraction's Owner
+	// attribution); never returns nil (an empty board yields an empty slice).
 	ListOpen(ctx context.Context, careerPageID uuid.UUID) ([]*JobListing, error)
 
 	// CloseAbsent runs the ATS-lane absence-sweep for ONE board (ADR-0035): when

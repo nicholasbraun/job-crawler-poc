@@ -73,10 +73,12 @@ func (r *CorpusRepository) Save(ctx context.Context, jl *crawler.JobListing) err
 
 // ListOpen returns every Open (closed_at IS NULL) listing under careerPageID,
 // ordered by first_seen, carrying the identity/hash fields a liveness refetch needs.
-// Never returns nil — an empty board yields an empty slice.
+// company_key is included so a changed-page re-extraction can rebuild the Owner
+// attribution (ADR-0021) from the listing's stored key. Never returns nil — an
+// empty board yields an empty slice.
 func (r *CorpusRepository) ListOpen(ctx context.Context, careerPageID uuid.UUID) ([]*crawler.JobListing, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT canonical_url, url, source, source_id, source_hash
+		SELECT canonical_url, url, source, source_id, source_hash, company_key
 		FROM job_listing
 		WHERE career_page_id = $1 AND closed_at IS NULL
 		ORDER BY first_seen`,
@@ -91,7 +93,7 @@ func (r *CorpusRepository) ListOpen(ctx context.Context, careerPageID uuid.UUID)
 	for rows.Next() {
 		jl := &crawler.JobListing{CareerPageID: careerPageID}
 		var source string
-		if err := rows.Scan(&jl.CanonicalURL, &jl.URL, &source, &jl.SourceID, &jl.SourceHash); err != nil {
+		if err := rows.Scan(&jl.CanonicalURL, &jl.URL, &source, &jl.SourceID, &jl.SourceHash, &jl.CompanyKey); err != nil {
 			return nil, fmt.Errorf("postgres: error scanning open listing: %w", err)
 		}
 		jl.Source = crawler.SourceLane(source)

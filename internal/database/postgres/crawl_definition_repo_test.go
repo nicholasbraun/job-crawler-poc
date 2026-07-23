@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -9,6 +10,45 @@ import (
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/postgres"
 )
+
+// TestSeededCollectionDefinition asserts migration 0019 seeds the singleton
+// Collection Crawl definition (ADR-0036): resolvable at the fixed
+// CollectionDefinitionID with kind 'collection', and its stored url_filter
+// round-trips equal to DefaultCollectionURLFilterConfig() so the SQL seed and the
+// Go helper cannot drift.
+func TestSeededCollectionDefinition(t *testing.T) {
+	pool := newTestPool(t)
+	defs := postgres.NewCrawlDefinitionRepository(pool)
+
+	def, err := defs.Get(t.Context(), crawler.CollectionDefinitionID)
+	if err != nil {
+		t.Fatalf("getting seeded collection definition: %v", err)
+	}
+	if def.Kind != crawler.CrawlKindCollection {
+		t.Errorf("kind = %q, want %q", def.Kind, crawler.CrawlKindCollection)
+	}
+	if !reflect.DeepEqual(def.URLFilter, crawler.DefaultCollectionURLFilterConfig()) {
+		t.Errorf("seeded url_filter drifted from DefaultCollectionURLFilterConfig()\n got: %+v\nwant: %+v",
+			def.URLFilter, crawler.DefaultCollectionURLFilterConfig())
+	}
+}
+
+// TestSingleCollectionDefinition drives the singleton-collection partial unique
+// index (migration 0019): the migration already seeded one collection definition,
+// so a second Create with kind 'collection' is rejected by the index.
+func TestSingleCollectionDefinition(t *testing.T) {
+	pool := newTestPool(t)
+	defs := postgres.NewCrawlDefinitionRepository(pool)
+
+	err := defs.Create(t.Context(), &crawler.CrawlDefinition{
+		Name:     "second collection",
+		Kind:     crawler.CrawlKindCollection,
+		MaxDepth: 1,
+	})
+	if err == nil {
+		t.Fatal("creating a second collection definition should be rejected by the singleton index")
+	}
+}
 
 // TestSingleDiscoveryDefinition drives the singleton-discovery partial unique
 // index (migration 0010) through the repository: at most one discovery

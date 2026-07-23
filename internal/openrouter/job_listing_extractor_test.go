@@ -324,3 +324,31 @@ func TestExtractSetsSourceHash(t *testing.T) {
 		t.Errorf("SourceHash = %q, want %q (sha256 of the exact capped input)", got.Listing.SourceHash, want)
 	}
 }
+
+// TestSourceHashMatchesExtract asserts the exported SourceHash (the refetch pass's
+// cache key, ADR-0035) is byte-identical to the hash the extractor stamps on Extract
+// — the load-bearing invariant that lets an unchanged refetch skip the LLM. It also
+// checks the cap is applied so content beyond maxChars never shifts the key.
+func TestSourceHashMatchesExtract(t *testing.T) {
+	const content = "some page text"
+
+	// Same cap the extractor uses in TestExtractSetsSourceHash (default 8000) → the
+	// hash is over the content verbatim, matching Extract's stamped SourceHash.
+	ext := newExtractorServer(t, `{"title":"X","is_job_posting":true}`)
+	got, err := ext.Extract(t.Context(), crawler.RawJobListing{
+		URL:     newURL(t, "https://careers.acme.com/jobs/1"),
+		Content: crawler.Content{MainContent: content},
+	})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if h := openrouter.SourceHash(content, 8000); h != got.Listing.SourceHash {
+		t.Errorf("SourceHash(%q) = %q, want %q (must match the extractor's stamp)", content, h, got.Listing.SourceHash)
+	}
+
+	// The cap makes content beyond maxChars invisible to the key.
+	base := strings.Repeat("a", 10)
+	if openrouter.SourceHash(base, 5) != openrouter.SourceHash(base+"IGNORED", 5) {
+		t.Error("SourceHash must hash only the first maxChars runes")
+	}
+}

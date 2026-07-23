@@ -610,4 +610,34 @@ func TestCorpusListOpen(t *testing.T) {
 			t.Errorf("want 0 open listings, got %d", len(open))
 		}
 	})
+
+	t.Run("returns company_key for re-extraction attribution", func(t *testing.T) {
+		keyed := &crawler.JobListing{
+			CanonicalURL: "https://ex.com/j/keyed",
+			URL:          "https://ex.com/j/keyed",
+			Source:       crawler.SourceLaneCrawl,
+			CareerPageID: page,
+			CompanyKey:   "acme.com",
+			Title:        "Keyed role",
+		}
+		if err := repo.Save(t.Context(), keyed); err != nil {
+			t.Fatalf("saving keyed listing: %v", err)
+		}
+		open, err := repo.ListOpen(t.Context(), page)
+		if err != nil {
+			t.Fatalf("ListOpen: %v", err)
+		}
+		var found bool
+		for _, jl := range open {
+			if jl.CanonicalURL == keyed.CanonicalURL {
+				found = true
+				if jl.CompanyKey != "acme.com" {
+					t.Errorf("company_key: want %q, got %q", "acme.com", jl.CompanyKey)
+				}
+			}
+		}
+		if !found {
+			t.Fatal("keyed listing missing from ListOpen")
+		}
+	})
 }
