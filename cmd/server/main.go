@@ -23,13 +23,9 @@ import (
 	"github.com/joho/godotenv"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/api"
-	"github.com/nicholasbraun/job-crawler-poc/internal/ats"
-	"github.com/nicholasbraun/job-crawler-poc/internal/atsingest"
-	"github.com/nicholasbraun/job-crawler-poc/internal/catalog"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/postgres"
 	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
-	joblistingfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/job_listing_filter"
 	urlfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/url"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 	redisfrontier "github.com/nicholasbraun/job-crawler-poc/internal/frontier/redis"
@@ -44,8 +40,6 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/processor"
 	careerpageprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/career_page_processor"
 	discoveryprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/discovery_processor"
-	joblistingprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/job_listing_processor"
-	urlprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/url_processor"
 	"github.com/nicholasbraun/job-crawler-poc/internal/robotstxt"
 	"github.com/nicholasbraun/job-crawler-poc/internal/robotstxt/temoto"
 	"github.com/nicholasbraun/job-crawler-poc/internal/runner"
@@ -69,24 +63,15 @@ const (
 	redisReadyTimeout      = 60 * time.Second
 	redisReadyPollInterval = 500 * time.Millisecond
 
-	// Crawl tuning defaults, previously sourced from config.json. The per-kind
-	// maxDepth constants seed a new crawl definition's field when the request
-	// omits maxDepth (overridable per definition via the API); Discovery reaches
-	// deeper because it is the perpetual catalog-building crawl. defaultMaxWorkers
-	// is the default size of the per-run worker pools, overridable via
-	// CRAWL_MAX_WORKERS.
+	// Crawl tuning defaults, previously sourced from config.json. The
+	// defaultDiscoveryMaxDepth constant seeds a new discovery definition's field
+	// when the request omits maxDepth (overridable per definition via the API);
+	// Discovery reaches deep because it is the perpetual catalog-building crawl.
+	// defaultMaxWorkers is the default size of the per-run worker pools,
+	// overridable via CRAWL_MAX_WORKERS.
 	defaultLogLevel          = "INFO"
-	defaultKeywordMaxDepth   = 4
 	defaultDiscoveryMaxDepth = 10
 	defaultMaxWorkers        = 50
-
-	// ATS Fetch lane tuning (ADR-0022). defaultATSMaxWorkers sizes the per-run ATS
-	// ingest pool — how many tenants are fetched in parallel; the per-provider rate
-	// limiter serializes calls to one provider, so this mainly parallelizes across
-	// providers. defaultATSRateInterval is the minimum spacing between board-API
-	// calls to a single provider, keeping the crawler a polite board-API client.
-	defaultATSMaxWorkers   = 8
-	defaultATSRateInterval = 250 * time.Millisecond
 
 	// llmMaxBacklog is the high-water cap on a per-run LLM stream's outstanding
 	// entries. Past it, the crawl's Enqueue blocks until the classify/extract
@@ -149,9 +134,9 @@ func main() {
 		ExtractMaxChars:  llmExtractMaxChars,
 	}
 
-	// CRAWL_MAX_WORKERS sizes the per-run crawl worker pools (the discovery and
-	// url/keyword pools) — how many pages are downloaded and processed in parallel
-	// per run. Crawl workers are I/O-bound (blocked on network downloads), so this
+	// CRAWL_MAX_WORKERS sizes the per-run discovery worker pool — how many pages
+	// are downloaded and processed in parallel per run. Crawl workers are
+	// I/O-bound (blocked on network downloads), so this
 	// can be raised well past the default to lift throughput once the frontier is
 	// no longer the bottleneck; the Postgres pool and outbound network are the next
 	// caps to watch.
@@ -223,7 +208,6 @@ func main() {
 		log.Fatalf("error opening postgres: %v", err)
 	}
 
-	jobListingRepository := postgres.NewJobListingRepository(pgPool)
 	companyRepository := postgres.NewCompanyRepository(pgPool)
 	careerPageRepository := postgres.NewCareerPageRepository(pgPool)
 	defRepository := postgres.NewCrawlDefinitionRepository(pgPool)
@@ -231,7 +215,7 @@ func main() {
 	importJobRepository := postgres.NewImportJobRepository(pgPool)
 
 	factory := newFactory(crawlMaxWorkers, visitedCap, robotsCacheTTL, robotsCacheSize, llmMaxWorkers, llmConfig, redisClient,
-		jobListingRepository, companyRepository, careerPageRepository)
+		companyRepository, careerPageRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory,
 		// One cleaner sweeps all of a run's transient Redis state on a terminal
 		// status or factory error: the frontier keys and the LLM stage's streams
@@ -266,7 +250,6 @@ func main() {
 		Definitions: defRepository,
 		Companies:   companyRepository,
 		CareerPages: careerPageRepository,
-		Listings:    jobListingRepository,
 		Importer:    catalogImporter,
 		ImportJobs:  importJobRepository,
 		// Frontier size is a live Redis read, kept out of the api package so it
@@ -282,7 +265,6 @@ func main() {
 			return redisfrontier.New(redisClient, runID, redisfrontier.WithVisitedCap(visitedCap)).AddURL(ctx, u)
 		},
 		Defaults: api.Defaults{
-			KeywordMaxDepth:   defaultKeywordMaxDepth,
 			DiscoveryMaxDepth: defaultDiscoveryMaxDepth,
 			DiscoverySeeds:    crawler.DefaultDiscoverySeeds(),
 			URLFilter:         crawler.DefaultURLFilterConfig(),
@@ -330,7 +312,7 @@ func main() {
 }
 
 // newFactory builds the per-run wiring closure. Stateless dependencies
-// (HTTP client, parser, robots checker, extractor, filters) are built once
+// (HTTP client, parser, robots checker, classifier, filters) are built once
 // here and shared across runs; per-run state (frontier, pools) is built inside.
 func newFactory(
 	maxWorkers int,
@@ -340,7 +322,6 @@ func newFactory(
 	llmMaxWorkers int,
 	llmConfig openrouter.Config,
 	redisClient *redis.Client,
-	jobListingRepository crawler.JobListingRepository,
 	companyRepository crawler.CompanyRepository,
 	careerPageRepository crawler.CareerPageRepository,
 ) runner.Factory {
@@ -357,14 +338,7 @@ func newFactory(
 	robotsTxtChecker := robotstxt.NewChecker(robotsTxtParser, robotsTxtDownloader,
 		robotstxt.WithCacheTTL(robotsCacheTTL), robotstxt.WithCacheSize(robotsCacheSize))
 
-	jobListingExtractor := openrouter.NewJobListingExtractor(llmConfig)
 	careerPageConfirmer := openrouter.NewCareerPageClassifier(llmConfig)
-
-	// ATS Fetch lane (ADR-0022): the provider→board-API-client registry, shared
-	// across runs. Today it ships a Greenhouse client; #128 adds Lever. Its clients
-	// use their own board-API HTTP client (separate from the crawl downloader); the
-	// per-run lane paces them via a HostLimiter.
-	atsRegistry := ats.NewDefaultRegistry()
 
 	// LLM-stage observability (ADR-0007 step 1): the Prometheus instruments and
 	// the Redis content-duplication probe are shared across runs; each run gets
@@ -393,303 +367,98 @@ func newFactory(
 			urlfilter.BlockHostnames(uf.BlockedHostnames...),
 		)
 
-		if def.Kind == crawler.CrawlKindDiscovery {
-			// Perpetual mode: the run stays alive after the frontier drains,
-			// waiting for URLs discovered later. It ends only on a desired-state
-			// stop. The Catalog (company + career_page) is filled by the
-			// career-page pool.
-			discoveryFrontier := redisfrontier.New(redisClient, runID,
-				redisfrontier.WithMaxDepth(def.MaxDepth),
-				redisfrontier.WithMode(frontier.Perpetual),
-				redisfrontier.WithVisitedCap(visitedCap),
-			)
-
-			// Durable LLM stage: gate-passing candidates are XADDed onto a per-run
-			// Redis Stream and drained by a consumer group into the career-page
-			// processor, so the crawl never blocks on the classifier and a crash or
-			// restart redelivers rather than loses the candidate (ADR-0007 step 4).
-			classifyStage := llmstream.NewStage(redisClient, runID, llmobs.KindClassify,
-				func() processor.Processor[crawler.RawCareerPage] {
-					return careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
-						CompanyRepository:    companyRepository,
-						CareerPageRepository: careerPageRepository,
-						Confirmer:            careerPageConfirmer,
-						Recorder:             llmRecorder,
-					})
-				},
-				llmstream.WithWorkers[crawler.RawCareerPage](llmMaxWorkers),
-				llmstream.WithRecorder[crawler.RawCareerPage](llmRecorder),
-				llmstream.WithMaxBacklog[crawler.RawCareerPage](llmMaxBacklog),
-				// The first-reclaim window must exceed the whole Process: a single
-				// Confirm is bounded by the http client's LLM_TIMEOUT, and the extra
-				// minute absorbs the follow-on catalog upsert, so a slow but alive
-				// worker still in flight is never reclaimed and double-called. Only a
-				// truly dead worker sits idle longer. Retries of an already-failed
-				// entry are paced by the shorter default reclaim interval.
-				llmstream.WithMinIdle[crawler.RawCareerPage](llmConfig.Timeout+time.Minute),
-			)
-			if err := classifyStage.Start(ctx); err != nil {
-				return nil, fmt.Errorf("starting classify stage: %w", err)
-			}
-
-			// Counter tap: a gate-passing page becomes a catalog candidate.
-			// ListingsFound is reused as "catalog entries found" in Step 5. Counted
-			// once here on enqueue (not per process) so a redelivery does not
-			// double-count.
-			onCareerPage := func(ctx context.Context, page *crawler.RawCareerPage) error {
-				counters.ListingsFound.Add(1)
-				return classifyStage.Enqueue(ctx, page)
-			}
-
-			discoveryWorkerPool := pool.NewPool(
-				ctx, "discovery_worker_pool", func() processor.Processor[crawler.URL] {
-					return discoveryprocessor.NewProcessor(&discoveryprocessor.Config{
-						Frontier:         discoveryFrontier,
-						Downloader:       retryHTTPClient,
-						Parser:           htmlParser,
-						ContentFilter:    contentFilter,
-						URLFilter:        urlFilter,
-						RobotsTxtChecker: robotsTxtChecker,
-						GateConfig:       gateConfig,
-						OnCareerPage:     onCareerPage,
-					})
-				}, pool.WithMaxWorkers[crawler.URL](maxWorkers))
-
-			onNextURL := func(ctx context.Context, u *crawler.URL) error {
-				counters.PagesCrawled.Add(1)
-				return discoveryWorkerPool.Enqueue(ctx, u)
-			}
-
-			o := orchestrator.NewOrchestrator(orchestrator.Config{
-				Frontier:   discoveryFrontier,
-				OnNextURL:  onNextURL,
-				ShouldStop: shouldStop,
-			})
-
-			return &runner.Engine{
-				Orchestrator: o,
-				// Discovery roams: seeds carry empty Scope/Owner provenance
-				// (ADR-0021), so no fence and no Catalog attribution is applied.
-				Seeds: crawler.SeedsFromURLs(def.SeedURLs),
-				// Close order: discovery pool first (the producer feeding the
-				// classify stage), then the stage. Closing the producer first means
-				// no new task is XADDed mid-drain; a clean finish then drains the
-				// stream to empty, while a stop/shutdown leaves the PEL for resume.
-				Close: func() {
-					discoveryWorkerPool.Close()
-					classifyStage.Close()
-					// All LLM calls for this run are done once the stage drains;
-					// emit the ADR-0007 measurement summary (ADR-0007 step 1).
-					slog.Info("runner: llm stage summary", append([]any{"run_id", runID}, llmStats.Summary()...)...)
-				},
-			}, nil
-		}
-
-		// Keyword: bounded run that finishes when the frontier drains,
-		// extracting Job Listings via the LLM. Unknown kinds are rejected at the
-		// API, so this is the only other real kind.
-		if def.Kind != crawler.CrawlKindKeyword {
+		// Discovery is the only live crawl kind; the Keyword Crawl lane was
+		// retired (ADR-0038). A stale keyword run left over from before the
+		// cutover surfaces here as an unsupported-kind error and fails to
+		// resume, which is the intended clean cutover.
+		if def.Kind != crawler.CrawlKindDiscovery {
 			return nil, fmt.Errorf("unsupported crawl kind: %q", def.Kind)
 		}
 
-		// Seed a Keyword Crawl from the Catalog: the union of every Career Page
-		// URL and each Pageless Company's Website (its seed of last resort). Each
-		// query returns a CatalogSeed carrying the seed URL and its owning
-		// Company's stored CompanyKey; catalog.ResolveSeeds then pairs the two
-		// ADR-0021 provenance keys onto each Seed -- Owner from the stored key (the
-		// attribution key), Scope from catalog.Identify(URL) (the fence key) --
-		// dropping any seed whose URL fails to parse so every Keyword seed carries
-		// a real Scope. On re-adoption (Reconcile) re-seeding is a no-op: the
-		// per-run Redis visited set survived the restart and dedups (which also
-		// collapses any overlap between the two seed sources).
-		careerPageSeeds, err := careerPageRepository.ListSeeds(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("resolving keyword crawl seeds from catalog: %w", err)
-		}
-		pagelessSeeds, err := companyRepository.ListPagelessSeeds(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("resolving keyword crawl pageless seeds from catalog: %w", err)
-		}
-		catalogSeeds := append(careerPageSeeds, pagelessSeeds...)
-		seeds := catalog.ResolveSeeds(catalogSeeds)
-
-		// Per-run attribution snapshot (ADR-0021): a CompanyKey → Company-name map
-		// the extract stage uses to attribute a saved Job Listing to its Owner
-		// Company via the source URL's Owner, discarding the extractor's own company
-		// guess. Captured read-only and shared across the stage's per-worker
-		// processors (safe concurrent reads).
-		companies, err := companyRepository.List(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("resolving keyword crawl company snapshot from catalog: %w", err)
-		}
-		companySnapshot := catalog.NewCompanySnapshot(companies)
-
-		// ATS Fetch lane (ADR-0022): route each resolved Seed on a registered ATS
-		// host away from the Frontier and into a direct, LLM-free board-API pull.
-		// crawlSeeds keeps every self-hosted (and clientless-ATS) Seed on the
-		// crawl-and-fence path; atsTasks are the tenants the lane fetches. Routing is
-		// pure; the lane (which starts worker goroutines) is built below, after the
-		// last fallible setup step, so an early error can't leak an idle pool.
-		crawlSeeds, atsTasks := atsingest.RouteSeeds(seeds, func(provider string) bool {
-			_, ok := atsRegistry.Fetcher(provider)
-			return ok
-		})
-
-		// Multi-keyword OR relevance filter built from the Definition: a page is
-		// relevant if its title OR main content contains any keyword. Prunes
-		// pages before the expensive LLM extraction (ADR-0004). A title match
-		// short-circuits via ErrPass; else fall through to the content check;
-		// else Reject.
-		keywordFilter := filter.Chain(
-			joblistingfilter.TitleContains(filter.Contains(def.Keywords...)),
-			joblistingfilter.MainContentContains(filter.Contains(def.Keywords...)),
-			filter.Reject[*crawler.Content](),
-		)
-
-		boundedFrontier := redisfrontier.New(redisClient, runID,
+		// Perpetual mode: the run stays alive after the frontier drains,
+		// waiting for URLs discovered later. It ends only on a desired-state
+		// stop. The Catalog (company + career_page) is filled by the
+		// career-page pool.
+		discoveryFrontier := redisfrontier.New(redisClient, runID,
 			redisfrontier.WithMaxDepth(def.MaxDepth),
+			redisfrontier.WithMode(frontier.Perpetual),
 			redisfrontier.WithVisitedCap(visitedCap),
 		)
 
-		// Durable LLM stage: relevance-passing pages are XADDed onto a per-run
-		// Redis Stream and drained by a consumer group into the job-listing
-		// extractor, so the crawl never blocks on the model and a crash or restart
-		// redelivers rather than loses the listing (ADR-0007 step 4, closes #32).
-		extractStage := llmstream.NewStage(redisClient, runID, llmobs.KindExtract,
-			func() processor.Processor[crawler.RawJobListing] {
-				return joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
-					JobListingRepository: jobListingRepository,
-					JobListingExtractor:  jobListingExtractor,
-					DefinitionID:         def.ID,
+		// Durable LLM stage: gate-passing candidates are XADDed onto a per-run
+		// Redis Stream and drained by a consumer group into the career-page
+		// processor, so the crawl never blocks on the classifier and a crash or
+		// restart redelivers rather than loses the candidate (ADR-0007 step 4).
+		classifyStage := llmstream.NewStage(redisClient, runID, llmobs.KindClassify,
+			func() processor.Processor[crawler.RawCareerPage] {
+				return careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
+					CompanyRepository:    companyRepository,
+					CareerPageRepository: careerPageRepository,
+					Confirmer:            careerPageConfirmer,
 					Recorder:             llmRecorder,
-					CompanyNames:         companySnapshot,
-					Countries:            def.Countries,
-					// A saved listing increments ListingsFound (#119). Counting on
-					// save -- not on enqueue below -- means the header reflects the
-					// LLM-confirmed, saved rows shown in the listings table, not the
-					// pre-extraction candidates that a later Extractor Abstain discards.
-					// Like the ATS lane, a durable-stream redelivery that re-saves an
-					// in-flight entry re-counts it; saved rows stay deduped by
-					// (definition_id, url), so only this per-run metric can inflate.
-					OnSaved: func(context.Context) { counters.ListingsFound.Add(1) },
 				})
 			},
-			llmstream.WithWorkers[crawler.RawJobListing](llmMaxWorkers),
-			llmstream.WithRecorder[crawler.RawJobListing](llmRecorder),
-			llmstream.WithMaxBacklog[crawler.RawJobListing](llmMaxBacklog),
+			llmstream.WithWorkers[crawler.RawCareerPage](llmMaxWorkers),
+			llmstream.WithRecorder[crawler.RawCareerPage](llmRecorder),
+			llmstream.WithMaxBacklog[crawler.RawCareerPage](llmMaxBacklog),
 			// The first-reclaim window must exceed the whole Process: a single
-			// Extract is bounded by the http client's LLM_TIMEOUT, and the extra
-			// minute absorbs the follow-on listing upsert, so a slow but alive worker
-			// still in flight is never reclaimed and double-called. Only a truly dead
-			// worker sits idle longer. Retries of an already-failed entry are paced by
-			// the shorter default reclaim interval.
-			llmstream.WithMinIdle[crawler.RawJobListing](llmConfig.Timeout+time.Minute),
+			// Confirm is bounded by the http client's LLM_TIMEOUT, and the extra
+			// minute absorbs the follow-on catalog upsert, so a slow but alive
+			// worker still in flight is never reclaimed and double-called. Only a
+			// truly dead worker sits idle longer. Retries of an already-failed
+			// entry are paced by the shorter default reclaim interval.
+			llmstream.WithMinIdle[crawler.RawCareerPage](llmConfig.Timeout+time.Minute),
 		)
-		if err := extractStage.Start(ctx); err != nil {
-			return nil, fmt.Errorf("starting extract stage: %w", err)
+		if err := classifyStage.Start(ctx); err != nil {
+			return nil, fmt.Errorf("starting classify stage: %w", err)
 		}
 
-		// ATS Fetch lane (ADR-0022): the LLM-free pool that pulls the routed tenants'
-		// boards straight from their provider APIs. Built here — after the last
-		// fallible setup (extractStage.Start) — because NewLane starts worker
-		// goroutines that only Engine.Close reaps; an earlier error would leak them.
-		// A saved posting is attributed to its Owner Company via companySnapshot.
-		atsLimiter := atsingest.NewHostLimiter(defaultATSRateInterval)
-		atsLane := atsingest.NewLane(ctx, atsingest.Config{
-			MaxWorkers: defaultATSMaxWorkers,
-			NewWorker: func() processor.Processor[atsingest.FetchTask] {
-				return atsingest.NewProcessor(&atsingest.ProcessorConfig{
-					ResolveFetcher: atsRegistry.Fetcher,
-					Repository:     jobListingRepository,
-					DefinitionID:   def.ID,
-					Keywords:       def.Keywords,
-					Countries:      def.Countries,
-					CompanyNames:   companySnapshot,
-					RateLimiter:    atsLimiter,
-					// A saved posting increments ListingsFound. Unlike the crawl
-					// lane's count-on-enqueue tap (deduped by the visited set), the
-					// ATS lane counts on save and has no durable redelivery: it
-					// rebuilds its per-run fetched-tenant set each launch (ADR-0022 —
-					// a board fetch is idempotent and re-runnable), so a resumed run
-					// re-fetches every tenant and re-counts its postings. Saved rows
-					// stay deduped by (definition_id, url); only this metric inflates
-					// on resume, by design.
-					OnSaved: func(context.Context) { counters.ListingsFound.Add(1) },
-				})
-			},
-		})
-
-		// A relevance-passing page is enqueued onto the durable extract stream. The
-		// run's ListingsFound is bumped downstream on save (the extractor's OnSaved
-		// above), not here on enqueue: enqueue only means a keyword-matching candidate,
-		// which a later Extractor Abstain may discard without ever saving a listing (#119).
-		onJobListing := func(ctx context.Context, jl *crawler.RawJobListing) error {
-			return extractStage.Enqueue(ctx, jl)
+		// Counter tap: a gate-passing page becomes a catalog candidate.
+		// ListingsFound is reused as "catalog entries found" in Step 5. Counted
+		// once here on enqueue (not per process) so a redelivery does not
+		// double-count.
+		onCareerPage := func(ctx context.Context, page *crawler.RawCareerPage) error {
+			counters.ListingsFound.Add(1)
+			return classifyStage.Enqueue(ctx, page)
 		}
 
-		urlWorkerPool := pool.NewPool(
-			ctx, "url_worker_pool", func() processor.Processor[crawler.URL] {
-				return urlprocessor.NewProcessor(&urlprocessor.Config{
-					Frontier:         boundedFrontier,
+		discoveryWorkerPool := pool.NewPool(
+			ctx, "discovery_worker_pool", func() processor.Processor[crawler.URL] {
+				return discoveryprocessor.NewProcessor(&discoveryprocessor.Config{
+					Frontier:         discoveryFrontier,
 					Downloader:       retryHTTPClient,
 					Parser:           htmlParser,
 					ContentFilter:    contentFilter,
 					URLFilter:        urlFilter,
 					RobotsTxtChecker: robotsTxtChecker,
-					RelevanceFilter:  keywordFilter,
 					GateConfig:       gateConfig,
-					OnJobListing:     onJobListing,
-					// ATS Embed trigger (ADR-0022, #129): a firing board embed on a
-					// crawled page whose provider has a registered fetcher is submitted
-					// through the same deduped Lane.Submit as the routed seeds, attributed
-					// to the embedding page's Owner. An embed for a clientless provider is
-					// ignored (HasATSFetcher reports false).
-					HasATSFetcher: func(provider string) bool {
-						_, ok := atsRegistry.Fetcher(provider)
-						return ok
-					},
-					OnATSEmbed: func(ctx context.Context, provider, tenant, owner string) error {
-						return atsLane.Submit(ctx, atsingest.FetchTask{
-							Provider:   provider,
-							TenantSlug: tenant,
-							Owner:      owner,
-						})
-					},
-					Recorder: llmRecorder,
+					OnCareerPage:     onCareerPage,
 				})
 			}, pool.WithMaxWorkers[crawler.URL](maxWorkers))
 
-		// Counter tap: a URL pulled from the frontier and dispatched to a worker.
 		onNextURL := func(ctx context.Context, u *crawler.URL) error {
 			counters.PagesCrawled.Add(1)
-			return urlWorkerPool.Enqueue(ctx, u)
+			return discoveryWorkerPool.Enqueue(ctx, u)
 		}
 
 		o := orchestrator.NewOrchestrator(orchestrator.Config{
-			Frontier:   boundedFrontier,
+			Frontier:   discoveryFrontier,
 			OnNextURL:  onNextURL,
 			ShouldStop: shouldStop,
 		})
 
-		// Prime the ATS lane last, after all fallible setup (extractStage.Start): from
-		// here a live priming goroutine feeds the ATS pool, and Engine.Close drains it.
-		atsLane.PrimeAsync(ctx, atsTasks)
-
 		return &runner.Engine{
 			Orchestrator: o,
-			// crawlSeeds, not seeds: the routed ATS tenants are fetched by the lane
-			// and must not enter the Frontier (ADR-0022).
-			Seeds: crawlSeeds,
-			// Close order: url pool first (the producer feeding the extract stage),
-			// then the ATS lane (wait priming, drain the ATS pool so the run completes
-			// only after every in-flight fetch finishes), then the extract stage.
-			// Closing the url pool first means no new task is XADDed mid-drain; a clean
-			// finish then drains the stream to empty, while a stop/shutdown leaves the
-			// PEL for resume.
+			// Discovery roams: seeds carry empty Scope/Owner provenance
+			// (ADR-0021), so no fence and no Catalog attribution is applied.
+			Seeds: crawler.SeedsFromURLs(def.SeedURLs),
+			// Close order: discovery pool first (the producer feeding the
+			// classify stage), then the stage. Closing the producer first means
+			// no new task is XADDed mid-drain; a clean finish then drains the
+			// stream to empty, while a stop/shutdown leaves the PEL for resume.
 			Close: func() {
-				urlWorkerPool.Close()
-				atsLane.Close()
-				extractStage.Close()
+				discoveryWorkerPool.Close()
+				classifyStage.Close()
 				// All LLM calls for this run are done once the stage drains;
 				// emit the ADR-0007 measurement summary (ADR-0007 step 1).
 				slog.Info("runner: llm stage summary", append([]any{"run_id", runID}, llmStats.Summary()...)...)

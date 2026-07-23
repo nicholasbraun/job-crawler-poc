@@ -3,7 +3,6 @@ package crawler
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,14 +17,16 @@ var ErrNotFound = errors.New("crawler: not found")
 // invariant (ADR-0017) permits only one. Callers map it to 409 Conflict.
 var ErrDiscoveryDefinitionExists = errors.New("crawler: discovery definition already exists")
 
-// CrawlKind distinguishes the crawl strategies. discovery walks a site
-// following the URL filters; keyword additionally gates pages by keywords.
-// Only discovery is exercised in Step 1; keyword is reserved for later steps.
+// CrawlKind distinguishes the crawl strategies. discovery is the only live
+// kind: it walks a site following the URL filters, cataloguing career pages.
+// "keyword" is a retired kind (the Keyword Crawl lane was removed); rows with
+// that kind may still exist in the database until the Corpus schema cutover, so
+// callers must treat any non-discovery kind as unsupported rather than assume it
+// is absent.
 type CrawlKind string
 
 const (
 	CrawlKindDiscovery CrawlKind = "discovery"
-	CrawlKindKeyword   CrawlKind = "keyword"
 )
 
 // URLFilterConfig captures the URL filtering rules for a crawl. A definition
@@ -231,32 +232,6 @@ type CrawlDefinition struct {
 	MaxDepth  int
 	URLFilter URLFilterConfig
 	CreatedAt time.Time
-}
-
-// KeepForCountry reports whether a Job Listing with the given resolved Country
-// passes the Country Constraint countries (ADR-0028): kept when countries is empty
-// (anywhere), the Country is unresolved (the empty Country), or the Country is in
-// the set; otherwise discarded. Codes compare case-insensitively (uppercased). This
-// single predicate is why "Germany means Germany" is identical on both the crawl
-// and ATS acquisition lanes.
-//
-// Work Arrangement is deliberately NOT an input. An earlier revision kept any
-// Remote listing as a blanket override, but that retained out-of-target remote jobs
-// (e.g. a US-only remote role under a {DE} constraint), so it was removed: a Remote
-// listing is now kept only when its Country is unknown or in the set, like any
-// other listing. Keep-unknown still covers a genuinely location-agnostic posting
-// ("Remote — EU"/"Remote"), which resolves to the empty Country.
-func KeepForCountry(countries []string, country string) bool {
-	if len(countries) == 0 || country == "" {
-		return true
-	}
-	country = strings.ToUpper(strings.TrimSpace(country))
-	for _, c := range countries {
-		if strings.ToUpper(strings.TrimSpace(c)) == country {
-			return true
-		}
-	}
-	return false
 }
 
 // CrawlDefinitionRepository persists and retrieves crawl definitions.

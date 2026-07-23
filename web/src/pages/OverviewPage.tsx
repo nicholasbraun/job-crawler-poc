@@ -5,12 +5,10 @@ import { fmt, prettyUrl, relativeTime } from "../lib/format";
 import {
   atsSplit,
   buildDiscovery,
-  buildKeywordCrawls,
   recentlyCatalogued,
   type Discovery,
 } from "../lib/model";
 import type { Company, CareerPage } from "../api";
-import { CrawlCard } from "../components/CrawlCard";
 import { useLayout } from "../components/Layout";
 import { PageShell } from "../components/PageShell";
 import { EmptyState, Icon, RunControls, Sparkline, StatCard, StatusTag } from "../components/primitives";
@@ -27,8 +25,6 @@ export function OverviewPage() {
   const pages = pagesQ.data ?? [];
 
   const discovery = buildDiscovery(defs, runList);
-  const crawls = buildKeywordCrawls(defs, runList);
-  const running = crawls.filter((c) => c.status === "running").length;
   const split = atsSplit(companies);
   const atsProviders = new Set(companies.filter((c) => c.atsProvider).map((c) => c.atsProvider)).size;
   const isMobile = useIsMobile();
@@ -36,7 +32,7 @@ export function OverviewPage() {
   return (
     <PageShell
       title="Overview"
-      subtitle={`${discovery ? "One perpetual discovery run" : "No discovery run"} · ${crawls.length} keyword crawls`}
+      subtitle={discovery ? "One perpetual discovery run" : "No discovery run"}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "var(--space-4)" }}>
@@ -46,19 +42,13 @@ export function OverviewPage() {
             icon="ph-buildings"
             sub={`${atsProviders} ATS providers + self-hosted`}
           />
-          <StatCard label="Career pages" value={fmt(pages.length)} icon="ph-stack" sub="seed set for keyword crawls" />
+          <StatCard label="Career pages" value={fmt(pages.length)} icon="ph-stack" sub="catalogued career pages" />
           <StatCard
             label="Discovery frontier"
             value={fmt(discovery?.frontierSize ?? 0)}
             icon="ph-broadcast"
             sub="URLs queued · perpetual"
             subColor="var(--color-accent-300)"
-          />
-          <StatCard
-            label="Active keyword crawls"
-            value={`${running}/${crawls.length}`}
-            icon="ph-magnifying-glass"
-            sub={`${running} running now`}
           />
         </div>
 
@@ -69,8 +59,6 @@ export function OverviewPage() {
           <DiscoveryPanel discovery={discovery} careerPages={pages.length} companies={companies.length} split={split} />
           <RecentlyCatalogued pages={pages} companies={companies} />
         </div>
-
-        <KeywordCrawlsSection crawls={crawls} />
       </div>
     </PageShell>
   );
@@ -242,32 +230,6 @@ function RecentlyCatalogued({ pages, companies }: { pages: CareerPage[]; compani
               </div>
               <span style={{ fontSize: 11, color: "var(--color-neutral-500)", flex: "none" }}>{relativeTime(p.firstSeen)}</span>
             </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function KeywordCrawlsSection({ crawls }: { crawls: ReturnType<typeof buildKeywordCrawls> }) {
-  const isMobile = useIsMobile();
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-        <h4 style={{ margin: 0, fontSize: 18 }}>
-          Keyword crawls{" "}
-          <span style={{ fontSize: 14, color: "var(--color-neutral-500)", fontWeight: 400 }}>· {crawls.length} definitions</span>
-        </h4>
-        <Link to="/crawls" style={{ fontSize: 13, textDecoration: "none" }}>
-          View all <Icon name="ph-arrow-right" size={12} />
-        </Link>
-      </div>
-      {crawls.length === 0 ? (
-        <EmptyState icon="ph-magnifying-glass" title="No keyword crawls yet" hint="Create one from the header — it seeds from the catalog and gates pages by your keywords." />
-      ) : (
-        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : "repeat(2, minmax(0, 1fr))", gap: "var(--space-4)" }}>
-          {crawls.slice(0, 6).map((c) => (
-            <CrawlCard key={c.definitionId} crawl={c} />
           ))}
         </div>
       )}

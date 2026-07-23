@@ -2,17 +2,15 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { Link, NavLink, Outlet, useOutletContext } from "react-router-dom";
 
 import { useDefinitions, useIsMobile, useRuns } from "../hooks";
-import { buildDiscovery, buildKeywordCrawls, crawlLabel } from "../lib/model";
+import { buildDiscovery } from "../lib/model";
 import { statusMeta } from "../lib/status";
 import { Dot, Icon } from "./primitives";
 import { DiscoveryStartModal } from "./DiscoveryStartModal";
-import { NewCrawlModal } from "./NewCrawlModal";
 
 // LayoutContext is threaded to every page via the router Outlet, exposing the
-// globally-owned modal actions: opening the "new keyword crawl" modal and the
-// "start discovery" modal (both modals live in the Layout so they overlay the
-// whole app).
-export type LayoutContext = { openNewCrawl: () => void; openStartDiscovery: () => void };
+// globally-owned "start discovery" modal action (the modal lives in the Layout
+// so it overlays the whole app).
+export type LayoutContext = { openStartDiscovery: () => void };
 
 export function useLayout(): LayoutContext {
   return useOutletContext<LayoutContext>();
@@ -106,7 +104,6 @@ function MobileTopBar({ onMenu }: { onMenu: () => void }) {
 }
 
 export function Layout() {
-  const [modalOpen, setModalOpen] = useState(false);
   const [discoveryOpen, setDiscoveryOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const isMobile = useIsMobile();
@@ -117,8 +114,6 @@ export function Layout() {
   const runList = runs.data ?? [];
 
   const discovery = buildDiscovery(defs, runList);
-  const crawls = buildKeywordCrawls(defs, runList);
-  const totalListings = crawls.reduce((sum, c) => sum + c.listingsFound, 0);
   const discoveryMeta = discovery ? statusMeta(discovery.status) : null;
 
   // Growing the viewport back to desktop retires the drawer, so one left open on
@@ -227,13 +222,6 @@ export function Layout() {
         <nav style={{ display: "flex", flexDirection: "column", gap: 2, flex: "1 1 auto", minHeight: 0, overflowY: "auto" }}>
           <NavItem item={{ to: "/", label: "Overview", icon: "ph-squares-four", end: true }} />
           <NavItem item={{ to: "/discovery", label: "Discovery", icon: "ph-broadcast" }} />
-          <NavItem item={{ to: "/crawls", label: "Keyword crawls", icon: "ph-magnifying-glass", end: true, count: totalListings }} />
-          {crawls.map((c) => (
-            <NavItem
-              key={c.definitionId}
-              item={{ to: `/crawls/${c.definitionId}`, label: crawlLabel(c), count: c.listingsFound, nested: true }}
-            />
-          ))}
           <NavItem item={{ to: "/catalog", label: "Catalog", icon: "ph-stack" }} />
         </nav>
 
@@ -288,14 +276,12 @@ export function Layout() {
         <Outlet
           context={
             {
-              openNewCrawl: () => setModalOpen(true),
               openStartDiscovery: () => setDiscoveryOpen(true),
             } satisfies LayoutContext
           }
         />
       </main>
 
-      <NewCrawlModal open={modalOpen} onClose={() => setModalOpen(false)} />
       <DiscoveryStartModal open={discoveryOpen} onClose={() => setDiscoveryOpen(false)} />
     </div>
   );

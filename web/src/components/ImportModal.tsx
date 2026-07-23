@@ -10,8 +10,8 @@ import { Icon } from "./primitives";
 // ImportModal is the full Catalog Import experience on /catalog: pick a
 // .ndjson/.jsonl file, optionally dry-run it, watch the Import Job live, read the
 // per-line error report, promote a dry run to a real import (reusing the held
-// file with a fresh idempotency key), and see recent imports. It is a sibling of
-// NewCrawlModal and follows its focus-trap conventions; Escape is handled at the
+// file with a fresh idempotency key), and see recent imports. It follows the
+// shared Dialog focus-trap conventions; Escape is handled at the
 // document level so it closes the modal even when focus has fallen back to the
 // body. Closing mid-job leaves the job running server-side; it reappears under
 // recent imports.
@@ -188,7 +188,7 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
 
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
             {/* autoFocus moves focus into the dialog on open so the onKeyDown
-                Escape/Tab-trap engages immediately, matching NewCrawlModal. */}
+                Escape/Tab-trap engages immediately. */}
             <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} autoFocus />
             Dry run — validate the file and report what would happen, without writing
           </label>

@@ -13,7 +13,6 @@ import {
   listCrawls,
   listDefinitions,
   listImportJobs,
-  listListings,
   pauseCrawl,
   resumeCrawl,
   startRun,
@@ -68,8 +67,6 @@ export const keys = {
   importJobs: ["import-jobs"] as const,
   importJob: (id: string) => ["import-job", id] as const,
   definitionDefaults: (kind: CrawlKind) => ["definition-defaults", kind] as const,
-  listings: (definitionId: string, keyword: string) =>
-    ["listings", definitionId, keyword] as const,
 };
 
 export function useRuns() {
@@ -144,14 +141,6 @@ export function useSubmitImport() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.importJobs });
     },
-  });
-}
-
-export function useListings(definitionId: string, keyword: string) {
-  return useQuery({
-    queryKey: keys.listings(definitionId, keyword),
-    queryFn: () => listListings({ definitionId, keyword: keyword || undefined }),
-    refetchInterval: RUNS_POLL_MS,
   });
 }
 

@@ -13,7 +13,9 @@ import (
 // TestSingleDiscoveryDefinition drives the singleton-discovery partial unique
 // index (migration 0010) through the repository: at most one discovery
 // definition, translated to crawler.ErrDiscoveryDefinitionExists (ADR-0017),
-// while keyword definitions remain unconstrained.
+// while non-discovery definitions remain unconstrained. The "keyword" kind is
+// retired (the Keyword Crawl lane was removed) but its rows still round-trip
+// through the retained column until the Corpus schema cutover.
 func TestSingleDiscoveryDefinition(t *testing.T) {
 	pool := newTestPool(t)
 	defs := postgres.NewCrawlDefinitionRepository(pool)
@@ -36,15 +38,16 @@ func TestSingleDiscoveryDefinition(t *testing.T) {
 		t.Fatalf("second discovery definition: got %v, want ErrDiscoveryDefinitionExists", err)
 	}
 
-	// Keyword definitions are outside the index predicate and accumulate freely.
+	// Non-discovery definitions are outside the index predicate and accumulate
+	// freely; the retired "keyword" kind still round-trips through the column.
 	for _, name := range []string{"keyword-a", "keyword-b"} {
 		if err := defs.Create(t.Context(), &crawler.CrawlDefinition{
 			Name:     name,
-			Kind:     crawler.CrawlKindKeyword,
+			Kind:     crawler.CrawlKind("keyword"),
 			Keywords: []string{"go"},
 			MaxDepth: 1,
 		}); err != nil {
-			t.Fatalf("keyword definition %q should insert: %v", name, err)
+			t.Fatalf("non-discovery definition %q should insert: %v", name, err)
 		}
 	}
 }
@@ -60,7 +63,7 @@ func TestCountryConstraintRoundTrip(t *testing.T) {
 	t.Run("countries survive the round trip", func(t *testing.T) {
 		def := &crawler.CrawlDefinition{
 			Name:      "go-de-at",
-			Kind:      crawler.CrawlKindKeyword,
+			Kind:      crawler.CrawlKind("keyword"),
 			Keywords:  []string{"go"},
 			Countries: []string{"DE", "AT"},
 			MaxDepth:  1,
@@ -81,7 +84,7 @@ func TestCountryConstraintRoundTrip(t *testing.T) {
 	t.Run("no countries reads back as an empty slice", func(t *testing.T) {
 		def := &crawler.CrawlDefinition{
 			Name:     "go-anywhere",
-			Kind:     crawler.CrawlKindKeyword,
+			Kind:     crawler.CrawlKind("keyword"),
 			Keywords: []string{"go"},
 			MaxDepth: 1,
 		}

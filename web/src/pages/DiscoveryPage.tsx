@@ -95,8 +95,7 @@ function SeedDomains({ discovery }: { discovery: Discovery }) {
       <h4 style={{ margin: 0, fontSize: 17 }}>Seed domains</h4>
       <p style={{ margin: 0, fontSize: 13, color: "var(--color-neutral-400)" }}>
         The discovery run walks these seeds with a perpetual frontier, following the URL filters toward career pages.
-        Confirmed hits are attributed to a company (ATS-aware) and catalogued as career pages — the seed set every keyword
-        crawl draws from.
+        Confirmed hits are attributed to a company (ATS-aware) and catalogued as career pages.
       </p>
       <div style={{ overflowX: "auto" }}>
         <table className="table" style={{ minWidth: 480 }}>

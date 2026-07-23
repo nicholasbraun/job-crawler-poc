@@ -49,7 +49,8 @@ export type RunStatusSnapshot = {
   frontierSize: number;
 };
 
-export type CrawlKind = "discovery" | "keyword";
+// Discovery is the only live crawl kind; the Keyword Crawl lane was retired.
+export type CrawlKind = "discovery";
 
 export type UrlFilterConfig = {
   allowedTLDs: string[];
@@ -65,43 +66,29 @@ export type Definition = {
   name: string;
   kind: CrawlKind;
   seedUrls: string[];
-  keywords: string[];
   maxDepth: number;
   urlFilter: UrlFilterConfig;
   createdAt: string;
 };
 
-// CountryOption is one selectable Country in the keyword template's Country
-// Constraint multi-select: an ISO alpha-2 code plus its display name. It mirrors
-// the server's countryOptionDTO and is sourced from the geo resolver's known set,
-// so the options always match what the crawler can actually place (ADR-0028).
-export type CountryOption = { code: string; name: string };
-
 // Only the fields a user supplies; the server fills depth/urlFilter from
 // its configured defaults when omitted. An omitted maxDepth lets the server
-// apply the per-kind default (discovery 10 / keyword 4). `countries` is the
-// keyword-only Country Constraint (ISO alpha-2 codes); omitted or empty means
-// anywhere (no country filtering), matching ADR-0028's empty-set rule.
+// apply the discovery default (10).
 export type CreateDefinitionRequest = {
   name: string;
   kind: CrawlKind;
   seedUrls?: string[];
-  keywords?: string[];
   maxDepth?: number;
-  countries?: string[];
 };
 
-// DefinitionDefaults is the per-kind crawl-modal prefill template from
-// GET /api/definitions/defaults. Discovery carries name + seedUrls; keyword
-// carries keywords and the `countries` known-country set for the Country
-// Constraint multi-select. maxDepth is always present (discovery 10 / keyword 4).
+// DefinitionDefaults is the discovery crawl-modal prefill template from
+// GET /api/definitions/defaults?kind=discovery: name + seedUrls and the
+// always-present maxDepth (10).
 export type DefinitionDefaults = {
   kind: CrawlKind;
   name?: string;
   seedUrls?: string[];
-  keywords?: string[];
   maxDepth: number;
-  countries?: CountryOption[];
 };
 
 // NameSource is the Name Ladder rung that produced a Company's name (ADR-0025),
@@ -184,16 +171,6 @@ export function mintIdempotencyKey(): string {
   return `imp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-export type Listing = {
-  url: string;
-  title: string;
-  company: string;
-  location: string;
-  country: string;
-  workArrangement: "remote" | "onsite" | "hybrid" | "unspecified";
-  description: string;
-};
-
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -217,8 +194,7 @@ export function listCrawls(): Promise<Run[]> {
 
 // createCrawl is the fused create-and-start endpoint: it persists a definition
 // and immediately starts a run, atomically (a failed start rolls the definition
-// back server-side). It backs the "Create & start" modal action. A keyword
-// crawl seeds from the catalog, so it carries keywords but no seedUrls.
+// back server-side). It backs the Discovery start modal.
 export function createCrawl(req: CreateDefinitionRequest): Promise<Run> {
   return request<Run>("/crawls", {
     method: "POST",
@@ -248,8 +224,8 @@ export function listDefinitions(): Promise<Definition[]> {
   return request<Definition[]>("/definitions");
 }
 
-// getDefinitionDefaults fetches a crawl modal's per-kind prefill template
-// (baseline seeds/keywords + depth) from the server's configured defaults.
+// getDefinitionDefaults fetches the discovery crawl modal's prefill template
+// (baseline seeds + depth) from the server's configured defaults.
 export function getDefinitionDefaults(kind: CrawlKind): Promise<DefinitionDefaults> {
   return request<DefinitionDefaults>(`/definitions/defaults?kind=${encodeURIComponent(kind)}`);
 }
@@ -274,8 +250,8 @@ export function startRun(definitionId: string): Promise<Run> {
 
 // addSeed appends a Seed to the Discovery Definition and injects it into the
 // live Frontier at depth 0 (ADR-0018). Discovery-only: the server refuses a
-// keyword definition or an invalid/empty URL with a 4xx. Returns the updated
-// definition so the caller can reflect the new Seed list.
+// non-discovery definition or an invalid/empty URL with a 4xx. Returns the
+// updated definition so the caller can reflect the new Seed list.
 export function addSeed(definitionId: string, url: string): Promise<Definition> {
   return request<Definition>(`/definitions/${definitionId}/seeds`, {
     method: "POST",
@@ -299,15 +275,6 @@ export function listCareerPages(companyId?: string): Promise<CareerPage[]> {
 // data), so the two never drift.
 export function getCatalogHistory(): Promise<CatalogHistory> {
   return request<CatalogHistory>("/catalog-history");
-}
-
-export function listListings(params: {
-  definitionId: string;
-  keyword?: string;
-}): Promise<Listing[]> {
-  const q = new URLSearchParams({ definitionId: params.definitionId });
-  if (params.keyword) q.set("keyword", params.keyword);
-  return request<Listing[]>(`/listings?${q.toString()}`);
 }
 
 // submitImport posts a catalog file as multipart and starts an asynchronous

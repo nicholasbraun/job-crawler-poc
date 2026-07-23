@@ -27,51 +27,6 @@ export function latestRunByDefinition(runs: Run[]): Map<string, Run> {
   return latest;
 }
 
-// KeywordCrawl fuses a keyword definition with its latest run — the design's
-// unit of "a crawl". run is null (status "idle") for a definition never started.
-export type KeywordCrawl = {
-  definitionId: string;
-  runId: string | null;
-  name: string;
-  keywords: string[];
-  status: DisplayStatus;
-  listingsFound: number;
-  pagesCrawled: number;
-  frontierSize: number;
-  error: string;
-};
-
-function fuse(def: Definition, run: Run | undefined): KeywordCrawl {
-  return {
-    definitionId: def.id,
-    runId: run?.id ?? null,
-    name: def.name,
-    keywords: def.keywords,
-    status: run ? run.status : "idle",
-    listingsFound: run?.listingsFound ?? 0,
-    pagesCrawled: run?.pagesCrawled ?? 0,
-    frontierSize: run?.frontierSize ?? 0,
-    error: run?.error ?? "",
-  };
-}
-
-// buildKeywordCrawls fuses every keyword definition with its latest run, newest
-// definition first (createdAt desc) so freshly created crawls surface on top.
-export function buildKeywordCrawls(defs: Definition[], runs: Run[]): KeywordCrawl[] {
-  const latest = latestRunByDefinition(runs);
-  return defs
-    .filter((d) => d.kind === "keyword")
-    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-    .map((d) => fuse(d, latest.get(d.id)));
-}
-
-// crawlLabel is the sidebar/detail-friendly name for a keyword crawl, falling
-// back to a legible placeholder when the crawl was saved without a name so the
-// nav entry stays readable and clickable.
-export function crawlLabel(crawl: KeywordCrawl): string {
-  return crawl.name.trim() || "Untitled crawl";
-}
-
 // Discovery is the single perpetual discovery run the dashboard centers on: the
 // discovery definition plus its latest run. Null when no discovery crawl exists.
 export type Discovery = {
