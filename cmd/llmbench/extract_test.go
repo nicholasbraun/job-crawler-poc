@@ -16,14 +16,18 @@ import (
 //
 // #115 landed the content reject rungs: the saturation rung (K=5) now rejects the
 // three hub-index openings-index leaks (each carrying 5 same-host job links),
-// cutting extract-calls 17->14 and leaks 7->4 while holding false-drop = 0. The
-// four remaining leaks are the structurally-silent residue pages -- the
-// deferred-L2 population the ADR-0020 content confirm would target.
+// cutting extract-calls 17->14 and leaks 7->4 while holding false-drop = 0.
+//
+// The extract-gate URL rungs (root/locale reject + terminal-index reject) then
+// rejected the /work-with-us careers-landing leak (a terminal index word), cutting
+// extract-calls 14->13 and leaks 4->3, still false-drop = 0. The three remaining
+// leaks are the structurally-silent residue pages (about/our-culture, life,
+// culture/values) -- the deferred-L2 population the ADR-0020 content confirm targets.
 const (
-	baselineExtractCalls    = 14     // was 17: the 3 hub-index openings-index leaks now reject via saturation
-	baselineExtractCallRate = 0.5385 // was 0.6538 = round(14/26)
-	baselineLeaks           = 4      // was 7: only the 4 structurally-silent residue pages still leak
-	baselineDetailFixtures  = 10     // unchanged -- every detail still extracts (false-drop = 0)
+	baselineExtractCalls    = 13  // was 14: the /work-with-us landing leak now rejects via the terminal-index rung
+	baselineExtractCallRate = 0.5 // was 0.5385 = round(13/26)
+	baselineLeaks           = 3   // was 4: only the 3 structurally-silent culture pages still leak
+	baselineDetailFixtures  = 10  // unchanged -- every detail still extracts (false-drop = 0)
 )
 
 // TestExtractGate_CommittedSetNoFalseDrop is the automated counterpart to the

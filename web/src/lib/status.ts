@@ -1,8 +1,8 @@
 import { isTerminal, type RunStatus } from "../api";
 
-// DisplayStatus extends the API's RunStatus with "idle" — a keyword-crawl
-// definition that has never been run, which the fused card model surfaces as its
-// own resting state.
+// DisplayStatus extends the API's RunStatus with "idle" — a discovery
+// definition that has never been run, which the fused Discovery model surfaces
+// as its own resting state.
 export type DisplayStatus = RunStatus | "idle";
 
 export type StatusMeta = {

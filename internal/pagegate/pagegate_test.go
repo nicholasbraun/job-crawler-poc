@@ -733,6 +733,33 @@ func TestCareerPage(t *testing.T) {
 // TestIsPostingPath locks the URL-only posting-path predicate the Catalog Doctor
 // reuses (ADR-0010): it makes the terminalHubWords exemption explicit and proves
 // the veto reads only the URL, no page content.
+func TestIsHubOrRootURL(t *testing.T) {
+	tests := []struct {
+		url  string
+		want bool
+	}{
+		{"https://karriere.hanwag.de/", true},                          // bare root
+		{"https://www.demecan.de", true},                               // bare root, no trailing slash
+		{"https://acme.com/en", true},                                  // locale-only root
+		{"https://acme.com/de-de", true},                               // locale-region root
+		{"https://careers.greentube.com/job-offers", true},             // terminal jobs-index word
+		{"https://firma.de/stellenangebote.html", true},                // terminal index served as .html
+		{"https://acme.com/careers/openings", true},                    // posting-path but terminal hub
+		{"https://acme.com/careers/senior-engineer", false},            // real posting
+		{"https://acme.com/o/senior-engineer", false},                  // real posting
+		{"https://acme.com/en/o/senior-engineer", false},               // locale-prefixed real posting
+		{"https://acme.com/hr", false},                                 // a 2-letter dept, not a locale root
+		{"https://job-boards.greenhouse.io/acme/jobs/openings", false}, // ATS posting: exempt though terminal is a hub word
+	}
+	for _, tt := range tests {
+		t.Run(tt.url, func(t *testing.T) {
+			if got := pagegate.IsHubOrRootURL(newURL(t, tt.url)); got != tt.want {
+				t.Errorf("IsHubOrRootURL(%q) = %v, want %v", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsPostingPath(t *testing.T) {
 	tests := []struct {
 		name string
@@ -928,6 +955,66 @@ func TestShouldExtract(t *testing.T) {
 			},
 			cfg:  zeroExtractSaturation(),
 			want: true,
+		},
+		{
+			// rung 2b: a careers-landing / homepage at a bare domain root is never a
+			// single posting -- the extractor would otherwise key a whole jobs-landing
+			// page to a root URL that collides in the Corpus.
+			name:    "bare domain root rejects (careers landing keyed to root)",
+			url:     "https://karriere.hanwag.de/",
+			content: &crawler.Content{},
+			want:    false,
+		},
+		{
+			name:    "bare domain root without trailing slash rejects",
+			url:     "https://www.demecan.de",
+			content: &crawler.Content{},
+			want:    false,
+		},
+		{
+			// rung 2b: a locale-only root (/en, /de-de) is still a section root.
+			name:    "locale-only root rejects",
+			url:     "https://acme.com/en",
+			content: &crawler.Content{},
+			want:    false,
+		},
+		{
+			// rung 2c: a terminal jobs-index word is a hub, not a posting.
+			name:    "terminal index word rejects (job-offers)",
+			url:     "https://careers.greentube.com/job-offers",
+			content: &crawler.Content{},
+			want:    false,
+		},
+		{
+			// rung 2c: the same, served as a static .html page (common on DE sites).
+			name:    "terminal index word with a .html suffix rejects",
+			url:     "https://firma.de/stellenangebote.html",
+			content: &crawler.Content{},
+			want:    false,
+		},
+		{
+			// rung 2c catches a posting-path URL whose terminal is a hub word, which
+			// rung 4 misses (its parent "careers" makes isJobPostingPath true).
+			name:    "posting-path openings index rejects (rung 4 misses it)",
+			url:     "https://acme.com/careers/openings",
+			content: &crawler.Content{},
+			want:    false,
+		},
+		{
+			// Guard: a real single-segment posting slug must still extract -- it is not
+			// a locale and not an index word.
+			name:    "single-segment posting slug still extracts",
+			url:     "https://acme.com/senior-go-engineer",
+			content: &crawler.Content{},
+			want:    true,
+		},
+		{
+			// Guard: a locale-prefixed real posting (deeper than one segment) still
+			// extracts -- rung 2b only fires on a locale-ONLY root.
+			name:    "locale-prefixed posting still extracts",
+			url:     "https://acme.com/en/o/senior-engineer",
+			content: &crawler.Content{},
+			want:    true,
 		},
 	}
 

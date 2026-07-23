@@ -50,8 +50,7 @@ export function DiscoveryStartModal({ open, onClose }: { open: boolean; onClose:
   const depthValid = Number.isInteger(depthNum) && depthNum >= 1 && depthNum <= 20;
   // The empty-seed and depth guards are the real gate — we intentionally do NOT
   // also require the defaults fetch to have loaded, so the operator can still
-  // start discovery by typing seeds if GET /definitions/defaults fails (matches
-  // the keyword modal, which likewise never blocks on its defaults load).
+  // start discovery by typing seeds if GET /definitions/defaults fails.
   const canSubmit = parsedSeeds.length > 0 && depthValid && !create.isPending;
 
   const submit = (e: React.FormEvent) => {
@@ -124,7 +123,7 @@ export function DiscoveryStartModal({ open, onClose }: { open: boolean; onClose:
           <Icon name="ph-info" size={15} color="var(--color-accent-300)" style={{ flex: "none", marginTop: 1 }} />
           <span>
             There is one perpetual discovery crawl. It walks these seed domains, following the URL filters toward
-            career pages, and catalogues confirmed hits — the seed set every keyword crawl draws from.
+            career pages, and catalogues confirmed hits.
           </span>
         </div>
 

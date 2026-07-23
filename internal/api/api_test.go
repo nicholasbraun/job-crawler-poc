@@ -249,8 +249,11 @@ func (f *fakeCareerPageRepo) Upsert(ctx context.Context, p *crawler.CareerPage) 
 	f.pages = append(f.pages, &saved)
 	return nil
 }
-func (f *fakeCareerPageRepo) ListSeeds(ctx context.Context) ([]crawler.CatalogSeed, error) {
+func (f *fakeCareerPageRepo) ListCollectionSeeds(ctx context.Context, dormancyThreshold int) ([]crawler.CollectionSeed, error) {
 	return nil, nil
+}
+func (f *fakeCareerPageRepo) RecordProbe(ctx context.Context, careerPageID uuid.UUID, outcome crawler.ProbeOutcome, threshold int) (crawler.DormancyResult, error) {
+	return crawler.DormancyResult{}, nil
 }
 func (f *fakeCareerPageRepo) List(ctx context.Context) ([]*crawler.CareerPage, error) {
 	if f.onList != nil {
@@ -301,22 +304,6 @@ func (f *fakeCareerPageRepo) MergeImport(ctx context.Context, m *crawler.CareerP
 		LastSeen:         lastSeen,
 	})
 	return nil
-}
-
-type fakeListingRepo struct {
-	byDefinition  []*crawler.JobListing
-	gotDefinition uuid.UUID
-	gotKeyword    string
-}
-
-func (f *fakeListingRepo) Save(ctx context.Context, definitionID uuid.UUID, jl *crawler.JobListing) error {
-	return nil
-}
-func (f *fakeListingRepo) Find(ctx context.Context) ([]*crawler.JobListing, error) { return nil, nil }
-func (f *fakeListingRepo) FindByDefinition(ctx context.Context, definitionID uuid.UUID, keyword string) ([]*crawler.JobListing, error) {
-	f.gotDefinition = definitionID
-	f.gotKeyword = keyword
-	return f.byDefinition, nil
 }
 
 // fakeImportJobRepo is a mutex-guarded in-memory ImportJobRepository shared by
@@ -413,7 +400,6 @@ func (f *fakeImportJobRepo) SweepInterrupted(ctx context.Context, msg string, at
 
 func defaults() api.Defaults {
 	return api.Defaults{
-		KeywordMaxDepth:   4,
 		DiscoveryMaxDepth: 10,
 		DiscoverySeeds:    []string{"https://seed-a.example.com/", "https://seed-b.example.com/"},
 		URLFilter:         crawler.URLFilterConfig{AllowedTLDs: []string{"com", "io"}},
@@ -438,11 +424,14 @@ func newHandler(cfg api.Config) http.Handler {
 	if cfg.CareerPages == nil {
 		cfg.CareerPages = &fakeCareerPageRepo{}
 	}
-	if cfg.Listings == nil {
-		cfg.Listings = &fakeListingRepo{}
-	}
 	if cfg.ImportJobs == nil {
 		cfg.ImportJobs = newFakeImportJobRepo()
+	}
+	if cfg.SavedSearches == nil {
+		cfg.SavedSearches = newFakeSavedSearchRepo()
+	}
+	if cfg.Search == nil {
+		cfg.Search = &fakeSearchRepo{}
 	}
 	if cfg.Importer == nil {
 		// A real importer over the fake repo, so submit->poll->result exercises
@@ -641,98 +630,32 @@ func TestCreateCrawlRejectsMissingFields(t *testing.T) {
 	}
 }
 
-func TestCreateKeywordCrawl(t *testing.T) {
-	t.Run("keyword crawl needs keywords but not seedUrls", func(t *testing.T) {
-		defs := &fakeDefRepo{}
-		srv := newHandler(api.Config{Definitions: defs})
+// TestCreateCrawlRejectsNonDiscoveryKinds locks the Keyword Crawl lane's removal
+// at the API boundary: the retired "keyword" kind and any other unknown kind are
+// both rejected with 400, so no non-discovery definition can ever be created.
+func TestCreateCrawlRejectsNonDiscoveryKinds(t *testing.T) {
+	for _, kind := range []string{"keyword", "sitemap"} {
+		t.Run(kind+" kind is rejected", func(t *testing.T) {
+			defs := &fakeDefRepo{}
+			srv := newHandler(api.Config{Definitions: defs})
 
-		body, _ := json.Marshal(map[string]any{
-			"name":     "go-backend",
-			"kind":     "keyword",
-			"keywords": []string{"golang", "backend"},
+			body, _ := json.Marshal(map[string]any{
+				"name":     "bogus",
+				"kind":     kind,
+				"keywords": []string{"golang"},
+				"seedUrls": []string{"https://example.com"},
+			})
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status: got %d, want 400; body=%s", rec.Code, rec.Body)
+			}
+			if defs.created != nil {
+				t.Errorf("no definition should be created for a non-discovery kind, got %+v", defs.created)
+			}
 		})
-		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
-
-		if rec.Code != http.StatusCreated {
-			t.Fatalf("status: got %d, want 201; body=%s", rec.Code, rec.Body)
-		}
-		if defs.created == nil || defs.created.Kind != crawler.CrawlKindKeyword {
-			t.Fatalf("expected a keyword definition, got %+v", defs.created)
-		}
-		if len(defs.created.Keywords) != 2 {
-			t.Errorf("keywords not persisted: %+v", defs.created.Keywords)
-		}
-	})
-
-	t.Run("keyword crawl with no keywords is rejected", func(t *testing.T) {
-		srv := newHandler(api.Config{})
-
-		body, _ := json.Marshal(map[string]any{"name": "no keywords", "kind": "keyword"})
-		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
-
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("status: got %d, want 400", rec.Code)
-		}
-	})
-
-	t.Run("country constraint is validated and stored uppercased", func(t *testing.T) {
-		defs := &fakeDefRepo{}
-		srv := newHandler(api.Config{Definitions: defs})
-
-		body, _ := json.Marshal(map[string]any{
-			"name":      "go-de-at",
-			"kind":      "keyword",
-			"keywords":  []string{"golang"},
-			"countries": []string{"de", "AT"},
-		})
-		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
-
-		if rec.Code != http.StatusCreated {
-			t.Fatalf("status: got %d, want 201; body=%s", rec.Code, rec.Body)
-		}
-		if defs.created == nil {
-			t.Fatal("expected a definition to be created")
-		}
-		if want := []string{"DE", "AT"}; !slices.Equal(defs.created.Countries, want) {
-			t.Errorf("countries: got %v, want %v (uppercased, order preserved)", defs.created.Countries, want)
-		}
-	})
-
-	t.Run("unknown country code is rejected", func(t *testing.T) {
-		srv := newHandler(api.Config{})
-
-		body, _ := json.Marshal(map[string]any{
-			"name":      "bad-country",
-			"kind":      "keyword",
-			"keywords":  []string{"golang"},
-			"countries": []string{"DE", "ZZ"},
-		})
-		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
-
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("status: got %d, want 400 for an unknown country code", rec.Code)
-		}
-	})
-
-	t.Run("unknown kind is rejected", func(t *testing.T) {
-		srv := newHandler(api.Config{})
-
-		body, _ := json.Marshal(map[string]any{
-			"name":     "bogus",
-			"kind":     "sitemap",
-			"seedUrls": []string{"https://example.com"},
-		})
-		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
-
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("status: got %d, want 400", rec.Code)
-		}
-	})
+	}
 }
 
 func TestDefinitionDefaults(t *testing.T) {
@@ -777,55 +700,11 @@ func TestDefinitionDefaults(t *testing.T) {
 		}
 	})
 
-	t.Run("keyword template has an empty keyword list and depth", func(t *testing.T) {
-		code, got := get(t, "keyword")
-		if code != http.StatusOK {
-			t.Fatalf("status: got %d, want 200", code)
-		}
-		if got["kind"] != "keyword" {
-			t.Errorf("kind: got %v, want keyword", got["kind"])
-		}
-		if got["maxDepth"] != float64(4) {
-			t.Errorf("maxDepth: got %v, want 4", got["maxDepth"])
-		}
-		keywords, ok := got["keywords"].([]any)
-		if !ok {
-			t.Fatalf("keywords should be an array (not null), got %T", got["keywords"])
-		}
-		if len(keywords) != 0 {
-			t.Errorf("keywords should be empty, got %v", keywords)
-		}
-		if got["name"] != nil {
-			t.Errorf("keyword template should not carry a name, got %v", got["name"])
-		}
-		if got["seedUrls"] != nil {
-			t.Errorf("keyword template should not carry seedUrls, got %v", got["seedUrls"])
-		}
-
-		// The known-country set backs the Country Constraint multi-select: a
-		// non-empty array of {code,name} options, sourced from the geo gazetteer.
-		countries, ok := got["countries"].([]any)
-		if !ok {
-			t.Fatalf("countries should be an array (not null), got %T", got["countries"])
-		}
-		if len(countries) == 0 {
-			t.Fatal("countries should be the non-empty known-country set")
-		}
-		foundDE := false
-		for _, raw := range countries {
-			opt, ok := raw.(map[string]any)
-			if !ok {
-				t.Fatalf("country option should be an object, got %T", raw)
-			}
-			if opt["code"] == "DE" {
-				foundDE = true
-				if opt["name"] != "Germany" {
-					t.Errorf("DE name: got %v, want Germany", opt["name"])
-				}
-			}
-		}
-		if !foundDE {
-			t.Error("known-country set should contain {code:DE, name:Germany}")
+	// The Keyword Crawl lane is retired: the defaults endpoint no longer has a
+	// keyword template, so ?kind=keyword now 400s like any other non-discovery kind.
+	t.Run("keyword kind is now rejected", func(t *testing.T) {
+		if code, _ := get(t, "keyword"); code != http.StatusBadRequest {
+			t.Fatalf("status: got %d, want 400", code)
 		}
 	})
 
@@ -843,26 +722,6 @@ func TestDefinitionDefaults(t *testing.T) {
 }
 
 func TestCreateCrawlDepthDefaultingPerKind(t *testing.T) {
-	t.Run("keyword crawl defaults to the keyword depth", func(t *testing.T) {
-		defs := &fakeDefRepo{}
-		srv := newHandler(api.Config{Definitions: defs})
-
-		body, _ := json.Marshal(map[string]any{
-			"name":     "kw",
-			"kind":     "keyword",
-			"keywords": []string{"golang"},
-		})
-		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/crawls", bytes.NewReader(body)))
-
-		if rec.Code != http.StatusCreated {
-			t.Fatalf("status: got %d, want 201; body=%s", rec.Code, rec.Body)
-		}
-		if defs.created == nil || defs.created.MaxDepth != 4 {
-			t.Errorf("omitted depth not defaulted to keyword default: %+v", defs.created)
-		}
-	})
-
 	t.Run("discovery crawl defaults to the discovery depth", func(t *testing.T) {
 		defs := &fakeDefRepo{}
 		srv := newHandler(api.Config{Definitions: defs})
@@ -1226,9 +1085,9 @@ func TestListAndGetDefinitions(t *testing.T) {
 		if len(got) != 1 || got[0]["name"] != "discovery-1" {
 			t.Errorf("unexpected list body: %v", got)
 		}
-		// nil slices must serialize as [] not null.
-		if _, ok := got[0]["keywords"].([]any); !ok {
-			t.Errorf("keywords should be an array, got %T", got[0]["keywords"])
+		// A nil seedUrls slice must serialize as [] not null.
+		if _, ok := got[0]["seedUrls"].([]any); !ok {
+			t.Errorf("seedUrls should be an array, got %T", got[0]["seedUrls"])
 		}
 	})
 
@@ -1355,8 +1214,10 @@ func TestAddSeed(t *testing.T) {
 		}
 	})
 
-	t.Run("keyword definition is refused", func(t *testing.T) {
-		def := &crawler.CrawlDefinition{ID: uuid.New(), Kind: crawler.CrawlKindKeyword, Keywords: []string{"go"}}
+	t.Run("non-discovery definition is refused", func(t *testing.T) {
+		// Adding a seed to any non-discovery definition is refused; the kind value
+		// is immaterial so long as it is not "discovery".
+		def := &crawler.CrawlDefinition{ID: uuid.New(), Kind: crawler.CrawlKind("test")}
 		defs := &fakeDefRepo{get: def}
 		var seededRun []uuid.UUID
 		seeder := func(ctx context.Context, runID uuid.UUID, u crawler.URL) error {
@@ -1370,10 +1231,10 @@ func TestAddSeed(t *testing.T) {
 			t.Fatalf("status: got %d, want 400; body=%s", rec.Code, rec.Body)
 		}
 		if len(defs.appended) != 0 {
-			t.Errorf("keyword definition must not append a seed; got %v", defs.appended)
+			t.Errorf("non-discovery definition must not append a seed; got %v", defs.appended)
 		}
 		if len(seededRun) != 0 {
-			t.Errorf("keyword definition must not inject a seed; got %v", seededRun)
+			t.Errorf("non-discovery definition must not inject a seed; got %v", seededRun)
 		}
 	})
 
@@ -1577,57 +1438,6 @@ func TestCatalogHistory(t *testing.T) {
 		}
 		if body := rec.Body.String(); !strings.Contains(body, `"careerPages":[]`) {
 			t.Errorf("empty catalog should serialize an empty array, got %s", body)
-		}
-	})
-}
-
-func TestListListings(t *testing.T) {
-	defID := uuid.New()
-	listings := &fakeListingRepo{byDefinition: []*crawler.JobListing{
-		{URL: "https://jobs/1", Title: "Go Engineer", Country: "DE"},
-	}}
-	srv := newHandler(api.Config{Listings: listings})
-
-	t.Run("requires definitionId", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/listings", nil))
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("status: got %d, want 400", rec.Code)
-		}
-	})
-
-	t.Run("passes definitionId and keyword through", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/listings?definitionId="+defID.String()+"&keyword=go", nil))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status: got %d, want 200; body=%s", rec.Code, rec.Body)
-		}
-		if listings.gotDefinition != defID {
-			t.Errorf("definitionId not forwarded: got %v, want %v", listings.gotDefinition, defID)
-		}
-		if listings.gotKeyword != "go" {
-			t.Errorf("keyword not forwarded: got %q, want %q", listings.gotKeyword, "go")
-		}
-		var got []map[string]any
-		_ = json.Unmarshal(rec.Body.Bytes(), &got)
-		if len(got) != 1 || got[0]["title"] != "Go Engineer" {
-			t.Errorf("unexpected listings body: %v", got)
-		}
-		// The listing DTO surfaces the resolved Country (ADR-0029).
-		if got[0]["country"] != "DE" {
-			t.Errorf("listing DTO should surface country=DE, got %v", got[0]["country"])
-		}
-		// tech_stack was dropped end-to-end (ADR-0023); the DTO must not carry it.
-		if _, ok := got[0]["techStack"]; ok {
-			t.Errorf("listing DTO should not carry techStack, got %v", got[0])
-		}
-	})
-
-	t.Run("invalid definitionId is 400", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/listings?definitionId=nope", nil))
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("status: got %d, want 400", rec.Code)
 		}
 	})
 }

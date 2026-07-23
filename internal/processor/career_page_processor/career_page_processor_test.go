@@ -48,8 +48,12 @@ func (r *spyCareerPageRepo) Upsert(ctx context.Context, p *crawler.CareerPage) e
 	return nil
 }
 
-func (r *spyCareerPageRepo) ListSeeds(ctx context.Context) ([]crawler.CatalogSeed, error) {
+func (r *spyCareerPageRepo) ListCollectionSeeds(ctx context.Context, dormancyThreshold int) ([]crawler.CollectionSeed, error) {
 	return nil, nil // career-page processor never seeds; unused
+}
+
+func (r *spyCareerPageRepo) RecordProbe(ctx context.Context, careerPageID uuid.UUID, outcome crawler.ProbeOutcome, threshold int) (crawler.DormancyResult, error) {
+	return crawler.DormancyResult{}, nil
 }
 
 func (r *spyCareerPageRepo) List(ctx context.Context) ([]*crawler.CareerPage, error) {

@@ -41,6 +41,7 @@ const leverRichPosting = `[
 func TestLeverFetchMapsBoard(t *testing.T) {
 	const body = `[
 		{
+			"id": "abc-id",
 			"text": "Backend Engineer",
 			"hostedUrl": "https://jobs.lever.co/acme/abc",
 			"categories": {"department": "Engineering", "location": "Berlin"},
@@ -72,6 +73,9 @@ func TestLeverFetchMapsBoard(t *testing.T) {
 	}
 	if first.URL != "https://jobs.lever.co/acme/abc" {
 		t.Errorf("URL = %q, want the hostedUrl", first.URL)
+	}
+	if first.SourceID != "abc-id" {
+		t.Errorf("SourceID = %q, want the posting id %q", first.SourceID, "abc-id")
 	}
 	if first.Location != "Berlin" {
 		t.Errorf("Location = %q, want %q", first.Location, "Berlin")
@@ -253,6 +257,22 @@ func TestLeverNon200ReturnsErrBoardStatus(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("listings = %v, want nil on a non-200 response", got)
+	}
+}
+
+func TestLeverTruncatedBodyIsHardError(t *testing.T) {
+	// Lever decodes the whole board (a top-level array) in one request, so
+	// completeness is structural (ADR-0035): a body cut mid-array surfaces as a decode
+	// error, never a silent partial. A single-shot provider returns a hard error, NOT
+	// ErrBoardIncomplete.
+	fetcher := newLeverFetcher(t, serveJSON(`[{"id":"a","hostedUrl":"https://x/a"`))
+
+	_, err := fetcher.Fetch(t.Context(), "acme")
+	if err == nil {
+		t.Fatal("want a decode error for a truncated body")
+	}
+	if errors.Is(err, ats.ErrBoardIncomplete) {
+		t.Fatal("single-shot provider must never emit ErrBoardIncomplete; a partial read is a hard error")
 	}
 }
 

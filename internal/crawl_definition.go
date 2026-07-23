@@ -3,7 +3,6 @@ package crawler
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,15 +17,25 @@ var ErrNotFound = errors.New("crawler: not found")
 // invariant (ADR-0017) permits only one. Callers map it to 409 Conflict.
 var ErrDiscoveryDefinitionExists = errors.New("crawler: discovery definition already exists")
 
-// CrawlKind distinguishes the crawl strategies. discovery walks a site
-// following the URL filters; keyword additionally gates pages by keywords.
-// Only discovery is exercised in Step 1; keyword is reserved for later steps.
+// CrawlKind distinguishes the crawl strategies. Two kinds are live: discovery
+// walks a site following the URL filters, cataloguing career pages; collection
+// (ADR-0036) is the periodic whole-Catalog Cycle that fills and keeps-live the
+// Corpus (ATS fetch + crawl walk + refetch). "keyword" is a retired kind (the
+// Keyword Crawl lane was removed); rows with that kind may still exist in the
+// database until the Corpus schema cutover, so callers must treat any unknown
+// kind as unsupported rather than assume it is absent.
 type CrawlKind string
 
 const (
-	CrawlKindDiscovery CrawlKind = "discovery"
-	CrawlKindKeyword   CrawlKind = "keyword"
+	CrawlKindDiscovery  CrawlKind = "discovery"
+	CrawlKindCollection CrawlKind = "collection"
 )
+
+// CollectionDefinitionID is the fixed id of the singleton Collection Crawl
+// definition seeded at migration 0019 (ADR-0036). Constant so the scheduler
+// (#191) and the startRun path resolve the one Collection definition without a
+// lookup.
+var CollectionDefinitionID = uuid.MustParse("00000000-0000-0000-0000-00000c011ec7")
 
 // URLFilterConfig captures the URL filtering rules for a crawl. A definition
 // carries its own filters; a create request that omits them is filled with the
@@ -218,45 +227,13 @@ func DefaultLLMGateConfig() LLMGateConfig {
 // how. A definition is immutable once created; each execution of it is a
 // CrawlRun.
 type CrawlDefinition struct {
-	ID       uuid.UUID
-	Name     string
-	Kind     CrawlKind
-	SeedURLs []string
-	// Keywords gate pages for keyword crawls. Unused for discovery crawls.
-	Keywords []string
-	// Countries is the Country Constraint (ADR-0028): the set of target ISO 3166-1
-	// alpha-2 codes (uppercase) a Keyword Crawl keeps Job Listings for. Empty means
-	// anywhere (today's behavior). Immutable, like Keywords; unused for discovery.
-	Countries []string
+	ID        uuid.UUID
+	Name      string
+	Kind      CrawlKind
+	SeedURLs  []string
 	MaxDepth  int
 	URLFilter URLFilterConfig
 	CreatedAt time.Time
-}
-
-// KeepForCountry reports whether a Job Listing with the given resolved Country
-// passes the Country Constraint countries (ADR-0028): kept when countries is empty
-// (anywhere), the Country is unresolved (the empty Country), or the Country is in
-// the set; otherwise discarded. Codes compare case-insensitively (uppercased). This
-// single predicate is why "Germany means Germany" is identical on both the crawl
-// and ATS acquisition lanes.
-//
-// Work Arrangement is deliberately NOT an input. An earlier revision kept any
-// Remote listing as a blanket override, but that retained out-of-target remote jobs
-// (e.g. a US-only remote role under a {DE} constraint), so it was removed: a Remote
-// listing is now kept only when its Country is unknown or in the set, like any
-// other listing. Keep-unknown still covers a genuinely location-agnostic posting
-// ("Remote — EU"/"Remote"), which resolves to the empty Country.
-func KeepForCountry(countries []string, country string) bool {
-	if len(countries) == 0 || country == "" {
-		return true
-	}
-	country = strings.ToUpper(strings.TrimSpace(country))
-	for _, c := range countries {
-		if strings.ToUpper(strings.TrimSpace(c)) == country {
-			return true
-		}
-	}
-	return false
 }
 
 // CrawlDefinitionRepository persists and retrieves crawl definitions.
@@ -369,6 +346,31 @@ func DefaultURLFilterConfig() URLFilterConfig {
 			"www.bing.com", "open.spotify",
 		},
 	}
+}
+
+// collectionBlockedEditorialPaths are the editorial/marketing path segments a
+// Collection Crawl blocks that Discovery deliberately leaves crawlable. Discovery
+// walks blogs/news for their outbound company links; a Collection Cycle already
+// knows its companies (it seeds from the Catalog) and only wants each Company's
+// careers/jobs subtree, so it sheds these editorial subtrees to keep the walk
+// narrow (ADR-0036). Both singular and plural forms, since the URL filter matches
+// per path segment exactly.
+var collectionBlockedEditorialPaths = []string{
+	"blog", "news", "press", "media", "articles", "article",
+	"stories", "story", "posts", "post", "magazine",
+}
+
+// DefaultCollectionURLFilterConfig returns the narrow URL filter for the
+// singleton Collection Crawl (ADR-0036): the discovery default plus the editorial
+// path segments Discovery leaves crawlable, so a Cycle stays on each Company's
+// careers/jobs subtrees instead of roaming its blog and press pages. It is
+// reference/parity only — the authoritative filter is the seeded definition row
+// (migration 0019); a testcontainers assertion pins the two together so they
+// cannot drift.
+func DefaultCollectionURLFilterConfig() URLFilterConfig {
+	cfg := DefaultURLFilterConfig()
+	cfg.BlockedPathSegments = append(cfg.BlockedPathSegments, collectionBlockedEditorialPaths...)
+	return cfg
 }
 
 // DefaultDiscoverySeeds returns the baseline Seed set for the singleton Discovery

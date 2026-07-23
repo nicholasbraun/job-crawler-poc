@@ -1,16 +1,25 @@
 import { Link } from "react-router-dom";
 
-import { useCareerPages, useCatalogHistory, useCompanies, useDefinitions, useIsMobile, useRuns } from "../hooks";
+import {
+  useCareerPages,
+  useCatalogHistory,
+  useCompanies,
+  useDefinitions,
+  useIsMobile,
+  useListingStats,
+  useRecentListings,
+  useRuns,
+} from "../hooks";
 import { fmt, prettyUrl, relativeTime } from "../lib/format";
 import {
   atsSplit,
+  buildCollection,
   buildDiscovery,
-  buildKeywordCrawls,
   recentlyCatalogued,
+  type Collection,
   type Discovery,
 } from "../lib/model";
-import type { Company, CareerPage } from "../api";
-import { CrawlCard } from "../components/CrawlCard";
+import type { Company, CareerPage, Listing, ListingStats } from "../api";
 import { useLayout } from "../components/Layout";
 import { PageShell } from "../components/PageShell";
 import { EmptyState, Icon, RunControls, Sparkline, StatCard, StatusTag } from "../components/primitives";
@@ -20,15 +29,16 @@ export function OverviewPage() {
   const definitions = useDefinitions();
   const companiesQ = useCompanies();
   const pagesQ = useCareerPages();
+  const statsQ = useListingStats();
 
   const defs = definitions.data ?? [];
   const runList = runs.data ?? [];
   const companies = companiesQ.data ?? [];
   const pages = pagesQ.data ?? [];
+  const stats = statsQ.data ?? null;
 
   const discovery = buildDiscovery(defs, runList);
-  const crawls = buildKeywordCrawls(defs, runList);
-  const running = crawls.filter((c) => c.status === "running").length;
+  const collection = buildCollection(defs, runList);
   const split = atsSplit(companies);
   const atsProviders = new Set(companies.filter((c) => c.atsProvider).map((c) => c.atsProvider)).size;
   const isMobile = useIsMobile();
@@ -36,7 +46,7 @@ export function OverviewPage() {
   return (
     <PageShell
       title="Overview"
-      subtitle={`${discovery ? "One perpetual discovery run" : "No discovery run"} · ${crawls.length} keyword crawls`}
+      subtitle={discovery ? "One perpetual discovery run" : "No discovery run"}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "var(--space-4)" }}>
@@ -46,19 +56,13 @@ export function OverviewPage() {
             icon="ph-buildings"
             sub={`${atsProviders} ATS providers + self-hosted`}
           />
-          <StatCard label="Career pages" value={fmt(pages.length)} icon="ph-stack" sub="seed set for keyword crawls" />
+          <StatCard label="Career pages" value={fmt(pages.length)} icon="ph-stack" sub="catalogued career pages" />
           <StatCard
             label="Discovery frontier"
             value={fmt(discovery?.frontierSize ?? 0)}
             icon="ph-broadcast"
             sub="URLs queued · perpetual"
             subColor="var(--color-accent-300)"
-          />
-          <StatCard
-            label="Active keyword crawls"
-            value={`${running}/${crawls.length}`}
-            icon="ph-magnifying-glass"
-            sub={`${running} running now`}
           />
         </div>
 
@@ -70,9 +74,172 @@ export function OverviewPage() {
           <RecentlyCatalogued pages={pages} companies={companies} />
         </div>
 
-        <KeywordCrawlsSection crawls={crawls} />
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : "minmax(0, 1.35fr) minmax(0, 1fr)", gap: "var(--space-4)", alignItems: "start" }}>
+          <CollectionPanel collection={collection} stats={stats} />
+          <RecentlyFound />
+        </div>
       </div>
     </PageShell>
+  );
+}
+
+// CollectionPanel is the Overview's window on the perpetual Collection Cycle: the
+// true corpus size it has built, its run status, and lifecycle controls. It mirrors
+// DiscoveryPanel — the two singleton runs sit side by side.
+function CollectionPanel({ collection, stats }: { collection: Collection | null; stats: ListingStats | null }) {
+  // Null only on a pre-inversion database that has no collection definition; the
+  // migration seeds one and the scheduler starts it, so this is the cold-boot case.
+  if (!collection) {
+    return (
+      <EmptyState
+        icon="ph-package"
+        title="Collection hasn't started"
+        hint="The perpetual Collection Cycle enumerates every catalogued company's open listings into the corpus. It starts automatically once the collection definition is seeded."
+      />
+    );
+  }
+
+  const idle = collection.status === "idle";
+  // Headline the true corpus size (distinct rows), not the run's ListingsFound
+  // counter — that counts save operations, so a re-verifying cycle inflates it far
+  // past the actual listing count.
+  const counters = [
+    { label: "open listings", value: fmt(stats?.open ?? 0) },
+    { label: "pages crawled", value: fmt(collection.pagesCrawled) },
+    { label: "frontier size", value: fmt(collection.frontierSize) },
+  ];
+
+  return (
+    <div className="card elev-sm" style={{ gap: "var(--space-4)", padding: "var(--space-6)" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "var(--space-4)", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 12, minWidth: 0 }}>
+          <span
+            style={{
+              display: "grid",
+              placeItems: "center",
+              width: 38,
+              height: 38,
+              borderRadius: 10,
+              background: "var(--color-accent-800)",
+              color: "var(--color-accent-200)",
+              flex: "none",
+            }}
+          >
+            <Icon name="ph-package" size={21} />
+          </span>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <h4 style={{ margin: 0, fontSize: 18 }}>Collection cycle</h4>
+              <StatusTag status={collection.status} />
+            </div>
+            <div style={{ fontSize: 12, color: "var(--color-neutral-400)", marginTop: 2 }}>
+              {idle
+                ? "Perpetual · scheduled · fills the corpus"
+                : `Perpetual · fills the corpus · started ${relativeTime(collection.startedAt)}`}
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: "var(--space-2)", flex: "none" }}>
+          <RunControls status={collection.status} runId={collection.runId} definitionId={collection.definition.id} />
+        </div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "flex-end", gap: "var(--space-8)" }}>
+        <div>
+          <div style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 44, lineHeight: 1, letterSpacing: "-0.02em" }}>
+            {fmt(stats?.open ?? 0)}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--color-neutral-400)", marginTop: 4 }}>
+            listings in corpus{stats && stats.closed > 0 ? ` · ${fmt(stats.closed)} closed` : ""}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "var(--space-4)", paddingTop: "var(--space-2)" }}>
+        {counters.map((c) => (
+          <div key={c.label}>
+            <div style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 19 }}>{c.value}</div>
+            <div style={{ fontSize: 11, color: "var(--color-neutral-500)" }}>{c.label}</div>
+          </div>
+        ))}
+      </div>
+
+      <Link to="/searches" style={{ alignSelf: "flex-start", fontSize: 13, marginTop: "var(--space-2)", textDecoration: "none" }}>
+        Search the corpus <Icon name="ph-arrow-right" size={12} />
+      </Link>
+    </div>
+  );
+}
+
+// RecentlyFound is the live feed of newly-collected job listings, newest first —
+// the corpus filling in real time as a Collection Cycle runs.
+function RecentlyFound() {
+  const { data } = useRecentListings(8);
+  const listings = data ?? [];
+
+  return (
+    <div className="card elev-sm" style={{ gap: "var(--space-3)", padding: "var(--space-4) var(--space-6)" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <h4 style={{ margin: 0, fontSize: 16 }}>Recently found</h4>
+        <span style={{ fontSize: 11, color: "var(--color-neutral-500)" }}>live</span>
+      </div>
+      {listings.length === 0 ? (
+        <div style={{ padding: "var(--space-6) 0", textAlign: "center", fontSize: 13, color: "var(--color-neutral-500)" }}>
+          No listings collected yet.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          {listings.map((l) => (
+            <RecentListingRow key={l.id} listing={l} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RecentListingRow({ listing }: { listing: Listing }) {
+  const companyLine = [listing.company, listing.department].filter(Boolean).join(" · ");
+  return (
+    <a
+      href={listing.url}
+      target="_blank"
+      rel="noreferrer"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 11,
+        padding: "9px 0",
+        boxShadow: "0 1px 0 var(--color-divider)",
+        textDecoration: "none",
+        color: "inherit",
+      }}
+    >
+      <span
+        style={{
+          display: "grid",
+          placeItems: "center",
+          width: 30,
+          height: 30,
+          borderRadius: 8,
+          flex: "none",
+          background: listing.source === "ats" ? "var(--color-accent-900)" : "var(--color-neutral-800)",
+          color: listing.source === "ats" ? "var(--color-accent-300)" : "var(--color-neutral-300)",
+        }}
+      >
+        <Icon name={listing.source === "ats" ? "ph-stack" : "ph-globe-hemisphere-west"} size={15} />
+      </span>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {listing.title || "Untitled role"}
+        </div>
+        <div style={{ fontSize: 11, color: "var(--color-neutral-500)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {companyLine || "—"}
+        </div>
+      </div>
+      {listing.country && <span className="tag tag-accent-2" style={{ flex: "none" }}>{listing.country}</span>}
+      <span style={{ fontSize: 11, color: "var(--color-neutral-500)", flex: "none" }}>{relativeTime(listing.firstSeen)}</span>
+    </a>
   );
 }
 
@@ -242,32 +409,6 @@ function RecentlyCatalogued({ pages, companies }: { pages: CareerPage[]; compani
               </div>
               <span style={{ fontSize: 11, color: "var(--color-neutral-500)", flex: "none" }}>{relativeTime(p.firstSeen)}</span>
             </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function KeywordCrawlsSection({ crawls }: { crawls: ReturnType<typeof buildKeywordCrawls> }) {
-  const isMobile = useIsMobile();
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-        <h4 style={{ margin: 0, fontSize: 18 }}>
-          Keyword crawls{" "}
-          <span style={{ fontSize: 14, color: "var(--color-neutral-500)", fontWeight: 400 }}>· {crawls.length} definitions</span>
-        </h4>
-        <Link to="/crawls" style={{ fontSize: 13, textDecoration: "none" }}>
-          View all <Icon name="ph-arrow-right" size={12} />
-        </Link>
-      </div>
-      {crawls.length === 0 ? (
-        <EmptyState icon="ph-magnifying-glass" title="No keyword crawls yet" hint="Create one from the header — it seeds from the catalog and gates pages by your keywords." />
-      ) : (
-        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : "repeat(2, minmax(0, 1fr))", gap: "var(--space-4)" }}>
-          {crawls.slice(0, 6).map((c) => (
-            <CrawlCard key={c.definitionId} crawl={c} />
           ))}
         </div>
       )}

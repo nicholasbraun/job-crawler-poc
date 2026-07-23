@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
@@ -72,34 +73,20 @@ func (f *stubFetcher) lastTenant() string {
 // can't rewrite history). failOn, when set, forces a Save error for a matching
 // listing so save-error handling can be exercised.
 type spyRepo struct {
-	mu        sync.Mutex
-	saved     []*crawler.JobListing
-	lastDefID uuid.UUID
-	failOn    func(*crawler.JobListing) bool
+	mu     sync.Mutex
+	saved  []*crawler.JobListing
+	failOn func(*crawler.JobListing) bool
 }
 
-func (r *spyRepo) Save(ctx context.Context, definitionID uuid.UUID, jl *crawler.JobListing) error {
+func (r *spyRepo) Save(ctx context.Context, jl *crawler.JobListing) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.lastDefID = definitionID
 	if r.failOn != nil && r.failOn(jl) {
 		return errSaveFailed
 	}
 	saved := *jl
 	r.saved = append(r.saved, &saved)
 	return nil
-}
-
-func (r *spyRepo) Find(ctx context.Context) ([]*crawler.JobListing, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.saved, nil
-}
-
-func (r *spyRepo) FindByDefinition(ctx context.Context, definitionID uuid.UUID, keyword string) ([]*crawler.JobListing, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.saved, nil
 }
 
 // resolveTo builds a ResolveFetcher that always returns f, ok=true.
@@ -112,7 +99,7 @@ func resolveNone(string) (ats.BoardFetcher, bool) { return nil, false }
 
 // newTestLane builds a Lane whose workers all share fetcher and repo, so tests
 // can count Fetch/Save calls across the pool.
-func newTestLane(t *testing.T, fetcher ats.BoardFetcher, repo crawler.JobListingRepository, workers int) *atsingest.Lane {
+func newTestLane(t *testing.T, fetcher ats.BoardFetcher, repo crawler.CorpusRepository, workers int) *atsingest.Lane {
 	t.Helper()
 	return atsingest.NewLane(t.Context(), atsingest.Config{
 		MaxWorkers: workers,
@@ -120,9 +107,73 @@ func newTestLane(t *testing.T, fetcher ats.BoardFetcher, repo crawler.JobListing
 			return atsingest.NewProcessor(&atsingest.ProcessorConfig{
 				ResolveFetcher: resolveTo(fetcher),
 				Repository:     repo,
-				DefinitionID:   uuid.New(),
-				Keywords:       []string{"go"},
 			})
 		},
 	})
+}
+
+// closeAbsentCall records one CloseAbsent invocation so a test can assert the
+// absence-sweep interlock (scope, watermark, and the complete flag).
+type closeAbsentCall struct {
+	careerPageID uuid.UUID
+	notSeenSince time.Time
+	complete     bool
+}
+
+// spyLiveness is an inline crawler.CorpusLivenessRepository recording the
+// absence-sweep calls the ATS processor makes; ListOpen/ApplyCrawlProbe are unused
+// on the ATS lane and return zero values.
+type spyLiveness struct {
+	mu               sync.Mutex
+	closeAbsentCalls []closeAbsentCall
+	closeReturn      int
+}
+
+func (s *spyLiveness) ListOpen(context.Context, uuid.UUID) ([]*crawler.JobListing, error) {
+	return []*crawler.JobListing{}, nil
+}
+
+func (s *spyLiveness) CloseAbsent(_ context.Context, careerPageID uuid.UUID, notSeenSince time.Time, complete bool) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeAbsentCalls = append(s.closeAbsentCalls, closeAbsentCall{careerPageID, notSeenSince, complete})
+	return s.closeReturn, nil
+}
+
+func (s *spyLiveness) ApplyCrawlProbe(context.Context, string, crawler.ProbeOutcome, int) (crawler.LifecycleState, error) {
+	return crawler.LifecycleState{}, nil
+}
+
+func (s *spyLiveness) calls() []closeAbsentCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]closeAbsentCall{}, s.closeAbsentCalls...)
+}
+
+// dormancyProbe records one RecordProbe invocation.
+type dormancyProbe struct {
+	careerPageID uuid.UUID
+	outcome      crawler.ProbeOutcome
+	threshold    int
+}
+
+// spyDormancy is an inline atsingest.DormancyRecorder recording each probe and
+// returning a canned DormancyResult.
+type spyDormancy struct {
+	mu     sync.Mutex
+	probes []dormancyProbe
+	result crawler.DormancyResult
+}
+
+func (s *spyDormancy) RecordProbe(_ context.Context, careerPageID uuid.UUID, outcome crawler.ProbeOutcome, threshold int) (crawler.DormancyResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.probes = append(s.probes, dormancyProbe{careerPageID, outcome, threshold})
+	return s.result, nil
+}
+
+func (s *spyDormancy) recorded() []dormancyProbe {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]dormancyProbe{}, s.probes...)
 }

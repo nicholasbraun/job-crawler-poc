@@ -3,30 +3,29 @@ package atsingest_test
 import (
 	"context"
 	"errors"
-	"slices"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
+	"github.com/nicholasbraun/job-crawler-poc/internal/ats"
 	"github.com/nicholasbraun/job-crawler-poc/internal/atsingest"
+	"github.com/nicholasbraun/job-crawler-poc/internal/listingid"
 )
 
-// TestProcessorSavesOnlyKeywordMatches asserts the relevance gate and that the
-// saved record carries the fetcher's canonical posting URL under the crawl
-// definition — the (definitionID, URL) upsert key.
-func TestProcessorSavesOnlyKeywordMatches(t *testing.T) {
+// TestProcessorSavesEveryPosting asserts a Collection Cycle has NO keyword pruning
+// (ADR-0038): every fetched posting is saved, each carrying the fetcher's canonical
+// posting URL and the Corpus identity stamped from the provider posting id (ADR-0034).
+func TestProcessorSavesEveryPosting(t *testing.T) {
 	fetcher := &stubFetcher{listings: []*crawler.JobListing{
-		{Title: "Go Engineer", URL: "https://boards.greenhouse.io/acme/jobs/1", Description: "build services"},
-		{Title: "Sales Rep", URL: "https://boards.greenhouse.io/acme/jobs/2", Description: "close deals"},
+		{Title: "Go Engineer", URL: "https://boards.greenhouse.io/acme/jobs/1", SourceID: "1", Description: "build services"},
+		{Title: "Sales Rep", URL: "https://boards.greenhouse.io/acme/jobs/2", SourceID: "2", Description: "close deals"},
 	}}
 	repo := &spyRepo{}
-	defID := uuid.New()
 	proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
 		ResolveFetcher: resolveTo(fetcher),
 		Repository:     repo,
-		DefinitionID:   defID,
-		Keywords:       []string{"go"},
 		CompanyNames:   map[string]string{"acme.com": "Acme Inc"},
 	})
 
@@ -38,41 +37,67 @@ func TestProcessorSavesOnlyKeywordMatches(t *testing.T) {
 	if got := fetcher.lastTenant(); got != "acme" {
 		t.Errorf("fetched tenant = %q, want acme", got)
 	}
-	if len(repo.saved) != 1 {
-		t.Fatalf("saved %d listings, want 1 (only the keyword match)", len(repo.saved))
+	if len(repo.saved) != 2 {
+		t.Fatalf("saved %d listings, want 2 (no keyword pruning)", len(repo.saved))
 	}
 	got := repo.saved[0]
-	if got.Title != "Go Engineer" {
-		t.Errorf("saved title = %q, want %q", got.Title, "Go Engineer")
+	if got.Source != crawler.SourceLaneATS {
+		t.Errorf("Source = %q, want %q", got.Source, crawler.SourceLaneATS)
 	}
-	if got.URL != "https://boards.greenhouse.io/acme/jobs/1" {
-		t.Errorf("saved URL = %q, want the canonical posting URL", got.URL)
-	}
-	if repo.lastDefID != defID {
-		t.Errorf("saved under definition %v, want %v", repo.lastDefID, defID)
+	if want := listingid.FromATS("greenhouse", "acme", got.SourceID); got.CanonicalURL != want {
+		t.Errorf("CanonicalURL = %q, want %q (identity from provider posting id)", got.CanonicalURL, want)
 	}
 }
 
-// TestProcessorMatchesOnDescription proves the title-OR-description relevance
-// rule: a posting whose title lacks the keyword but whose description carries it
-// is still saved.
-func TestProcessorMatchesOnDescription(t *testing.T) {
+// TestProcessorStampsCareerPageID asserts each saved posting carries the task's
+// CareerPageID (ADR-0035) so the crawl-lane refetch and dormancy scope resolve.
+func TestProcessorStampsCareerPageID(t *testing.T) {
+	page := uuid.New()
 	fetcher := &stubFetcher{listings: []*crawler.JobListing{
-		{Title: "Backend Engineer", URL: "u", Description: "experience with Go and Kubernetes"},
+		{Title: "Go Engineer", URL: "https://boards.greenhouse.io/acme/jobs/1", SourceID: "1"},
 	}}
 	repo := &spyRepo{}
 	proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
 		ResolveFetcher: resolveTo(fetcher),
 		Repository:     repo,
-		DefinitionID:   uuid.New(),
-		Keywords:       []string{"go"},
+		Liveness:       &spyLiveness{},
+		Dormancy:       &spyDormancy{},
+	})
+
+	task := &atsingest.FetchTask{Provider: "greenhouse", TenantSlug: "acme", Owner: "acme.com", CareerPageID: page}
+	if err := proc.Process(t.Context(), task); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if len(repo.saved) != 1 {
+		t.Fatalf("saved %d, want 1", len(repo.saved))
+	}
+	if repo.saved[0].CareerPageID != page {
+		t.Errorf("CareerPageID = %v, want %v (stamped from the task)", repo.saved[0].CareerPageID, page)
+	}
+}
+
+// TestProcessorFallsBackToURLIdentityWithoutSourceID asserts the keep-distinct
+// fallback (ADR-0034): a posting the fetcher could not id keys on its
+// canonicalized URL rather than collapsing the whole tenant to one key.
+func TestProcessorFallsBackToURLIdentityWithoutSourceID(t *testing.T) {
+	fetcher := &stubFetcher{listings: []*crawler.JobListing{
+		{Title: "Go Engineer", URL: "https://boards.greenhouse.io/acme/jobs/1", Description: "build services"},
+	}}
+	repo := &spyRepo{}
+	proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
+		ResolveFetcher: resolveTo(fetcher),
+		Repository:     repo,
 	})
 
 	if err := proc.Process(t.Context(), &atsingest.FetchTask{Provider: "greenhouse", TenantSlug: "acme"}); err != nil {
 		t.Fatalf("Process: %v", err)
 	}
 	if len(repo.saved) != 1 {
-		t.Fatalf("saved %d, want 1 (matched via description)", len(repo.saved))
+		t.Fatalf("saved %d listings, want 1", len(repo.saved))
+	}
+	got := repo.saved[0]
+	if want := listingid.FromURL(got.URL); got.CanonicalURL != want {
+		t.Errorf("CanonicalURL = %q, want the URL-derived identity %q", got.CanonicalURL, want)
 	}
 }
 
@@ -88,8 +113,6 @@ func TestProcessorAttributesOwner(t *testing.T) {
 		proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
 			ResolveFetcher: resolveTo(fetcher),
 			Repository:     repo,
-			DefinitionID:   uuid.New(),
-			Keywords:       []string{"go"},
 			CompanyNames:   map[string]string{"acme.com": "Acme Inc"},
 		})
 
@@ -113,8 +136,6 @@ func TestProcessorAttributesOwner(t *testing.T) {
 		proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
 			ResolveFetcher: resolveTo(fetcher),
 			Repository:     repo,
-			DefinitionID:   uuid.New(),
-			Keywords:       []string{"go"},
 			CompanyNames:   map[string]string{"other.com": "Other Inc"},
 		})
 
@@ -165,8 +186,6 @@ func TestProcessorResolvesCountryAtSave(t *testing.T) {
 			proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
 				ResolveFetcher: resolveTo(fetcher),
 				Repository:     repo,
-				DefinitionID:   uuid.New(),
-				Keywords:       []string{"go"},
 			})
 
 			if err := proc.Process(t.Context(), &atsingest.FetchTask{Provider: "greenhouse", TenantSlug: "acme"}); err != nil {
@@ -182,64 +201,6 @@ func TestProcessorResolvesCountryAtSave(t *testing.T) {
 	}
 }
 
-// TestProcessorCountryConstraintGate asserts the ATS-lane Country Constraint
-// (ADR-0028): with a target set of {DE}, a keyword-matching posting is saved only
-// when its resolved Country is DE or its Country is unresolved; any other resolved
-// Country is discarded before save regardless of Work Arrangement (Remote is not an
-// override). Country is driven via the provider CountryHint / Location the resolver
-// reads.
-func TestProcessorCountryConstraintGate(t *testing.T) {
-	all := []*crawler.JobListing{
-		{Title: "Go DE", URL: "https://board/de", Location: "Berlin, Germany"},
-		{Title: "Go FR", URL: "https://board/fr", Location: "Paris, France"},
-		{Title: "Go unresolved", URL: "https://board/unknown", Location: "European Union"},
-		{Title: "Go FR remote", URL: "https://board/fr-remote", Location: "Paris, France", WorkArrangement: crawler.WorkArrangementRemote},
-	}
-
-	tests := []struct {
-		name       string
-		countries  []string
-		wantTitles []string
-	}{
-		{
-			name:       "DE constraint keeps DE and unresolved; drops FR onsite and FR remote",
-			countries:  []string{"DE"},
-			wantTitles: []string{"Go DE", "Go unresolved"},
-		},
-		{
-			name:       "empty constraint keeps every country",
-			countries:  nil,
-			wantTitles: []string{"Go DE", "Go FR", "Go unresolved", "Go FR remote"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			fetcher := &stubFetcher{listings: all}
-			repo := &spyRepo{}
-			proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
-				ResolveFetcher: resolveTo(fetcher),
-				Repository:     repo,
-				DefinitionID:   uuid.New(),
-				Keywords:       []string{"go"},
-				Countries:      tt.countries,
-			})
-
-			if err := proc.Process(t.Context(), &atsingest.FetchTask{Provider: "greenhouse", TenantSlug: "acme"}); err != nil {
-				t.Fatalf("Process: %v", err)
-			}
-
-			gotTitles := make([]string, 0, len(repo.saved))
-			for _, jl := range repo.saved {
-				gotTitles = append(gotTitles, jl.Title)
-			}
-			if !slices.Equal(gotTitles, tt.wantTitles) {
-				t.Errorf("saved titles = %v, want %v", gotTitles, tt.wantTitles)
-			}
-		})
-	}
-}
-
 // TestProcessorUnregisteredProviderIsNoOp asserts the clientless-provider
 // fail-safe: no Fetch, no Save, and Process returns nil so the pool is never
 // errored by a provider that routing should have filtered.
@@ -249,8 +210,6 @@ func TestProcessorUnregisteredProviderIsNoOp(t *testing.T) {
 	proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
 		ResolveFetcher: resolveNone,
 		Repository:     repo,
-		DefinitionID:   uuid.New(),
-		Keywords:       []string{"go"},
 	})
 
 	if err := proc.Process(t.Context(), &atsingest.FetchTask{Provider: "lever", TenantSlug: "beta", Owner: "beta.com"}); err != nil {
@@ -273,8 +232,6 @@ func TestProcessorFetchErrorIsReturned(t *testing.T) {
 	proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
 		ResolveFetcher: resolveTo(fetcher),
 		Repository:     repo,
-		DefinitionID:   uuid.New(),
-		Keywords:       []string{"go"},
 	})
 
 	err := proc.Process(t.Context(), &atsingest.FetchTask{Provider: "greenhouse", TenantSlug: "acme"})
@@ -287,6 +244,149 @@ func TestProcessorFetchErrorIsReturned(t *testing.T) {
 	if len(repo.saved) != 0 {
 		t.Errorf("saved %d listings on fetch error, want 0", len(repo.saved))
 	}
+}
+
+// TestProcessorIncompleteBoardSavesPartial asserts the save-presence / skip-sweep
+// contract (ADR-0035): ErrBoardIncomplete is the one non-fatal fetch error — the
+// partial slice riding alongside it is still persisted and the task succeeds, and
+// the absence-sweep runs with complete=false so it closes nothing.
+func TestProcessorIncompleteBoardSavesPartial(t *testing.T) {
+	page := uuid.New()
+	fetcher := &stubFetcher{
+		listings: []*crawler.JobListing{
+			{Title: "Go One", URL: "https://board/1", SourceID: "1", Description: "build services"},
+			{Title: "Go Two", URL: "https://board/2", SourceID: "2", Description: "ship services"},
+		},
+		err: ats.ErrBoardIncomplete,
+	}
+	repo := &spyRepo{}
+	liveness := &spyLiveness{}
+	var savedTaps, incompleteTaps int
+	proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
+		ResolveFetcher:    resolveTo(fetcher),
+		Repository:        repo,
+		Liveness:          liveness,
+		Dormancy:          &spyDormancy{},
+		CycleStart:        time.Now(),
+		OnSaved:           func(context.Context) { savedTaps++ },
+		OnBoardIncomplete: func(context.Context) { incompleteTaps++ },
+	})
+
+	if err := proc.Process(t.Context(), &atsingest.FetchTask{Provider: "greenhouse", TenantSlug: "acme", CareerPageID: page}); err != nil {
+		t.Fatalf("Process returned %v, want nil (ErrBoardIncomplete is swallowed, not a task failure)", err)
+	}
+	if len(repo.saved) != 2 {
+		t.Fatalf("saved %d listings, want 2 (the partial slice is persisted)", len(repo.saved))
+	}
+	if savedTaps != 2 {
+		t.Errorf("OnSaved fired %d times, want 2", savedTaps)
+	}
+	if incompleteTaps != 1 {
+		t.Errorf("OnBoardIncomplete fired %d times, want 1", incompleteTaps)
+	}
+	calls := liveness.calls()
+	if len(calls) != 1 || calls[0].complete {
+		t.Fatalf("CloseAbsent calls = %+v, want one with complete=false (skip the sweep)", calls)
+	}
+}
+
+// TestProcessorClosesAbsentOnCompleteFetch asserts the absence-sweep runs with
+// complete=true, scoped to the task's CareerPageID and watermarked at CycleStart,
+// after a clean fetch (ADR-0035); the count closed is tallied through OnClosed.
+func TestProcessorClosesAbsentOnCompleteFetch(t *testing.T) {
+	page := uuid.New()
+	cycleStart := time.Now()
+	fetcher := &stubFetcher{listings: []*crawler.JobListing{
+		{Title: "Go One", URL: "https://board/1", SourceID: "1"},
+	}}
+	liveness := &spyLiveness{closeReturn: 3}
+	var closedTaps int
+	proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
+		ResolveFetcher: resolveTo(fetcher),
+		Repository:     &spyRepo{},
+		Liveness:       liveness,
+		Dormancy:       &spyDormancy{},
+		CycleStart:     cycleStart,
+		OnClosed:       func(_ context.Context, n int) { closedTaps += n },
+	})
+
+	if err := proc.Process(t.Context(), &atsingest.FetchTask{Provider: "greenhouse", TenantSlug: "acme", CareerPageID: page}); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	calls := liveness.calls()
+	if len(calls) != 1 {
+		t.Fatalf("CloseAbsent calls = %d, want 1", len(calls))
+	}
+	c := calls[0]
+	if c.careerPageID != page || !c.complete || !c.notSeenSince.Equal(cycleStart) {
+		t.Errorf("CloseAbsent(%v, %v, %v), want (%v, %v, true)", c.careerPageID, c.notSeenSince, c.complete, page, cycleStart)
+	}
+	if closedTaps != 3 {
+		t.Errorf("OnClosed tallied %d, want 3", closedTaps)
+	}
+}
+
+// TestProcessorRecordsDormancy asserts the board-reach probe feeds Career-Page
+// dormancy (ADR-0035): a clean/incomplete fetch is Alive; a board-status error is
+// Dead; and an embed-discovered board (Nil CareerPageID) records nothing.
+func TestProcessorRecordsDormancy(t *testing.T) {
+	page := uuid.New()
+
+	t.Run("successful fetch records Alive", func(t *testing.T) {
+		dormancy := &spyDormancy{}
+		proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
+			ResolveFetcher:    resolveTo(&stubFetcher{listings: []*crawler.JobListing{{URL: "u", SourceID: "1"}}}),
+			Repository:        &spyRepo{},
+			Liveness:          &spyLiveness{},
+			Dormancy:          dormancy,
+			DormancyThreshold: 5,
+		})
+		if err := proc.Process(t.Context(), &atsingest.FetchTask{Provider: "greenhouse", TenantSlug: "acme", CareerPageID: page}); err != nil {
+			t.Fatalf("Process: %v", err)
+		}
+		probes := dormancy.recorded()
+		if len(probes) != 1 || probes[0].outcome != crawler.ProbeAlive || probes[0].careerPageID != page || probes[0].threshold != 5 {
+			t.Fatalf("dormancy probes = %+v, want one Alive for page %v at threshold 5", probes, page)
+		}
+	})
+
+	t.Run("board-status error records Dead", func(t *testing.T) {
+		dormancy := &spyDormancy{}
+		proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
+			ResolveFetcher: resolveTo(&stubFetcher{err: ats.ErrBoardStatus}),
+			Repository:     &spyRepo{},
+			Liveness:       &spyLiveness{},
+			Dormancy:       dormancy,
+		})
+		err := proc.Process(t.Context(), &atsingest.FetchTask{Provider: "greenhouse", TenantSlug: "acme", CareerPageID: page})
+		if err == nil || !errors.Is(err, ats.ErrBoardStatus) {
+			t.Fatalf("Process error = %v, want the board-status error propagated", err)
+		}
+		probes := dormancy.recorded()
+		if len(probes) != 1 || probes[0].outcome != crawler.ProbeDead {
+			t.Fatalf("dormancy probes = %+v, want one Dead", probes)
+		}
+	})
+
+	t.Run("embed board with Nil CareerPageID records nothing", func(t *testing.T) {
+		dormancy := &spyDormancy{}
+		liveness := &spyLiveness{}
+		proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
+			ResolveFetcher: resolveTo(&stubFetcher{listings: []*crawler.JobListing{{URL: "u", SourceID: "1"}}}),
+			Repository:     &spyRepo{},
+			Liveness:       liveness,
+			Dormancy:       dormancy,
+		})
+		if err := proc.Process(t.Context(), &atsingest.FetchTask{Provider: "greenhouse", TenantSlug: "acme"}); err != nil {
+			t.Fatalf("Process: %v", err)
+		}
+		if len(dormancy.recorded()) != 0 {
+			t.Errorf("dormancy recorded %d probes for a Nil-page embed board, want 0", len(dormancy.recorded()))
+		}
+		if len(liveness.calls()) != 0 {
+			t.Errorf("CloseAbsent called %d times for a Nil-page embed board, want 0", len(liveness.calls()))
+		}
+	})
 }
 
 // TestProcessorContinuesAfterSaveError asserts one failed save neither drops the
@@ -302,8 +402,6 @@ func TestProcessorContinuesAfterSaveError(t *testing.T) {
 	proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
 		ResolveFetcher: resolveTo(fetcher),
 		Repository:     repo,
-		DefinitionID:   uuid.New(),
-		Keywords:       []string{"go"},
 		OnSaved:        func(context.Context) { savedTaps++ },
 	})
 
@@ -319,25 +417,5 @@ func TestProcessorContinuesAfterSaveError(t *testing.T) {
 	}
 	if savedTaps != 1 {
 		t.Errorf("OnSaved fired %d times, want 1 (only the successful save)", savedTaps)
-	}
-}
-
-// TestProcessorEmptyKeywordsSaveNothing is the defensive case: with no keywords
-// the relevance gate rejects everything, exactly like the crawl lane's Reject.
-func TestProcessorEmptyKeywordsSaveNothing(t *testing.T) {
-	fetcher := &stubFetcher{listings: []*crawler.JobListing{{Title: "Go Engineer", URL: "u"}}}
-	repo := &spyRepo{}
-	proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
-		ResolveFetcher: resolveTo(fetcher),
-		Repository:     repo,
-		DefinitionID:   uuid.New(),
-		Keywords:       nil,
-	})
-
-	if err := proc.Process(t.Context(), &atsingest.FetchTask{Provider: "greenhouse", TenantSlug: "acme"}); err != nil {
-		t.Fatalf("Process: %v", err)
-	}
-	if len(repo.saved) != 0 {
-		t.Errorf("saved %d listings with no keywords, want 0", len(repo.saved))
 	}
 }

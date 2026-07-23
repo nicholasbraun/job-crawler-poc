@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -10,10 +11,50 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/postgres"
 )
 
+// TestSeededCollectionDefinition asserts migration 0019 seeds the singleton
+// Collection Crawl definition (ADR-0036): resolvable at the fixed
+// CollectionDefinitionID with kind 'collection', and its stored url_filter
+// round-trips equal to DefaultCollectionURLFilterConfig() so the SQL seed and the
+// Go helper cannot drift.
+func TestSeededCollectionDefinition(t *testing.T) {
+	pool := newTestPool(t)
+	defs := postgres.NewCrawlDefinitionRepository(pool)
+
+	def, err := defs.Get(t.Context(), crawler.CollectionDefinitionID)
+	if err != nil {
+		t.Fatalf("getting seeded collection definition: %v", err)
+	}
+	if def.Kind != crawler.CrawlKindCollection {
+		t.Errorf("kind = %q, want %q", def.Kind, crawler.CrawlKindCollection)
+	}
+	if !reflect.DeepEqual(def.URLFilter, crawler.DefaultCollectionURLFilterConfig()) {
+		t.Errorf("seeded url_filter drifted from DefaultCollectionURLFilterConfig()\n got: %+v\nwant: %+v",
+			def.URLFilter, crawler.DefaultCollectionURLFilterConfig())
+	}
+}
+
+// TestSingleCollectionDefinition drives the singleton-collection partial unique
+// index (migration 0019): the migration already seeded one collection definition,
+// so a second Create with kind 'collection' is rejected by the index.
+func TestSingleCollectionDefinition(t *testing.T) {
+	pool := newTestPool(t)
+	defs := postgres.NewCrawlDefinitionRepository(pool)
+
+	err := defs.Create(t.Context(), &crawler.CrawlDefinition{
+		Name:     "second collection",
+		Kind:     crawler.CrawlKindCollection,
+		MaxDepth: 1,
+	})
+	if err == nil {
+		t.Fatal("creating a second collection definition should be rejected by the singleton index")
+	}
+}
+
 // TestSingleDiscoveryDefinition drives the singleton-discovery partial unique
 // index (migration 0010) through the repository: at most one discovery
 // definition, translated to crawler.ErrDiscoveryDefinitionExists (ADR-0017),
-// while keyword definitions remain unconstrained.
+// while non-discovery definitions remain unconstrained. The kind value on the
+// non-discovery fixtures is immaterial — only "discovery" is index-constrained.
 func TestSingleDiscoveryDefinition(t *testing.T) {
 	pool := newTestPool(t)
 	defs := postgres.NewCrawlDefinitionRepository(pool)
@@ -36,67 +77,17 @@ func TestSingleDiscoveryDefinition(t *testing.T) {
 		t.Fatalf("second discovery definition: got %v, want ErrDiscoveryDefinitionExists", err)
 	}
 
-	// Keyword definitions are outside the index predicate and accumulate freely.
-	for _, name := range []string{"keyword-a", "keyword-b"} {
+	// Non-discovery definitions are outside the index predicate and accumulate
+	// freely; the kind value is immaterial to the index.
+	for _, name := range []string{"non-discovery-a", "non-discovery-b"} {
 		if err := defs.Create(t.Context(), &crawler.CrawlDefinition{
 			Name:     name,
-			Kind:     crawler.CrawlKindKeyword,
-			Keywords: []string{"go"},
+			Kind:     crawler.CrawlKind("test"),
 			MaxDepth: 1,
 		}); err != nil {
-			t.Fatalf("keyword definition %q should insert: %v", name, err)
+			t.Fatalf("non-discovery definition %q should insert: %v", name, err)
 		}
 	}
-}
-
-// TestCountryConstraintRoundTrip drives the Country Constraint column (ADR-0028,
-// migration 0016) through Create/Get: the target Countries survive the round trip,
-// and a definition created with no Countries reads back as an empty (non-nil,
-// non-panicking) slice via the NOT NULL DEFAULT '{}' column.
-func TestCountryConstraintRoundTrip(t *testing.T) {
-	pool := newTestPool(t)
-	defs := postgres.NewCrawlDefinitionRepository(pool)
-
-	t.Run("countries survive the round trip", func(t *testing.T) {
-		def := &crawler.CrawlDefinition{
-			Name:      "go-de-at",
-			Kind:      crawler.CrawlKindKeyword,
-			Keywords:  []string{"go"},
-			Countries: []string{"DE", "AT"},
-			MaxDepth:  1,
-		}
-		if err := defs.Create(t.Context(), def); err != nil {
-			t.Fatalf("creating definition: %v", err)
-		}
-
-		got, err := defs.Get(t.Context(), def.ID)
-		if err != nil {
-			t.Fatalf("getting definition: %v", err)
-		}
-		if want := []string{"DE", "AT"}; !slices.Equal(got.Countries, want) {
-			t.Errorf("countries: got %v, want %v", got.Countries, want)
-		}
-	})
-
-	t.Run("no countries reads back as an empty slice", func(t *testing.T) {
-		def := &crawler.CrawlDefinition{
-			Name:     "go-anywhere",
-			Kind:     crawler.CrawlKindKeyword,
-			Keywords: []string{"go"},
-			MaxDepth: 1,
-		}
-		if err := defs.Create(t.Context(), def); err != nil {
-			t.Fatalf("creating definition: %v", err)
-		}
-
-		got, err := defs.Get(t.Context(), def.ID)
-		if err != nil {
-			t.Fatalf("getting definition: %v", err)
-		}
-		if len(got.Countries) != 0 {
-			t.Errorf("countries: got %v, want empty (anywhere)", got.Countries)
-		}
-	})
 }
 
 // TestAppendSeedURL drives the additive Seed mutation (ADR-0018): a new Seed is

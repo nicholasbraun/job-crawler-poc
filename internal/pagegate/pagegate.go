@@ -271,6 +271,20 @@ func ShouldExtract(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateC
 		// reject rung below.
 		return true
 	}
+	// rung 2b: a bare domain root (or a locale-only root like /en, /de-de) is never a
+	// single job posting -- a posting always carries a slug/id beyond the host. This
+	// sheds careers-landing and homepage pages the extractor would otherwise
+	// hallucinate a listing from, keyed to a root URL that collides in the Corpus.
+	if isBareOrLocaleRoot(u.RawURL) {
+		return false
+	}
+	// rung 2c: a URL whose terminal path segment is a jobs index/section word
+	// (careers, jobs, openings, job-offers, search-jobs, ..., any web extension
+	// stripped) is a hub, not a posting -- even a posting-path URL like
+	// /careers/openings, which rung 4 misses because its parent is a job segment.
+	if isExtractIndexTerminal(u.RawURL) {
+		return false
+	}
 	if pathHasSegment(u.RawURL, cfg.RejectPathSignals) {
 		return false // rung 3: a strong-negative reject path.
 	}
@@ -322,6 +336,24 @@ func countJobPostingLinks(base crawler.URL, content *crawler.Content) int {
 		}
 	}
 	return len(seen)
+}
+
+// IsHubOrRootURL reports whether u is structurally a jobs hub or a bare/locale root
+// -- never a single Job Listing -- by the extract gate's URL-only reject rungs (a
+// bare/locale-only root, or a terminal jobs-index segment). It reads only the URL,
+// no page content, so the crawl-lane refetch can replay it over a stored listing to
+// self-heal the Corpus when the gate tightens -- the same way the Catalog Doctor
+// replays IsPostingPath. ShouldExtract applies these two rungs to a freshly-walked
+// page; this exports their union for the retroactive check.
+func IsHubOrRootURL(u crawler.URL) bool {
+	// Mirror ShouldExtract's rung ordering: a catalog-classified ATS posting is a
+	// single posting regardless of its URL shape, so it is exempt from the URL rungs
+	// (never re-gated). This keeps the invariant that the re-gate closes only what the
+	// live gate would reject.
+	if catalog.Classify(u) == catalog.RoleJobListing {
+		return false
+	}
+	return isBareOrLocaleRoot(u.RawURL) || isExtractIndexTerminal(u.RawURL)
 }
 
 // IsPostingPath reports whether u's path is structurally a single Job Listing or
@@ -392,6 +424,73 @@ func careerHubRoot(rawURL string, signals []string) bool {
 		}
 	}
 	return false
+}
+
+// extractIndexTerminals are terminal path segments that mark a jobs index/section
+// page (never a single posting) for the extract gate, on TOP of terminalHubWords.
+// Kept a separate list so this reject is scoped to ShouldExtract and does not shift
+// the classifier's IsPostingPath veto (which reads terminalHubWords).
+var extractIndexTerminals = []string{
+	"search-jobs", "job-offers", "job_offers", "job-openings", "work-with-us",
+	"stellengesuche", "stellenausschreibungen", "stellenanzeigen",
+}
+
+// localeRootSegments are language/locale tokens that, as a URL's ONLY path segment,
+// still leave it a site/section root, not a single posting (e.g. "acme.com/en",
+// "firma.de/de-de"). A curated set (not any two letters) so a real one-segment
+// posting slug or a department code like "/hr" is never mistaken for a locale.
+var localeRootSegments = map[string]bool{
+	"en": true, "de": true, "fr": true, "es": true, "it": true, "nl": true,
+	"pt": true, "pl": true, "da": true, "sv": true, "fi": true, "no": true,
+	"cs": true, "sk": true, "hu": true, "ro": true, "ru": true, "tr": true,
+	"ja": true, "zh": true, "ko": true,
+	"en-us": true, "en-gb": true, "de-de": true, "de-at": true, "de-ch": true,
+	"fr-fr": true, "es-es": true, "pt-br": true, "nl-nl": true, "da-dk": true,
+}
+
+// isBareOrLocaleRoot reports whether rawURL points at a bare domain root (no path
+// segments) or a locale-only root (its single segment is a language/locale token).
+// Neither can be a single Job Listing, whose URL always carries a posting slug/id.
+func isBareOrLocaleRoot(rawURL string) bool {
+	segs := pathSegmentsOf(rawURL)
+	if len(segs) == 0 {
+		return true
+	}
+	return len(segs) == 1 && localeRootSegments[strings.ToLower(segs[0])]
+}
+
+// isExtractIndexTerminal reports whether rawURL's terminal path segment -- with a
+// trailing web extension (.html/.php/...) stripped -- is a jobs index/section word
+// (terminalHubWords plus extractIndexTerminals). Such a page is a hub, not a single
+// posting, even when it sits on a job-posting path.
+func isExtractIndexTerminal(rawURL string) bool {
+	segs := pathSegmentsOf(rawURL)
+	if len(segs) == 0 {
+		return false
+	}
+	last := strings.ToLower(stripWebExt(segs[len(segs)-1]))
+	for _, w := range terminalHubWords {
+		if last == strings.ToLower(w) {
+			return true
+		}
+	}
+	for _, w := range extractIndexTerminals {
+		if last == w {
+			return true
+		}
+	}
+	return false
+}
+
+// stripWebExt drops a trailing static-page file extension so an index page served
+// as "stellenangebote.html" matches the same word as a bare "stellenangebote".
+func stripWebExt(s string) string {
+	for _, ext := range []string{".html", ".htm", ".php", ".aspx", ".asp", ".jsp"} {
+		if len(s) > len(ext) && strings.EqualFold(s[len(s)-len(ext):], ext) {
+			return s[:len(s)-len(ext)]
+		}
+	}
+	return s
 }
 
 // pathHasSegment reports whether any of rawURL's path segments equals (case-

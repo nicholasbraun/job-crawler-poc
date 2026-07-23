@@ -41,9 +41,19 @@ func NormalizeWorkArrangement(s string) WorkArrangement {
 	}
 }
 
+// SourceLane is which of the two acquisition paths collected a Job Listing
+// (ADR-0034/CONTEXT "Source Lane"): an ATS Fetch or a Crawl. It decides how the
+// listing's Liveness is later judged and is stored in job_listing.source.
+type SourceLane string
+
+const (
+	SourceLaneATS   SourceLane = "ats"
+	SourceLaneCrawl SourceLane = "crawl"
+)
+
 // JobListing holds the structured data of a single job posting. It is populated
 // by a JobListingExtractor (crawl lane) or an ATS BoardFetcher (ATS Fetch lane,
-// ADR-0022) and persisted via JobListingRepository. JSON tags are used for LLM
+// ADR-0022) and persisted via CorpusRepository. JSON tags are used for LLM
 // response unmarshaling, not for API serialization.
 type JobListing struct {
 	// URL is the source page this listing was extracted from. Not populated
@@ -86,6 +96,27 @@ type JobListing struct {
 	// listing or when the board omitted or malformed the timestamp. The json:"-"
 	// tag keeps LLM-response unmarshaling from ever reaching it.
 	FirstPublished time.Time `json:"-"`
+	// CanonicalURL is the listing's stable Corpus identity (ADR-0034): the value
+	// job_listing is keyed and deduplicated on. Set by the save processor via the
+	// listingid package — listingid.FromURL on the crawl lane, listingid.FromATS on
+	// the ATS lane. Never populated by the LLM.
+	CanonicalURL string `json:"-"`
+	// Source is the Source Lane that collected this listing (ADR-0034). Set by the
+	// save processor. Stored in job_listing.source ('ats'|'crawl').
+	Source SourceLane `json:"-"`
+	// SourceID is the ATS provider's stable posting id, populated by the BoardFetcher
+	// on the ATS lane and folded into the CanonicalURL via listingid.FromATS so a URL
+	// re-slug never forges a new posting (ADR-0034). Empty on the crawl lane.
+	SourceID string `json:"-"`
+	// SourceHash is the SHA-256 (hex) of the EXACT capped MainContent fed to the
+	// extractor — the extraction-cache key the later crawl-lane refetch pass compares
+	// against (ADR-0035), replacing the vestigial output content_hash. Set by the
+	// extractor on the crawl lane; empty on the ATS lane (absence-from-board liveness).
+	SourceHash string `json:"-"`
+	// CareerPageID links the listing to the Career Page it was collected under (FK to
+	// career_page). uuid.Nil when unknown (stored as SQL NULL). Not populated in #187 —
+	// a later collection ticket threads it from the seed.
+	CareerPageID uuid.UUID `json:"-"`
 }
 
 // RawJobListing pairs a crawled URL with its parsed page content before
@@ -105,17 +136,40 @@ type Extraction struct {
 	IsJobPosting bool
 }
 
-type JobListingRepository interface {
-	// Save persists jobListing under the crawl definition identified by
-	// definitionID. Listings are keyed (definitionID, URL) and upserted:
-	// re-saving the same pair refreshes the record in place rather than
-	// inserting a duplicate.
-	Save(ctx context.Context, definitionID uuid.UUID, jobListing *JobListing) error
-	Find(ctx context.Context) ([]*JobListing, error)
-	// FindByDefinition returns the listings extracted under definitionID,
-	// most-recently-seen first. When keyword is non-empty it is matched
-	// case-insensitively against the listing title and description; an empty
-	// keyword applies no such filter. It never returns nil; no matches yields
-	// an empty slice.
-	FindByDefinition(ctx context.Context, definitionID uuid.UUID, keyword string) ([]*JobListing, error)
+// CorpusRepository persists Job Listings into the global, deduplicated Corpus
+// (ADR-0034 / CONTEXT "Corpus").
+type CorpusRepository interface {
+	// Save upserts jl into the Corpus keyed on jl.CanonicalURL: re-saving the same
+	// posting refreshes its mutable fields in place, preserves first_seen, advances
+	// last_seen, and reopens it (clears closed_at) if it had been closed (ADR-0035).
+	// It stamps the Source Lane, source_id, source_hash, and career_page_id.
+	Save(ctx context.Context, jl *JobListing) error
+}
+
+// CorpusLivenessRepository is the set of Corpus operations a Collection Cycle drives
+// to keep Job Listing Liveness current (ADR-0035): the ATS absence-sweep, the
+// crawl-lane refetch application, and the query of a board's Open listings. It is
+// implemented by the same store as CorpusRepository; kept separate so the extraction
+// pipeline (which only Saves) depends on the narrower port.
+type CorpusLivenessRepository interface {
+	// ListOpen returns every currently-Open (closed_at IS NULL) Job Listing collected
+	// under careerPageID, so a Cycle can refetch them for liveness. Each carries
+	// CanonicalURL, URL, Source, SourceID, SourceHash, CompanyKey, and CareerPageID
+	// (the fields a refetch needs — CompanyKey rebuilds the re-extraction's Owner
+	// attribution); never returns nil (an empty board yields an empty slice).
+	ListOpen(ctx context.Context, careerPageID uuid.UUID) ([]*JobListing, error)
+
+	// CloseAbsent runs the ATS-lane absence-sweep for ONE board (ADR-0035): when
+	// boardComplete, it Closes every Open ATS listing under careerPageID whose last_seen
+	// predates notSeenSince (not seen in this Cycle's complete fetch); when boardComplete
+	// is false it closes nothing (a partial/failed fetch must never mass-close a board).
+	// Scoped strictly to careerPageID — never the whole Company. Returns the count closed.
+	CloseAbsent(ctx context.Context, careerPageID uuid.UUID, notSeenSince time.Time, boardComplete bool) (int, error)
+
+	// ApplyCrawlProbe applies one crawl-lane refetch Outcome to the listing keyed on
+	// canonicalURL via the pure NextLiveness reducer: Alive advances last_seen and clears
+	// the streak; Dead closes it; Inconclusive increments the streak and closes only once
+	// it reaches staleThreshold. Attempt-gated by construction — only a probed listing is
+	// touched, so a down collector closes nothing. Returns the resulting LifecycleState.
+	ApplyCrawlProbe(ctx context.Context, canonicalURL string, outcome ProbeOutcome, staleThreshold int) (LifecycleState, error)
 }

@@ -80,6 +80,9 @@ func TestRecruiteeFetchMapsBoard(t *testing.T) {
 	if first.URL != "https://careers.hostaway.com/o/senior-frontend-engineer-100-remote-emea-1" {
 		t.Errorf("URL = %q, want the custom-domain careers_url", first.URL)
 	}
+	if first.SourceID != "100" {
+		t.Errorf("SourceID = %q, want the stringified offer id %q", first.SourceID, "100")
+	}
 	if first.Location != "Remote job" {
 		t.Errorf("Location = %q, want the flat location string", first.Location)
 	}
@@ -360,6 +363,21 @@ func TestRecruiteeNon200ReturnsErrBoardStatus(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("listings = %v, want nil on a non-200 response", got)
+	}
+}
+
+func TestRecruiteeTruncatedBodyIsHardError(t *testing.T) {
+	// Recruitee decodes the whole board in one request, so completeness is structural
+	// (ADR-0035): a body cut mid-array surfaces as a decode error, never a silent
+	// partial. A single-shot provider returns a hard error, NOT ErrBoardIncomplete.
+	fetcher := newRecruiteeFetcher(t, serveJSON(`{"offers":[{"id":1,"careers_url":"https://x/a"`))
+
+	_, err := fetcher.Fetch(t.Context(), "acme")
+	if err == nil {
+		t.Fatal("want a decode error for a truncated body")
+	}
+	if errors.Is(err, ats.ErrBoardIncomplete) {
+		t.Fatal("single-shot provider must never emit ErrBoardIncomplete; a partial read is a hard error")
 	}
 }
 

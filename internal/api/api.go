@@ -11,12 +11,10 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
-	"github.com/nicholasbraun/job-crawler-poc/internal/geo"
 	"github.com/nicholasbraun/job-crawler-poc/internal/runner"
 )
 
@@ -49,24 +47,12 @@ type FrontierSeeder func(ctx context.Context, runID uuid.UUID, url crawler.URL) 
 // domain defaults wired in cmd/server (crawler.DefaultDiscoverySeeds,
 // crawler.DefaultURLFilterConfig).
 type Defaults struct {
-	// KeywordMaxDepth and DiscoveryMaxDepth are the per-kind crawl-depth
-	// defaults applied when a create request omits maxDepth (keyword 4,
-	// discovery 10).
-	KeywordMaxDepth   int
+	// DiscoveryMaxDepth is the crawl-depth default applied when a discovery
+	// create request omits maxDepth.
 	DiscoveryMaxDepth int
 	// DiscoverySeeds is the baseline Seed set the Discovery start modal prefills.
 	DiscoverySeeds []string
 	URLFilter      crawler.URLFilterConfig
-}
-
-// maxDepthFor returns the default crawl depth for a kind. An unrecognized kind --
-// which decodeDefinition rejects before reaching here -- falls back to the
-// discovery default defensively.
-func (d Defaults) maxDepthFor(kind crawler.CrawlKind) int {
-	if kind == crawler.CrawlKindKeyword {
-		return d.KeywordMaxDepth
-	}
-	return d.DiscoveryMaxDepth
 }
 
 // Config groups the Handler's dependencies. Every repository the read endpoints
@@ -78,11 +64,14 @@ type Config struct {
 	Definitions crawler.CrawlDefinitionRepository
 	Companies   crawler.CompanyRepository
 	CareerPages crawler.CareerPageRepository
-	Listings    crawler.JobListingRepository
 	// Importer starts Catalog Imports; required for POST /api/catalog/import.
 	Importer Importer
 	// ImportJobs serves the Import Job read endpoints (list + get by id).
-	ImportJobs    crawler.ImportJobRepository
+	ImportJobs crawler.ImportJobRepository
+	// SavedSearches backs the SavedSearch CRUD endpoints (ADR-0037).
+	SavedSearches crawler.SavedSearchRepository
+	// Search answers a SavedSearch's results endpoint against the Corpus (ADR-0037).
+	Search        crawler.CorpusSearchRepository
 	FrontierSizer FrontierSizer
 	// FrontierSeeder injects a runtime Seed into a Discovery Run's live Frontier;
 	// optional (nil → the Seed is still durably appended, injection is skipped).
@@ -119,7 +108,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /api/definitions/{id}/runs", h.startRun)
 	mux.HandleFunc("POST /api/definitions/{id}/seeds", h.addSeed)
 
-	// Catalog + listings (read-only browse).
+	// Catalog (read-only browse).
 	mux.HandleFunc("GET /api/companies", h.listCompanies)
 	mux.HandleFunc("GET /api/career-pages", h.listCareerPages)
 	mux.HandleFunc("GET /api/catalog-history", h.catalogHistory)
@@ -127,7 +116,18 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /api/catalog/import", h.importCatalog)
 	mux.HandleFunc("GET /api/catalog/import-jobs", h.listImportJobs)
 	mux.HandleFunc("GET /api/catalog/import-jobs/{id}", h.getImportJob)
-	mux.HandleFunc("GET /api/listings", h.listListings)
+
+	// Corpus listings (read-only): the Overview's live "recently found" feed and the
+	// corpus-size headline.
+	mux.HandleFunc("GET /api/listings/recent", h.recentListings)
+	mux.HandleFunc("GET /api/listings/stats", h.listingStats)
+
+	// SavedSearches (ADR-0037): named Corpus queries + their live results.
+	mux.HandleFunc("GET /api/saved-searches", h.listSavedSearches)
+	mux.HandleFunc("POST /api/saved-searches", h.createSavedSearch)
+	mux.HandleFunc("PATCH /api/saved-searches/{id}", h.renameSavedSearch)
+	mux.HandleFunc("DELETE /api/saved-searches/{id}", h.deleteSavedSearch)
+	mux.HandleFunc("GET /api/saved-searches/{id}/results", h.savedSearchResults)
 
 	return mux
 }
@@ -138,8 +138,6 @@ type createCrawlRequest struct {
 	Name      string                   `json:"name"`
 	SeedURLs  []string                 `json:"seedUrls"`
 	Kind      string                   `json:"kind"`
-	Keywords  []string                 `json:"keywords"`
-	Countries []string                 `json:"countries"`
 	MaxDepth  *int                     `json:"maxDepth"`
 	URLFilter *crawler.URLFilterConfig `json:"urlFilter"`
 }
@@ -179,35 +177,23 @@ type definitionDTO struct {
 	Name      string                  `json:"name"`
 	Kind      string                  `json:"kind"`
 	SeedURLs  []string                `json:"seedUrls"`
-	Keywords  []string                `json:"keywords"`
-	Countries []string                `json:"countries"`
 	MaxDepth  int                     `json:"maxDepth"`
 	URLFilter crawler.URLFilterConfig `json:"urlFilter"`
 	CreatedAt time.Time               `json:"createdAt"`
 }
 
 func toDefinitionDTO(def *crawler.CrawlDefinition) definitionDTO {
-	// Coalesce nil slices so the JSON is [] rather than null, keeping the
+	// Coalesce a nil slice so the JSON is [] rather than null, keeping the
 	// frontend's array handling uniform.
 	seedURLs := def.SeedURLs
 	if seedURLs == nil {
 		seedURLs = []string{}
-	}
-	keywords := def.Keywords
-	if keywords == nil {
-		keywords = []string{}
-	}
-	countries := def.Countries
-	if countries == nil {
-		countries = []string{}
 	}
 	return definitionDTO{
 		ID:        def.ID.String(),
 		Name:      def.Name,
 		Kind:      string(def.Kind),
 		SeedURLs:  seedURLs,
-		Keywords:  keywords,
-		Countries: countries,
 		MaxDepth:  def.MaxDepth,
 		URLFilter: def.URLFilter,
 		CreatedAt: def.CreatedAt,
@@ -267,28 +253,6 @@ func toCareerPageDTO(p *crawler.CareerPage) careerPageDTO {
 // the client.
 type catalogHistoryResponse struct {
 	CareerPages []int `json:"careerPages"`
-}
-
-type listingDTO struct {
-	URL             string `json:"url"`
-	Title           string `json:"title"`
-	Company         string `json:"company"`
-	Location        string `json:"location"`
-	Country         string `json:"country"`
-	WorkArrangement string `json:"workArrangement"`
-	Description     string `json:"description"`
-}
-
-func toListingDTO(jl *crawler.JobListing) listingDTO {
-	return listingDTO{
-		URL:             jl.URL,
-		Title:           jl.Title,
-		Company:         jl.Company,
-		Location:        jl.Location,
-		Country:         jl.Country,
-		WorkArrangement: string(jl.WorkArrangement),
-		Description:     jl.Description,
-	}
 }
 
 // runStatusDTO is a run's live progress: durable counters from the run row plus
@@ -593,10 +557,9 @@ func (h *Handler) getDefinition(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toDefinitionDTO(def))
 }
 
-// discoveryDefaultsDTO and keywordDefaultsDTO are the per-kind prefill templates
-// returned by GET /api/definitions/defaults, each matching its crawl modal's
-// editable fields: the Discovery modal edits an auto-named ("discovery") Seed list
-// and depth; the Keyword modal edits keywords and depth.
+// discoveryDefaultsDTO is the prefill template returned by
+// GET /api/definitions/defaults?kind=discovery, matching the Discovery modal's
+// editable fields: an auto-named ("discovery") Seed list and depth.
 type discoveryDefaultsDTO struct {
 	Name     string   `json:"name"`
 	Kind     string   `json:"kind"`
@@ -604,27 +567,9 @@ type discoveryDefaultsDTO struct {
 	MaxDepth int      `json:"maxDepth"`
 }
 
-// countryOptionDTO is one selectable Country in the keyword template's
-// known-country set: an ISO code plus its display name, backing the dashboard's
-// Country Constraint multi-select (ADR-0028).
-type countryOptionDTO struct {
-	Code string `json:"code"`
-	Name string `json:"name"`
-}
-
-type keywordDefaultsDTO struct {
-	Kind     string   `json:"kind"`
-	Keywords []string `json:"keywords"`
-	MaxDepth int      `json:"maxDepth"`
-	// Countries is the known-country set (sorted by name) the Country Constraint
-	// multi-select offers. Only the keyword template carries it — the constraint
-	// applies to keyword crawls (ADR-0028) — so the discovery template omits it.
-	Countries []countryOptionDTO `json:"countries"`
-}
-
-// getDefinitionDefaults returns the modal prefill template for
-// ?kind=discovery|keyword. An unknown or missing kind is a 400: the client must
-// ask for a concrete kind.
+// getDefinitionDefaults returns the modal prefill template for ?kind=discovery.
+// Discovery is the only live kind, so an unknown or missing kind is a 400: the
+// client must ask for it explicitly.
 func (h *Handler) getDefinitionDefaults(w http.ResponseWriter, r *http.Request) {
 	switch crawler.CrawlKind(r.URL.Query().Get("kind")) {
 	case crawler.CrawlKindDiscovery:
@@ -639,20 +584,6 @@ func (h *Handler) getDefinitionDefaults(w http.ResponseWriter, r *http.Request) 
 			Kind:     string(crawler.CrawlKindDiscovery),
 			SeedURLs: seeds,
 			MaxDepth: h.cfg.Defaults.DiscoveryMaxDepth,
-		})
-	case crawler.CrawlKindKeyword:
-		// The known-country set is sourced from the domain gazetteer (geo), not from
-		// Defaults, so the multi-select stays in sync with what the Resolver can place.
-		known := geo.KnownCountries()
-		countries := make([]countryOptionDTO, 0, len(known))
-		for _, c := range known {
-			countries = append(countries, countryOptionDTO{Code: c.Code, Name: c.Name})
-		}
-		writeJSON(w, http.StatusOK, keywordDefaultsDTO{
-			Kind:      string(crawler.CrawlKindKeyword),
-			Keywords:  []string{},
-			MaxDepth:  h.cfg.Defaults.KeywordMaxDepth,
-			Countries: countries,
 		})
 	default:
 		writeError(w, http.StatusBadRequest, "unknown or missing kind")
@@ -713,8 +644,8 @@ type addSeedRequest struct {
 }
 
 // addSeed appends a Seed to a Discovery Definition and injects it into the live
-// Run's Frontier at depth 0 (ADR-0018). Discovery-only: a Keyword Definition is
-// refused (keyword crawls seed from the Catalog, not by hand). The durable
+// Run's Frontier at depth 0 (ADR-0018). Discovery-only: any non-discovery
+// Definition (e.g. a retired keyword row) is refused. The durable
 // append is idempotent; the live injection targets the ≤1 non-terminal Run of
 // the Definition (guaranteed by the one-active-run index) and is best-effort —
 // a failed injection leaves the Seed durably stored for the next restart, so it
@@ -738,7 +669,7 @@ func (h *Handler) addSeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if def.Kind != crawler.CrawlKindDiscovery {
-		writeError(w, http.StatusBadRequest, "keyword crawls seed from the catalog, not manually")
+		writeError(w, http.StatusBadRequest, "seeds can only be added to a discovery crawl")
 		return
 	}
 
@@ -802,8 +733,8 @@ func (h *Handler) injectSeed(ctx context.Context, definitionID uuid.UUID, seed c
 }
 
 // minCrawlDepth and maxCrawlDepth bound a definition's editable crawl depth. A
-// request outside this range is rejected; an omitted depth falls back to the
-// per-kind default (Defaults.maxDepthFor), which always sits inside the range.
+// request outside this range is rejected; an omitted depth falls back to
+// Defaults.DiscoveryMaxDepth, which always sits inside the range.
 const (
 	minCrawlDepth = 1
 	maxCrawlDepth = 20
@@ -827,59 +758,37 @@ func (h *Handler) decodeDefinition(r *http.Request) (*crawler.CrawlDefinition, s
 	if kind == "" {
 		kind = crawler.CrawlKindDiscovery
 	}
-	seedURLs := req.SeedURLs
-	switch kind {
-	case crawler.CrawlKindKeyword:
-		// Seeds come from the Catalog, not the request; keywords drive the
-		// relevance filter, so an empty set would reject every page.
-		if len(req.Keywords) == 0 {
-			return nil, "keywords are required for a keyword crawl"
-		}
-	case crawler.CrawlKindDiscovery:
-		if len(req.SeedURLs) == 0 {
-			return nil, "seedUrls are required for a discovery crawl"
-		}
-		// Normalize each Seed to the same canonical form the add-seed path uses
-		// (crawler.NewURL), so a Seed stored at creation and the same Seed
-		// re-added later via /seeds dedupe against each other instead of
-		// accumulating a near-duplicate (e.g. a stored trailing slash). This
-		// also validates the Seeds up front.
-		seedURLs = make([]string, 0, len(req.SeedURLs))
-		for _, raw := range req.SeedURLs {
-			u, err := crawler.NewURL(raw)
-			if err != nil {
-				return nil, fmt.Sprintf("invalid seed url: %q", raw)
-			}
-			seedURLs = append(seedURLs, u.RawURL)
-		}
-	default:
+	// Discovery is the only live kind; any other (including the retired "keyword")
+	// is rejected before it can reach the factory.
+	if kind != crawler.CrawlKindDiscovery {
 		return nil, "unknown crawl kind"
 	}
-
-	maxDepth := valueOr(req.MaxDepth, h.cfg.Defaults.maxDepthFor(kind))
-	if maxDepth < minCrawlDepth || maxDepth > maxCrawlDepth {
-		return nil, fmt.Sprintf("maxDepth must be between %d and %d", minCrawlDepth, maxCrawlDepth)
+	if len(req.SeedURLs) == 0 {
+		return nil, "seedUrls are required for a discovery crawl"
+	}
+	// Normalize each Seed to the same canonical form the add-seed path uses
+	// (crawler.NewURL), so a Seed stored at creation and the same Seed
+	// re-added later via /seeds dedupe against each other instead of
+	// accumulating a near-duplicate (e.g. a stored trailing slash). This
+	// also validates the Seeds up front.
+	seedURLs := make([]string, 0, len(req.SeedURLs))
+	for _, raw := range req.SeedURLs {
+		u, err := crawler.NewURL(raw)
+		if err != nil {
+			return nil, fmt.Sprintf("invalid seed url: %q", raw)
+		}
+		seedURLs = append(seedURLs, u.RawURL)
 	}
 
-	// Validate + normalize the Country Constraint (ADR-0028), matching the
-	// keywords-required strictness: an unknown code is a hard reject rather than a
-	// silent drop. Stored uppercased so the save-time gate compares canonically. An
-	// omitted or empty array is the "anywhere" constraint. Kind-agnostic: the field
-	// is stored on any definition, but only the keyword lanes read it.
-	countries := make([]string, 0, len(req.Countries))
-	for _, c := range req.Countries {
-		if !geo.Valid(c) {
-			return nil, fmt.Sprintf("unknown country code: %q", c)
-		}
-		countries = append(countries, strings.ToUpper(strings.TrimSpace(c)))
+	maxDepth := valueOr(req.MaxDepth, h.cfg.Defaults.DiscoveryMaxDepth)
+	if maxDepth < minCrawlDepth || maxDepth > maxCrawlDepth {
+		return nil, fmt.Sprintf("maxDepth must be between %d and %d", minCrawlDepth, maxCrawlDepth)
 	}
 
 	def := &crawler.CrawlDefinition{
 		Name:      req.Name,
 		Kind:      kind,
 		SeedURLs:  seedURLs,
-		Keywords:  req.Keywords,
-		Countries: countries,
 		MaxDepth:  maxDepth,
 		URLFilter: h.cfg.Defaults.URLFilter,
 	}
@@ -890,7 +799,7 @@ func (h *Handler) decodeDefinition(r *http.Request) (*crawler.CrawlDefinition, s
 	return def, ""
 }
 
-// --- Catalog + listing handlers ---
+// --- Catalog handlers ---
 
 func (h *Handler) listCompanies(w http.ResponseWriter, r *http.Request) {
 	companies, err := h.cfg.Companies.List(r.Context())
@@ -961,36 +870,6 @@ func (h *Handler) catalogHistory(w http.ResponseWriter, r *http.Request) {
 
 	series := catalogSparkline(counts, time.Now(), maxCatalogHistoryPoints)
 	writeJSON(w, http.StatusOK, catalogHistoryResponse{CareerPages: series})
-}
-
-// listListings returns the job listings extracted under a definition, filtered
-// by the required ?definitionId= and an optional ?keyword= substring.
-func (h *Handler) listListings(w http.ResponseWriter, r *http.Request) {
-	raw := r.URL.Query().Get("definitionId")
-	if raw == "" {
-		writeError(w, http.StatusBadRequest, "definitionId is required")
-		return
-	}
-	definitionID, err := uuid.Parse(raw)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid definitionId")
-		return
-	}
-	keyword := r.URL.Query().Get("keyword")
-
-	listings, err := h.cfg.Listings.FindByDefinition(r.Context(), definitionID, keyword)
-	if err != nil {
-		slog.Error("api: error listing job listings", "err", err)
-		writeError(w, http.StatusInternalServerError, "could not list listings")
-		return
-	}
-
-	dtos := make([]listingDTO, 0, len(listings))
-	for _, jl := range listings {
-		dtos = append(dtos, toListingDTO(jl))
-	}
-
-	writeJSON(w, http.StatusOK, dtos)
 }
 
 // --- Helpers ---

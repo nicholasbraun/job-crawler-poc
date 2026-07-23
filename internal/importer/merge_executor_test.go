@@ -48,8 +48,11 @@ type fakeCatalogPageRepo struct {
 }
 
 func (f *fakeCatalogPageRepo) Upsert(context.Context, *crawler.CareerPage) error { return nil }
-func (f *fakeCatalogPageRepo) ListSeeds(context.Context) ([]crawler.CatalogSeed, error) {
+func (f *fakeCatalogPageRepo) ListCollectionSeeds(context.Context, int) ([]crawler.CollectionSeed, error) {
 	return nil, nil
+}
+func (f *fakeCatalogPageRepo) RecordProbe(context.Context, uuid.UUID, crawler.ProbeOutcome, int) (crawler.DormancyResult, error) {
+	return crawler.DormancyResult{}, nil
 }
 func (f *fakeCatalogPageRepo) List(context.Context) ([]*crawler.CareerPage, error) {
 	return nil, nil

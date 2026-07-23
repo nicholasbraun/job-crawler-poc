@@ -1,5 +1,5 @@
 // Package joblistingprocessor converts raw job listings into structured
-// JobListing records and persists them via the JobListingRepository.
+// JobListing records and persists them into the Corpus (CorpusRepository).
 package joblistingprocessor
 
 import (
@@ -11,9 +11,9 @@ import (
 	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/geo"
+	"github.com/nicholasbraun/job-crawler-poc/internal/listingid"
 	"github.com/nicholasbraun/job-crawler-poc/internal/llmobs"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -27,11 +27,10 @@ type JobListingExtractor interface {
 }
 
 type Config struct {
-	JobListingRepository crawler.JobListingRepository
-	JobListingExtractor  JobListingExtractor
-	// DefinitionID identifies the crawl definition whose run produced these
-	// listings; it is passed through to Save as the listing key's first half.
-	DefinitionID uuid.UUID
+	// Corpus persists the extracted listings, upserted on their canonical URL
+	// identity (ADR-0034).
+	Corpus              crawler.CorpusRepository
+	JobListingExtractor JobListingExtractor
 	// Recorder instruments the LLM extractor (calls, content dedup) for the
 	// ADR-0007 measurement. Optional: a nil Recorder records nothing.
 	Recorder llmobs.Recorder
@@ -40,9 +39,11 @@ type Config struct {
 	// source URL's Owner, discarding the extractor's own company. A nil map or a
 	// missing Owner leaves Company empty.
 	CompanyNames map[string]string
-	// Countries is the definition's Country Constraint (ADR-0028): the set of target
-	// ISO alpha-2 codes to keep listings for. Empty (or nil) keeps every Country.
-	Countries []string
+	// AttributeCareerPage best-matches a crawled posting to the Career Page it was
+	// collected under (ADR-0035), keyed on the source URL's Owner (CompanyKey) and the
+	// posting URL, so the saved listing carries career_page_id for the crawl-lane
+	// refetch and dormancy scope. Optional: nil leaves CareerPageID uuid.Nil.
+	AttributeCareerPage func(companyKey, postingURL string) uuid.UUID
 	// OnSaved is called once per listing actually persisted -- after a successful
 	// Save, so an Extractor Abstain or an extraction/save error never fires it
 	// (e.g. the run's saved-listings counter tap, #119). Optional: nil is a no-op.
@@ -52,14 +53,12 @@ type Config struct {
 // JobListingProcessor extracts structured job data from raw crawled pages
 // and persists the results. It implements processor.Processor[crawler.RawJobListing].
 type JobListingProcessor struct {
-	jobListingRepository        crawler.JobListingRepository
+	corpus                      crawler.CorpusRepository
 	jobListingsProcessedCounter metric.Int64Counter
-	droppedByCountryCounter     metric.Int64Counter
 	jobListingExtractor         JobListingExtractor
 	recorder                    llmobs.Recorder
-	definitionID                uuid.UUID
 	companyNames                map[string]string
-	countries                   []string
+	attributeCareerPage         func(companyKey, postingURL string) uuid.UUID
 	onSaved                     func(ctx context.Context)
 }
 
@@ -70,11 +69,6 @@ func NewProcessor(cfg *Config) *JobListingProcessor {
 	if err != nil {
 		slog.Error("job_listing_processor: error setting up metrics", "err", err, "name", name)
 	}
-	droppedName := "crawler.job_listings.dropped_by_country"
-	droppedByCountryCounter, err := meter.Int64Counter(droppedName)
-	if err != nil {
-		slog.Error("job_listing_processor: error setting up metrics", "err", err, "name", droppedName)
-	}
 
 	recorder := cfg.Recorder
 	if recorder == nil {
@@ -82,14 +76,12 @@ func NewProcessor(cfg *Config) *JobListingProcessor {
 	}
 
 	return &JobListingProcessor{
-		jobListingRepository:        cfg.JobListingRepository,
+		corpus:                      cfg.Corpus,
 		jobListingsProcessedCounter: jobListingsProcessedCounter,
-		droppedByCountryCounter:     droppedByCountryCounter,
 		jobListingExtractor:         cfg.JobListingExtractor,
 		recorder:                    recorder,
-		definitionID:                cfg.DefinitionID,
 		companyNames:                cfg.CompanyNames,
-		countries:                   cfg.Countries,
+		attributeCareerPage:         cfg.AttributeCareerPage,
 		onSaved:                     cfg.OnSaved,
 	}
 }
@@ -131,22 +123,27 @@ func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.Raw
 	extraction.Listing.CompanyKey = owner
 	extraction.Listing.Company = w.companyNames[owner]
 
-	// Resolve the Country from the LLM's free-text location at save (ADR-0029): the
-	// resolver is the sole authority on the ISO code, and Location is left verbatim.
-	// An unresolvable location yields the empty Country, which is kept (ADR-0028).
-	extraction.Listing.Country = geo.Resolve(extraction.Listing.Location)
-
-	// Country Constraint gate (ADR-0028): discard the listing before persistence
-	// unless it passes the definition's target Countries. A discard is a completed
-	// decision -- no Save, no processed/OnSaved counter -- so return nil (parity with
-	// the Extractor Abstain above), never an error the durable stream would retry.
-	if !crawler.KeepForCountry(w.countries, extraction.Listing.Country) {
-		slog.Info("dropped by country constraint", "url", workload.URL.RawURL, "country", extraction.Listing.Country)
-		w.droppedByCountryCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("lane", "crawl")))
-		return nil
+	// Attribute the posting to its owning Career Page (ADR-0035) so the saved listing
+	// carries career_page_id for the crawl-lane refetch and dormancy scope. A nil hook
+	// (Discovery, or an un-scoped run) leaves CareerPageID uuid.Nil.
+	if w.attributeCareerPage != nil {
+		extraction.Listing.CareerPageID = w.attributeCareerPage(owner, workload.URL.RawURL)
 	}
 
-	if err := w.jobListingRepository.Save(ctx, w.definitionID, &extraction.Listing); err != nil {
+	// Resolve the Country from the LLM's free-text location at save (ADR-0029): the
+	// resolver is the sole authority on the ISO code, and Location is left verbatim.
+	// An unresolvable location yields the empty Country. The Country is recorded for
+	// downstream querying; it no longer gates the save (the Country Constraint died
+	// with the Keyword Crawl lane, ADR-0038).
+	extraction.Listing.Country = geo.Resolve(extraction.Listing.Location)
+
+	// Stamp the Corpus identity (ADR-0034): the crawl lane keys on the canonicalized
+	// source URL. SourceID stays empty (crawl lane); SourceHash was set by the
+	// extractor from the exact capped input it saw.
+	extraction.Listing.Source = crawler.SourceLaneCrawl
+	extraction.Listing.CanonicalURL = listingid.FromURL(workload.URL.RawURL)
+
+	if err := w.corpus.Save(ctx, &extraction.Listing); err != nil {
 		return fmt.Errorf("job_listing_processor: error saving processed job listing %v: %w", *workload, err)
 	}
 

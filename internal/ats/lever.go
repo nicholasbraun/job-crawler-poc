@@ -114,6 +114,7 @@ func (l *LeverFetcher) Fetch(ctx context.Context, tenant string) ([]*crawler.Job
 // leverPosting is one entry in the postings-API JSON array. Only the fields the
 // mapper reads are declared; any others in the JSON are ignored by the decoder.
 type leverPosting struct {
+	ID            string          `json:"id"`        // stable posting id (Corpus SourceID)
 	Text          string          `json:"text"`      // posting title
 	HostedURL     string          `json:"hostedUrl"` // canonical posting URL (upsert key)
 	Categories    leverCategories `json:"categories"`
@@ -141,6 +142,7 @@ func mapLeverPosting(p leverPosting) *crawler.JobListing {
 	return &crawler.JobListing{
 		Title:       p.Text,
 		URL:         p.HostedURL,
+		SourceID:    p.ID,
 		Location:    p.Categories.Location,
 		Description: leverDescription(p),
 		// workplaceType is Lever's positive signal ("remote"/"on-site"/"hybrid"); the

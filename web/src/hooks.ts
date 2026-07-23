@@ -4,17 +4,23 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   addSeed,
   createCrawl,
+  createSavedSearch,
+  deleteSavedSearch,
   getCatalogHistory,
   getDefinitionDefaults,
   getImportJob,
+  getListingStats,
+  getSavedSearchResults,
   isImportTerminal,
   listCareerPages,
   listCompanies,
   listCrawls,
   listDefinitions,
   listImportJobs,
-  listListings,
+  listRecentListings,
+  listSavedSearches,
   pauseCrawl,
+  renameSavedSearch,
   resumeCrawl,
   startRun,
   stopCrawl,
@@ -32,6 +38,13 @@ const CATALOG_POLL_MS = 8000;
 // (a concurrent submission, a boot-time restart sweep). Completion also
 // invalidates it directly, so it can afford to be lazy.
 const IMPORT_JOBS_POLL_MS = 4000;
+// SavedSearch panels are a live pull over the Corpus (ADR-0037): the Corpus only
+// moves on a Collection Cycle, so a lazy cadence keeps each panel current without
+// hammering the query endpoint.
+const SEARCHES_POLL_MS = 15000;
+// The Overview's "recently found" feed tracks a live Collection Cycle, so it polls
+// on the run cadence rather than the lazy searches cadence.
+const RECENT_LISTINGS_POLL_MS = 5000;
 
 // MOBILE_QUERY is the shared phone-portrait breakpoint: below 640px CSS width
 // the dashboard switches to its mobile layout (drawer nav, stacked grids). It
@@ -68,8 +81,10 @@ export const keys = {
   importJobs: ["import-jobs"] as const,
   importJob: (id: string) => ["import-job", id] as const,
   definitionDefaults: (kind: CrawlKind) => ["definition-defaults", kind] as const,
-  listings: (definitionId: string, keyword: string) =>
-    ["listings", definitionId, keyword] as const,
+  savedSearches: ["saved-searches"] as const,
+  savedSearchResults: (id: string) => ["saved-search-results", id] as const,
+  recentListings: (limit: number) => ["recent-listings", limit] as const,
+  listingStats: ["listing-stats"] as const,
 };
 
 export function useRuns() {
@@ -147,14 +162,6 @@ export function useSubmitImport() {
   });
 }
 
-export function useListings(definitionId: string, keyword: string) {
-  return useQuery({
-    queryKey: keys.listings(definitionId, keyword),
-    queryFn: () => listListings({ definitionId, keyword: keyword || undefined }),
-    refetchInterval: RUNS_POLL_MS,
-  });
-}
-
 // CrawlAction is the lifecycle verb a control fires. pause/resume/stop target a
 // run id; rerun starts a new run of a definition.
 export type CrawlAction = "pause" | "resume" | "stop" | "rerun";
@@ -202,5 +209,71 @@ export function useAddSeed() {
     mutationFn: ({ definitionId, url }: { definitionId: string; url: string }) =>
       addSeed(definitionId, url),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.definitions }),
+  });
+}
+
+// --- Saved searches ---
+
+// useSavedSearches lists the saved searches backing the panels, polling lazily so
+// a search created in another tab appears.
+export function useSavedSearches() {
+  return useQuery({
+    queryKey: keys.savedSearches,
+    queryFn: listSavedSearches,
+    refetchInterval: SEARCHES_POLL_MS,
+  });
+}
+
+// useSavedSearchResults is the live pull backing one panel: it re-runs the search
+// against the Corpus on the shared searches cadence.
+export function useSavedSearchResults(id: string) {
+  return useQuery({
+    queryKey: keys.savedSearchResults(id),
+    queryFn: () => getSavedSearchResults(id),
+    refetchInterval: SEARCHES_POLL_MS,
+  });
+}
+
+// useRecentListings polls the newly-discovered corpus listings for the Overview's
+// live collection feed, on the run cadence so it tracks a running Cycle.
+export function useRecentListings(limit = 12) {
+  return useQuery({
+    queryKey: keys.recentListings(limit),
+    queryFn: () => listRecentListings(limit),
+    refetchInterval: RECENT_LISTINGS_POLL_MS,
+  });
+}
+
+// useListingStats polls the true corpus size (distinct open/total rows) for the
+// collection headline, tracking a running Cycle on the same live cadence.
+export function useListingStats() {
+  return useQuery({
+    queryKey: keys.listingStats,
+    queryFn: getListingStats,
+    refetchInterval: RECENT_LISTINGS_POLL_MS,
+  });
+}
+
+export function useCreateSavedSearch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: createSavedSearch,
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.savedSearches }),
+  });
+}
+
+export function useRenameSavedSearch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => renameSavedSearch(id, name),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.savedSearches }),
+  });
+}
+
+export function useDeleteSavedSearch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteSavedSearch,
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.savedSearches }),
   });
 }

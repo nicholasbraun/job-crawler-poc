@@ -6,8 +6,8 @@ import { Icon } from "./primitives";
 // Dialog is the shared modal scaffold: a backdrop that closes on outside click,
 // a form container that traps Tab focus and closes on Escape, and a title row
 // with a close button. Consumers render their fields + a .dialog-actions row as
-// children and submit via onSubmit. Extracted from NewCrawlModal so the keyword
-// and discovery-start modals share one backdrop/focus-trap/Escape implementation.
+// children and submit via onSubmit. The discovery-start and import modals share
+// this one backdrop/focus-trap/Escape implementation.
 export function Dialog({
   title,
   onClose,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -138,6 +139,7 @@ type recruiteeOffersResponse struct {
 }
 
 type recruiteeOffer struct {
+	ID           int64                    `json:"id"` // stable posting id (Corpus SourceID)
 	Title        string                   `json:"title"`
 	CareersURL   string                   `json:"careers_url"` // canonical posting URL (upsert key)
 	Location     string                   `json:"location"`    // flattened primary location string
@@ -166,6 +168,7 @@ func mapRecruiteeOffer(o recruiteeOffer) *crawler.JobListing {
 	listing := &crawler.JobListing{
 		Title:           o.Title,
 		URL:             o.CareersURL,
+		SourceID:        strconv.FormatInt(o.ID, 10),
 		Location:        recruiteeLocation(o),
 		CountryHint:     recruiteeCountryHint(o),
 		Department:      o.Department,

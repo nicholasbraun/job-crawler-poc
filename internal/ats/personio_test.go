@@ -111,6 +111,9 @@ func TestPersonioFetchMapsBoard(t *testing.T) {
 	if want := baseURL + "/job/101"; first.URL != want {
 		t.Errorf("URL = %q, want the synthesized %q", first.URL, want)
 	}
+	if first.SourceID != "101" {
+		t.Errorf("SourceID = %q, want the position id %q", first.SourceID, "101")
+	}
 	// Each <jobDescription> section's heading and CDATA-HTML body become a
 	// plain-text line: tags stripped, &amp; decoded, list items space-joined.
 	wantDesc := "Your Tasks\nBuild & ship Go services.\nYour Profile\n5+ years Go REST APIs"
@@ -370,6 +373,22 @@ func TestPersonioBuildsBoardURL(t *testing.T) {
 	// X-Company-ID is a disproven ReadMe artifact — the fetcher must never send it.
 	if gotCompanyID != "" {
 		t.Errorf("X-Company-ID header = %q, want it never sent", gotCompanyID)
+	}
+}
+
+func TestPersonioTruncatedBodyIsHardError(t *testing.T) {
+	// Personio decodes the whole /xml feed in one request, so completeness is
+	// structural (ADR-0035): a body cut mid-document surfaces as a decode error, never
+	// a silent partial. A single-shot provider returns a hard error, NOT
+	// ErrBoardIncomplete.
+	fetcher, _ := newPersonioFetcher(t, serveXML(`<workzag-jobs><position><id>1</id>`))
+
+	_, err := fetcher.Fetch(t.Context(), "acme")
+	if err == nil {
+		t.Fatal("want a decode error for a truncated body")
+	}
+	if errors.Is(err, ats.ErrBoardIncomplete) {
+		t.Fatal("single-shot provider must never emit ErrBoardIncomplete; a partial read is a hard error")
 	}
 }
 

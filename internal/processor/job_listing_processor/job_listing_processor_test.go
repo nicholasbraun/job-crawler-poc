@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
+	"github.com/nicholasbraun/job-crawler-poc/internal/listingid"
 	"github.com/nicholasbraun/job-crawler-poc/internal/llmobs"
 	joblistingprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/job_listing_processor"
 )
@@ -16,16 +16,10 @@ type spyJobListingRepo struct {
 	saved []*crawler.JobListing
 }
 
-func (r *spyJobListingRepo) Save(ctx context.Context, definitionID uuid.UUID, jl *crawler.JobListing) error {
+func (r *spyJobListingRepo) Save(ctx context.Context, jl *crawler.JobListing) error {
 	saved := *jl
 	r.saved = append(r.saved, &saved)
 	return nil
-}
-func (r *spyJobListingRepo) Find(ctx context.Context) ([]*crawler.JobListing, error) {
-	return r.saved, nil
-}
-func (r *spyJobListingRepo) FindByDefinition(ctx context.Context, definitionID uuid.UUID, keyword string) ([]*crawler.JobListing, error) {
-	return r.saved, nil
 }
 
 type stubExtractor struct {
@@ -74,10 +68,9 @@ func TestJobListingProcessorRecordsExtractCall(t *testing.T) {
 	repo := &spyJobListingRepo{}
 	rec := &spyRecorder{}
 	proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
-		JobListingRepository: repo,
-		JobListingExtractor:  &stubExtractor{result: crawler.JobListing{Title: "Engineer"}, isPosting: true},
-		DefinitionID:         uuid.New(),
-		Recorder:             rec,
+		Corpus:              repo,
+		JobListingExtractor: &stubExtractor{result: crawler.JobListing{Title: "Engineer"}, isPosting: true},
+		Recorder:            rec,
 	})
 
 	raw := &crawler.RawJobListing{
@@ -90,6 +83,15 @@ func TestJobListingProcessorRecordsExtractCall(t *testing.T) {
 
 	if len(repo.saved) != 1 {
 		t.Fatalf("want 1 listing saved, got %d", len(repo.saved))
+	}
+	// The crawl lane stamps the Corpus identity (ADR-0034): Source is crawl and
+	// CanonicalURL is the canonicalized source URL.
+	got := repo.saved[0]
+	if got.Source != crawler.SourceLaneCrawl {
+		t.Errorf("Source = %q, want %q", got.Source, crawler.SourceLaneCrawl)
+	}
+	if wantURL := listingid.FromURL("https://careers.acme.com/jobs/1"); got.CanonicalURL != wantURL {
+		t.Errorf("CanonicalURL = %q, want %q", got.CanonicalURL, wantURL)
 	}
 	if rec.content != 1 {
 		t.Errorf("content probes = %d, want 1 (content is fed to the extractor)", rec.content)
@@ -108,10 +110,9 @@ func TestJobListingProcessorOnSaved(t *testing.T) {
 	t.Run("fires once on a saved listing", func(t *testing.T) {
 		saved := 0
 		proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
-			JobListingRepository: &spyJobListingRepo{},
-			JobListingExtractor:  &stubExtractor{result: crawler.JobListing{Title: "Engineer"}, isPosting: true},
-			DefinitionID:         uuid.New(),
-			OnSaved:              func(context.Context) { saved++ },
+			Corpus:              &spyJobListingRepo{},
+			JobListingExtractor: &stubExtractor{result: crawler.JobListing{Title: "Engineer"}, isPosting: true},
+			OnSaved:             func(context.Context) { saved++ },
 		})
 
 		raw := &crawler.RawJobListing{
@@ -130,10 +131,9 @@ func TestJobListingProcessorOnSaved(t *testing.T) {
 	t.Run("does not fire on an abstain", func(t *testing.T) {
 		saved := 0
 		proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
-			JobListingRepository: &spyJobListingRepo{},
-			JobListingExtractor:  &stubExtractor{result: crawler.JobListing{Title: "Careers"}, isPosting: false},
-			DefinitionID:         uuid.New(),
-			OnSaved:              func(context.Context) { saved++ },
+			Corpus:              &spyJobListingRepo{},
+			JobListingExtractor: &stubExtractor{result: crawler.JobListing{Title: "Careers"}, isPosting: false},
+			OnSaved:             func(context.Context) { saved++ },
 		})
 
 		raw := &crawler.RawJobListing{
@@ -157,10 +157,9 @@ func TestJobListingProcessorAbstainSuppressesSave(t *testing.T) {
 	repo := &spyJobListingRepo{}
 	rec := &spyRecorder{}
 	proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
-		JobListingRepository: repo,
-		JobListingExtractor:  &stubExtractor{result: crawler.JobListing{Title: "Careers"}, isPosting: false},
-		DefinitionID:         uuid.New(),
-		Recorder:             rec,
+		Corpus:              repo,
+		JobListingExtractor: &stubExtractor{result: crawler.JobListing{Title: "Careers"}, isPosting: false},
+		Recorder:            rec,
 	})
 
 	raw := &crawler.RawJobListing{
@@ -192,10 +191,9 @@ func TestJobListingProcessorAttributesOwnerFromSnapshot(t *testing.T) {
 	t.Run("snapshot hit: catalog name wins over the extractor guess", func(t *testing.T) {
 		repo := &spyJobListingRepo{}
 		proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
-			JobListingRepository: repo,
-			JobListingExtractor:  &stubExtractor{result: crawler.JobListing{Title: "Engineer", Company: "WrongGuess"}, isPosting: true},
-			DefinitionID:         uuid.New(),
-			CompanyNames:         map[string]string{"acme.com": "Acme Inc"},
+			Corpus:              repo,
+			JobListingExtractor: &stubExtractor{result: crawler.JobListing{Title: "Engineer", Company: "WrongGuess"}, isPosting: true},
+			CompanyNames:        map[string]string{"acme.com": "Acme Inc"},
 		})
 
 		u := newURL(t, "https://acme.com/jobs/1")
@@ -220,10 +218,9 @@ func TestJobListingProcessorAttributesOwnerFromSnapshot(t *testing.T) {
 	t.Run("snapshot miss: extractor guess still discarded, Owner persisted", func(t *testing.T) {
 		repo := &spyJobListingRepo{}
 		proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
-			JobListingRepository: repo,
-			JobListingExtractor:  &stubExtractor{result: crawler.JobListing{Title: "Engineer", Company: "WrongGuess"}, isPosting: true},
-			DefinitionID:         uuid.New(),
-			CompanyNames:         map[string]string{"other.com": "Other Inc"},
+			Corpus:              repo,
+			JobListingExtractor: &stubExtractor{result: crawler.JobListing{Title: "Engineer", Company: "WrongGuess"}, isPosting: true},
+			CompanyNames:        map[string]string{"other.com": "Other Inc"},
 		})
 
 		u := newURL(t, "https://acme.com/jobs/1")
@@ -271,9 +268,8 @@ func TestJobListingProcessorResolvesCountryAtSave(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &spyJobListingRepo{}
 			proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
-				JobListingRepository: repo,
-				JobListingExtractor:  &stubExtractor{result: crawler.JobListing{Title: "Engineer", Location: tt.location}, isPosting: true},
-				DefinitionID:         uuid.New(),
+				Corpus:              repo,
+				JobListingExtractor: &stubExtractor{result: crawler.JobListing{Title: "Engineer", Location: tt.location}, isPosting: true},
 			})
 
 			raw := &crawler.RawJobListing{
@@ -298,71 +294,6 @@ func TestJobListingProcessorResolvesCountryAtSave(t *testing.T) {
 	}
 }
 
-// TestJobListingProcessorCountryConstraintGate asserts the crawl-lane Country
-// Constraint (ADR-0028): with a target set of {DE}, a listing is kept only when its
-// resolved Country is DE or its Country is unresolved; any other resolved Country is
-// discarded regardless of Work Arrangement (Remote is not an override). A discard is
-// a completed decision -- Process returns nil (no retry), nothing is saved, and
-// OnSaved never fires.
-func TestJobListingProcessorCountryConstraintGate(t *testing.T) {
-	tests := []struct {
-		name        string
-		countries   []string
-		location    string
-		arrangement crawler.WorkArrangement
-		wantSaved   bool
-	}{
-		{"in-set country is kept", []string{"DE"}, "Berlin, Germany", crawler.WorkArrangementOnsite, true},
-		{"out-of-set country is dropped", []string{"DE"}, "Paris, France", crawler.WorkArrangementOnsite, false},
-		{"unresolved country is kept", []string{"DE"}, "", crawler.WorkArrangementOnsite, true},
-		{"remote does NOT override an out-of-set country", []string{"DE"}, "Paris, France", crawler.WorkArrangementRemote, false},
-		{"remote with unresolved location is still kept", []string{"DE"}, "Remote - EU", crawler.WorkArrangementRemote, true},
-		{"empty constraint keeps every country", nil, "Paris, France", crawler.WorkArrangementOnsite, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			repo := &spyJobListingRepo{}
-			saved := 0
-			proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
-				JobListingRepository: repo,
-				JobListingExtractor: &stubExtractor{
-					result:    crawler.JobListing{Title: "Engineer", Location: tt.location, WorkArrangement: tt.arrangement},
-					isPosting: true,
-				},
-				DefinitionID: uuid.New(),
-				Countries:    tt.countries,
-				OnSaved:      func(context.Context) { saved++ },
-			})
-
-			raw := &crawler.RawJobListing{
-				URL:     newURL(t, "https://careers.acme.com/jobs/1"),
-				Content: crawler.Content{MainContent: "we are hiring"},
-			}
-			// A drop is a completed decision: Process must return nil, never an error.
-			if err := proc.Process(t.Context(), raw); err != nil {
-				t.Fatalf("Process returned error: %v", err)
-			}
-
-			if tt.wantSaved {
-				if len(repo.saved) != 1 {
-					t.Fatalf("want 1 listing saved, got %d", len(repo.saved))
-				}
-				if saved != 1 {
-					t.Errorf("OnSaved fired %d times, want 1 on a kept listing", saved)
-				}
-			} else {
-				if len(repo.saved) != 0 {
-					t.Fatalf("want 0 listings saved (dropped by country), got %d", len(repo.saved))
-				}
-				if saved != 0 {
-					t.Errorf("OnSaved fired %d times, want 0 on a dropped listing", saved)
-				}
-			}
-		})
-	}
-}
-
 // TestJobListingProcessorExtractErrorNotAbstain guards the err==nil half of the
 // abstain classification. On an extraction failure the extractor returns the zero
 // Extraction (IsJobPosting=false); without the err==nil guard the false verdict
@@ -374,10 +305,9 @@ func TestJobListingProcessorExtractErrorNotAbstain(t *testing.T) {
 	rec := &spyRecorder{}
 	extractErr := errors.New("openrouter: status 500: oops")
 	proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
-		JobListingRepository: repo,
-		JobListingExtractor:  &stubExtractor{err: extractErr},
-		DefinitionID:         uuid.New(),
-		Recorder:             rec,
+		Corpus:              repo,
+		JobListingExtractor: &stubExtractor{err: extractErr},
+		Recorder:            rec,
 	})
 
 	raw := &crawler.RawJobListing{

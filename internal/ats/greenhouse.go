@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
@@ -120,6 +121,7 @@ type greenhouseJobsResponse struct {
 }
 
 type greenhouseJob struct {
+	ID             int64                  `json:"id"` // stable posting id (Corpus SourceID)
 	Title          string                 `json:"title"`
 	AbsoluteURL    string                 `json:"absolute_url"`
 	Content        string                 `json:"content"` // HTML-entity-encoded HTML
@@ -145,6 +147,7 @@ func mapGreenhouseJob(j greenhouseJob) *crawler.JobListing {
 	listing := &crawler.JobListing{
 		Title:           j.Title,
 		URL:             j.AbsoluteURL, // canonical posting URL; the lane keys upserts on it (#127)
+		SourceID:        strconv.FormatInt(j.ID, 10),
 		Location:        j.Location.Name,
 		Description:     htmlDoubleEncodedToText(j.Content),
 		WorkArrangement: crawler.WorkArrangementUnspecified,

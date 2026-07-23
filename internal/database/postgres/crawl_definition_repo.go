@@ -29,19 +29,11 @@ func (r *CrawlDefinitionRepository) Create(ctx context.Context, def *crawler.Cra
 		def.ID = uuid.New()
 	}
 
-	// A nil slice encodes to SQL NULL, which violates the NOT NULL columns
+	// A nil slice encodes to SQL NULL, which violates the NOT NULL column
 	// (the default only applies when the column is omitted). Coalesce to empty.
 	seedURLs := def.SeedURLs
 	if seedURLs == nil {
 		seedURLs = []string{}
-	}
-	keywords := def.Keywords
-	if keywords == nil {
-		keywords = []string{}
-	}
-	countries := def.Countries
-	if countries == nil {
-		countries = []string{}
 	}
 
 	filterJSON, err := json.Marshal(def.URLFilter)
@@ -51,11 +43,11 @@ func (r *CrawlDefinitionRepository) Create(ctx context.Context, def *crawler.Cra
 
 	err = r.pool.QueryRow(ctx, `
 		INSERT INTO crawl_definition
-			(id, name, kind, seed_urls, keywords, countries, max_depth, url_filter)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			(id, name, kind, seed_urls, max_depth, url_filter)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING created_at
 		`,
-		def.ID, def.Name, string(def.Kind), seedURLs, keywords, countries,
+		def.ID, def.Name, string(def.Kind), seedURLs,
 		def.MaxDepth, filterJSON,
 	).Scan(&def.CreatedAt)
 	if err != nil {
@@ -102,7 +94,7 @@ func (r *CrawlDefinitionRepository) AppendSeedURL(ctx context.Context, id uuid.U
 
 func (r *CrawlDefinitionRepository) Get(ctx context.Context, id uuid.UUID) (*crawler.CrawlDefinition, error) {
 	row := r.pool.QueryRow(ctx, `
-		SELECT id, name, kind, seed_urls, keywords, countries, max_depth, url_filter, created_at
+		SELECT id, name, kind, seed_urls, max_depth, url_filter, created_at
 		FROM crawl_definition WHERE id = $1
 		`, id)
 
@@ -119,7 +111,7 @@ func (r *CrawlDefinitionRepository) Get(ctx context.Context, id uuid.UUID) (*cra
 
 func (r *CrawlDefinitionRepository) List(ctx context.Context) ([]*crawler.CrawlDefinition, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, name, kind, seed_urls, keywords, countries, max_depth, url_filter, created_at
+		SELECT id, name, kind, seed_urls, max_depth, url_filter, created_at
 		FROM crawl_definition ORDER BY created_at DESC
 		`)
 	if err != nil {
@@ -151,7 +143,7 @@ func scanDefinition(row scanRow) (*crawler.CrawlDefinition, error) {
 	var filterJSON []byte
 
 	if err := row.Scan(
-		&def.ID, &def.Name, &kind, &def.SeedURLs, &def.Keywords, &def.Countries,
+		&def.ID, &def.Name, &kind, &def.SeedURLs,
 		&def.MaxDepth, &filterJSON, &def.CreatedAt,
 	); err != nil {
 		return nil, err

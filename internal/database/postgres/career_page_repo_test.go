@@ -91,10 +91,10 @@ func TestCareerPageRepository(t *testing.T) {
 	})
 
 	// Runs after the upserts above, so the Catalog holds both career pages.
-	t.Run("ListSeeds pairs each url with its owning company key", func(t *testing.T) {
-		seeds, err := repo.ListSeeds(t.Context())
+	t.Run("ListCollectionSeeds pairs each url + id with its owning company key", func(t *testing.T) {
+		seeds, err := repo.ListCollectionSeeds(t.Context(), crawler.DefaultPageDormancyThreshold)
 		if err != nil {
-			t.Fatalf("error listing career page seeds: %v", err)
+			t.Fatalf("error listing collection seeds: %v", err)
 		}
 		want := map[string]string{
 			acmeURL: "greenhouse:acme",
@@ -111,6 +111,9 @@ func TestCareerPageRepository(t *testing.T) {
 			}
 			if s.CompanyKey != wantKey {
 				t.Errorf("seed %q CompanyKey: want %q, got %q", s.URL, wantKey, s.CompanyKey)
+			}
+			if s.CareerPageID == uuid.Nil {
+				t.Errorf("seed %q should carry a non-nil CareerPageID", s.URL)
 			}
 		}
 	})
@@ -142,20 +145,209 @@ func TestCareerPageRepository(t *testing.T) {
 	})
 }
 
-func TestCareerPageRepositoryListSeedsEmpty(t *testing.T) {
+func TestCareerPageRepositoryListCollectionSeedsEmpty(t *testing.T) {
 	pool := newTestPool(t)
 	repo := postgres.NewCareerPageRepository(pool)
 
-	seeds, err := repo.ListSeeds(t.Context())
+	seeds, err := repo.ListCollectionSeeds(t.Context(), crawler.DefaultPageDormancyThreshold)
 	if err != nil {
-		t.Fatalf("error listing career page seeds: %v", err)
+		t.Fatalf("error listing collection seeds: %v", err)
 	}
 	if seeds == nil {
-		t.Fatal("ListSeeds must return a non-nil slice, got nil")
+		t.Fatal("ListCollectionSeeds must return a non-nil slice, got nil")
 	}
 	if len(seeds) != 0 {
 		t.Errorf("empty catalog should yield no seeds, got %v", seeds)
 	}
+}
+
+// seedPageForDormancy inserts a company + career_page directly and returns the
+// career_page id, so the dormancy tests have a real FK target for job_listing.
+// key must be unique per call within one test (company.company_key is UNIQUE).
+func seedPageForDormancy(t *testing.T, pool *pgxpool.Pool, key string) uuid.UUID {
+	t.Helper()
+	ctx := t.Context()
+	var companyID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO company (company_key) VALUES ($1) RETURNING id`, key,
+	).Scan(&companyID); err != nil {
+		t.Fatalf("seeding company %q: %v", key, err)
+	}
+	var pageID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO career_page (company_id, url) VALUES ($1, $2) RETURNING id`,
+		companyID, "https://"+key+"/careers",
+	).Scan(&pageID); err != nil {
+		t.Fatalf("seeding career page for %q: %v", key, err)
+	}
+	return pageID
+}
+
+// failuresOf reads a career page's stored consecutive_failures counter.
+func failuresOf(t *testing.T, pool *pgxpool.Pool, pageID uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(t.Context(),
+		`SELECT consecutive_failures FROM career_page WHERE id = $1`, pageID,
+	).Scan(&n); err != nil {
+		t.Fatalf("reading consecutive_failures: %v", err)
+	}
+	return n
+}
+
+// TestCareerPageRecordProbe exercises the dormancy reducer end to end (ADR-0035):
+// Dead increments, Alive resets and stamps last_ok, Inconclusive is a no-op, and the
+// dormant transition closes the page's Open listings across both lanes.
+func TestCareerPageRecordProbe(t *testing.T) {
+	t.Run("Dead increments, Inconclusive is a no-op, Alive resets and stamps last_ok", func(t *testing.T) {
+		pool := newTestPool(t)
+		repo := postgres.NewCareerPageRepository(pool)
+		page := seedPageForDormancy(t, pool, "probe-ladder")
+
+		for i := 1; i <= 2; i++ {
+			res, err := repo.RecordProbe(t.Context(), page, crawler.ProbeDead, crawler.DefaultPageDormancyThreshold)
+			if err != nil {
+				t.Fatalf("RecordProbe Dead: %v", err)
+			}
+			if res.ConsecutiveFailures != i {
+				t.Errorf("after %d Dead probes, failures = %d, want %d", i, res.ConsecutiveFailures, i)
+			}
+			if res.BecameDormant {
+				t.Errorf("became dormant too early after %d Dead probes (threshold %d)", i, crawler.DefaultPageDormancyThreshold)
+			}
+		}
+
+		if _, err := repo.RecordProbe(t.Context(), page, crawler.ProbeInconclusive, crawler.DefaultPageDormancyThreshold); err != nil {
+			t.Fatalf("RecordProbe Inconclusive: %v", err)
+		}
+		if got := failuresOf(t, pool, page); got != 2 {
+			t.Errorf("Inconclusive changed the count: failures = %d, want 2 (no-op)", got)
+		}
+
+		if _, err := repo.RecordProbe(t.Context(), page, crawler.ProbeAlive, crawler.DefaultPageDormancyThreshold); err != nil {
+			t.Fatalf("RecordProbe Alive: %v", err)
+		}
+		if got := failuresOf(t, pool, page); got != 0 {
+			t.Errorf("Alive did not reset the count: failures = %d, want 0", got)
+		}
+		var lastOK *time.Time
+		if err := pool.QueryRow(t.Context(), `SELECT last_ok FROM career_page WHERE id = $1`, page).Scan(&lastOK); err != nil {
+			t.Fatalf("reading last_ok: %v", err)
+		}
+		if lastOK == nil {
+			t.Error("Alive should stamp last_ok, got NULL")
+		}
+	})
+
+	t.Run("dormant transition closes the page's open listings across both lanes", func(t *testing.T) {
+		pool := newTestPool(t)
+		repo := postgres.NewCareerPageRepository(pool)
+		corpus := postgres.NewCorpusRepository(pool)
+		page := seedPageForDormancy(t, pool, "probe-cascade")
+
+		// One crawl-lane and one ATS-lane Open listing under the page.
+		for _, jl := range []*crawler.JobListing{
+			{CanonicalURL: "https://ex.com/j/crawl", URL: "https://ex.com/j/crawl", Source: crawler.SourceLaneCrawl, CareerPageID: page, Title: "Crawl role"},
+			{CanonicalURL: "greenhouse:probe/1", URL: "https://ex.com/j/ats", Source: crawler.SourceLaneATS, SourceID: "1", CareerPageID: page, Title: "ATS role"},
+		} {
+			if err := corpus.Save(t.Context(), jl); err != nil {
+				t.Fatalf("seeding listing: %v", err)
+			}
+		}
+
+		const threshold = 2
+		if _, err := repo.RecordProbe(t.Context(), page, crawler.ProbeDead, threshold); err != nil {
+			t.Fatalf("first Dead probe: %v", err)
+		}
+		res, err := repo.RecordProbe(t.Context(), page, crawler.ProbeDead, threshold)
+		if err != nil {
+			t.Fatalf("second Dead probe: %v", err)
+		}
+		if !res.BecameDormant {
+			t.Fatalf("second Dead probe at threshold %d should tip dormant, got %+v", threshold, res)
+		}
+		if res.ClosedListings != 2 {
+			t.Errorf("dormant cascade closed %d listings, want 2 (both lanes)", res.ClosedListings)
+		}
+
+		var open int
+		if err := pool.QueryRow(t.Context(),
+			`SELECT count(*) FROM job_listing WHERE career_page_id = $1 AND closed_at IS NULL`, page,
+		).Scan(&open); err != nil {
+			t.Fatalf("counting open listings: %v", err)
+		}
+		if open != 0 {
+			t.Errorf("want 0 open listings after dormancy, got %d", open)
+		}
+
+		// A further probe on an already-dormant page re-closes nothing.
+		again, err := repo.RecordProbe(t.Context(), page, crawler.ProbeDead, threshold)
+		if err != nil {
+			t.Fatalf("post-dormant probe: %v", err)
+		}
+		if again.BecameDormant || again.ClosedListings != 0 {
+			t.Errorf("already-dormant page re-closed listings: %+v", again)
+		}
+	})
+}
+
+// TestCareerPageDormancyExclusionAndRevival asserts a page at/over threshold drops
+// out of ListCollectionSeeds and re-discovery (Upsert) revives it (ADR-0035).
+func TestCareerPageDormancyExclusionAndRevival(t *testing.T) {
+	pool := newTestPool(t)
+	companyRepo := postgres.NewCompanyRepository(pool)
+	repo := postgres.NewCareerPageRepository(pool)
+
+	company := &crawler.Company{CompanyKey: "revive.com", DisplayDomain: "revive.com", Name: "Revive"}
+	if err := companyRepo.Upsert(t.Context(), company); err != nil {
+		t.Fatalf("seeding company: %v", err)
+	}
+	page := &crawler.CareerPage{CompanyID: company.ID, URL: "https://revive.com/careers", PolitenessDomain: "revive.com"}
+	if err := repo.Upsert(t.Context(), page); err != nil {
+		t.Fatalf("upserting page: %v", err)
+	}
+
+	const threshold = crawler.DefaultPageDormancyThreshold
+	for i := 0; i < threshold; i++ {
+		if _, err := repo.RecordProbe(t.Context(), pageIDOf(t, pool, company.ID), crawler.ProbeDead, threshold); err != nil {
+			t.Fatalf("Dead probe %d: %v", i, err)
+		}
+	}
+
+	seeds, err := repo.ListCollectionSeeds(t.Context(), threshold)
+	if err != nil {
+		t.Fatalf("ListCollectionSeeds: %v", err)
+	}
+	if len(seeds) != 0 {
+		t.Fatalf("a dormant page must drop out of the seed set, got %v", seeds)
+	}
+
+	// Re-discovery resets the counters, reviving the page.
+	if err := repo.Upsert(t.Context(), page); err != nil {
+		t.Fatalf("re-upserting page: %v", err)
+	}
+	seeds, err = repo.ListCollectionSeeds(t.Context(), threshold)
+	if err != nil {
+		t.Fatalf("ListCollectionSeeds after revival: %v", err)
+	}
+	if len(seeds) != 1 {
+		t.Errorf("re-discovery should revive the page, got %d seeds", len(seeds))
+	}
+	if failuresOf(t, pool, pageIDOf(t, pool, company.ID)) != 0 {
+		t.Error("Upsert should reset consecutive_failures to 0 on revival")
+	}
+}
+
+// pageIDOf reads the single career_page id owned by companyID.
+func pageIDOf(t *testing.T, pool *pgxpool.Pool, companyID uuid.UUID) uuid.UUID {
+	t.Helper()
+	var id uuid.UUID
+	if err := pool.QueryRow(t.Context(),
+		`SELECT id FROM career_page WHERE company_id = $1`, companyID,
+	).Scan(&id); err != nil {
+		t.Fatalf("reading career_page id: %v", err)
+	}
+	return id
 }
 
 func TestCareerPageRepositoryFirstSeenByDay(t *testing.T) {
@@ -280,6 +472,55 @@ func TestCareerPageRepositoryDelete(t *testing.T) {
 			t.Errorf("want 0 career pages, got %d", countCareerPages(t, pool))
 		}
 	})
+}
+
+// TestCareerPageRepositoryDeleteWithListings asserts the job_listing.career_page_id
+// FK is ON DELETE SET NULL (migration 0017): deleting a Career Page that owns Corpus
+// listings orphans them (career_page_id -> NULL) instead of raising an FK violation.
+func TestCareerPageRepositoryDeleteWithListings(t *testing.T) {
+	pool := newTestPool(t)
+	companyRepo := postgres.NewCompanyRepository(pool)
+	repo := postgres.NewCareerPageRepository(pool)
+	corpus := postgres.NewCorpusRepository(pool)
+
+	acme := &crawler.Company{CompanyKey: "greenhouse:acme", ATSProvider: "greenhouse", DisplayDomain: "boards.greenhouse.io", Name: "Acme"}
+	if err := companyRepo.Upsert(t.Context(), acme); err != nil {
+		t.Fatalf("seeding company: %v", err)
+	}
+	const url = "https://boards.greenhouse.io/acme/jobs/1"
+	if err := repo.Upsert(t.Context(), &crawler.CareerPage{
+		CompanyID:        acme.ID,
+		URL:              url,
+		PolitenessDomain: "boards.greenhouse.io",
+	}); err != nil {
+		t.Fatalf("seeding career page: %v", err)
+	}
+	id := careerPageIDByURL(t, repo, url)
+
+	listing := &crawler.JobListing{
+		CanonicalURL: url,
+		URL:          url,
+		Source:       crawler.SourceLaneCrawl,
+		CareerPageID: id,
+		Title:        "Backend Engineer",
+	}
+	if err := corpus.Save(t.Context(), listing); err != nil {
+		t.Fatalf("seeding listing: %v", err)
+	}
+
+	if err := repo.Delete(t.Context(), id); err != nil {
+		t.Fatalf("deleting a page that owns a listing should not FK-violate: %v", err)
+	}
+
+	var careerPageID *uuid.UUID
+	if err := pool.QueryRow(t.Context(),
+		`SELECT career_page_id FROM job_listing WHERE canonical_url = $1`, url,
+	).Scan(&careerPageID); err != nil {
+		t.Fatalf("listing should survive the page delete: %v", err)
+	}
+	if careerPageID != nil {
+		t.Errorf("career_page_id should be NULL after the page delete, got %v", *careerPageID)
+	}
 }
 
 func TestCareerPageRepositoryReattribute(t *testing.T) {

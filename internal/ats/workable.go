@@ -143,6 +143,7 @@ type workableAccountResponse struct {
 
 type workableJob struct {
 	Title          string                  `json:"title"`
+	Shortcode      string                  `json:"shortcode"` // stable posting id (Corpus SourceID)
 	Department     string                  `json:"department"`
 	Country        string                  `json:"country"`
 	State          string                  `json:"state"`
@@ -184,6 +185,7 @@ func mapWorkableJob(j workableJob, canonicalURL string) *crawler.JobListing {
 	listing := &crawler.JobListing{
 		Title:           j.Title,
 		URL:             canonicalURL,
+		SourceID:        j.Shortcode,
 		Location:        workableLocation(j),
 		CountryHint:     workableCountryHint(j),
 		Description:     htmlSingleEncodedToText(j.Description),

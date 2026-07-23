@@ -2,14 +2,11 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { useIsMobile } from "../hooks";
-import { useLayout } from "./Layout";
 import { Icon } from "./primitives";
 
 // PageShell is the per-view frame: a sticky header (optional back link, title,
-// subtitle) with an optional per-page actions slot and the New-keyword-crawl
-// action, over the scrolling body. Every page renders one. Slotted actions
-// render before the global primary action so page-specific controls never
-// displace it.
+// subtitle) with an optional per-page actions slot, over the scrolling body.
+// Every page renders one.
 export function PageShell({
   title,
   subtitle,
@@ -23,7 +20,6 @@ export function PageShell({
   actions?: ReactNode;
   children: ReactNode;
 }) {
-  const { openNewCrawl } = useLayout();
   const isMobile = useIsMobile();
 
   return (
@@ -68,12 +64,11 @@ export function PageShell({
             <div style={{ fontSize: 13, color: "var(--color-neutral-400)", marginTop: 3 }}>{subtitle}</div>
           )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "var(--space-3)", flex: "none" }}>
-          {actions}
-          <button className="btn btn-primary" onClick={openNewCrawl}>
-            <Icon name="ph-plus" size={14} /> New keyword crawl
-          </button>
-        </div>
+        {actions != null && (
+          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "var(--space-3)", flex: "none" }}>
+            {actions}
+          </div>
+        )}
       </header>
       <div
         style={{

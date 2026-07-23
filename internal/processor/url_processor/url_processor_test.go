@@ -231,7 +231,9 @@ func TestProcessRecordsRelevanceGate(t *testing.T) {
 			}
 
 			worker := urlprocessor.NewProcessor(cfg)
-			seed, err := crawler.NewURL("http://example.com")
+			// A real posting path (not a bare root or index), so ShouldExtract's URL
+			// rungs pass and this exercises the relevance gate, not the structure gate.
+			seed, err := crawler.NewURL("http://example.com/o/senior-engineer")
 			if err != nil {
 				t.Fatalf("NewURL: %v", err)
 			}

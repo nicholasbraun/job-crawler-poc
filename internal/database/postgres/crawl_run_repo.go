@@ -116,6 +116,27 @@ func (r *CrawlRunRepository) ListByStatus(ctx context.Context, statuses ...crawl
 	return runs, rows.Err()
 }
 
+// LatestByDefinition returns the most-recently-started run for definitionID, or
+// nil (no error) when the definition has never run. It backs the collection
+// scheduler's restart-safe due-check (ADR-0036): the returned run's StartedAt is
+// the cadence anchor and a non-terminal status means a Cycle is still active.
+func (r *CrawlRunRepository) LatestByDefinition(ctx context.Context, definitionID uuid.UUID) (*crawler.CrawlRun, error) {
+	row := r.pool.QueryRow(ctx, `
+		SELECT id, definition_id, status, pages_crawled, listings_found, started_at, finished_at, error
+		FROM crawl_run WHERE definition_id = $1 ORDER BY started_at DESC LIMIT 1
+		`, definitionID)
+
+	run, err := scanRun(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil // never run: normal, not an error
+		}
+		return nil, fmt.Errorf("postgres: error getting latest crawl run: %w", err)
+	}
+
+	return run, nil
+}
+
 func (r *CrawlRunRepository) GetStatus(ctx context.Context, id uuid.UUID) (crawler.RunStatus, error) {
 	var status string
 	err := r.pool.QueryRow(ctx, `SELECT status FROM crawl_run WHERE id = $1`, id).Scan(&status)

@@ -170,6 +170,9 @@ func TestSmartRecruitersFetchMapsBoard(t *testing.T) {
 	if first.URL != "https://jobs.smartrecruiters.com/BoschGroup/744000138449489--process-development-engineer-em" {
 		t.Errorf("URL = %q, want the detail postingUrl", first.URL)
 	}
+	if first.SourceID != "744000138449489" {
+		t.Errorf("SourceID = %q, want the posting id (URL re-slug stable, ADR-0034)", first.SourceID)
+	}
 	if first.Location != "Changsha, cn" {
 		t.Errorf("Location = %q, want %q (city, country)", first.Location, "Changsha, cn")
 	}
@@ -301,8 +304,10 @@ func TestSmartRecruitersListNon200ReturnsErrBoardStatus(t *testing.T) {
 }
 
 func TestSmartRecruitersSkipsPostingWithoutResolvableURL(t *testing.T) {
-	// Two ids: one detail 404s (no resolvable URL), the other is valid. The board
-	// still succeeds and returns only the resolvable posting.
+	// Two ids: one detail 404s (no resolvable URL), the other is valid. A posting the
+	// fetcher could not resolve means the returned set is not the whole open board, so
+	// the fetch is ErrBoardIncomplete (ADR-0035) — but the resolvable posting still
+	// rides along in the partial slice.
 	list := `{"offset":0,"limit":100,"totalFound":2,"content":[{"id":"gone"},{"id":"keeps"}]}`
 	rec := srConst(list, map[string]string{
 		"keeps": `{"name":"Kept","postingUrl":"https://jobs.smartrecruiters.com/acme/keeps"}`,
@@ -311,11 +316,11 @@ func TestSmartRecruitersSkipsPostingWithoutResolvableURL(t *testing.T) {
 	fetcher := newSmartRecruitersFetcher(t, rec.handler())
 
 	got, err := fetcher.Fetch(t.Context(), "acme")
-	if err != nil {
-		t.Fatalf("Fetch: %v", err)
+	if !errors.Is(err, ats.ErrBoardIncomplete) {
+		t.Fatalf("err = %v, want it to wrap ErrBoardIncomplete (an unresolvable posting)", err)
 	}
 	if len(got) != 1 {
-		t.Fatalf("got %d listings, want 1 (the unresolvable posting is skipped)", len(got))
+		t.Fatalf("got %d listings, want 1 (the resolvable posting rides the partial slice)", len(got))
 	}
 	if got[0].URL != "https://jobs.smartrecruiters.com/acme/keeps" {
 		t.Errorf("kept listing URL = %q, want the posting whose detail resolved", got[0].URL)
@@ -323,8 +328,10 @@ func TestSmartRecruitersSkipsPostingWithoutResolvableURL(t *testing.T) {
 }
 
 func TestSmartRecruitersSkipsPostingWithEmptyPostingURL(t *testing.T) {
-	// A detail that returns 200 but omits postingUrl has no upsert key and is
-	// dropped rather than mapped to a keyless listing (mirrors Greenhouse/Lever).
+	// A detail that returns 200 but omits postingUrl has no upsert key and is dropped
+	// rather than mapped to a keyless listing (mirrors Greenhouse/Lever). Dropping it
+	// makes the collected count fall short of totalFound, so the fetch is
+	// ErrBoardIncomplete (ADR-0035); the resolvable posting still rides the slice.
 	list := `{"offset":0,"limit":100,"totalFound":2,"content":[{"id":"blank"},{"id":"keeps"}]}`
 	rec := srConst(list, map[string]string{
 		"blank": `{"name":"No URL","postingUrl":""}`,
@@ -333,14 +340,84 @@ func TestSmartRecruitersSkipsPostingWithEmptyPostingURL(t *testing.T) {
 	fetcher := newSmartRecruitersFetcher(t, rec.handler())
 
 	got, err := fetcher.Fetch(t.Context(), "acme")
-	if err != nil {
-		t.Fatalf("Fetch: %v", err)
+	if !errors.Is(err, ats.ErrBoardIncomplete) {
+		t.Fatalf("err = %v, want it to wrap ErrBoardIncomplete (a dropped URL-less posting)", err)
 	}
 	if len(got) != 1 {
 		t.Fatalf("got %d listings, want 1 (the URL-less posting is skipped)", len(got))
 	}
 	if got[0].URL != "https://jobs.smartrecruiters.com/acme/keeps" {
 		t.Errorf("kept listing URL = %q, want the posting that has a postingUrl", got[0].URL)
+	}
+}
+
+func TestSmartRecruitersIncompleteOnCountMismatch(t *testing.T) {
+	// The list claims totalFound:3 but delivers two ids then an empty page — the board
+	// returned fewer postings than it claimed. Both details resolve, so every returned
+	// listing is real; the fetch is still ErrBoardIncomplete because the enumerated
+	// count fell short of the reported total (ADR-0035 count cross-check).
+	page0 := `{"offset":0,"limit":100,"totalFound":3,"content":[{"id":"id-1"},{"id":"id-2"}]}`
+	page2 := `{"offset":2,"limit":100,"totalFound":3,"content":[]}`
+	detail := func(id string) string {
+		return `{"name":"Role ` + id + `","postingUrl":"https://jobs.smartrecruiters.com/acme/` + id + `"}`
+	}
+	rec := &srRecorder{
+		listByOffset: func(offset int) string {
+			if offset == 0 {
+				return page0
+			}
+			return page2
+		},
+		details: map[string]string{
+			"id-1": detail("id-1"),
+			"id-2": detail("id-2"),
+		},
+	}
+	fetcher := newSmartRecruitersFetcher(t, rec.handler())
+
+	got, err := fetcher.Fetch(t.Context(), "acme")
+	if !errors.Is(err, ats.ErrBoardIncomplete) {
+		t.Fatalf("err = %v, want it to wrap ErrBoardIncomplete (delivered 2 of a claimed 3)", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d listings, want 2 (the partial slice the fetcher did collect)", len(got))
+	}
+	// The partial slice is real data, not a nil placeholder: each listing is mapped.
+	for i, l := range got {
+		if l.Title == "" || l.URL == "" {
+			t.Errorf("listing[%d] = %+v, want a fully mapped posting in the partial slice", i, l)
+		}
+	}
+}
+
+func TestSmartRecruitersIncompleteOnPaginationCap(t *testing.T) {
+	// With the pagination cap set to 1 page, the first page (totalFound:3, two ids)
+	// stops the loop before the reported total is reached. Both details resolve, but
+	// the fetch is ErrBoardIncomplete because the cap truncated enumeration (ADR-0035).
+	page0 := `{"offset":0,"limit":100,"totalFound":3,"content":[{"id":"id-1"},{"id":"id-2"}]}`
+	detail := func(id string) string {
+		return `{"name":"Role ` + id + `","postingUrl":"https://jobs.smartrecruiters.com/acme/` + id + `"}`
+	}
+	rec := &srRecorder{
+		listByOffset: func(int) string { return page0 },
+		details: map[string]string{
+			"id-1": detail("id-1"),
+			"id-2": detail("id-2"),
+		},
+	}
+	srv := httptest.NewServer(rec.handler())
+	t.Cleanup(srv.Close)
+	fetcher := ats.NewSmartRecruitersFetcher(
+		ats.WithSmartRecruitersBaseURL(srv.URL),
+		ats.WithSmartRecruitersMaxPages(1),
+	)
+
+	got, err := fetcher.Fetch(t.Context(), "acme")
+	if !errors.Is(err, ats.ErrBoardIncomplete) {
+		t.Fatalf("err = %v, want it to wrap ErrBoardIncomplete (pagination cap hit before totalFound)", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d listings, want 2 (the partial slice collected before the cap)", len(got))
 	}
 }
 

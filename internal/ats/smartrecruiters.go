@@ -42,9 +42,18 @@ const (
 // posting summaries — the canonical postingUrl and the jobAd description live on
 // the per-posting detail object — so the fetcher pages the list for ids, then
 // resolves each id with a follow-up detail call (ADR-0022/ADR-0023).
+//
+// As the only provider that paginates and reports a total, it is the only one that
+// computes completeness at runtime (ADR-0035): Fetch returns ErrBoardIncomplete
+// alongside the partial slice when the list did not enumerate the whole reported
+// board (a short/empty-before-total page or the pagination cap), a posting failed
+// to resolve to a detail, or the final mapped count falls short of totalFound.
 type SmartRecruitersFetcher struct {
 	baseURL    string
 	httpClient *http.Client
+	// maxPages bounds the pagination loop; exceeding it without reaching totalFound
+	// marks the fetch ErrBoardIncomplete. Defaults to smartRecruitersMaxPages.
+	maxPages int
 }
 
 // SmartRecruitersFetcherOption configures a SmartRecruitersFetcher at construction.
@@ -66,12 +75,22 @@ func WithSmartRecruitersHTTPClient(c *http.Client) SmartRecruitersFetcherOption 
 	}
 }
 
+// WithSmartRecruitersMaxPages overrides the pagination cap (default
+// smartRecruitersMaxPages). Exceeding the cap without reaching totalFound marks the
+// fetch ErrBoardIncomplete; chiefly a test knob for the cap path.
+func WithSmartRecruitersMaxPages(n int) SmartRecruitersFetcherOption {
+	return func(s *SmartRecruitersFetcher) {
+		s.maxPages = n
+	}
+}
+
 // NewSmartRecruitersFetcher builds a SmartRecruitersFetcher pointed at the public
 // Posting API with a default-timeout HTTP client, overridable via options.
 func NewSmartRecruitersFetcher(opts ...SmartRecruitersFetcherOption) *SmartRecruitersFetcher {
 	s := &SmartRecruitersFetcher{
 		baseURL:    smartRecruitersDefaultBaseURL,
 		httpClient: &http.Client{Timeout: smartRecruitersDefaultTimeout},
+		maxPages:   smartRecruitersMaxPages,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -87,16 +106,28 @@ func NewSmartRecruitersFetcher(opts ...SmartRecruitersFetcherOption) *SmartRecru
 // never nukes the whole board. Company and CompanyKey are left empty for the
 // ingest lane to stamp from the page's Owner (ADR-0022). An empty board yields an
 // empty, non-nil slice.
+//
+// Completeness (ADR-0035): Fetch returns the collected slice with ErrBoardIncomplete
+// — never a nil slice — when the fetch cannot be proven to be the whole open board.
+// Three triggers: the list did not enumerate the reported total (a short/empty page
+// before totalFound or the pagination cap), a posting failed to resolve to a detail
+// (a skipped detail), or the final mapped count falls short of totalFound (also
+// catching a posting dropped for an empty postingUrl). Any shortfall biases to
+// keep-stale-open (skip-sweep), never a mass-close. A cancelled context still
+// surfaces as a hard context error with a nil slice, ahead of the incomplete verdict.
 func (s *SmartRecruitersFetcher) Fetch(ctx context.Context, tenant string) ([]*crawler.JobListing, error) {
 	if tenant == "" {
 		return nil, fmt.Errorf("ats: smartrecruiters: empty tenant slug")
 	}
 
-	ids, err := s.collectPostingIDs(ctx, tenant)
+	ids, totalFound, listComplete, err := s.collectPostingIDs(ctx, tenant)
 	if err != nil {
 		return nil, err
 	}
 
+	// detailSkipped guards against a lying/low totalFound: a per-posting failure alone
+	// makes the fetch untrustworthy even if the count still happens to reconcile.
+	detailSkipped := false
 	listings := []*crawler.JobListing{}
 	for _, id := range ids {
 		// Abort (rather than skip every remaining posting) on a cancelled context, so
@@ -114,6 +145,7 @@ func (s *SmartRecruitersFetcher) Fetch(ctx context.Context, tenant string) ([]*c
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
+			detailSkipped = true
 			continue
 		}
 		// postingUrl is the canonical posting URL the lane keys upserts on (#127); a
@@ -123,38 +155,57 @@ func (s *SmartRecruitersFetcher) Fetch(ctx context.Context, tenant string) ([]*c
 		}
 		listings = append(listings, mapSmartRecruitersPosting(detail))
 	}
+
+	// Completeness contract (ADR-0035): the sweep may run only on a provably complete
+	// snapshot. Complete iff every page was enumerated up to the reported total, no
+	// posting failed to resolve, and the collected count matches the board's total.
+	// The count cross-check (len(listings) < totalFound) uniformly catches a transient
+	// detail skip and a posting dropped for an empty postingUrl.
+	if !listComplete || detailSkipped || len(listings) < totalFound {
+		return listings, fmt.Errorf("ats: smartrecruiters tenant %q: %w", tenant, ErrBoardIncomplete)
+	}
 	return listings, nil
 }
 
-// collectPostingIDs pages the list endpoint and returns every posting id, in board
-// order. It advances offset by the actual page length (tolerating a server-side
-// page-size clamp), stops when a page is empty or offset reaches totalFound, and is
-// hard-capped at smartRecruitersMaxPages. A non-200 aborts the whole fetch with
-// ErrBoardStatus: a partial board would mislead the lane's upsert.
-func (s *SmartRecruitersFetcher) collectPostingIDs(ctx context.Context, tenant string) ([]string, error) {
-	ids := []string{}
+// collectPostingIDs pages the list endpoint and returns every posting id in board
+// order, the board's reported totalFound, and whether the list was enumerated in
+// full. It advances offset by the actual page length (tolerating a server-side
+// page-size clamp) and is hard-capped at s.maxPages. listComplete is true only when
+// offset reaches totalFound; a page emptied before the total (a short/mismatched
+// board) or the cap being hit both yield listComplete=false so the caller can mark
+// the fetch incomplete. A non-200 aborts the whole fetch with ErrBoardStatus.
+func (s *SmartRecruitersFetcher) collectPostingIDs(ctx context.Context, tenant string) (ids []string, totalFound int, listComplete bool, err error) {
+	ids = []string{}
 	offset := 0
-	for page := 0; page < smartRecruitersMaxPages; page++ {
+	for page := 0; page < s.maxPages; page++ {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, 0, false, err
 		}
 		endpoint := fmt.Sprintf("%s/v1/companies/%s/postings?limit=%d&offset=%d",
 			s.baseURL, url.PathEscape(tenant), smartRecruitersPageSize, offset)
 		var resp smartRecruitersListResponse
 		if err := s.getInto(ctx, endpoint, &resp); err != nil {
-			return nil, fmt.Errorf("ats: smartrecruiters list tenant %q: %w", tenant, err)
+			return nil, 0, false, fmt.Errorf("ats: smartrecruiters list tenant %q: %w", tenant, err)
 		}
+		totalFound = resp.TotalFound
 		for _, item := range resp.Content {
 			if item.ID != "" {
 				ids = append(ids, item.ID)
 			}
 		}
 		offset += len(resp.Content)
-		if len(resp.Content) == 0 || offset >= resp.TotalFound {
-			break
+		if offset >= resp.TotalFound {
+			// The whole reported board was enumerated.
+			return ids, totalFound, true, nil
+		}
+		if len(resp.Content) == 0 {
+			// An empty page before reaching the total: the board delivered fewer postings
+			// than it claimed (short/mismatch). Stop and report the shortfall.
+			return ids, totalFound, false, nil
 		}
 	}
-	return ids, nil
+	// The pagination cap was hit without reaching totalFound.
+	return ids, totalFound, false, nil
 }
 
 // fetchPostingDetail resolves one posting id to its detail object. ok is false when
@@ -215,6 +266,7 @@ type smartRecruitersListItem struct {
 // smartRecruitersPosting is a single posting's detail object. Only the fields the
 // mapper reads are declared; any others in the JSON are ignored by the decoder.
 type smartRecruitersPosting struct {
+	ID           string                  `json:"id"` // stable posting id (Corpus SourceID)
 	Name         string                  `json:"name"`
 	PostingURL   string                  `json:"postingUrl"`   // canonical posting URL (upsert key)
 	ReleasedDate string                  `json:"releasedDate"` // RFC3339 (with fractional seconds)
@@ -270,6 +322,7 @@ func mapSmartRecruitersPosting(p smartRecruitersPosting) *crawler.JobListing {
 	listing := &crawler.JobListing{
 		Title:    p.Name,
 		URL:      p.PostingURL, // canonical posting URL; the lane keys upserts on it (#127)
+		SourceID: p.ID,         // the re-slug-stable posting id (ADR-0034)
 		Location: smartRecruitersLocationText(p.Location),
 		// location.country is a structured ISO alpha-2 country code (e.g. "de"), not a
 		// name; the ingest lane treats it as a valid code at save (uppercased) in

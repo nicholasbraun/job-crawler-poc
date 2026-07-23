@@ -1,5 +1,7 @@
 package crawler
 
+import "github.com/google/uuid"
+
 // Seed is a crawl entry point plus the two ADR-0021 provenance keys every
 // descendant URL inherits unchanged (Scope, the fence key; Owner, the
 // attribution key). An empty Scope+Owner is the roam signal: a Discovery Crawl
@@ -21,6 +23,18 @@ type Seed struct {
 type CatalogSeed struct {
 	URL        string
 	CompanyKey string
+}
+
+// CollectionSeed is a Collection Cycle seed resolved from the Catalog (ADR-0036):
+// a URL, the owning Company's stored CompanyKey (the seed's Owner / attribution
+// key), and — for a Career Page seed — the career_page.id it was drawn from so the
+// crawl lane can attribute and sweep by page. CareerPageID is uuid.Nil for a
+// Pageless Company's Website seed (no career page). It carries CareerPageID, which
+// CatalogSeed lacks; Scope is derived later from the URL via catalog.Identify.
+type CollectionSeed struct {
+	URL          string
+	CompanyKey   string
+	CareerPageID uuid.UUID
 }
 
 // SeedsFromURLs maps bare URLs to Seeds with empty Scope and Owner — the
