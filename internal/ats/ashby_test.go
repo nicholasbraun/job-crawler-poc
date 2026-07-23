@@ -361,6 +361,21 @@ func TestAshbyIgnoresProviderCompanyField(t *testing.T) {
 	}
 }
 
+func TestAshbyTruncatedBodyIsHardError(t *testing.T) {
+	// Ashby decodes the whole board in one request, so completeness is structural
+	// (ADR-0035): a body cut mid-array surfaces as a decode error, never a silent
+	// partial. A single-shot provider returns a hard error, NOT ErrBoardIncomplete.
+	fetcher := newAshbyFetcher(t, serveJSON(`{"jobs":[{"id":"a","jobUrl":"https://x/a"`))
+
+	_, err := fetcher.Fetch(t.Context(), "acme")
+	if err == nil {
+		t.Fatal("want a decode error for a truncated body")
+	}
+	if errors.Is(err, ats.ErrBoardIncomplete) {
+		t.Fatal("single-shot provider must never emit ErrBoardIncomplete; a partial read is a hard error")
+	}
+}
+
 func TestAshbyEmptyTenant(t *testing.T) {
 	// An empty tenant slug is a caller bug the fetcher rejects before any request.
 	fetcher := ats.NewAshbyFetcher()

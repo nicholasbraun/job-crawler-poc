@@ -89,8 +89,17 @@ func (p *Processor) Process(ctx context.Context, task *FetchTask) error {
 	}
 
 	listings, err := fetcher.Fetch(ctx, task.TenantSlug)
-	if err != nil {
+	if err != nil && !errors.Is(err, ats.ErrBoardIncomplete) {
 		return fmt.Errorf("atsingest: fetching %s tenant %q: %w", task.Provider, task.TenantSlug, err)
+	}
+	if errors.Is(err, ats.ErrBoardIncomplete) {
+		// Save-presence / skip-sweep (ADR-0035): an incomplete fetch returns its
+		// collected slice alongside ErrBoardIncomplete. Persist what we saw so those
+		// postings still refresh, and do NOT fail the task. Only the absence-sweep must
+		// be skipped, and it is not wired into this lane yet (a later collection ticket
+		// owns it).
+		slog.Warn("atsingest: incomplete board fetch, saving presence only",
+			"provider", task.Provider, "tenant", task.TenantSlug, "listings", len(listings))
 	}
 
 	var saveErr error

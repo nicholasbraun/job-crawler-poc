@@ -267,6 +267,22 @@ func TestGreenhouseMalformedFirstPublished(t *testing.T) {
 	}
 }
 
+func TestGreenhouseTruncatedBodyIsHardError(t *testing.T) {
+	// Greenhouse decodes the whole board in one request, so completeness is structural
+	// (ADR-0035): a body cut mid-array surfaces as a decode error, never a silent
+	// partial. A single-shot provider must therefore return a hard error, NOT
+	// ErrBoardIncomplete (which only a fetcher that computes runtime completeness emits).
+	fetcher := newGreenhouseFetcher(t, serveJSON(`{"jobs":[{"id":1,"absolute_url":"https://b/j/1"`))
+
+	_, err := fetcher.Fetch(t.Context(), "acme")
+	if err == nil {
+		t.Fatal("want a decode error for a truncated body")
+	}
+	if errors.Is(err, ats.ErrBoardIncomplete) {
+		t.Fatal("single-shot provider must never emit ErrBoardIncomplete; a partial read is a hard error")
+	}
+}
+
 func TestGreenhouseEmptyTenant(t *testing.T) {
 	// An empty tenant slug is a caller bug the fetcher rejects before any request.
 	fetcher := ats.NewGreenhouseFetcher()

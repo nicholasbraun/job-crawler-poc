@@ -376,6 +376,22 @@ func TestPersonioBuildsBoardURL(t *testing.T) {
 	}
 }
 
+func TestPersonioTruncatedBodyIsHardError(t *testing.T) {
+	// Personio decodes the whole /xml feed in one request, so completeness is
+	// structural (ADR-0035): a body cut mid-document surfaces as a decode error, never
+	// a silent partial. A single-shot provider returns a hard error, NOT
+	// ErrBoardIncomplete.
+	fetcher, _ := newPersonioFetcher(t, serveXML(`<workzag-jobs><position><id>1</id>`))
+
+	_, err := fetcher.Fetch(t.Context(), "acme")
+	if err == nil {
+		t.Fatal("want a decode error for a truncated body")
+	}
+	if errors.Is(err, ats.ErrBoardIncomplete) {
+		t.Fatal("single-shot provider must never emit ErrBoardIncomplete; a partial read is a hard error")
+	}
+}
+
 func TestPersonioEmptyTenant(t *testing.T) {
 	// An empty tenant slug is a caller bug the fetcher rejects before any request
 	// (and before deriving the bogus "https://.jobs.personio.de" host).

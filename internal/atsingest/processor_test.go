@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
+	"github.com/nicholasbraun/job-crawler-poc/internal/ats"
 	"github.com/nicholasbraun/job-crawler-poc/internal/atsingest"
 	"github.com/nicholasbraun/job-crawler-poc/internal/listingid"
 )
@@ -248,6 +249,38 @@ func TestProcessorFetchErrorIsReturned(t *testing.T) {
 	}
 	if len(repo.saved) != 0 {
 		t.Errorf("saved %d listings on fetch error, want 0", len(repo.saved))
+	}
+}
+
+// TestProcessorIncompleteBoardSavesPartial asserts the save-presence / skip-sweep
+// contract (ADR-0035): ErrBoardIncomplete is the one non-fatal fetch error — the
+// partial slice riding alongside it is still persisted and the task succeeds, so
+// those postings refresh even though the absence-sweep must be skipped.
+func TestProcessorIncompleteBoardSavesPartial(t *testing.T) {
+	fetcher := &stubFetcher{
+		listings: []*crawler.JobListing{
+			{Title: "Go One", URL: "https://board/1", SourceID: "1", Description: "build services"},
+			{Title: "Go Two", URL: "https://board/2", SourceID: "2", Description: "ship services"},
+		},
+		err: ats.ErrBoardIncomplete,
+	}
+	repo := &spyRepo{}
+	var savedTaps int
+	proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
+		ResolveFetcher: resolveTo(fetcher),
+		Repository:     repo,
+		Keywords:       []string{"go"},
+		OnSaved:        func(context.Context) { savedTaps++ },
+	})
+
+	if err := proc.Process(t.Context(), &atsingest.FetchTask{Provider: "greenhouse", TenantSlug: "acme"}); err != nil {
+		t.Fatalf("Process returned %v, want nil (ErrBoardIncomplete is swallowed, not a task failure)", err)
+	}
+	if len(repo.saved) != 2 {
+		t.Fatalf("saved %d listings, want 2 (the partial slice is persisted)", len(repo.saved))
+	}
+	if savedTaps != 2 {
+		t.Errorf("OnSaved fired %d times, want 2", savedTaps)
 	}
 }
 
