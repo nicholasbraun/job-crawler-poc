@@ -69,3 +69,26 @@ func TestRecentListings(t *testing.T) {
 		}
 	})
 }
+
+func TestListingStats(t *testing.T) {
+	search := &fakeSearchRepo{countOpen: 7137, countTotal: 7149}
+	srv := newHandler(api.Config{Search: search})
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/listings/stats", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+	var got struct {
+		Open   int `json:"open"`
+		Closed int `json:"closed"`
+		Total  int `json:"total"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Open != 7137 || got.Total != 7149 || got.Closed != 12 {
+		t.Errorf("stats: got %+v, want {open:7137 closed:12 total:7149}", got)
+	}
+}

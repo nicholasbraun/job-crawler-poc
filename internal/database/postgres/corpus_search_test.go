@@ -346,6 +346,33 @@ func equalOrder(got, want []string) bool {
 	return true
 }
 
+// TestListingCounts asserts ListingCounts reports distinct open/total rows (the
+// true corpus size), counting a closed listing in total but not open.
+func TestListingCounts(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCorpusRepository(pool)
+
+	if open, total, err := repo.ListingCounts(t.Context()); err != nil || open != 0 || total != 0 {
+		t.Fatalf("empty corpus: got open=%d total=%d err=%v, want 0/0/nil", open, total, err)
+	}
+
+	saveSearchable(t, repo, "https://ex.com/count/1", "Role 1", "", "acme", "DE", crawler.WorkArrangementRemote)
+	saveSearchable(t, repo, "https://ex.com/count/2", "Role 2", "", "acme", "DE", crawler.WorkArrangementRemote)
+	gone := saveSearchable(t, repo, "https://ex.com/count/3", "Role 3", "", "acme", "DE", crawler.WorkArrangementRemote)
+	closeSearchListing(t, pool, gone.CanonicalURL)
+	// Re-saving an existing listing must NOT change the counts (upsert, not a new row) —
+	// this is exactly what the run's ListingsFound counter over-counts.
+	saveSearchable(t, repo, "https://ex.com/count/1", "Role 1 refreshed", "", "acme", "DE", crawler.WorkArrangementRemote)
+
+	open, total, err := repo.ListingCounts(t.Context())
+	if err != nil {
+		t.Fatalf("ListingCounts: %v", err)
+	}
+	if open != 2 || total != 3 {
+		t.Errorf("counts: got open=%d total=%d, want open=2 total=3", open, total)
+	}
+}
+
 // TestSearchListingsReturnsDepartment asserts the ATS-lane department attribute
 // (ADR-0022, migration 0021) is persisted at Save and returned on the projected
 // CorpusListing, so a SavedSearch panel can render it.

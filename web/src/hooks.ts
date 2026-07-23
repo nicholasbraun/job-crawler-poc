@@ -9,6 +9,7 @@ import {
   getCatalogHistory,
   getDefinitionDefaults,
   getImportJob,
+  getListingStats,
   getSavedSearchResults,
   isImportTerminal,
   listCareerPages,
@@ -83,6 +84,7 @@ export const keys = {
   savedSearches: ["saved-searches"] as const,
   savedSearchResults: (id: string) => ["saved-search-results", id] as const,
   recentListings: (limit: number) => ["recent-listings", limit] as const,
+  listingStats: ["listing-stats"] as const,
 };
 
 export function useRuns() {
@@ -238,6 +240,16 @@ export function useRecentListings(limit = 12) {
   return useQuery({
     queryKey: keys.recentListings(limit),
     queryFn: () => listRecentListings(limit),
+    refetchInterval: RECENT_LISTINGS_POLL_MS,
+  });
+}
+
+// useListingStats polls the true corpus size (distinct open/total rows) for the
+// collection headline, tracking a running Cycle on the same live cadence.
+export function useListingStats() {
+  return useQuery({
+    queryKey: keys.listingStats,
+    queryFn: getListingStats,
     refetchInterval: RECENT_LISTINGS_POLL_MS,
   });
 }

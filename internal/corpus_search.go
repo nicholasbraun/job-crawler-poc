@@ -77,4 +77,10 @@ type CorpusSearchRepository interface {
 	// q.Limit/q.Offset. Open-only unless q.IncludeClosed. Never returns nil; no match
 	// yields an empty slice.
 	SearchListings(ctx context.Context, q ListingQuery) ([]*CorpusListing, error)
+
+	// ListingCounts reports how many distinct Corpus listings exist: open (closed_at
+	// IS NULL) and total. This is the true corpus size — distinct from a Collection
+	// run's ListingsFound counter, which counts save operations (a re-saved or
+	// reopened listing is counted again), so it far exceeds the row count.
+	ListingCounts(ctx context.Context) (open int, total int, err error)
 }

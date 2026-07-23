@@ -81,8 +81,10 @@ func (f *fakeSavedSearchRepo) Delete(ctx context.Context, id uuid.UUID) error {
 // it received, so the results test can assert the handler projected the SavedSearch's
 // facets (and the includeClosed toggle) into the query.
 type fakeSearchRepo struct {
-	listings []*crawler.CorpusListing
-	lastQ    crawler.ListingQuery
+	listings   []*crawler.CorpusListing
+	lastQ      crawler.ListingQuery
+	countOpen  int
+	countTotal int
 }
 
 func (f *fakeSearchRepo) SearchListings(ctx context.Context, q crawler.ListingQuery) ([]*crawler.CorpusListing, error) {
@@ -91,6 +93,10 @@ func (f *fakeSearchRepo) SearchListings(ctx context.Context, q crawler.ListingQu
 		return []*crawler.CorpusListing{}, nil
 	}
 	return f.listings, nil
+}
+
+func (f *fakeSearchRepo) ListingCounts(ctx context.Context) (open int, total int, err error) {
+	return f.countOpen, f.countTotal, nil
 }
 
 func TestCreateSavedSearch(t *testing.T) {

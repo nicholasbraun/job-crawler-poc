@@ -396,3 +396,16 @@ export function getSavedSearchResults(id: string): Promise<Listing[]> {
 export function listRecentListings(limit = 12): Promise<Listing[]> {
   return request<Listing[]>(`/listings/recent?limit=${limit}`);
 }
+
+// ListingStats is the corpus-size headline: distinct listing row counts. This is
+// the true corpus size, NOT a Collection run's listingsFound counter (which counts
+// save operations, so a re-saved/reopened listing inflates it past the row count).
+export type ListingStats = {
+  open: number;
+  closed: number;
+  total: number;
+};
+
+export function getListingStats(): Promise<ListingStats> {
+  return request<ListingStats>("/listings/stats");
+}

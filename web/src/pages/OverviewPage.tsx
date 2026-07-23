@@ -6,6 +6,7 @@ import {
   useCompanies,
   useDefinitions,
   useIsMobile,
+  useListingStats,
   useRecentListings,
   useRuns,
 } from "../hooks";
@@ -18,7 +19,7 @@ import {
   type Collection,
   type Discovery,
 } from "../lib/model";
-import type { Company, CareerPage, Listing } from "../api";
+import type { Company, CareerPage, Listing, ListingStats } from "../api";
 import { useLayout } from "../components/Layout";
 import { PageShell } from "../components/PageShell";
 import { EmptyState, Icon, RunControls, Sparkline, StatCard, StatusTag } from "../components/primitives";
@@ -28,11 +29,13 @@ export function OverviewPage() {
   const definitions = useDefinitions();
   const companiesQ = useCompanies();
   const pagesQ = useCareerPages();
+  const statsQ = useListingStats();
 
   const defs = definitions.data ?? [];
   const runList = runs.data ?? [];
   const companies = companiesQ.data ?? [];
   const pages = pagesQ.data ?? [];
+  const stats = statsQ.data ?? null;
 
   const discovery = buildDiscovery(defs, runList);
   const collection = buildCollection(defs, runList);
@@ -72,7 +75,7 @@ export function OverviewPage() {
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : "minmax(0, 1.35fr) minmax(0, 1fr)", gap: "var(--space-4)", alignItems: "start" }}>
-          <CollectionPanel collection={collection} />
+          <CollectionPanel collection={collection} stats={stats} />
           <RecentlyFound />
         </div>
       </div>
@@ -80,10 +83,10 @@ export function OverviewPage() {
   );
 }
 
-// CollectionPanel is the Overview's window on the perpetual Collection Cycle: its
-// run status, the listings it has collected this cycle, and lifecycle controls. It
-// mirrors DiscoveryPanel — the two singleton runs sit side by side.
-function CollectionPanel({ collection }: { collection: Collection | null }) {
+// CollectionPanel is the Overview's window on the perpetual Collection Cycle: the
+// true corpus size it has built, its run status, and lifecycle controls. It mirrors
+// DiscoveryPanel — the two singleton runs sit side by side.
+function CollectionPanel({ collection, stats }: { collection: Collection | null; stats: ListingStats | null }) {
   // Null only on a pre-inversion database that has no collection definition; the
   // migration seeds one and the scheduler starts it, so this is the cold-boot case.
   if (!collection) {
@@ -97,10 +100,13 @@ function CollectionPanel({ collection }: { collection: Collection | null }) {
   }
 
   const idle = collection.status === "idle";
+  // Headline the true corpus size (distinct rows), not the run's ListingsFound
+  // counter — that counts save operations, so a re-verifying cycle inflates it far
+  // past the actual listing count.
   const counters = [
+    { label: "open listings", value: fmt(stats?.open ?? 0) },
     { label: "pages crawled", value: fmt(collection.pagesCrawled) },
     { label: "frontier size", value: fmt(collection.frontierSize) },
-    { label: "listings this cycle", value: fmt(collection.listingsFound) },
   ];
 
   return (
@@ -141,9 +147,11 @@ function CollectionPanel({ collection }: { collection: Collection | null }) {
       <div style={{ display: "flex", alignItems: "flex-end", gap: "var(--space-8)" }}>
         <div>
           <div style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 44, lineHeight: 1, letterSpacing: "-0.02em" }}>
-            {fmt(collection.listingsFound)}
+            {fmt(stats?.open ?? 0)}
           </div>
-          <div style={{ fontSize: 12, color: "var(--color-neutral-400)", marginTop: 4 }}>listings collected this cycle</div>
+          <div style={{ fontSize: 12, color: "var(--color-neutral-400)", marginTop: 4 }}>
+            listings in corpus{stats && stats.closed > 0 ? ` · ${fmt(stats.closed)} closed` : ""}
+          </div>
         </div>
       </div>
 

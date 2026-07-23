@@ -50,3 +50,24 @@ func (h *Handler) recentListings(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, dtos)
 }
+
+// listingStatsDTO is the corpus-size headline: distinct listing row counts. This is
+// the true corpus size, not a Collection run's ListingsFound counter (which counts
+// save operations, so a re-saved/reopened listing inflates it far past the row count).
+type listingStatsDTO struct {
+	Open   int `json:"open"`
+	Closed int `json:"closed"`
+	Total  int `json:"total"`
+}
+
+// listingStats returns the distinct open/closed/total Corpus listing counts, so the
+// Overview shows the real corpus size instead of the run's save-event counter.
+func (h *Handler) listingStats(w http.ResponseWriter, r *http.Request) {
+	open, total, err := h.cfg.Search.ListingCounts(r.Context())
+	if err != nil {
+		slog.Error("api: error counting corpus listings", "err", err)
+		writeError(w, http.StatusInternalServerError, "could not count corpus listings")
+		return
+	}
+	writeJSON(w, http.StatusOK, listingStatsDTO{Open: open, Closed: total - open, Total: total})
+}

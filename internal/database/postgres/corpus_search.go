@@ -165,6 +165,17 @@ func (r *CorpusRepository) SearchListings(ctx context.Context, q crawler.Listing
 	return r.searchWithFuzzyThreshold(ctx, sb.String(), args)
 }
 
+// ListingCounts returns the distinct open and total Corpus listing counts — the true
+// corpus size, not a run's save-event counter (crawler.CorpusSearchRepository).
+func (r *CorpusRepository) ListingCounts(ctx context.Context) (open int, total int, err error) {
+	if err = r.pool.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE closed_at IS NULL), count(*) FROM job_listing`,
+	).Scan(&open, &total); err != nil {
+		return 0, 0, fmt.Errorf("postgres: error counting corpus listings: %w", err)
+	}
+	return open, total, nil
+}
+
 // searchWithFuzzyThreshold runs a keyword search SELECT inside a transaction that pins
 // pg_trgm.word_similarity_threshold via SET LOCAL, so the title %> kw / company %> kw
 // operators match at exactly fuzzyMatchThreshold — a GUC-scoped setting the operator

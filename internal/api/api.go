@@ -117,8 +117,10 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /api/catalog/import-jobs", h.listImportJobs)
 	mux.HandleFunc("GET /api/catalog/import-jobs/{id}", h.getImportJob)
 
-	// Corpus listings (read-only): the Overview's live "recently found" feed.
+	// Corpus listings (read-only): the Overview's live "recently found" feed and the
+	// corpus-size headline.
 	mux.HandleFunc("GET /api/listings/recent", h.recentListings)
+	mux.HandleFunc("GET /api/listings/stats", h.listingStats)
 
 	// SavedSearches (ADR-0037): named Corpus queries + their live results.
 	mux.HandleFunc("GET /api/saved-searches", h.listSavedSearches)
