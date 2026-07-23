@@ -34,6 +34,11 @@ const (
 	SortRelevance ListingSort = ""
 	// SortRecent orders strictly by last_seen descending, ignoring relevance.
 	SortRecent ListingSort = "recent"
+	// SortFound orders strictly by first_seen descending — the newly-discovered
+	// postings, ignoring relevance. Distinct from SortRecent: last_seen bumps on
+	// every re-verification, so "recently found" (first_seen) is what a live
+	// collection feed wants, not "recently re-seen".
+	SortFound ListingSort = "found"
 )
 
 // CorpusListing is a persisted Corpus Job Listing projected for reading — what a

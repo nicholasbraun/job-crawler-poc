@@ -41,6 +41,15 @@ func setLastSeen(t *testing.T, pool *pgxpool.Pool, canonicalURL string, ts time.
 	}
 }
 
+func setFirstSeen(t *testing.T, pool *pgxpool.Pool, canonicalURL string, ts time.Time) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE job_listing SET first_seen = $2 WHERE canonical_url = $1`, canonicalURL, ts,
+	); err != nil {
+		t.Fatalf("setting first_seen for %q: %v", canonicalURL, err)
+	}
+}
+
 // closeSearchListing marks a row closed so the open-only default can be exercised.
 func closeSearchListing(t *testing.T, pool *pgxpool.Pool, canonicalURL string) {
 	t.Helper()
@@ -283,6 +292,58 @@ func TestSearchListingsEmptyAndBrowse(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestSearchListingsSortFound asserts SortFound orders strictly by first_seen
+// (newly-discovered postings, the live collection feed), distinct from SortRecent's
+// last_seen order, and stays open-only by default.
+func TestSearchListingsSortFound(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCorpusRepository(pool)
+
+	a := saveSearchable(t, repo, "https://ex.com/found/a", "Role A", "", "acme", "DE", crawler.WorkArrangementRemote)
+	b := saveSearchable(t, repo, "https://ex.com/found/b", "Role B", "", "acme", "DE", crawler.WorkArrangementRemote)
+	c := saveSearchable(t, repo, "https://ex.com/found/c", "Role C", "", "acme", "DE", crawler.WorkArrangementRemote)
+	gone := saveSearchable(t, repo, "https://ex.com/found/closed", "Role Closed", "", "acme", "DE", crawler.WorkArrangementRemote)
+	closeSearchListing(t, pool, gone.CanonicalURL)
+
+	base := dbNow(t, pool)
+	// first_seen ascending a<b<c => SortFound order c,b,a.
+	setFirstSeen(t, pool, a.CanonicalURL, base.Add(1*time.Minute))
+	setFirstSeen(t, pool, b.CanonicalURL, base.Add(2*time.Minute))
+	setFirstSeen(t, pool, c.CanonicalURL, base.Add(3*time.Minute))
+	// last_seen reversed a>b>c => SortRecent would order a,b,c, so the two sorts diverge.
+	setLastSeen(t, pool, a.CanonicalURL, base.Add(30*time.Minute))
+	setLastSeen(t, pool, b.CanonicalURL, base.Add(20*time.Minute))
+	setLastSeen(t, pool, c.CanonicalURL, base.Add(10*time.Minute))
+
+	found, err := repo.SearchListings(t.Context(), crawler.ListingQuery{Sort: crawler.SortFound})
+	if err != nil {
+		t.Fatalf("SearchListings SortFound: %v", err)
+	}
+	if got, want := searchURLOrder(found), []string{c.CanonicalURL, b.CanonicalURL, a.CanonicalURL}; !equalOrder(got, want) {
+		t.Fatalf("SortFound order: want %v (first_seen desc), got %v", want, got)
+	}
+
+	recent, err := repo.SearchListings(t.Context(), crawler.ListingQuery{Sort: crawler.SortRecent})
+	if err != nil {
+		t.Fatalf("SearchListings SortRecent: %v", err)
+	}
+	if got, want := searchURLOrder(recent), []string{a.CanonicalURL, b.CanonicalURL, c.CanonicalURL}; !equalOrder(got, want) {
+		t.Fatalf("SortRecent order: want %v (last_seen desc), got %v", want, got)
+	}
+}
+
+func equalOrder(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestSearchListingsReturnsDepartment asserts the ATS-lane department attribute

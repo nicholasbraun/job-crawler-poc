@@ -49,8 +49,11 @@ export type RunStatusSnapshot = {
   frontierSize: number;
 };
 
-// Discovery is the only live crawl kind; the Keyword Crawl lane was retired.
-export type CrawlKind = "discovery";
+// Crawl kinds after the pipeline inversion (ADR-0038): Discovery walks seed
+// domains to build the catalog; Collection perpetually fills the corpus. The
+// Keyword Crawl lane was retired. Only Discovery is user-creatable; Collection is
+// a seeded singleton.
+export type CrawlKind = "discovery" | "collection";
 
 export type UrlFilterConfig = {
   allowedTLDs: string[];
@@ -386,4 +389,10 @@ export function deleteSavedSearch(id: string): Promise<void> {
 // matching listings, ranked and open-only (a query, never a crawl).
 export function getSavedSearchResults(id: string): Promise<Listing[]> {
   return request<Listing[]>(`/saved-searches/${id}/results`);
+}
+
+// listRecentListings returns the most recently discovered Open corpus listings
+// (first-seen descending), backing the Overview's live collection feed.
+export function listRecentListings(limit = 12): Promise<Listing[]> {
+  return request<Listing[]>(`/listings/recent?limit=${limit}`);
 }

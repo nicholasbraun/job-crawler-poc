@@ -55,6 +55,40 @@ export function buildDiscovery(defs: Definition[], runs: Run[]): Discovery | nul
   };
 }
 
+// Collection is the perpetual Collection Cycle the dashboard watches: the seeded
+// singleton collection definition plus its latest run. Null when the collection
+// definition is absent (a pre-inversion database). listingsFound is the run's
+// corpus-save counter; frontierSize is the live per-run queue.
+export type Collection = {
+  definition: Definition;
+  runId: string | null;
+  status: DisplayStatus;
+  pagesCrawled: number;
+  listingsFound: number;
+  frontierSize: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+};
+
+// buildCollection fuses the singleton collection definition with its latest run.
+// ADR-0036 seeds exactly one collection definition, so no tie-break is needed.
+// Null when no collection definition exists yet.
+export function buildCollection(defs: Definition[], runs: Run[]): Collection | null {
+  const definition = defs.find((d) => d.kind === "collection");
+  if (!definition) return null;
+  const run = latestRunByDefinition(runs).get(definition.id);
+  return {
+    definition,
+    runId: run?.id ?? null,
+    status: run ? run.status : "idle",
+    pagesCrawled: run?.pagesCrawled ?? 0,
+    listingsFound: run?.listingsFound ?? 0,
+    frontierSize: run?.frontierSize ?? 0,
+    startedAt: run?.startedAt ?? null,
+    finishedAt: run?.finishedAt ?? null,
+  };
+}
+
 // --- Catalog derivations ---
 
 // atsSplit partitions catalogued companies into ATS-hosted vs self-hosted (an

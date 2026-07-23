@@ -16,6 +16,7 @@ import {
   listCrawls,
   listDefinitions,
   listImportJobs,
+  listRecentListings,
   listSavedSearches,
   pauseCrawl,
   renameSavedSearch,
@@ -40,6 +41,9 @@ const IMPORT_JOBS_POLL_MS = 4000;
 // moves on a Collection Cycle, so a lazy cadence keeps each panel current without
 // hammering the query endpoint.
 const SEARCHES_POLL_MS = 15000;
+// The Overview's "recently found" feed tracks a live Collection Cycle, so it polls
+// on the run cadence rather than the lazy searches cadence.
+const RECENT_LISTINGS_POLL_MS = 5000;
 
 // MOBILE_QUERY is the shared phone-portrait breakpoint: below 640px CSS width
 // the dashboard switches to its mobile layout (drawer nav, stacked grids). It
@@ -78,6 +82,7 @@ export const keys = {
   definitionDefaults: (kind: CrawlKind) => ["definition-defaults", kind] as const,
   savedSearches: ["saved-searches"] as const,
   savedSearchResults: (id: string) => ["saved-search-results", id] as const,
+  recentListings: (limit: number) => ["recent-listings", limit] as const,
 };
 
 export function useRuns() {
@@ -224,6 +229,16 @@ export function useSavedSearchResults(id: string) {
     queryKey: keys.savedSearchResults(id),
     queryFn: () => getSavedSearchResults(id),
     refetchInterval: SEARCHES_POLL_MS,
+  });
+}
+
+// useRecentListings polls the newly-discovered corpus listings for the Overview's
+// live collection feed, on the run cadence so it tracks a running Cycle.
+export function useRecentListings(limit = 12) {
+  return useQuery({
+    queryKey: keys.recentListings(limit),
+    queryFn: () => listRecentListings(limit),
+    refetchInterval: RECENT_LISTINGS_POLL_MS,
   });
 }
 

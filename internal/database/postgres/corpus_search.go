@@ -116,9 +116,14 @@ func (r *CorpusRepository) SearchListings(ctx context.Context, q crawler.Listing
 	// skips a row. Fuzzy-only matches get ts_rank 0 and fall to the recency tiebreak, so
 	// exact beats fuzzy and newer beats older.
 	var orderBy string
-	if q.Sort == crawler.SortRecent || len(keywords) == 0 {
+	switch {
+	case q.Sort == crawler.SortFound:
+		// Newly-discovered postings first, regardless of keywords (the live
+		// collection feed). first_seen never bumps on re-verification.
+		orderBy = "first_seen DESC, id"
+	case q.Sort == crawler.SortRecent || len(keywords) == 0:
 		orderBy = "last_seen DESC, id"
-	} else {
+	default:
 		rank := next(strings.Join(keywords, " "))
 		orderBy = fmt.Sprintf(
 			"ts_rank(search_tsv, websearch_to_tsquery('simple', %s)) DESC, last_seen DESC, id",
