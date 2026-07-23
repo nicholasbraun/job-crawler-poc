@@ -4,6 +4,7 @@ import { OverviewPage } from "./pages/OverviewPage";
 import { DiscoveryPage } from "./pages/DiscoveryPage";
 import { CatalogPage } from "./pages/CatalogPage";
 import { SearchesPage } from "./pages/SearchesPage";
+import { SearchDetailPage } from "./pages/SearchDetailPage";
 
 // The server's SPA fallback rewrites unknown paths to index.html, so these
 // client routes need no server-side counterpart.
@@ -16,6 +17,7 @@ export const router = createBrowserRouter([
       { path: "discovery", element: <DiscoveryPage /> },
       { path: "catalog", element: <CatalogPage /> },
       { path: "searches", element: <SearchesPage /> },
+      { path: "searches/:id", element: <SearchDetailPage /> },
     ],
   },
 ]);
