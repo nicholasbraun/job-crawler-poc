@@ -126,7 +126,7 @@ func (r *CareerPageRepository) RecordProbe(ctx context.Context, careerPageID uui
 		careerPageID,
 	).Scan(&failures, &lastOK)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return crawler.DormancyResult{}, fmt.Errorf("postgres: dormancy probe for unknown career page %q", careerPageID)
+		return crawler.DormancyResult{}, fmt.Errorf("postgres: dormancy probe for unknown career page %q: %w", careerPageID, crawler.ErrNotFound)
 	}
 	if err != nil {
 		return crawler.DormancyResult{}, fmt.Errorf("postgres: error reading career page for dormancy probe: %w", err)

@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -606,9 +607,10 @@ func TestCorpusApplyCrawlProbe(t *testing.T) {
 		}
 	})
 
-	t.Run("probing an unknown listing errors", func(t *testing.T) {
-		if _, err := repo.ApplyCrawlProbe(t.Context(), "https://ex.com/j/nope", crawler.ProbeAlive, 3); err == nil {
-			t.Errorf("expected an error probing an unknown listing")
+	t.Run("probing an unknown listing reports ErrNotFound", func(t *testing.T) {
+		_, err := repo.ApplyCrawlProbe(t.Context(), "https://ex.com/j/nope", crawler.ProbeAlive, 3)
+		if !errors.Is(err, crawler.ErrNotFound) {
+			t.Errorf("probing an unknown listing: got %v, want it to wrap crawler.ErrNotFound", err)
 		}
 	})
 }

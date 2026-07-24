@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -287,6 +288,16 @@ func TestCareerPageRecordProbe(t *testing.T) {
 		}
 		if again.BecameDormant || again.ClosedListings != 0 {
 			t.Errorf("already-dormant page re-closed listings: %+v", again)
+		}
+	})
+
+	t.Run("probing an unknown page reports ErrNotFound", func(t *testing.T) {
+		pool := newTestPool(t)
+		repo := postgres.NewCareerPageRepository(pool)
+
+		_, err := repo.RecordProbe(t.Context(), uuid.New(), crawler.ProbeDead, crawler.DefaultPageDormancyThreshold)
+		if !errors.Is(err, crawler.ErrNotFound) {
+			t.Errorf("probing an unknown page: got %v, want it to wrap crawler.ErrNotFound", err)
 		}
 	})
 }

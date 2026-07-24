@@ -166,7 +166,7 @@ func (r *CorpusRepository) ApplyCrawlProbe(ctx context.Context, canonicalURL str
 		canonicalURL,
 	).Scan(&current.Open, &current.InconclusiveStreak)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return crawler.LifecycleState{}, fmt.Errorf("postgres: crawl probe for unknown listing %q", canonicalURL)
+		return crawler.LifecycleState{}, fmt.Errorf("postgres: crawl probe for unknown listing %q: %w", canonicalURL, crawler.ErrNotFound)
 	}
 	if err != nil {
 		return crawler.LifecycleState{}, fmt.Errorf("postgres: error reading listing for crawl probe: %w", err)
