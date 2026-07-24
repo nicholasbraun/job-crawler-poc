@@ -350,3 +350,40 @@ func TestCheckerRefetchesAfterTTL(t *testing.T) {
 		}
 	})
 }
+
+func TestCheckerReprobesUnavailableUnderShortTTL(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// A 5xx robots.txt is an RFC 9309 disallow-all, but a transient one: it
+		// must be cached only under the short unavailable TTL so a server blip does
+		// not lock the host out for the full positive TTL (default 1h).
+		getter := &fakeGetter{response: &robotstxt.Response{StatusCode: 503}}
+		checker := robotstxt.NewChecker(&fakeParser{}, getter)
+
+		const u = "http://example.com/ok"
+
+		// First probe hits the 5xx: blocked, and the verdict is cached.
+		if err := checker.Check(t.Context(), u); err == nil {
+			t.Fatalf("expected blocked on 5xx, got nil")
+		}
+
+		// Still inside the short unavailable TTL: served from cache, no re-fetch.
+		time.Sleep(robotstxt.DefaultUnavailableTTL - time.Minute)
+		if err := checker.Check(t.Context(), u); err == nil {
+			t.Fatalf("expected blocked on 5xx within unavailable TTL, got nil")
+		}
+		if got := getter.callCount(); got != 1 {
+			t.Fatalf("within unavailable TTL: got %d calls, want 1", got)
+		}
+
+		// Past the short unavailable TTL but far inside the 1h positive TTL: had the
+		// 5xx been cached under the positive TTL this would still be a hit. It must
+		// re-probe instead.
+		time.Sleep(2 * time.Minute)
+		if err := checker.Check(t.Context(), u); err == nil {
+			t.Fatalf("expected blocked on 5xx after unavailable TTL, got nil")
+		}
+		if got := getter.callCount(); got != 2 {
+			t.Fatalf("after unavailable TTL expiry: got %d calls, want 2", got)
+		}
+	})
+}

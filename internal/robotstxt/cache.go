@@ -19,10 +19,13 @@ type cache struct {
 	mu         sync.RWMutex
 	byHostname map[string]entry
 
-	// ttl caps how long a cached result is served before a re-fetch. maxEntries
-	// bounds the map. now is the clock, left as time.Now in production and faked
-	// by testing/synctest in tests.
+	// ttl caps how long a cached result is served before a re-fetch. negTTL does
+	// the same for a transiently-unavailable verdict (a 5xx robots.txt, which
+	// disallows all), kept short so a one-off server blip does not lock a host out
+	// for the full ttl. maxEntries bounds the map. now is the clock, left as
+	// time.Now in production and faked by testing/synctest in tests.
 	ttl        time.Duration
+	negTTL     time.Duration
 	maxEntries int
 	now        func() time.Time
 }
@@ -33,10 +36,11 @@ type entry struct {
 	expiry time.Time
 }
 
-func newCache(ttl time.Duration, maxEntries int) *cache {
+func newCache(ttl, negTTL time.Duration, maxEntries int) *cache {
 	return &cache{
 		byHostname: map[string]entry{},
 		ttl:        ttl,
+		negTTL:     negTTL,
 		maxEntries: maxEntries,
 		now:        time.Now,
 	}
@@ -66,7 +70,15 @@ func (c *cache) getOrFetch(hostname string, fetchFn func() (Rules, error)) (Rule
 		return e.rules, nil
 	}
 
-	c.storeLocked(hostname, entry{rules: rules, expiry: c.now().Add(c.ttl)})
+	// A transiently-unavailable verdict (disallowAll from a 5xx robots.txt) is
+	// cached only briefly (negTTL) so a one-second blip re-probes within minutes
+	// instead of blocking every URL on the host for the full ttl. A real parsed
+	// ruleset and the 404/410 allow-all keep the standard ttl.
+	ttl := c.ttl
+	if _, unavailable := rules.(disallowAll); unavailable {
+		ttl = c.negTTL
+	}
+	c.storeLocked(hostname, entry{rules: rules, expiry: c.now().Add(ttl)})
 
 	return rules, nil
 }

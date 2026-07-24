@@ -54,6 +54,12 @@ const (
 	// cache before a re-fetch. Robots rules change on the order of days, so an
 	// hour keeps a hot host's checks off the network while bounding staleness.
 	DefaultCacheTTL = time.Hour
+	// DefaultUnavailableTTL bounds how long a transiently-unavailable verdict is
+	// cached: a 5xx robots.txt disallows all paths per RFC 9309 §2.4, but that is
+	// a server blip, not a durable rule. Kept far shorter than DefaultCacheTTL so
+	// the host re-probes within minutes rather than locking out every URL on it
+	// for an hour. Mirrors the DNS cache's negative TTL (internal/downloader).
+	DefaultUnavailableTTL = 5 * time.Minute
 	// DefaultCacheSize bounds how many hosts' Rules are cached, so the cache
 	// cannot grow without limit across a discovery crawl that touches tens of
 	// thousands of hosts. Sized to match the DNS cache (internal/downloader): a
@@ -100,7 +106,7 @@ func NewChecker(parser Parser, downloader Getter, opts ...CheckerOption) *Checke
 	return &Checker{
 		parser:     parser,
 		downloader: downloader,
-		cache:      newCache(cfg.cacheTTL, cfg.cacheSize),
+		cache:      newCache(cfg.cacheTTL, DefaultUnavailableTTL, cfg.cacheSize),
 		sf:         new(singleflight.Group),
 	}
 }
