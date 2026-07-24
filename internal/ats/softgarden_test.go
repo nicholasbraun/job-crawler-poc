@@ -66,7 +66,7 @@ const softgardenSample = `{
 
 func TestSoftgardenFetchMapsBoard(t *testing.T) {
 	fetcher := newSoftgardenFetcher(t, serveJSON(softgardenSample))
-	got, err := fetcher.Fetch(t.Context(), "demo.career.softgarden.de")
+	got, err := fetcher.Fetch(t.Context(), "demo")
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestSoftgardenFetchMapsBoard(t *testing.T) {
 func TestSoftgardenFetchEmptyBoard(t *testing.T) {
 	fetcher := newSoftgardenFetcher(t, serveJSON(`{"dataFeedElement":[]}`))
 
-	got, err := fetcher.Fetch(t.Context(), "demo.career.softgarden.de")
+	got, err := fetcher.Fetch(t.Context(), "demo")
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestSoftgardenSkipsItemWithoutURL(t *testing.T) {
 	]}`
 	fetcher := newSoftgardenFetcher(t, serveJSON(body))
 
-	got, err := fetcher.Fetch(t.Context(), "demo.career.softgarden.de")
+	got, err := fetcher.Fetch(t.Context(), "demo")
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestSoftgardenDescriptionStrips(t *testing.T) {
 	}}]}`
 	fetcher := newSoftgardenFetcher(t, serveJSON(body))
 
-	got, err := fetcher.Fetch(t.Context(), "demo.career.softgarden.de")
+	got, err := fetcher.Fetch(t.Context(), "demo")
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestSoftgardenLocationComposition(t *testing.T) {
 			body := `{"dataFeedElement":[{"item":{"url":"https://demo.career.softgarden.de/jobs/1/x/","jobLocation":{"address":` + tc.addr + `}}}]}`
 			fetcher := newSoftgardenFetcher(t, serveJSON(body))
 
-			got, err := fetcher.Fetch(t.Context(), "demo.career.softgarden.de")
+			got, err := fetcher.Fetch(t.Context(), "demo")
 			if err != nil {
 				t.Fatalf("Fetch: %v", err)
 			}
@@ -276,7 +276,7 @@ func TestSoftgardenCountryHint(t *testing.T) {
 			body := `{"dataFeedElement":[{"item":{"url":"https://demo.career.softgarden.de/jobs/1/x/","jobLocation":{"address":` + tc.addr + `}}}]}`
 			fetcher := newSoftgardenFetcher(t, serveJSON(body))
 
-			got, err := fetcher.Fetch(t.Context(), "demo.career.softgarden.de")
+			got, err := fetcher.Fetch(t.Context(), "demo")
 			if err != nil {
 				t.Fatalf("Fetch: %v", err)
 			}
@@ -308,7 +308,7 @@ func TestSoftgardenMalformedDatePosted(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fetcher := newSoftgardenFetcher(t, serveJSON(tc.body))
 
-			got, err := fetcher.Fetch(t.Context(), "demo.career.softgarden.de")
+			got, err := fetcher.Fetch(t.Context(), "demo")
 			if err != nil {
 				t.Fatalf("Fetch: %v", err)
 			}
@@ -322,6 +322,36 @@ func TestSoftgardenMalformedDatePosted(t *testing.T) {
 	}
 }
 
+func TestSoftgardenTolerantIdentifier(t *testing.T) {
+	// identifier.value is normally a number but is a string (or absent) on some tenants.
+	// A non-numeric value must degrade to a stringified SourceID and NEVER fail the
+	// whole-feed decode (ADR-0035) — the same fail-soft as a bad datePosted, so one odd
+	// posting can't wipe an entire board.
+	body := `{"dataFeedElement":[
+		{"item":{"url":"https://demo.career.softgarden.de/jobs/1/a/","identifier":{"@type":"PropertyValue","value":"REQ-ABC"}}},
+		{"item":{"url":"https://demo.career.softgarden.de/jobs/2/b/","identifier":{"@type":"PropertyValue","value":42}}},
+		{"item":{"url":"https://demo.career.softgarden.de/jobs/3/c/"}}
+	]}`
+	fetcher := newSoftgardenFetcher(t, serveJSON(body))
+
+	got, err := fetcher.Fetch(t.Context(), "demo")
+	if err != nil {
+		t.Fatalf("Fetch: %v (a string identifier must not fail the board)", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d listings, want 3 (no posting dropped by an odd identifier)", len(got))
+	}
+	if got[0].SourceID != "REQ-ABC" {
+		t.Errorf("SourceID[0] = %q, want the stringified value %q", got[0].SourceID, "REQ-ABC")
+	}
+	if got[1].SourceID != "42" {
+		t.Errorf("SourceID[1] = %q, want the numeric value %q", got[1].SourceID, "42")
+	}
+	if got[2].SourceID != "" {
+		t.Errorf("SourceID[2] = %q, want empty for an absent identifier", got[2].SourceID)
+	}
+}
+
 func TestSoftgardenBuildsBoardURL(t *testing.T) {
 	var gotPath string
 	handler := func(w http.ResponseWriter, r *http.Request) {
@@ -331,7 +361,7 @@ func TestSoftgardenBuildsBoardURL(t *testing.T) {
 	}
 	fetcher := newSoftgardenFetcher(t, handler)
 
-	if _, err := fetcher.Fetch(t.Context(), "demo.career.softgarden.de"); err != nil {
+	if _, err := fetcher.Fetch(t.Context(), "demo"); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	if gotPath != "/jobs.feed.json" {
@@ -339,10 +369,12 @@ func TestSoftgardenBuildsBoardURL(t *testing.T) {
 	}
 }
 
-func TestSoftgardenTemplatesFullHost(t *testing.T) {
-	// The tenant IS the full board host, so the base templates the WHOLE host, not a
-	// bare slug: a multi-label tenant must not be reduced. A test base carrying the
-	// placeholder in the path proves the substitution without needing real hosts.
+func TestSoftgardenTemplatesTenantSlug(t *testing.T) {
+	// The ATS Fetch lane passes the leftmost catalog label (the tenant slug), which the
+	// base URL templates into the board host. A test base carrying the {tenant}
+	// placeholder in the path proves the substitution without needing a real host; that
+	// the DEFAULT base's .career.softgarden.de suffix reconstructs the real board host
+	// from the slug is pinned end-to-end by collection.TestSubdomainProviderHostContract.
 	var gotPath string
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
@@ -353,11 +385,11 @@ func TestSoftgardenTemplatesFullHost(t *testing.T) {
 	t.Cleanup(srv.Close)
 	fetcher := ats.NewSoftgardenFetcher(ats.WithSoftgardenBaseURL(srv.URL + "/{tenant}"))
 
-	if _, err := fetcher.Fetch(t.Context(), "demo.career.softgarden.de"); err != nil {
+	if _, err := fetcher.Fetch(t.Context(), "demo"); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if gotPath != "/demo.career.softgarden.de/jobs.feed.json" {
-		t.Errorf("request path = %q, want %q (full host templated)", gotPath, "/demo.career.softgarden.de/jobs.feed.json")
+	if gotPath != "/demo/jobs.feed.json" {
+		t.Errorf("request path = %q, want %q (tenant slug substituted)", gotPath, "/demo/jobs.feed.json")
 	}
 }
 
@@ -372,7 +404,7 @@ func TestSoftgardenSendsNoAuthHeader(t *testing.T) {
 	}
 	fetcher := newSoftgardenFetcher(t, handler)
 
-	if _, err := fetcher.Fetch(t.Context(), "demo.career.softgarden.de"); err != nil {
+	if _, err := fetcher.Fetch(t.Context(), "demo"); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	if gotAuth != "" {
@@ -386,7 +418,7 @@ func TestSoftgardenNon200ReturnsErrBoardStatus(t *testing.T) {
 	}
 	fetcher := newSoftgardenFetcher(t, handler)
 
-	got, err := fetcher.Fetch(t.Context(), "missing.career.softgarden.de")
+	got, err := fetcher.Fetch(t.Context(), "missing")
 	if !errors.Is(err, ats.ErrBoardStatus) {
 		t.Fatalf("err = %v, want it to wrap ErrBoardStatus", err)
 	}
@@ -401,7 +433,7 @@ func TestSoftgardenTruncatedBodyIsHardError(t *testing.T) {
 	// partial. A single-shot provider returns a hard error, NOT ErrBoardIncomplete.
 	fetcher := newSoftgardenFetcher(t, serveJSON(`{"dataFeedElement":[{"item":{"url":"https://x/a"`))
 
-	_, err := fetcher.Fetch(t.Context(), "demo.career.softgarden.de")
+	_, err := fetcher.Fetch(t.Context(), "demo")
 	if err == nil {
 		t.Fatal("want a decode error for a truncated body")
 	}

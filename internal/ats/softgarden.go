@@ -22,12 +22,14 @@ const (
 	// enforced by the wiring point (pinned by TestSoftgardenCatalogRecognition).
 	ProviderSoftgarden = "softgarden"
 
-	// softgardenDefaultBaseURL templates the per-tenant board host via a "{tenant}"
-	// placeholder. softgarden's tenant IS the FULL board host (a career.softgarden.de
-	// subdomain OR a custom-domain CNAME), so the placeholder is the whole host — there
-	// is no fixed suffix to append, unlike Recruitee's ".recruitee.com". A test override
-	// with no placeholder is used verbatim.
-	softgardenDefaultBaseURL = "https://{tenant}"
+	// softgardenDefaultBaseURL templates the tenant slug into the board host via a
+	// "{tenant}" placeholder. The ATS Fetch lane hands the fetcher the leftmost catalog
+	// label (e.g. "demo" for demo.career.softgarden.de), which is templated into the
+	// fixed .career.softgarden.de board host — mirroring Recruitee/Teamtailor's
+	// "{tenant}.<suffix>" bases. Custom-domain CNAME tenants are NOT host-recognized
+	// (they fall to eTLD+1 and the crawl lane), so this fetcher only ever receives the
+	// leftmost label. A test override with no placeholder is used verbatim.
+	softgardenDefaultBaseURL = "https://{tenant}.career.softgarden.de"
 	softgardenDefaultTimeout = 15 * time.Second
 )
 
@@ -78,11 +80,11 @@ func NewSoftgardenFetcher(opts ...SoftgardenFetcherOption) *SoftgardenFetcher {
 	return s
 }
 
-// Fetch returns the tenant's postings mapped to Job Listings. The tenant is the FULL
-// board host (a career.softgarden.de subdomain or a custom-domain CNAME), which is
-// templated into the host and read from /jobs.feed.json — the whole open set in one
-// payload (no pagination, no detail call; a very large board is bounded by the shared
-// maxBoardBytes ceiling). No Authorization/token header is sent: the public feed is
+// Fetch returns the tenant's postings mapped to Job Listings. The tenant is the
+// leftmost catalog label (the slug, e.g. "demo"), templated into the fixed
+// .career.softgarden.de board host and read from /jobs.feed.json — the whole open
+// set in one payload (no pagination, no detail call; a very large board is bounded
+// by the shared maxBoardBytes ceiling). No Authorization/token header is sent: the public feed is
 // zero-auth, and the dev.softgarden.de token/OAuth API is deliberately avoided. A
 // non-200 response yields ErrBoardStatus; a decode failure is wrapped. Company and
 // CompanyKey are left empty for the ingest lane to stamp from the page's Owner
@@ -99,7 +101,7 @@ func (s *SoftgardenFetcher) Fetch(ctx context.Context, tenant string) ([]*crawle
 		return nil, fmt.Errorf("ats: softgarden: empty tenant slug")
 	}
 
-	// The tenant is a trusted host string that goes into the host, so it is NOT
+	// The tenant slug is a trusted host label that goes into the host, so it is NOT
 	// url.PathEscaped — escaping a host is wrong (same reasoning as Recruitee).
 	endpoint := strings.Replace(s.baseURL, "{tenant}", tenant, 1) + "/jobs.feed.json"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -157,11 +159,46 @@ type softgardenItem struct {
 	JobLocation softgardenJobLocation `json:"jobLocation"`
 }
 
-// softgardenIdentifier is the schema.org PropertyValue. Value is the stable numeric
-// posting id; json.Number renders the integer exactly and yields "" when absent.
+// softgardenIdentifier is the schema.org PropertyValue carrying the stable posting id.
 type softgardenIdentifier struct {
-	Value json.Number `json:"value"`
+	Value softgardenIDValue `json:"value"`
 }
+
+// softgardenIDValue holds identifier.value, which is normally a JSON number but is a
+// string on some tenants (e.g. "REQ-ABC"). It decodes either form into its literal
+// text and NEVER errors on another shape or an absent value, so a single odd
+// identifier degrades to an empty SourceID rather than aborting the whole-feed decode
+// (ADR-0035: a partial/odd board must degrade to keep-what-we-saw, never a hard
+// failure) — the same fail-soft the mapper already applies to datePosted.
+type softgardenIDValue struct {
+	s string
+}
+
+// UnmarshalJSON accepts a JSON number or string (any other shape, or null, leaves the
+// value empty) and never returns an error.
+func (v *softgardenIDValue) UnmarshalJSON(data []byte) error {
+	s := strings.TrimSpace(string(data))
+	if s == "" || s == "null" {
+		return nil
+	}
+	if s[0] == '"' {
+		var str string
+		// Tolerate a malformed string literal: leave the value empty rather than fail.
+		_ = json.Unmarshal([]byte(s), &str)
+		v.s = str
+		return nil
+	}
+	// A JSON number renders its integer exactly; a bool/object/array leaves it empty.
+	var n json.Number
+	if err := json.Unmarshal([]byte(s), &n); err == nil {
+		v.s = n.String()
+	}
+	return nil
+}
+
+// String returns the stringified identifier value, or "" when it was absent or an
+// unsupported shape.
+func (v softgardenIDValue) String() string { return v.s }
 
 type softgardenJobLocation struct {
 	Address softgardenAddress `json:"address"`
@@ -183,10 +220,11 @@ type softgardenAddress struct {
 // appears inside the free-text description HTML, so WorkArrangement stays Unspecified —
 // a silent provider is never Onsite (ADR-0030); TechStack is not set (ADR-0023).
 //
-// SourceID maps identifier.value — the stable numeric posting id — even though it is
-// not in the ticket's literal field map: the canonical item.url embeds a mutable title
-// slug, so without a stable SourceID a retitle would re-slug into a "new" listing under
-// listingid.FromURL and the original would be absence-swept-closed (ADR-0034/ADR-0035).
+// SourceID maps identifier.value — the stable posting id (normally a number, a string
+// on some tenants) — even though it is not in the ticket's literal field map: the
+// canonical item.url embeds a mutable title slug, so without a stable SourceID a
+// retitle would re-slug into a "new" listing under listingid.FromURL and the original
+// would be absence-swept-closed (ADR-0034/ADR-0035).
 func mapSoftgardenItem(item softgardenItem) *crawler.JobListing {
 	listing := &crawler.JobListing{
 		Title:           item.Title,
