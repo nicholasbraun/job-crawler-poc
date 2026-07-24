@@ -110,7 +110,7 @@ func (r *RecruiteeFetcher) Fetch(ctx context.Context, tenant string) ([]*crawler
 	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ats: recruitee tenant %q: status %d: %w", tenant, res.StatusCode, ErrBoardStatus)
+		return nil, fmt.Errorf("ats: recruitee tenant %q: %w", tenant, &BoardStatusError{StatusCode: res.StatusCode})
 	}
 
 	var resp recruiteeOffersResponse

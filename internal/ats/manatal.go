@@ -217,7 +217,7 @@ func (m *ManatalFetcher) getInto(ctx context.Context, endpoint string, dst any) 
 	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("open/v1 status %d: %w", res.StatusCode, ErrBoardStatus)
+		return fmt.Errorf("open/v1: %w", &BoardStatusError{StatusCode: res.StatusCode})
 	}
 	if err := json.NewDecoder(io.LimitReader(res.Body, maxBoardBytes)).Decode(dst); err != nil {
 		return fmt.Errorf("decode: %w", err)

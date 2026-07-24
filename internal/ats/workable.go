@@ -107,7 +107,7 @@ func (w *WorkableFetcher) Fetch(ctx context.Context, tenant string) ([]*crawler.
 	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ats: workable tenant %q: status %d: %w", tenant, res.StatusCode, ErrBoardStatus)
+		return nil, fmt.Errorf("ats: workable tenant %q: %w", tenant, &BoardStatusError{StatusCode: res.StatusCode})
 	}
 
 	// Every observed board returned all jobs in one payload, so this issues a single

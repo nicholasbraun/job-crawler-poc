@@ -246,6 +246,15 @@ func TestGreenhouseNon200ReturnsErrBoardStatus(t *testing.T) {
 	if !errors.Is(err, ats.ErrBoardStatus) {
 		t.Fatalf("err = %v, want it to wrap ErrBoardStatus", err)
 	}
+	// The HTTP code must ride out on a *BoardStatusError so the ingest lane can tell a
+	// 404 (dead board) from a 429/5xx (transient) instead of mass-closing on either (#208).
+	var se *ats.BoardStatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("err = %v, want it to carry a *BoardStatusError", err)
+	}
+	if se.StatusCode != http.StatusNotFound {
+		t.Errorf("StatusCode = %d, want %d", se.StatusCode, http.StatusNotFound)
+	}
 	if got != nil {
 		t.Errorf("listings = %v, want nil on a non-200 response", got)
 	}

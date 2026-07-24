@@ -3,6 +3,7 @@ package atsingest_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strconv"
 	"testing"
 	"time"
@@ -327,8 +328,10 @@ func TestProcessorClosesAbsentOnCompleteFetch(t *testing.T) {
 }
 
 // TestProcessorRecordsDormancy asserts the board-reach probe feeds Career-Page
-// dormancy (ADR-0035): a clean/incomplete fetch is Alive; a board-status error is
-// Dead; and an embed-discovered board (Nil CareerPageID) records nothing.
+// dormancy (ADR-0035): a clean/incomplete fetch is Alive; a 404/410 board is Dead
+// while a 429/5xx board is Inconclusive (#208 — a rate-limit or transient degrade
+// must not tip a live board dormant); and an embed-discovered board (Nil
+// CareerPageID) records nothing.
 func TestProcessorRecordsDormancy(t *testing.T) {
 	page := uuid.New()
 
@@ -350,10 +353,10 @@ func TestProcessorRecordsDormancy(t *testing.T) {
 		}
 	})
 
-	t.Run("board-status error records Dead", func(t *testing.T) {
+	t.Run("404 board-status error records Dead", func(t *testing.T) {
 		dormancy := &spyDormancy{}
 		proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
-			ResolveFetcher: resolveTo(&stubFetcher{err: ats.ErrBoardStatus}),
+			ResolveFetcher: resolveTo(&stubFetcher{err: &ats.BoardStatusError{StatusCode: http.StatusNotFound}}),
 			Repository:     &spyRepo{},
 			Liveness:       &spyLiveness{},
 			Dormancy:       dormancy,
@@ -365,6 +368,31 @@ func TestProcessorRecordsDormancy(t *testing.T) {
 		probes := dormancy.recorded()
 		if len(probes) != 1 || probes[0].outcome != crawler.ProbeDead {
 			t.Fatalf("dormancy probes = %+v, want one Dead", probes)
+		}
+	})
+
+	// #208: a 429 (our own politeness signal) or a 5xx (transient degrade) must fold
+	// to Inconclusive, so ~5 rate-limited cycles never tip a live board dormant and
+	// mass-close its open listings. The crawl lane already draws this line.
+	t.Run("429/5xx board-status error records Inconclusive", func(t *testing.T) {
+		for _, code := range []int{http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable} {
+			t.Run(strconv.Itoa(code), func(t *testing.T) {
+				dormancy := &spyDormancy{}
+				proc := atsingest.NewProcessor(&atsingest.ProcessorConfig{
+					ResolveFetcher: resolveTo(&stubFetcher{err: &ats.BoardStatusError{StatusCode: code}}),
+					Repository:     &spyRepo{},
+					Liveness:       &spyLiveness{},
+					Dormancy:       dormancy,
+				})
+				err := proc.Process(t.Context(), &atsingest.FetchTask{Provider: "greenhouse", TenantSlug: "acme", CareerPageID: page})
+				if err == nil || !errors.Is(err, ats.ErrBoardStatus) {
+					t.Fatalf("Process error = %v, want the board-status error propagated", err)
+				}
+				probes := dormancy.recorded()
+				if len(probes) != 1 || probes[0].outcome != crawler.ProbeInconclusive {
+					t.Fatalf("dormancy probes = %+v, want one Inconclusive for status %d", probes, code)
+				}
+			})
 		}
 	})
 

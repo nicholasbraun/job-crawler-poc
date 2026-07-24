@@ -125,7 +125,7 @@ func (t *TeamtailorFetcher) Fetch(ctx context.Context, tenant string) ([]*crawle
 		// Unlike Personio's opt-in feed, Teamtailor's /jobs.rss is not opt-in, so a 404
 		// is a genuinely missing/wrong board (not "no open roles") and surfaces as
 		// ErrBoardStatus rather than an empty slice.
-		return nil, fmt.Errorf("ats: teamtailor tenant %q: status %d: %w", tenant, res.StatusCode, ErrBoardStatus)
+		return nil, fmt.Errorf("ats: teamtailor tenant %q: %w", tenant, &BoardStatusError{StatusCode: res.StatusCode})
 	}
 
 	var feed teamtailorFeed

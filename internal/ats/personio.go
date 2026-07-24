@@ -127,7 +127,7 @@ func (p *PersonioFetcher) Fetch(ctx context.Context, tenant string) ([]*crawler.
 		return []*crawler.JobListing{}, nil
 	}
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ats: personio tenant %q: status %d: %w", tenant, res.StatusCode, ErrBoardStatus)
+		return nil, fmt.Errorf("ats: personio tenant %q: %w", tenant, &BoardStatusError{StatusCode: res.StatusCode})
 	}
 
 	var doc personioJobs

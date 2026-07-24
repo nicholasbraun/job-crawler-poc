@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -111,10 +112,10 @@ func NewProcessor(cfg *ProcessorConfig) *Processor {
 // then keeps the board's Liveness current (ADR-0035): the absence-sweep closes Open
 // listings not re-seen on a complete fetch, and the board-reach outcome folds into
 // Career-Page dormancy. An unregistered provider is a no-op (routing already gated
-// it). A hard fetch failure records a dormancy probe (Dead on a board-status error,
-// Inconclusive otherwise), then propagates so the pool logs it and the tenant is
-// retried next Cycle; per-posting save errors are joined so one bad posting neither
-// drops the rest nor aborts the pool.
+// it). A hard fetch failure records a dormancy probe (Dead only on a 404/410 board,
+// Inconclusive on a 429/5xx/transport blip), then propagates so the pool logs it and
+// the tenant is retried next Cycle; per-posting save errors are joined so one bad
+// posting neither drops the rest nor aborts the pool.
 func (p *Processor) Process(ctx context.Context, task *FetchTask) error {
 	fetcher, ok := p.resolveFetcher(task.Provider)
 	if !ok {
@@ -130,8 +131,9 @@ func (p *Processor) Process(ctx context.Context, task *FetchTask) error {
 
 	listings, err := fetcher.Fetch(ctx, task.TenantSlug)
 	if err != nil && !errors.Is(err, ats.ErrBoardIncomplete) {
-		// Hard failure: classify for dormancy (a board-status error is hard-dead; a
-		// decode/context/network error is inconclusive), record it, then propagate.
+		// Hard failure: classify for dormancy (only a 404/410 board is hard-dead; a
+		// 429/5xx board, decode, context, or network error is inconclusive), record it,
+		// then propagate.
 		p.recordDormancy(ctx, task, classifyBoard(err))
 		return fmt.Errorf("atsingest: fetching %s tenant %q: %w", task.Provider, task.TenantSlug, err)
 	}
@@ -219,13 +221,16 @@ func (p *Processor) recordDormancy(ctx context.Context, task *FetchTask, outcome
 }
 
 // classifyBoard maps a hard (non-ErrBoardIncomplete) fetch error to a dormancy
-// ProbeOutcome (ADR-0035): a board-status error (a 404/non-200 board) is hard-dead;
-// any other error (a decode, context, or network failure) is inconclusive so a
-// transient blip never counts toward dormancy. ErrBoardStatus carries no HTTP code,
-// so a persistent 5xx counts as hard-dead — an accepted imprecision the high page
-// threshold absorbs (the crawl lane demonstrates the 404 case precisely).
+// ProbeOutcome (ADR-0035), mirroring the crawl lane's classifyStatus: only a 404/410
+// board-status response (the tenant is gone) is hard-dead. Every other error — a
+// 429/5xx board-status (rate-limited or degraded), a decode, context, or network
+// failure — is inconclusive, so a transient blip or our own politeness signal never
+// counts toward dormancy and never mass-closes a live board. The code rides out of
+// the fetcher on a *ats.BoardStatusError; a bare error with no code folds to
+// inconclusive (do-least-harm).
 func classifyBoard(err error) crawler.ProbeOutcome {
-	if errors.Is(err, ats.ErrBoardStatus) {
+	var se *ats.BoardStatusError
+	if errors.As(err, &se) && (se.StatusCode == http.StatusNotFound || se.StatusCode == http.StatusGone) {
 		return crawler.ProbeDead
 	}
 	return crawler.ProbeInconclusive

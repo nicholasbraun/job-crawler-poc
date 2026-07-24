@@ -95,7 +95,7 @@ func (a *AshbyFetcher) Fetch(ctx context.Context, tenant string) ([]*crawler.Job
 	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ats: ashby tenant %q: status %d: %w", tenant, res.StatusCode, ErrBoardStatus)
+		return nil, fmt.Errorf("ats: ashby tenant %q: %w", tenant, &BoardStatusError{StatusCode: res.StatusCode})
 	}
 
 	var resp ashbyJobsResponse

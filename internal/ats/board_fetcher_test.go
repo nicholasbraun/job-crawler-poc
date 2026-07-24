@@ -2,11 +2,33 @@ package ats_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
 	"testing"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/ats"
 )
+
+// TestBoardStatusError asserts a BoardStatusError both matches the coarse
+// ErrBoardStatus sentinel (so existing errors.Is checks survive) and surrenders its
+// HTTP code via errors.As through an outer fmt.Errorf wrap — the seam #208 needs to
+// tell a dead board (404/410) from a transient one (429/5xx).
+func TestBoardStatusError(t *testing.T) {
+	wrapped := fmt.Errorf("ats: greenhouse tenant %q: %w", "acme", &ats.BoardStatusError{StatusCode: http.StatusTooManyRequests})
+
+	if !errors.Is(wrapped, ats.ErrBoardStatus) {
+		t.Errorf("errors.Is(err, ErrBoardStatus) = false, want true")
+	}
+	var se *ats.BoardStatusError
+	if !errors.As(wrapped, &se) {
+		t.Fatalf("errors.As(err, *BoardStatusError) = false, want true")
+	}
+	if se.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("StatusCode = %d, want %d", se.StatusCode, http.StatusTooManyRequests)
+	}
+}
 
 // stubFetcher is an inline test double for BoardFetcher: it returns its canned
 // listings and error, and records the tenant it was called with.

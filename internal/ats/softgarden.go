@@ -119,7 +119,7 @@ func (s *SoftgardenFetcher) Fetch(ctx context.Context, tenant string) ([]*crawle
 	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ats: softgarden tenant %q: status %d: %w", tenant, res.StatusCode, ErrBoardStatus)
+		return nil, fmt.Errorf("ats: softgarden tenant %q: %w", tenant, &BoardStatusError{StatusCode: res.StatusCode})
 	}
 
 	var feed softgardenFeed
