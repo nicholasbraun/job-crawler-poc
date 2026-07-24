@@ -72,10 +72,19 @@ func WithMaxBackoff(mb time.Duration) RetryClientOption {
 func (rc *RetryClient) Get(ctx context.Context, url string) (*Response, error) {
 	currentBackoff := rc.backoff
 
+	var lastErr error
 	for i := 1; i <= rc.maxTries; i++ {
 		res, err := rc.inner.Get(ctx, url)
 		if !isRetryable(err) {
 			return res, err
+		}
+		lastErr = err
+
+		// No point backing off after the final attempt: no retry follows it, so
+		// sleeping would only pin a worker before the loop exits with the
+		// terminal error below.
+		if i == rc.maxTries {
+			break
 		}
 
 		// Honor a server-provided Retry-After hint when present; otherwise fall
@@ -98,7 +107,9 @@ func (rc *RetryClient) Get(ctx context.Context, url string) (*Response, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("could not GET %s after %d tries", url, rc.maxTries)
+	// Wrap the last underlying failure so callers can errors.Is/errors.As it
+	// (e.g. to a *StatusError or a timeout) after retries are exhausted.
+	return nil, fmt.Errorf("could not GET %s after %d tries: %w", url, rc.maxTries, lastErr)
 }
 
 func isRetryable(err error) bool {
