@@ -59,9 +59,25 @@ const payloadField = "payload"
 // while their owner is alive (a wasted duplicate LLM call). The reclaimer's own
 // pending-list scan is separately sized by defaultBatchCount, since listing more
 // idle entries per round only speeds redelivery/dead-lettering.
+// llmOpTimeout mirrors the OpenRouter clients' end-to-end per-request timeout
+// (openrouter.defaultTimeout, 5m — a generous bound sized for a cold local
+// model): the longest a live worker can spend inside one entry's model call.
+// llmstream stays decoupled from the openrouter package, so this is a documented
+// mirror rather than an import; keep the two in step if that timeout changes.
+const llmOpTimeout = 5 * time.Minute
+
 const (
-	defaultMaxAttempts      = 5
-	defaultMinIdle          = 30 * time.Second
+	defaultMaxAttempts = 5
+	// defaultMinIdle is the first-reclaim crash window applied when a caller omits
+	// WithMinIdle. It sits a full minute ABOVE llmOpTimeout so the whole Process
+	// (one model call, bounded by the LLM client's timeout, plus the follow-on
+	// Postgres upsert) always completes before this window opens — otherwise a
+	// slow-but-alive worker's in-flight entry would be reclaimed and re-processed,
+	// a wasted duplicate LLM call. The old 30s default sat far below the 5m LLM
+	// timeout and was exactly that footgun for callers who did not tune it.
+	// Explicit WithMinIdle overrides (e.g. small values in tests) are honoured as
+	// given; this is the safe floor only for the default.
+	defaultMinIdle          = llmOpTimeout + time.Minute
 	defaultReclaimInterval  = 30 * time.Second
 	defaultBlockDur         = 5 * time.Second
 	defaultDepthInterval    = 10 * time.Second
@@ -95,12 +111,14 @@ func WithMaxAttempts[T any](n int) Option[T] {
 
 // WithMinIdle sets how long a pending (delivered-but-unacked) entry on its FIRST,
 // never-reclaimed delivery must sit idle before the reclaimer treats its worker as
-// dead and redelivers it (default 30s). It must exceed the maximum time a live
-// worker spends on one entry — for the LLM stage, the whole Process: one model
-// call (bounded by the http client's timeout) plus the follow-on Postgres upsert —
-// or a slow-but-alive worker's in-flight entry is reclaimed and processed a second
-// time (a wasted, duplicate LLM call); only a truly dead worker should ever sit
-// idle this long. Retries of an already-failed entry are paced by the shorter
+// dead and redelivers it (default defaultMinIdle, one minute above the LLM
+// operation timeout). It must exceed the maximum time a live worker spends on one
+// entry — for the LLM stage, the whole Process: one model call (bounded by the
+// http client's timeout) plus the follow-on Postgres upsert — or a slow-but-alive
+// worker's in-flight entry is reclaimed and processed a second time (a wasted,
+// duplicate LLM call); only a truly dead worker should ever sit idle this long.
+// That is why the default is floored above llmOpTimeout rather than a naive few
+// seconds. Retries of an already-failed entry are paced by the shorter
 // WithReclaimInterval, not this window. Small values make redelivery fast for tests.
 func WithMinIdle[T any](d time.Duration) Option[T] {
 	return func(s *Stage[T]) { s.minIdle = d }

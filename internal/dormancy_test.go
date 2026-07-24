@@ -48,6 +48,12 @@ func TestDormant(t *testing.T) {
 		{4, 5, false},
 		{5, 5, true},
 		{6, 5, true},
+		// Fail-safe (#227): a threshold <= 0 disables dormancy — never tip dormant,
+		// even with failures at/above it. Without the guard 0 >= 0 would close a
+		// healthy page's whole board on its first probe.
+		{0, 0, false},
+		{3, 0, false},
+		{3, -1, false},
 	}
 	for _, tt := range tests {
 		if got := crawler.Dormant(tt.failures, tt.threshold); got != tt.want {

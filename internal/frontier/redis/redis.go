@@ -87,11 +87,16 @@ redis.call('LPUSH', queuePrefix .. domain, member)
 -- number of entries this insert evicted and the post-eviction ZCARD, both
 -- derived from the single ZCARD above (no second ZCARD): size = card - evicted.
 local card    = redis.call('ZCARD', visited)
-local over    = card - cap
 local evicted = 0
-if over > 0 then
-  redis.call('ZREMRANGEBYRANK', visited, 0, over - 1)
-  evicted = over
+-- A cap <= 0 DISABLES capping (unbounded; never evict): the fail-safe for a
+-- misconfigured CRAWL_VISITED_CAP=0/negative, which would otherwise make over =
+-- card and shed the WHOLE visited set on every insert, unbounding the re-crawl.
+if cap > 0 then
+  local over = card - cap
+  if over > 0 then
+    redis.call('ZREMRANGEBYRANK', visited, 0, over - 1)
+    evicted = over
+  end
 end
 return {'NEW', evicted, card - evicted}
 `)
@@ -109,10 +114,14 @@ local cap = tonumber(ARGV[2])
 for i = 3, #ARGV do
   redis.call('ZADD', visited, 'NX', now, ARGV[i])
 end
-local card = redis.call('ZCARD', visited)
-local over = card - cap
-if over > 0 then
-  redis.call('ZREMRANGEBYRANK', visited, 0, over - 1)
+-- A cap <= 0 disables capping (unbounded; never evict), matching addScript's
+-- fail-safe so a misconfigured CRAWL_VISITED_CAP never wipes the visited set.
+if cap > 0 then
+  local card = redis.call('ZCARD', visited)
+  local over = card - cap
+  if over > 0 then
+    redis.call('ZREMRANGEBYRANK', visited, 0, over - 1)
+  end
 end
 return redis.call('ZCARD', visited)
 `)
@@ -388,7 +397,10 @@ func WithMode(m frontier.Mode) Option {
 
 // WithVisitedCap sets the per-run ceiling on the visited ZSET's cardinality;
 // once exceeded, the oldest-inserted entries are FIFO-evicted inline in the add
-// script (ADR-0027). Defaults to DefaultVisitedCap.
+// script (ADR-0027). Defaults to DefaultVisitedCap. A value <= 0 DISABLES capping
+// (unbounded; the visited set never evicts) — the fail-safe so a misconfigured
+// CRAWL_VISITED_CAP=0 never evicts the whole set on every insert (which would
+// unbound the re-crawl), mirroring the "<= 0 leaves the signal silent" convention.
 func WithVisitedCap(n int) Option {
 	return func(f *Frontier) { f.visitedCap = n }
 }

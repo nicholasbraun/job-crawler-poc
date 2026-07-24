@@ -98,6 +98,26 @@ func TestNextLiveness(t *testing.T) {
 			threshold: 3,
 			want:      crawler.LifecycleState{Open: false, InconclusiveStreak: 4},
 		},
+		{
+			// Fail-safe (#227): a zero threshold must NOT close on the first
+			// Inconclusive probe. It disables the staleness backstop entirely; the
+			// streak still accrues.
+			name:      "zero threshold never closes, only accrues the streak",
+			current:   crawler.LifecycleState{Open: true, InconclusiveStreak: 0},
+			outcome:   crawler.ProbeInconclusive,
+			complete:  true,
+			threshold: 0,
+			want:      crawler.LifecycleState{Open: true, InconclusiveStreak: 1},
+		},
+		{
+			// Fail-safe (#227): a negative threshold behaves like zero — never close.
+			name:      "negative threshold never closes even with a long streak",
+			current:   crawler.LifecycleState{Open: true, InconclusiveStreak: 9},
+			outcome:   crawler.ProbeInconclusive,
+			complete:  true,
+			threshold: -1,
+			want:      crawler.LifecycleState{Open: true, InconclusiveStreak: 10},
+		},
 	}
 
 	for _, tc := range cases {

@@ -53,7 +53,14 @@ func NextLiveness(current LifecycleState, outcome ProbeOutcome, boardComplete bo
 		return LifecycleState{Open: false, InconclusiveStreak: 0}
 	case ProbeInconclusive:
 		streak := current.InconclusiveStreak + 1
-		if streak >= staleThreshold {
+		// A staleThreshold <= 0 DISABLES the staleness backstop (never mark stale,
+		// never close): the do-least-harm fail-safe. Without this guard a
+		// non-positive threshold would fire on the first Inconclusive probe
+		// (streak 1 >= 0), closing a live listing on one transient blip — the exact
+		// inversion of the backstop's purpose. Mirrors the "<= 0 leaves the signal
+		// silent" convention (LLMGateConfig). The streak still accrues so a later
+		// positive-threshold observation reads a legible count.
+		if staleThreshold > 0 && streak >= staleThreshold {
 			// Persistently-inconclusive tail: close. Keep the accrued streak so the
 			// close reason stays legible.
 			return LifecycleState{Open: false, InconclusiveStreak: streak}
