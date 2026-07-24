@@ -117,4 +117,19 @@ func TestNewDefaultRegistry(t *testing.T) {
 	if _, ok := reg.Fetcher(ats.ProviderRecruitee); !ok {
 		t.Errorf("NewDefaultRegistry did not wire the Recruitee fetcher")
 	}
+	// #195 ships the softgarden (schema.org DataFeed JSON) board-API client, so the
+	// default registry resolves it too rather than falling back to the crawl path.
+	if _, ok := reg.Fetcher(ats.ProviderSoftgarden); !ok {
+		t.Errorf("NewDefaultRegistry did not wire the softgarden fetcher")
+	}
+	// #196 ships the Teamtailor (RSS) board-API client, so the default registry
+	// resolves it too rather than falling back to the crawl path.
+	if _, ok := reg.Fetcher(ats.ProviderTeamtailor); !ok {
+		t.Errorf("NewDefaultRegistry did not wire the Teamtailor fetcher")
+	}
+	// #197 ships the Manatal (Open API) board-API client, so the default registry
+	// resolves it too rather than falling back to the crawl path.
+	if _, ok := reg.Fetcher(ats.ProviderManatal); !ok {
+		t.Errorf("NewDefaultRegistry did not wire the Manatal fetcher")
+	}
 }
