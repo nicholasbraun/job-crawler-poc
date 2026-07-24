@@ -669,10 +669,11 @@ func newFactory(
 			// Refetch-lane politeness (ADR-0040): ONE shared limiter + decorator across all
 			// refetch workers, so a page's probe + its N listings and two workers hitting
 			// the same platform share one per-registrable-domain spacing bucket. Reuses the
-			// already-cache-warm robotsTxtChecker (no new robots cache). onRobotsBlocked is
-			// left nil here; the counter is wired in the observability ticket (#239).
+			// already-cache-warm robotsTxtChecker (no new robots cache). onRobotsBlocked taps
+			// collectionMetrics.RobotsBlocked — the single choke point covering both the page
+			// probe and per-listing robots blocks (ADR-0040 / #239).
 			refetchLimiter := atsingest.NewHostLimiter(defaultRefetchRateInterval)
-			politeRefetchDownloader := collection.NewPoliteDownloader(retryHTTPClient, robotsTxtChecker, refetchLimiter, nil)
+			politeRefetchDownloader := collection.NewPoliteDownloader(retryHTTPClient, robotsTxtChecker, refetchLimiter, collectionMetrics.RobotsBlocked)
 
 			// Refetch + dormancy lane (ADR-0035): probes each crawled Career Page and
 			// refetches its known-open postings for liveness, re-enqueueing changed pages
