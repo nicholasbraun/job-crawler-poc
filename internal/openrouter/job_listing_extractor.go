@@ -45,10 +45,14 @@ const (
 	defaultBaseURL = "https://openrouter.ai/api/v1/chat/completions"
 	defaultModel   = "openai/gpt-5.4-nano"
 
-	// defaultTimeout is generous because a local model (e.g. Ollama on a laptop)
-	// generates serially: a request can wait in the server's queue behind others
-	// before its first token, and the timeout must cover that whole wait.
-	defaultTimeout = 5 * time.Minute
+	// DefaultTimeout bounds a single chat-completions request end-to-end and is the
+	// fallback when Config.Timeout is zero. It is generous because a local model
+	// (e.g. Ollama on a laptop) generates serially: a request can wait in the
+	// server's queue behind others before its first token, and the timeout must
+	// cover that whole wait. Exported so the durable LLM stage (internal/llmstream)
+	// can lock its reclaim floor above this value without importing this package
+	// (see llmstream's defaults_test).
+	DefaultTimeout = 5 * time.Minute
 
 	openrouterPrompt = `
 	Parse the crawled page text and return only a valid json string with the following fields:
@@ -154,7 +158,7 @@ func stripThinkBlock(s string) string {
 // Model default to OpenRouter's endpoint and a small hosted model when empty;
 // set them to run against any OpenAI-compatible server (e.g. a local Ollama).
 // Timeout bounds a single request end-to-end (including time queued on the
-// server) and defaults to defaultTimeout when zero.
+// server) and defaults to DefaultTimeout when zero.
 type Config struct {
 	APIKey  string
 	BaseURL string
@@ -175,7 +179,7 @@ func (c Config) withDefaults() Config {
 		c.Model = defaultModel
 	}
 	if c.Timeout <= 0 {
-		c.Timeout = defaultTimeout
+		c.Timeout = DefaultTimeout
 	}
 	if c.ClassifyMaxChars <= 0 {
 		c.ClassifyMaxChars = defaultClassifyMaxChars

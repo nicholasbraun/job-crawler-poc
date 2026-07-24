@@ -2,7 +2,8 @@ package llmstream
 
 import (
 	"testing"
-	"time"
+
+	"github.com/nicholasbraun/job-crawler-poc/internal/openrouter"
 )
 
 // TestDefaultMinIdleFloor pins the #227 fail-safe: the default first-reclaim crash
@@ -15,9 +16,17 @@ func TestDefaultMinIdleFloor(t *testing.T) {
 		t.Errorf("defaultMinIdle (%s) must exceed the LLM op timeout (%s): a live worker on a slow model call would be reclaimed and double-called",
 			defaultMinIdle, llmOpTimeout)
 	}
-	// Guard against llmOpTimeout silently drifting below the 5m OpenRouter default
-	// it mirrors, which would quietly re-open the footgun.
-	if llmOpTimeout < 5*time.Minute {
-		t.Errorf("llmOpTimeout (%s) fell below the 5m openrouter default it mirrors", llmOpTimeout)
+}
+
+// TestLLMOpTimeoutMirrorsOpenrouter locks llmOpTimeout to the openrouter client's
+// DefaultTimeout that it mirrors. Production llmstream deliberately does not import
+// openrouter, so the constant is copied by hand; this white-box test is free to
+// import openrouter (there is no import cycle) and fails the moment the two drift.
+// Without it, lowering openrouter.DefaultTimeout would silently drop llmOpTimeout's
+// mirror below the real timeout and quietly re-open the reclaim-double-call footgun.
+func TestLLMOpTimeoutMirrorsOpenrouter(t *testing.T) {
+	if llmOpTimeout != openrouter.DefaultTimeout {
+		t.Errorf("llmOpTimeout (%s) drifted from openrouter.DefaultTimeout (%s); update the mirror in llmstream.go",
+			llmOpTimeout, openrouter.DefaultTimeout)
 	}
 }

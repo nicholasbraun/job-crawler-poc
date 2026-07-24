@@ -60,10 +60,12 @@ const payloadField = "payload"
 // pending-list scan is separately sized by defaultBatchCount, since listing more
 // idle entries per round only speeds redelivery/dead-lettering.
 // llmOpTimeout mirrors the OpenRouter clients' end-to-end per-request timeout
-// (openrouter.defaultTimeout, 5m — a generous bound sized for a cold local
+// (openrouter.DefaultTimeout, 5m — a generous bound sized for a cold local
 // model): the longest a live worker can spend inside one entry's model call.
-// llmstream stays decoupled from the openrouter package, so this is a documented
-// mirror rather than an import; keep the two in step if that timeout changes.
+// Production llmstream stays decoupled from the openrouter package, so this is a
+// documented mirror rather than an import; defaults_test locks the two together
+// (asserting this equals openrouter.DefaultTimeout) so the mirror cannot silently
+// drift below the real timeout and re-open the reclaim-double-call footgun.
 const llmOpTimeout = 5 * time.Minute
 
 const (
