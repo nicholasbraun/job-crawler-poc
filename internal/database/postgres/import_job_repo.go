@@ -152,8 +152,11 @@ func (r *ImportJobRepository) List(ctx context.Context) ([]*crawler.ImportJob, e
 		}
 		jobs = append(jobs, job)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: error listing import jobs: %w", err)
+	}
 
-	return jobs, rows.Err()
+	return jobs, nil
 }
 
 // Update writes the mutable columns of a job (status, result, error, updated_at)

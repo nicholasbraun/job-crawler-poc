@@ -127,8 +127,11 @@ func (r *CrawlDefinitionRepository) List(ctx context.Context) ([]*crawler.CrawlD
 		}
 		defs = append(defs, def)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: error listing crawl definitions: %w", err)
+	}
 
-	return defs, rows.Err()
+	return defs, nil
 }
 
 // scanRow abstracts over *pgxpool.Row and pgx.Rows so a single scan helper

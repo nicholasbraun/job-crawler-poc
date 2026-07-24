@@ -184,6 +184,9 @@ func (r *CompanyRepository) List(ctx context.Context) ([]*crawler.Company, error
 		}
 		companies = append(companies, c)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: error listing companies: %w", err)
+	}
 
-	return companies, rows.Err()
+	return companies, nil
 }

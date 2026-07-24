@@ -99,8 +99,11 @@ func (r *CareerPageRepository) ListCollectionSeeds(ctx context.Context, dormancy
 		}
 		seeds = append(seeds, s)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: error listing collection seeds: %w", err)
+	}
 
-	return seeds, rows.Err()
+	return seeds, nil
 }
 
 // RecordProbe folds one dormancy ProbeOutcome into a Career Page's counters via
@@ -236,8 +239,11 @@ func (r *CareerPageRepository) FirstSeenByDay(ctx context.Context) ([]crawler.Da
 		}
 		counts = append(counts, dc)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: error counting career pages by day: %w", err)
+	}
 
-	return counts, rows.Err()
+	return counts, nil
 }
 
 // List returns every catalogued Career Page as a full entity, most-recently-seen
@@ -270,6 +276,9 @@ func (r *CareerPageRepository) List(ctx context.Context) ([]*crawler.CareerPage,
 		}
 		pages = append(pages, p)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: error listing career pages: %w", err)
+	}
 
-	return pages, rows.Err()
+	return pages, nil
 }

@@ -19,11 +19,8 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/nicholasbraun/job-crawler-poc/internal/catalogdoctor"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/postgres"
+	"github.com/nicholasbraun/job-crawler-poc/internal/pgenv"
 )
-
-// defaultDatabaseURL matches cmd/server's default DSN so the Doctor targets the
-// same local Catalog without extra configuration.
-const defaultDatabaseURL = "postgres://crawler:crawler@localhost:5432/crawler?sslmode=disable"
 
 func main() {
 	apply := flag.Bool("apply", false, "execute the plan; default is a dry-run report")
@@ -38,7 +35,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	dsn := envOr("DATABASE_URL", defaultDatabaseURL)
+	dsn := pgenv.EnvOr("DATABASE_URL", pgenv.DefaultDatabaseURL)
 	// The Catalog is assumed already migrated (by the server); the Doctor never
 	// migrates, it only reads and repairs.
 	pool, err := postgres.Open(ctx, dsn)
@@ -107,13 +104,4 @@ func printReport(w io.Writer, total int, result catalogdoctor.Result) {
 	for _, c := range result.Orphans {
 		fmt.Fprintf(w, "  orphan company   %s\n", c.CompanyKey)
 	}
-}
-
-// envOr returns the value of environment variable key, or fallback if it is
-// unset or empty.
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }

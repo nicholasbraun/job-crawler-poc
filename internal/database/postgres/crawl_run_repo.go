@@ -83,8 +83,11 @@ func (r *CrawlRunRepository) List(ctx context.Context) ([]*crawler.CrawlRun, err
 		}
 		runs = append(runs, run)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: error listing crawl runs: %w", err)
+	}
 
-	return runs, rows.Err()
+	return runs, nil
 }
 
 // ListByStatus returns the runs whose status is one of statuses, newest first.
@@ -112,8 +115,11 @@ func (r *CrawlRunRepository) ListByStatus(ctx context.Context, statuses ...crawl
 		}
 		runs = append(runs, run)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: error listing crawl runs by status: %w", err)
+	}
 
-	return runs, rows.Err()
+	return runs, nil
 }
 
 // LatestByDefinition returns the most-recently-started run for definitionID, or
