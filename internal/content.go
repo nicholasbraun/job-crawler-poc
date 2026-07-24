@@ -1,7 +1,9 @@
 package crawler
 
 // Content holds the parsed result of downloading and parsing a single web page.
-// Used as a pointer type.
+// The parser returns it as *Content and the filter/gate pipeline passes it by
+// pointer; the Raw* candidate structs (RawJobListing, RawCareerPage) embed it by
+// value.
 type Content struct {
 	Title       string
 	MainContent string

@@ -838,6 +838,7 @@ func (h *Handler) listCareerPages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// TODO(#235): push companyId filter into a repository query as the catalog grows.
 	dtos := make([]careerPageDTO, 0, len(pages))
 	for _, p := range pages {
 		if filterCompanyID != uuid.Nil && p.CompanyID != filterCompanyID {

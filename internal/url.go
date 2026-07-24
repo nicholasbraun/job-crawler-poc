@@ -42,7 +42,10 @@ func NewURL(u string) (URL, error) {
 	}, nil
 }
 
-func (base *URL) Parse(u string) (URL, error) {
+// Parse resolves u against the base URL, returning a new normalized URL that
+// inherits the base's Scope and Owner and carries Depth+1. URL is a value type,
+// so the base is read, never mutated.
+func (base URL) Parse(u string) (URL, error) {
 	parsed, err := url.Parse(base.RawURL)
 	if err != nil {
 		return URL{}, err

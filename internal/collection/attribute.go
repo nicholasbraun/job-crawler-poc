@@ -41,13 +41,28 @@ func NewAttributor(pages []*crawler.CareerPage, companyKeyByID map[uuid.UUID]str
 		bestLen := -1
 		for _, p := range candidates {
 			pk := prefixKey(p.URL)
-			if strings.HasPrefix(posting, pk) && len(pk) > bestLen {
+			if hasPathPrefix(posting, pk) && len(pk) > bestLen {
 				best = p
 				bestLen = len(pk)
 			}
 		}
 		return best.ID
 	}
+}
+
+// hasPathPrefix reports whether prefix bounds s at a path-segment boundary. Unlike
+// a raw strings.HasPrefix, a prefix of ".../car" matches ".../car" and ".../car/…"
+// but NOT ".../careers/…" — the character after the prefix must be a "/" (or the
+// prefix must already end in one, or exactly equal s). This keeps a page at a
+// short path from spuriously swallowing postings under a longer sibling segment.
+func hasPathPrefix(s, prefix string) bool {
+	if !strings.HasPrefix(s, prefix) {
+		return false
+	}
+	if len(s) == len(prefix) || strings.HasSuffix(prefix, "/") {
+		return true
+	}
+	return s[len(prefix)] == '/'
 }
 
 // prefixKey reduces a URL to the scheme+host+path used for longest-prefix matching,
