@@ -77,6 +77,16 @@ func TestInScope(t *testing.T) {
 			want:  false,
 		},
 		{
+			// ADR-0039 Consequences: full-host keying is deliberately strict, so a
+			// "www."-prefixed variant is a distinct host and thus a distinct scope. No
+			// www-stripping step exists; this case pins that documented behavior so a
+			// future refactor that adds one cannot silently widen the fence.
+			name:  "shared-host www-prefixed variant rejected",
+			scope: "acme.substack.com",
+			child: "https://www.acme.substack.com/p/x",
+			want:  false,
+		},
+		{
 			// The legacy whole-platform key no longer matches a full-host tenant key,
 			// so a stored "substack.com" scope confines to nothing on the platform.
 			name:  "legacy whole-platform key no longer matches a tenant",
