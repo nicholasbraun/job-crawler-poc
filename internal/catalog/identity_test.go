@@ -242,6 +242,41 @@ func TestIdentify(t *testing.T) {
 			wantPoliteness: "customer.careers-page.com",
 		},
 		{
+			// Shared-hosting platform: one independent tenant per subdomain, so the
+			// fence keys on the full host, not the whole-platform eTLD+1 (#202).
+			name:           "shared host keys on the full tenant subdomain",
+			url:            "https://acme.substack.com/p/foo",
+			wantKey:        "acme.substack.com",
+			wantProvider:   "",
+			wantPoliteness: "acme.substack.com",
+		},
+		{
+			name:           "second shared-host platform keys on the full host",
+			url:            "https://globex.beehiiv.com/",
+			wantKey:        "globex.beehiiv.com",
+			wantProvider:   "",
+			wantPoliteness: "globex.beehiiv.com",
+		},
+		{
+			// The bare shared host carries no tenant subdomain, so the full host
+			// already equals the eTLD+1 — benign, and still distinct from any tenant.
+			name:           "shared host bare suffix equals eTLD+1",
+			url:            "https://substack.com/",
+			wantKey:        "substack.com",
+			wantProvider:   "",
+			wantPoliteness: "substack.com",
+		},
+		{
+			// Regression guard for the 22.4% cross-subdomain case: a real company is
+			// NOT a shared host, so eTLD+1 stays the default and sibling subdomains
+			// (careers.acme.com, jobs.acme.com) share one key.
+			name:           "self-hosted sibling subdomain keeps the eTLD+1 default",
+			url:            "https://jobs.acme.com/openings",
+			wantKey:        "acme.com",
+			wantProvider:   "",
+			wantPoliteness: "jobs.acme.com",
+		},
+		{
 			name:           "self-hosted falls back to eTLD+1",
 			url:            "https://careers.acme.com/jobs/senior-go",
 			wantKey:        "acme.com",

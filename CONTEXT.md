@@ -178,6 +178,10 @@ _Avoid_: entry point, root URL
 The Company-identity boundary a Collection Crawl stays within: a crawl seeded from one Career Page follows links only into that same Company — its own site and subdomains, or its single ATS tenant — never onto unrelated hosts. Derived from the seed's URL so any discovered link can be tested against it. The Discovery Crawl has no Scope; roaming is its job.
 _Avoid_: domain limit, allowlist, fence
 
+**Shared-Host Suffix**:
+A registrable domain that fronts many independent tenants on distinct subdomains (one newsletter or blog per `{tenant}.substack.com`), where the Scope fence keys on the full hostname rather than the eTLD+1 — so a seed is confined to its own subdomain instead of the whole platform, the way it otherwise would be for a self-hosted company (see Scope, ADR-0021/0039). A curated Public-Suffix-List supplement covering only the multi-tenant hosts the PSL does not already fence; a real company keeps the eTLD+1 default so its sibling subdomains stay in one Scope.
+_Avoid_: shared domain, multi-tenant host, platform domain
+
 **ATS Fetch**:
 The Collection Crawl's primary acquisition of a Company's Job Listings straight from its ATS provider's board API in one call, rather than by crawling and extracting its posting pages. Available for a Company on — or embedding — a recognized ATS the crawler has an API client for; other ATS boards are crawled as a fallback. A complete Fetch is the sole trusted basis for Absence-from-Board.
 _Avoid_: board fetch, API scrape, direct ingest

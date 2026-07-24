@@ -60,6 +60,49 @@ func TestInScope(t *testing.T) {
 			want:  false,
 		},
 		{
+			// #202: a shared-hosting seed is keyed on its full host, so a different
+			// path on the same tenant subdomain stays in scope.
+			name:  "shared-host same tenant different path passes",
+			scope: "acme.substack.com",
+			child: "https://acme.substack.com/archive",
+			want:  true,
+		},
+		{
+			// The core #202 fix: a sibling newsletter on the same platform is a
+			// different tenant, so it is now OUT of scope (previously the seed keyed
+			// on "substack.com" and swept every tenant in).
+			name:  "shared-host sibling tenant rejected",
+			scope: "acme.substack.com",
+			child: "https://bob.substack.com/p/x",
+			want:  false,
+		},
+		{
+			// ADR-0039 Consequences: full-host keying is deliberately strict, so a
+			// "www."-prefixed variant is a distinct host and thus a distinct scope. No
+			// www-stripping step exists; this case pins that documented behavior so a
+			// future refactor that adds one cannot silently widen the fence.
+			name:  "shared-host www-prefixed variant rejected",
+			scope: "acme.substack.com",
+			child: "https://www.acme.substack.com/p/x",
+			want:  false,
+		},
+		{
+			// The legacy whole-platform key no longer matches a full-host tenant key,
+			// so a stored "substack.com" scope confines to nothing on the platform.
+			name:  "legacy whole-platform key no longer matches a tenant",
+			scope: "substack.com",
+			child: "https://acme.substack.com/p/x",
+			want:  false,
+		},
+		{
+			// Guards the 22.4% case: a real company is not a shared host, so a sibling
+			// subdomain of its eTLD+1 stays in scope.
+			name:  "real-company sibling subdomain stays in scope",
+			scope: "acme.com",
+			child: "https://jobs.acme.com/openings",
+			want:  true,
+		},
+		{
 			name:  "empty scope roams",
 			scope: "",
 			child: "https://anything.dev/x",
