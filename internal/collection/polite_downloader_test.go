@@ -113,6 +113,11 @@ func TestPoliteDownloaderAllowWaitsThenFetches(t *testing.T) {
 	if got := spy.waited(); len(got) != 1 || got[0] != "acme.com" {
 		t.Errorf("spacing keys = %v, want [acme.com] (eTLD+1 fold)", got)
 	}
+	// Robots is checked exactly once per logical request (ADR-0040): the decorator
+	// sits outside the retry client, so re-attempts self-space without re-fetching.
+	if robots.calls != 1 {
+		t.Errorf("robots checked %d times, want exactly 1 (once per logical request)", robots.calls)
+	}
 	if got := inner.requested(); len(got) != 1 || got[0] != url {
 		t.Errorf("inner requested = %v, want one GET of %q", got, url)
 	}

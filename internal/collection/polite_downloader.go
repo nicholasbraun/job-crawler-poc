@@ -66,6 +66,13 @@ func (d *politeDownloader) Get(ctx context.Context, url string) (*downloader.Res
 	// are "cannot verify → decay." (The checker already folds a 404/410 to
 	// allow=nil.) A short-circuit here never burns a spacing slot nor calls inner.
 	if err := d.robots.Check(ctx, url); err != nil {
+		// A cancelled ctx during a cold-cache robots fetch surfaces here as a
+		// wrapped context error; propagate it rather than mis-reporting our own
+		// shutdown as robots friction (which would tick onRobotsBlocked). Mirrors
+		// the limiter.Wait path below, which returns the context error directly.
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		if d.onRobotsBlocked != nil {
 			d.onRobotsBlocked(ctx)
 		}
@@ -86,13 +93,20 @@ func (d *politeDownloader) Get(ctx context.Context, url string) (*downloader.Res
 
 // spacingKey folds url to its Politeness Domain — the registrable domain
 // (eTLD+1) per ADR-0040 — so a platform's tenant subdomains share one spacing
-// bucket. Falls back to the raw url on a parse failure (degenerate but safe:
-// over-spacing, never under). Reached only after robots.Check parsed the URL.
+// bucket. On a PSL edge (e.g. a bare IP, which has no registrable domain) it
+// keys on the full host; only a parse failure falls back to the raw url. Both
+// fallbacks are degenerate but safe: they over-space, never under. Reached only
+// after robots.Check parsed the URL.
 func (d *politeDownloader) spacingKey(url string) string {
-	if u, err := crawler.NewURL(url); err == nil {
-		if rd := catalog.RegistrableDomain(u.Hostname); rd != "" {
-			return rd
-		}
+	u, err := crawler.NewURL(url)
+	if err != nil {
+		return url
+	}
+	if rd := catalog.RegistrableDomain(u.Hostname); rd != "" {
+		return rd
+	}
+	if u.Hostname != "" {
+		return u.Hostname
 	}
 	return url
 }
