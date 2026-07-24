@@ -8,10 +8,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// ErrNotFound is returned by repositories when a requested entity does not
-// exist. Callers use errors.Is to map it to a 404.
-var ErrNotFound = errors.New("crawler: not found")
-
 // ErrDiscoveryDefinitionExists is returned by CrawlDefinitionRepository.Create
 // when a discovery definition already exists: the singleton Discovery Crawl
 // invariant (ADR-0017) permits only one. Callers map it to 409 Conflict.
