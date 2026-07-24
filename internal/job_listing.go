@@ -117,6 +117,13 @@ type JobListing struct {
 	// career_page). uuid.Nil when unknown (stored as SQL NULL). Not populated in #187 —
 	// a later collection ticket threads it from the seed.
 	CareerPageID uuid.UUID `json:"-"`
+	// DiscoveredDepth is the crawl depth (hops from the seed) of the source page this
+	// listing was extracted from — pure instrumentation for tuning the frontier maxDepth
+	// cap from real save-depths. Set by the save processor from the source URL's Depth on
+	// the crawl lane only; the ATS Fetch lane leaves it 0 and it persists as SQL NULL
+	// there (no crawl depth applies). Captured once at first save and preserved across
+	// re-saves. Never populated by the LLM.
+	DiscoveredDepth int `json:"-"`
 }
 
 // RawJobListing pairs a crawled URL with its parsed page content before

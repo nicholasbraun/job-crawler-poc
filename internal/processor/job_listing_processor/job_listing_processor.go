@@ -143,6 +143,10 @@ func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.Raw
 	extraction.Listing.Source = crawler.SourceLaneCrawl
 	extraction.Listing.CanonicalURL = listingid.FromURL(workload.URL.RawURL)
 
+	// Record the crawl depth of the source page (instrumentation only, migration 0024):
+	// lets us tune the frontier maxDepth cap from where postings are actually found.
+	extraction.Listing.DiscoveredDepth = workload.URL.Depth
+
 	if err := w.corpus.Save(ctx, &extraction.Listing); err != nil {
 		return fmt.Errorf("job_listing_processor: error saving processed job listing %v: %w", *workload, err)
 	}

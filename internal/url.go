@@ -62,16 +62,39 @@ func (base *URL) Parse(u string) (URL, error) {
 	}, nil
 }
 
+// trackingParams are query parameters that never change which page is served —
+// marketing/analytics tags a link carries only to attribute a click. Left in place
+// they defeat frontier dedup: the same page arrives under ?utm_source=a and
+// ?utm_source=b as two distinct visited entries (observed live: substack cross-promo
+// links minting a fresh key per referral). normalize strips them so the variants
+// collapse to one canonical URL. Keys are matched exactly except utm_*, stripped by
+// prefix. Cache/session/trap params (cHash, tx_*, PHPSESSID) are handled by the
+// BlockQueryParams URL filter instead — those mark a page not worth fetching at all,
+// so they reject rather than dedup.
+var trackingParams = map[string]struct{}{
+	"gclid": {}, "gclsrc": {}, "dclid": {}, "fbclid": {}, "msclkid": {},
+	"mc_cid": {}, "mc_eid": {}, "igshid": {}, "_hsenc": {}, "_hsmi": {},
+	"ref_src": {}, "vero_id": {}, "yclid": {}, "wickedid": {}, "twclid": {},
+}
+
 // normalize canonicalizes a URL so that trivially-equivalent variants dedup
-// to the same string: lowercases scheme and host, drops the fragment, sorts
-// query parameters, and strips a trailing slash from non-root paths.
+// to the same string: lowercases scheme and host, drops the fragment, strips
+// tracking query parameters, sorts the rest, and strips a trailing slash from
+// non-root paths.
 func normalize(u *url.URL) {
 	u.Scheme = strings.ToLower(u.Scheme)
 	u.Host = strings.ToLower(u.Host)
 	u.Fragment = ""
 	u.RawFragment = ""
 	if u.RawQuery != "" {
-		u.RawQuery = u.Query().Encode()
+		q := u.Query()
+		for key := range q {
+			lower := strings.ToLower(key)
+			if _, tracked := trackingParams[lower]; tracked || strings.HasPrefix(lower, "utm_") {
+				q.Del(key)
+			}
+		}
+		u.RawQuery = q.Encode()
 	}
 	if len(u.Path) > 1 {
 		u.Path = strings.TrimRight(u.Path, "/")

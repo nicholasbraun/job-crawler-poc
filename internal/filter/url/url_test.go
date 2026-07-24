@@ -200,6 +200,35 @@ func TestURLFilter(t *testing.T) {
 		}
 	})
 
+	t.Run("block query params", func(t *testing.T) {
+		blockQueryParamsCheck := urlfilter.BlockQueryParams("tx_*", "no_cache", "phpsessid")
+		tests := []test{
+			{"block tx_ wildcard", "https://uni.de/page?tx_news_pi1[uid]=5&cHash=abc", false},
+			{"block tx_ case-insensitive", "https://uni.de/page?TX_News[action]=list", false},
+			{"block exact no_cache", "https://uni.de/page?no_cache=1", false},
+			{"block session id", "https://shop.de/p?PHPSESSID=deadbeef", false},
+			{"block among several params", "https://uni.de/p?a=1&tx_menu[uid]=2&b=3", false},
+			{"pass clean url", "https://uni.de/jobs?page=2", true},
+			{"pass no query", "https://uni.de/jobs", true},
+			{"pass unrelated param", "https://uni.de/jobs?id=5", true},
+			{"prefix does not over-match", "https://uni.de/jobs?context=x", true},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				checkFn := filter.Chain(blockQueryParamsCheck)
+
+				err := checkFn(tt.url)
+				if err == nil && !tt.wantPass {
+					t.Errorf("expected an error. got nil")
+				}
+				if err != nil && tt.wantPass {
+					t.Errorf("expected no error. got %v", err)
+				}
+			})
+		}
+	})
+
 	t.Run("pass check fails fast", func(t *testing.T) {
 		passPathSegmentsCheck := urlfilter.PassPathSegments("jobs", "career")
 		blockPathSegmentsCheck := urlfilter.BlockPathSegments("blog", "contact")

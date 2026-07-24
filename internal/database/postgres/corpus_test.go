@@ -30,6 +30,7 @@ type corpusRow struct {
 	lastSeen           time.Time
 	closedAt           *time.Time
 	careerPageID       *uuid.UUID
+	discoveredDepth    *int
 }
 
 // getListing reads the single job_listing row keyed on canonicalURL.
@@ -39,12 +40,12 @@ func getListing(t *testing.T, pool *pgxpool.Pool, canonicalURL string) corpusRow
 	err := pool.QueryRow(context.Background(), `
 		SELECT url, source, source_id, source_hash, company, title, description,
 		       location, work_arrangement, company_key, country, inconclusive_streak,
-		       first_seen, last_seen, closed_at, career_page_id
+		       first_seen, last_seen, closed_at, career_page_id, discovered_depth
 		FROM job_listing WHERE canonical_url = $1`, canonicalURL,
 	).Scan(
 		&r.url, &r.source, &r.sourceID, &r.sourceHash, &r.company, &r.title, &r.description,
 		&r.location, &r.workArrangement, &r.companyKey, &r.country, &r.inconclusiveStreak,
-		&r.firstSeen, &r.lastSeen, &r.closedAt, &r.careerPageID,
+		&r.firstSeen, &r.lastSeen, &r.closedAt, &r.careerPageID, &r.discoveredDepth,
 	)
 	if err != nil {
 		t.Fatalf("reading listing %q: %v", canonicalURL, err)
@@ -343,6 +344,74 @@ func TestCorpusCountryRoundTrip(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCorpusDiscoveredDepth asserts the crawl-lane depth instrumentation (migration
+// 0024): a crawl-lane Save persists discovered_depth, the ATS Fetch lane leaves it
+// NULL (no crawl depth applies), and a re-save preserves the depth captured at first
+// discovery rather than overwriting it with a later re-crawl's depth.
+func TestCorpusDiscoveredDepth(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCorpusRepository(pool)
+
+	t.Run("crawl lane persists depth", func(t *testing.T) {
+		jl := &crawler.JobListing{
+			CanonicalURL:    "https://ex.com/j/depth",
+			URL:             "https://ex.com/j/depth",
+			Source:          crawler.SourceLaneCrawl,
+			Title:           "Engineer",
+			DiscoveredDepth: 3,
+		}
+		if err := repo.Save(t.Context(), jl); err != nil {
+			t.Fatalf("saving crawl listing: %v", err)
+		}
+		got := getListing(t, pool, jl.CanonicalURL)
+		if got.discoveredDepth == nil {
+			t.Fatalf("discovered_depth: want 3, got NULL")
+		}
+		if *got.discoveredDepth != 3 {
+			t.Errorf("discovered_depth: want 3, got %d", *got.discoveredDepth)
+		}
+	})
+
+	t.Run("ats lane leaves depth NULL", func(t *testing.T) {
+		jl := &crawler.JobListing{
+			CanonicalURL: "greenhouse:acme:1",
+			URL:          "https://boards.greenhouse.io/acme/jobs/1",
+			Source:       crawler.SourceLaneATS,
+			Title:        "Engineer",
+			// DiscoveredDepth left 0 -- must not be written on the ATS lane.
+		}
+		if err := repo.Save(t.Context(), jl); err != nil {
+			t.Fatalf("saving ats listing: %v", err)
+		}
+		got := getListing(t, pool, jl.CanonicalURL)
+		if got.discoveredDepth != nil {
+			t.Errorf("discovered_depth: want NULL on ats lane, got %d", *got.discoveredDepth)
+		}
+	})
+
+	t.Run("re-save preserves first-discovery depth", func(t *testing.T) {
+		jl := &crawler.JobListing{
+			CanonicalURL:    "https://ex.com/j/resave",
+			URL:             "https://ex.com/j/resave",
+			Source:          crawler.SourceLaneCrawl,
+			Title:           "Engineer",
+			DiscoveredDepth: 2,
+		}
+		if err := repo.Save(t.Context(), jl); err != nil {
+			t.Fatalf("first save: %v", err)
+		}
+		resave := *jl
+		resave.DiscoveredDepth = 9 // a later re-crawl reached it deeper; must not overwrite
+		if err := repo.Save(t.Context(), &resave); err != nil {
+			t.Fatalf("re-save: %v", err)
+		}
+		got := getListing(t, pool, jl.CanonicalURL)
+		if got.discoveredDepth == nil || *got.discoveredDepth != 2 {
+			t.Errorf("discovered_depth: want 2 preserved, got %v", got.discoveredDepth)
+		}
+	})
 }
 
 // saveATS saves a minimal ATS-lane listing under careerPageID and returns it.

@@ -46,8 +46,14 @@ type URLFilterConfig struct {
 	BlockedPathSegments   []string `json:"blockedPathSegments"`
 	BlockedHostnames      []string `json:"blockedHostnames"`
 	BlockedFileExtensions []string `json:"blockedFileExtensions"`
-	PassSubdomains        []string `json:"passSubdomains"`
-	PassPathSegments      []string `json:"passPathSegments"`
+	// BlockedQueryParams rejects a URL carrying any of these query-parameter keys
+	// (case-insensitive; a trailing "*" is a prefix wildcard). They are crawler-trap
+	// and cache-busting params -- TYPO3 plugin routing (tx_*), cache busters, session
+	// ids -- that mint unbounded distinct URLs for one page. Pure tracking tags
+	// (utm_*, gclid) are stripped in url.normalize, not listed here.
+	BlockedQueryParams []string `json:"blockedQueryParams"`
+	PassSubdomains     []string `json:"passSubdomains"`
+	PassPathSegments   []string `json:"passPathSegments"`
 }
 
 // LLMGateConfig holds pre-LLM gate signals (ADR-0007 step 2): cheap URL-path
@@ -336,6 +342,17 @@ func DefaultURLFilterConfig() URLFilterConfig {
 			// Fonts.
 			"woff", "woff2", "ttf", "otf", "eot",
 		},
+		BlockedQueryParams: []string{
+			// TYPO3 plugin routing: each nav/RSS-include widget re-emits the whole
+			// menu as tx_<ext>[controller|action|uid] params, minting a distinct URL
+			// per link for the same page (observed live spiralling university sites).
+			"tx_*",
+			// Cache busters and CMS session ids -- same page, unbounded URL variants.
+			"no_cache", "phpsessid", "jsessionid", "sessionid",
+			// WordPress comment-reply permalinks: a fresh ?replytocom= per comment,
+			// an unbounded fan-out over pages that hold no company links.
+			"replytocom",
+		},
 		BlockedHostnames: []string{
 			"www.addtoany.com", "trustpilot.com", "www.apple.com", "x.com",
 			"www.x.com", "youtube.com", "www.youtube.com", "youtu.be",
@@ -358,6 +375,15 @@ func DefaultURLFilterConfig() URLFilterConfig {
 var collectionBlockedEditorialPaths = []string{
 	"blog", "news", "press", "media", "articles", "article",
 	"stories", "story", "posts", "post", "magazine",
+	// German + institutional editorial/event/media subtrees that dominate the
+	// Collection frontier on university/government seeds (observed live) yet never
+	// hold a job posting: press/announcements, events/calendars, media galleries,
+	// and publication lists. Kept conservative -- research/study/staff subtrees
+	// (forschung, studium, mitarbeiter) are NOT blocked, since academic postings
+	// can live under them.
+	"presse", "aktuelles", "pressemitteilungen", "meldungen", "mitteilungen",
+	"veranstaltung", "veranstaltungen", "termine", "kalender",
+	"galerie", "gallery", "publikationen", "veroeffentlichungen", "publications",
 }
 
 // DefaultCollectionURLFilterConfig returns the narrow URL filter for the

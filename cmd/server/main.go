@@ -72,12 +72,17 @@ const (
 
 	// Crawl tuning defaults, previously sourced from config.json. The
 	// defaultDiscoveryMaxDepth constant seeds a new discovery definition's field
-	// when the request omits maxDepth (overridable per definition via the API);
-	// Discovery reaches deep because it is the perpetual catalog-building crawl.
+	// when the request omits maxDepth (overridable per definition via the API).
+	// Lowered 10 -> 7: a live frontier audit found the deep tail (depth >=4 = ~34%
+	// of enqueued URLs) is reached almost entirely via cross-linking (recommendation
+	// graphs, nav menus) into non-job content, not by postings living deep -- 93% of
+	// crawl-sourced listings sit within +3 path levels of their seed. 7 keeps margin
+	// over that while capping the sprawl. Instrumented via job_listing.discovered_depth
+	// (migration 0024) so the cap can be re-tuned from real save-depths.
 	// defaultMaxWorkers is the default size of the per-run worker pools,
 	// overridable via CRAWL_MAX_WORKERS.
 	defaultLogLevel          = "INFO"
-	defaultDiscoveryMaxDepth = 10
+	defaultDiscoveryMaxDepth = 7
 	defaultMaxWorkers        = 50
 
 	// ATS Fetch lane tuning (ADR-0022), shared by every Collection Cycle:
@@ -437,6 +442,7 @@ func newFactory(
 			urlfilter.BlockPathSegments(uf.BlockedPathSegments...),
 			urlfilter.BlockFileExtensions(uf.BlockedFileExtensions...),
 			urlfilter.BlockHostnames(uf.BlockedHostnames...),
+			urlfilter.BlockQueryParams(uf.BlockedQueryParams...),
 		)
 
 		// Two live crawl kinds: discovery (perpetual catalog walk) and collection

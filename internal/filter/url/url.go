@@ -58,6 +58,40 @@ func BlockFileExtensions(extensions ...string) filter.CheckFn[string] {
 	}
 }
 
+// BlockQueryParams rejects a URL carrying any of the given query-parameter keys
+// (compared case-insensitively). These are crawler-trap and cache-busting params
+// that mint unbounded distinct URLs for the same underlying page -- TYPO3 plugin
+// routing (tx_*, observed live generating a fresh URL per nav/RSS include), cache
+// busters (no_cache), WordPress comment-reply chains (replytocom), and session ids
+// (PHPSESSID) -- so blocking them keeps the frontier from spiralling on one host.
+// A key ending in "*" is a prefix wildcard (e.g. "tx_*" blocks every tx_… param);
+// all others match a present parameter name exactly. Purely tracking params
+// (utm_*, gclid) are stripped by url.normalize instead, since those pages are worth
+// fetching once -- only their duplicate variants are waste.
+func BlockQueryParams(params ...string) filter.CheckFn[string] {
+	return func(u string) error {
+		parsed, err := url.Parse(u)
+		if err != nil {
+			return fmt.Errorf("filter: error parsing url: %s. err: %w", u, err)
+		}
+
+		for key := range parsed.Query() {
+			lower := strings.ToLower(key)
+			for _, p := range params {
+				if prefix, ok := strings.CutSuffix(p, "*"); ok {
+					if strings.HasPrefix(lower, prefix) {
+						return fmt.Errorf("filter: blocked because of query param: %s", key)
+					}
+				} else if lower == p {
+					return fmt.Errorf("filter: blocked because of query param: %s", key)
+				}
+			}
+		}
+
+		return nil
+	}
+}
+
 func BlockHostnames(hostnames ...string) filter.CheckFn[string] {
 	return func(u string) error {
 		parsed, err := url.Parse(u)

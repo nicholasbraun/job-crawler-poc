@@ -160,6 +160,10 @@ func TestURLNormalize(t *testing.T) {
 		{"strip trailing slash deep path", "https://example.com/jobs/golang/", "https://example.com/jobs/golang"},
 		{"keep root path", "https://example.com/", "https://example.com/"},
 		{"combined", "HTTPS://Example.COM/Jobs/?b=2&a=1#apply", "https://example.com/Jobs?a=1&b=2"},
+		{"strip utm params", "https://example.com/jobs?utm_source=x&utm_medium=y", "https://example.com/jobs"},
+		{"strip tracking click id", "https://example.com/jobs?gclid=abc123", "https://example.com/jobs"},
+		{"strip tracking case-insensitive", "https://example.com/jobs?UTM_Source=x&FBCLID=y", "https://example.com/jobs"},
+		{"keep real params, drop tracking", "https://example.com/jobs?a=1&utm_campaign=x&b=2", "https://example.com/jobs?a=1&b=2"},
 	}
 
 	for _, tc := range cases {

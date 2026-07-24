@@ -38,11 +38,19 @@ func (r *CorpusRepository) Save(ctx context.Context, jl *crawler.JobListing) err
 	if jl.CareerPageID != uuid.Nil {
 		careerPageID = jl.CareerPageID
 	}
+	// discovered_depth is crawl-lane-only instrumentation (migration 0024): NULL on
+	// the ATS lane (no crawl depth), and never overwritten on re-save so it records
+	// the depth at first discovery.
+	var discoveredDepth any
+	if jl.Source == crawler.SourceLaneCrawl {
+		discoveredDepth = jl.DiscoveredDepth
+	}
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO job_listing
 			(canonical_url, url, source, source_id, source_hash, career_page_id,
-			 company, title, description, location, work_arrangement, company_key, country, department)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			 company, title, description, location, work_arrangement, company_key, country, department,
+			 discovered_depth)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		ON CONFLICT (canonical_url) DO UPDATE SET
 			url              = EXCLUDED.url,
 			source           = EXCLUDED.source,
@@ -65,7 +73,7 @@ func (r *CorpusRepository) Save(ctx context.Context, jl *crawler.JobListing) err
 		// avoid any pgx encode ambiguity for a named string type.
 		jl.CanonicalURL, jl.URL, string(jl.Source), jl.SourceID, jl.SourceHash, careerPageID,
 		jl.Company, jl.Title, jl.Description, jl.Location, string(jl.WorkArrangement),
-		jl.CompanyKey, jl.Country, jl.Department,
+		jl.CompanyKey, jl.Country, jl.Department, discoveredDepth,
 	)
 	if err != nil {
 		return fmt.Errorf("postgres: error saving job listing: %w", err)
