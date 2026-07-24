@@ -45,10 +45,14 @@ const (
 	defaultBaseURL = "https://openrouter.ai/api/v1/chat/completions"
 	defaultModel   = "openai/gpt-5.4-nano"
 
-	// defaultTimeout is generous because a local model (e.g. Ollama on a laptop)
-	// generates serially: a request can wait in the server's queue behind others
-	// before its first token, and the timeout must cover that whole wait.
-	defaultTimeout = 5 * time.Minute
+	// DefaultTimeout bounds a single chat-completions request end-to-end and is the
+	// fallback when Config.Timeout is zero. It is generous because a local model
+	// (e.g. Ollama on a laptop) generates serially: a request can wait in the
+	// server's queue behind others before its first token, and the timeout must
+	// cover that whole wait. Exported so the durable LLM stage (internal/llmstream)
+	// can lock its reclaim floor above this value without importing this package
+	// (see llmstream's defaults_test).
+	DefaultTimeout = 5 * time.Minute
 
 	openrouterPrompt = `
 	Parse the crawled page text and return only a valid json string with the following fields:
@@ -109,11 +113,52 @@ func capChars(s string, max int) string {
 	return string(r[:max])
 }
 
+// unmarshalLenient unmarshals an LLM JSON response into v, tolerating a server
+// that ignored the response_format instruction and padded the object. It first
+// strips a leading <think>...</think> block (some reasoning models emit one), then
+// attempts a direct parse; only if that fails does it retry on the outermost-brace
+// substring (first '{' to last '}'), salvaging an object that was prefixed or
+// suffixed with prose. A clean object parses on the first attempt, so the happy
+// path is unchanged. The direct-parse error is returned when the fallback also
+// fails, since it is the most informative.
+func unmarshalLenient(content string, v any) error {
+	content = stripThinkBlock(content)
+	err := json.Unmarshal([]byte(content), v)
+	if err == nil {
+		return nil
+	}
+	start, end := strings.Index(content, "{"), strings.LastIndex(content, "}")
+	if start >= 0 && end > start {
+		if inner := content[start : end+1]; inner != content {
+			if json.Unmarshal([]byte(inner), v) == nil {
+				return nil
+			}
+		}
+	}
+	return err
+}
+
+// stripThinkBlock removes a single leading <think>...</think> block (some
+// reasoning models emit their chain-of-thought before the JSON despite the
+// non-reasoning prompt), returning the text that follows it. Content without a
+// leading, closed think block is returned unchanged.
+func stripThinkBlock(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if !strings.HasPrefix(trimmed, "<think>") {
+		return s
+	}
+	end := strings.Index(trimmed, "</think>")
+	if end < 0 {
+		return s
+	}
+	return strings.TrimSpace(trimmed[end+len("</think>"):])
+}
+
 // Config configures an OpenAI-compatible chat completions client. BaseURL and
 // Model default to OpenRouter's endpoint and a small hosted model when empty;
 // set them to run against any OpenAI-compatible server (e.g. a local Ollama).
 // Timeout bounds a single request end-to-end (including time queued on the
-// server) and defaults to defaultTimeout when zero.
+// server) and defaults to DefaultTimeout when zero.
 type Config struct {
 	APIKey  string
 	BaseURL string
@@ -134,7 +179,7 @@ func (c Config) withDefaults() Config {
 		c.Model = defaultModel
 	}
 	if c.Timeout <= 0 {
-		c.Timeout = defaultTimeout
+		c.Timeout = DefaultTimeout
 	}
 	if c.ClassifyMaxChars <= 0 {
 		c.ClassifyMaxChars = defaultClassifyMaxChars
@@ -269,7 +314,7 @@ func (jle *JobListingExtractor) Extract(ctx context.Context, raw crawler.RawJobL
 	content = strings.TrimSpace(content)
 
 	var result extractionResult
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
+	if err := unmarshalLenient(content, &result); err != nil {
 		return crawler.Extraction{}, fmt.Errorf("error parsing job listing JSON: %w", err)
 	}
 

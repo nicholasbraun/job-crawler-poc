@@ -14,12 +14,12 @@ type URL struct {
 	// Depth is the number of links followed from a seed URL to reach this URL.
 	// Seed URLs have depth 0.
 	Depth int
-	// Scope and Owner are the keyword-crawl provenance every URL carries
-	// (ADR-0021). Both are set at the seed and inherited unchanged by every link
-	// discovered from it — unlike Depth, which increments. Empty for a Discovery
-	// Crawl and, until keyword scoping/attribution lands, empty everywhere. Scope
-	// is the seed's URL-derived CompanyKey (the fence key); Owner is the seed's
-	// catalog-stored CompanyKey (the attribution key).
+	// Scope and Owner are the provenance keys every URL carries (ADR-0021). Both
+	// are set at the seed and inherited unchanged by every link discovered from
+	// it — unlike Depth, which increments. Empty for a Discovery Crawl (which
+	// roams); populated by a Collection Crawl, whose seeds are resolved from the
+	// Catalog. Scope is the seed's URL-derived CompanyKey (the fence key); Owner
+	// is the seed's catalog-stored CompanyKey (the attribution key).
 	Scope string
 	Owner string
 }
@@ -42,7 +42,10 @@ func NewURL(u string) (URL, error) {
 	}, nil
 }
 
-func (base *URL) Parse(u string) (URL, error) {
+// Parse resolves u against the base URL, returning a new normalized URL that
+// inherits the base's Scope and Owner and carries Depth+1. URL is a value type,
+// so the base is read, never mutated.
+func (base URL) Parse(u string) (URL, error) {
 	parsed, err := url.Parse(base.RawURL)
 	if err != nil {
 		return URL{}, err

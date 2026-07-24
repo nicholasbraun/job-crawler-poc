@@ -8,10 +8,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// ErrNotFound is returned by repositories when a requested entity does not
-// exist. Callers use errors.Is to map it to a 404.
-var ErrNotFound = errors.New("crawler: not found")
-
 // ErrDiscoveryDefinitionExists is returned by CrawlDefinitionRepository.Create
 // when a discovery definition already exists: the singleton Discovery Crawl
 // invariant (ADR-0017) permits only one. Callers map it to 409 Conflict.
@@ -59,7 +55,7 @@ type URLFilterConfig struct {
 // LLMGateConfig holds pre-LLM gate signals (ADR-0007 step 2): cheap URL-path
 // checks that resolve a page's classifier/extractor verdict without a model
 // call. A CareerPath segment marks a page a Career Page hub confidently enough
-// to catalog it without the LLM classifier (and, on the keyword path, marks it
+// to catalog it without the LLM classifier (and, in a Collection Crawl, marks it
 // an index to crawl rather than extract); a RejectPath segment marks it
 // structurally not a job page, dropping it before any LLM call. A page with
 // neither signal is ambiguous and still goes to the model.
@@ -141,7 +137,7 @@ type LLMGateConfig struct {
 
 // DefaultLLMGateConfig returns the built-in pre-LLM gate signals. CareerPathSignals
 // is intentionally a high-precision set: a bare page on one of these paths is
-// cataloged as a Career Page (or, on the keyword path, treated as an index) with no
+// cataloged as a Career Page (or, in a Collection Crawl, treated as an index) with no
 // LLM confirmation, so only path tokens that are almost always a jobs hub belong
 // here. Weaker, ambiguous tokens (e.g. "join", which is as often a newsletter or
 // community signup) are deliberately left out; the pagegate content heuristic still

@@ -103,8 +103,8 @@ type CompanyRepository interface {
 	// ListPagelessSeeds returns each Pageless Company's Website paired with its
 	// stored CompanyKey (the seed's Owner) -- a Pageless Company being a
 	// catalogued Company that declares a Website (non-NULL) and owns no Career
-	// Page. A Keyword Crawl unions these seeds with the Career Page seeds to seed
-	// its Frontier, so an imported prospect with no known page still contributes
+	// Page. A Collection Cycle unions these seeds with the Career Page seeds to
+	// seed its Frontier, so an imported prospect with no known page still contributes
 	// listings. The query is self-healing: a Company drops out the moment it
 	// gains a Career Page, so its homepage stops seeding once a real page is
 	// catalogued. It never returns nil; a Catalog with no Pageless Companies

@@ -19,7 +19,7 @@ type CatalogDoctorStore struct {
 	pages     *CareerPageRepository
 }
 
-var _ catalogdoctor.Store = (*CatalogDoctorStore)(nil)
+var _ catalogdoctor.Store = &CatalogDoctorStore{}
 
 // NewCatalogDoctorStore wires the Company and Career Page repositories into a
 // Store the Catalog Doctor can execute a plan against.

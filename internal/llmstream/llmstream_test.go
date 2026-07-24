@@ -163,6 +163,37 @@ func TestStage(t *testing.T) {
 		}
 	})
 
+	t.Run("processes exactly maxAttempts times before dead-lettering", func(t *testing.T) {
+		runID := uuid.New()
+		spy := newSpy()
+		spy.alwaysFail = true
+
+		// The threshold boundary: an entry is dead-lettered once its delivery count
+		// reaches maxAttempts, so it is processed exactly maxAttempts times — not one
+		// extra. The pre-fix strict-greater test dead-lettered at maxAttempts+1
+		// deliveries, spending one wasted LLM call per poison entry.
+		const attempts = 3
+		opts := append(fastOpts(), llmstream.WithMaxAttempts[task](attempts))
+		stage := llmstream.NewStage(client, runID, llmobs.KindClassify, procOf(spy), opts...)
+		if err := stage.Start(runCtx); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		defer stage.Close()
+
+		if err := stage.Enqueue(t.Context(), &task{Key: "poison"}); err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+
+		waitFor(t, eventually, "poison task dead-lettered after exhausting attempts",
+			func() bool { return deadLen(t, client, runID, llmobs.KindClassify) == 1 })
+		waitFor(t, eventually, "poison task acked off the main pending list",
+			depthIsZero(t, client, runID, llmobs.KindClassify))
+
+		if got := spy.callCount(); got != attempts {
+			t.Errorf("processed %d times, want exactly %d (maxAttempts, no off-by-one extra)", got, attempts)
+		}
+	})
+
 	t.Run("DeleteRun sweeps run keys", func(t *testing.T) {
 		runID := uuid.New()
 		stage := llmstream.NewStage(client, runID, llmobs.KindClassify, procOf(newSpy()))

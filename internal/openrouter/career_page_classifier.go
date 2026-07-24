@@ -148,7 +148,7 @@ func (c *CareerPageClassifier) Confirm(ctx context.Context, url string, content 
 	content0 = strings.TrimSpace(content0)
 
 	var confirmation careerPageConfirmation
-	if err := json.Unmarshal([]byte(content0), &confirmation); err != nil {
+	if err := unmarshalLenient(content0, &confirmation); err != nil {
 		return careerpageprocessor.Verdict{}, fmt.Errorf("error parsing career page confirmation JSON: %w", err)
 	}
 

@@ -31,6 +31,15 @@ func NextDormancy(failures int, lastOK time.Time, outcome ProbeOutcome, now time
 // Dormant reports whether a Career Page with failures consecutive hard-dead
 // probes is dormant at the given threshold (ADR-0035). Dormancy is derived from
 // the counter, never a stored flag, so a threshold change re-derives it for free.
+//
+// A threshold <= 0 DISABLES dormancy (never tip dormant, never close the page):
+// the do-least-harm fail-safe. Without this guard a non-positive threshold would
+// read even zero failures as dormant (0 >= 0), closing a healthy page's whole
+// board on its first probe — the inversion this backstop must never do. Mirrors
+// the "<= 0 leaves the signal silent" convention (LLMGateConfig).
 func Dormant(failures, threshold int) bool {
+	if threshold <= 0 {
+		return false
+	}
 	return failures >= threshold
 }

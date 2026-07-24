@@ -37,42 +37,64 @@ type Pool[T any] struct {
 	newWorker   func() processor.Processor[T]
 	name        string
 	closed      bool
-	mu          sync.RWMutex
+	// done is closed by Close to release any Enqueue blocked on a full
+	// workStream, so shutdown latency is not coupled to the slowest Process.
+	done chan struct{}
+	// sends counts Enqueue calls that have passed the closed check and may still
+	// send on workStream. Close waits for it to reach zero before closing
+	// workStream, which makes a send on a closed channel impossible.
+	sends sync.WaitGroup
+	mu    sync.RWMutex
 }
 
+// Enqueue offers workload to the pool, blocking until a worker slot is free, the
+// pool is closed, or ctx is cancelled. It returns ErrPoolClosed once Close has
+// been called and ctx.Err() on cancellation.
 func (p *Pool[T]) Enqueue(ctx context.Context, workload *T) error {
+	// Hold the read lock only long enough to observe the closed flag and register
+	// this send; it is released before the blocking send so Close's write lock
+	// never queues behind an in-flight Process (the release-before-blocking
+	// convention). done then lets a send abandon a full workStream the moment
+	// Close is called, instead of waiting out a worker.
 	p.mu.RLock()
-	defer p.mu.RUnlock()
-
 	if p.closed {
+		p.mu.RUnlock()
 		return ErrPoolClosed
 	}
+	p.sends.Add(1)
+	p.mu.RUnlock()
+	defer p.sends.Done()
 
 	select {
 	case p.workStream <- workload:
+		return nil
+	case <-p.done:
+		return ErrPoolClosed
 	case <-ctx.Done():
 		return ctx.Err()
-
 	}
-
-	return nil
 }
 
 // Close stops accepting new work, drains the work channel, and blocks until
 // all workers have finished processing. Safe to call multiple times.
 func (p *Pool[T]) Close() {
 	p.mu.Lock()
-
 	if p.closed {
 		p.mu.Unlock()
 		return
 	}
-
 	p.closed = true
-	close(p.workStream)
-
+	// Wake every Enqueue blocked on a full workStream so it returns promptly and
+	// stops sending, decoupling shutdown from Process latency.
+	close(p.done)
 	p.mu.Unlock()
 
+	// No further Enqueue can begin a send — later callers observe closed and
+	// reject — and every in-flight send has now either landed in the buffer or
+	// bailed via done. Only once none remain is it safe to close workStream: the
+	// workers then range to completion, draining every buffered item.
+	p.sends.Wait()
+	close(p.workStream)
 	p.wg.Wait()
 }
 
@@ -114,6 +136,7 @@ func NewPool[T any](ctx context.Context, name string, factoryFn func() processor
 		channelSize: 10,
 		newWorker:   factoryFn,
 		name:        name,
+		done:        make(chan struct{}),
 	}
 
 	for _, fn := range opts {

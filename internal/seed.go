@@ -6,7 +6,7 @@ import "github.com/google/uuid"
 // descendant URL inherits unchanged (Scope, the fence key; Owner, the
 // attribution key). An empty Scope+Owner is the roam signal: a Discovery Crawl
 // seeds bare URLs with no provenance and is meant to walk onto any host, while a
-// Keyword Crawl fills both from the Catalog so the crawl stays fenced to — and
+// Collection Crawl fills both from the Catalog so the crawl stays fenced to — and
 // attributes its Job Listings to — a single Company.
 type Seed struct {
 	URL   string
@@ -14,7 +14,7 @@ type Seed struct {
 	Owner string
 }
 
-// CatalogSeed is a Keyword-Crawl seed drawn from the Catalog: a URL paired with
+// CatalogSeed is a Collection Crawl seed drawn from the Catalog: a URL paired with
 // its owning Company's stored CompanyKey (the seed's Owner). Scope is
 // deliberately absent — it is derived from the URL later via catalog.Identify,
 // which is why the two keys can legitimately diverge (an imported Company may

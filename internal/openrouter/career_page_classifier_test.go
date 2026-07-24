@@ -83,6 +83,30 @@ func TestConfirmDecodesVerdict(t *testing.T) {
 			wantCareer:  true,
 			wantCompany: "Acme",
 		},
+		{
+			// A reasoning model that ignores the non-reasoning prompt may prepend its
+			// chain-of-thought; a leading <think> block is stripped before decode.
+			name:        "leading think block is stripped before decode",
+			content:     "<think>the page lists open roles</think>\n{\"is_career_page\":true,\"company_name\":\"Acme\"}",
+			wantCareer:  true,
+			wantCompany: "Acme",
+		},
+		{
+			// A server that ignores response_format may wrap the object in prose; the
+			// outermost-brace fallback salvages the object.
+			name:        "prose-wrapped json salvaged by brace fallback",
+			content:     "Sure! Here is the JSON: {\"is_career_page\":true,\"company_name\":\"Acme\"} — hope that helps.",
+			wantCareer:  true,
+			wantCompany: "Acme",
+		},
+		{
+			// think block + code fence together: strip the think block, then the brace
+			// fallback recovers the object from inside the surviving fence.
+			name:        "think-wrapped fenced json still decodes",
+			content:     "<think>reasoning about the page</think>\n```json\n{\"is_career_page\":true,\"company_name\":\"Acme\"}\n```",
+			wantCareer:  true,
+			wantCompany: "Acme",
+		},
 	}
 
 	for _, tc := range tests {

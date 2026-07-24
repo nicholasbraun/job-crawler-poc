@@ -51,3 +51,51 @@ func TestNewAttributor(t *testing.T) {
 		})
 	}
 }
+
+// TestNewAttributorPrefixBoundary pins the path-segment boundary: a page at a short
+// path (".../car") must not raw-prefix-match a posting under a longer sibling
+// segment (".../careers/..."), while a page ending exactly on a segment boundary
+// still matches.
+func TestNewAttributorPrefixBoundary(t *testing.T) {
+	company := uuid.New()
+	companyKeyByID := map[uuid.UUID]string{company: "acme.com"}
+
+	teamID := uuid.New()
+	carID := uuid.New()
+	careersID := uuid.New()
+
+	t.Run("short page does not spuriously prefix-match a longer segment", func(t *testing.T) {
+		// team is freshest (candidates[0], the fallback); /car would raw-prefix-match
+		// "/careers/…" but must not, so attribution falls back to /team, NOT /car.
+		pages := []*crawler.CareerPage{
+			{ID: teamID, CompanyID: company, URL: "https://acme.com/team", LastSeen: time.Now()},
+			{ID: carID, CompanyID: company, URL: "https://acme.com/car", LastSeen: time.Now().Add(-time.Hour)},
+		}
+		attribute := collection.NewAttributor(pages, companyKeyByID)
+		if got := attribute("acme.com", "https://acme.com/careers/eng/7"); got != teamID {
+			t.Errorf("posting under /careers must not attribute to the /car page; got %v, want fallback %v", got, teamID)
+		}
+	})
+
+	t.Run("prefix ending on a segment boundary still matches", func(t *testing.T) {
+		pages := []*crawler.CareerPage{
+			{ID: teamID, CompanyID: company, URL: "https://acme.com/team", LastSeen: time.Now()},
+			{ID: careersID, CompanyID: company, URL: "https://acme.com/careers", LastSeen: time.Now().Add(-time.Hour)},
+		}
+		attribute := collection.NewAttributor(pages, companyKeyByID)
+		if got := attribute("acme.com", "https://acme.com/careers/eng/7"); got != careersID {
+			t.Errorf("posting under /careers must attribute to the /careers page; got %v, want %v", got, careersID)
+		}
+	})
+
+	t.Run("exact URL match attributes to that page", func(t *testing.T) {
+		pages := []*crawler.CareerPage{
+			{ID: teamID, CompanyID: company, URL: "https://acme.com/team", LastSeen: time.Now()},
+			{ID: careersID, CompanyID: company, URL: "https://acme.com/careers", LastSeen: time.Now().Add(-time.Hour)},
+		}
+		attribute := collection.NewAttributor(pages, companyKeyByID)
+		if got := attribute("acme.com", "https://acme.com/careers"); got != careersID {
+			t.Errorf("exact-match posting must attribute to the /careers page; got %v, want %v", got, careersID)
+		}
+	})
+}

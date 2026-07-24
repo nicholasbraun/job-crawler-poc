@@ -91,6 +91,22 @@ func TestExtractParsesVerdict(t *testing.T) {
 			wantPosting: true,
 			wantTitle:   "Backend Engineer",
 		},
+		{
+			// A reasoning model may prepend a <think> block despite the non-reasoning
+			// prompt; it is stripped before decode.
+			name:        "leading think block is stripped before decode",
+			content:     "<think>weighing whether this is one role</think>\n{\"title\":\"Backend Engineer\",\"is_job_posting\":true}",
+			wantPosting: true,
+			wantTitle:   "Backend Engineer",
+		},
+		{
+			// A server that ignores response_format may wrap the object in prose; the
+			// outermost-brace fallback salvages it.
+			name:        "prose-wrapped json salvaged by brace fallback",
+			content:     "Here you go: {\"title\":\"Backend Engineer\",\"is_job_posting\":true} — done.",
+			wantPosting: true,
+			wantTitle:   "Backend Engineer",
+		},
 	}
 
 	for _, tc := range tests {

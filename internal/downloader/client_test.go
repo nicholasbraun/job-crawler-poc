@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -366,6 +367,107 @@ func TestRetry(t *testing.T) {
 				t.Errorf("expected %d attemps. got: %d", wantAttempts, gotAttempts)
 			}
 		})
+	})
+
+	t.Run("No backoff after the final attempt", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			mock := &mockDownloader{
+				responses: []*downloader.Response{nil, nil, nil},
+				errors: []error{
+					&downloader.StatusError{StatusCode: 500, Retryable: true},
+					&downloader.StatusError{StatusCode: 500, Retryable: true},
+					&downloader.StatusError{StatusCode: 500, Retryable: true},
+				},
+			}
+			// Fixed 1s backoff over 3 tries: only the two gaps between attempts
+			// should sleep. A sleep after the final (third) attempt would push
+			// elapsed past 2s and needlessly pin the worker.
+			retryClient := downloader.NewRetryClient(
+				mock,
+				downloader.WithMaxTries(3),
+				downloader.WithBackoff(time.Second),
+				downloader.WithMultiplicator(1),
+			)
+
+			start := time.Now()
+			_, err := retryClient.Get(t.Context(), "http://something.de")
+			if err == nil {
+				t.Fatal("expected an error after exhausting retries, got nil")
+			}
+
+			if elapsed := time.Since(start); elapsed != 2*time.Second {
+				t.Errorf("waited %v, want 2s (no backoff after the final attempt)", elapsed)
+			}
+			if mock.callCount != 3 {
+				t.Errorf("expected 3 attempts, got: %d", mock.callCount)
+			}
+		})
+	})
+
+	t.Run("Terminal error wraps the last underlying error", func(t *testing.T) {
+		t.Run("errors.As reaches a StatusError", func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				mock := &mockDownloader{
+					responses: []*downloader.Response{nil, nil},
+					errors: []error{
+						&downloader.StatusError{StatusCode: 503, Retryable: true},
+						&downloader.StatusError{StatusCode: 503, Retryable: true},
+					},
+				}
+				retryClient := downloader.NewRetryClient(mock, downloader.WithMaxTries(2))
+
+				_, err := retryClient.Get(t.Context(), "http://something.de")
+
+				var statusErr *downloader.StatusError
+				if !errors.As(err, &statusErr) {
+					t.Fatalf("terminal error does not unwrap to *StatusError: %v", err)
+				}
+				if statusErr.StatusCode != 503 {
+					t.Errorf("StatusCode = %d, want 503", statusErr.StatusCode)
+				}
+			})
+		})
+
+		t.Run("errors.Is reaches the last underlying error", func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				sentinel := errors.New("boom")
+				mock := &mockDownloader{
+					responses: []*downloader.Response{nil, nil},
+					errors:    []error{sentinel, sentinel},
+				}
+				retryClient := downloader.NewRetryClient(mock, downloader.WithMaxTries(2))
+
+				_, err := retryClient.Get(t.Context(), "http://something.de")
+
+				if !errors.Is(err, sentinel) {
+					t.Errorf("terminal error does not wrap the last underlying error; errors.Is = false for: %v", err)
+				}
+			})
+		})
+	})
+
+	t.Run("maxTries <= 0 returns a clean error without a nil wrap", func(t *testing.T) {
+		// Degenerate config: the loop never runs, so there is no underlying error to
+		// wrap. The terminal error must not %w-wrap a nil (which renders fmt's
+		// %!w(<nil>) artifact). The empty mock would panic on an out-of-range index if
+		// Get were called, so callCount == 0 also confirms no attempt was made.
+		mock := &mockDownloader{}
+		retryClient := downloader.NewRetryClient(mock, downloader.WithMaxTries(0))
+
+		res, err := retryClient.Get(t.Context(), "http://something.de")
+
+		if res != nil {
+			t.Errorf("res = %v, want nil", res)
+		}
+		if err == nil {
+			t.Fatal("err = nil, want a non-nil terminal error")
+		}
+		if strings.Contains(err.Error(), "%!") {
+			t.Errorf("terminal error contains a bad format verb from wrapping nil: %v", err)
+		}
+		if mock.callCount != 0 {
+			t.Errorf("inner.Get called %d times, want 0 for maxTries=0", mock.callCount)
+		}
 	})
 
 	t.Run("Honors Retry-After hint over backoff", func(t *testing.T) {
