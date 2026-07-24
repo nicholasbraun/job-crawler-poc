@@ -43,6 +43,18 @@ func (d *fakeDownloader) ok(url, body string) {
 	d.results[url] = getResult{body: []byte(body)}
 }
 
+// fail stubs url to return err (e.g. ErrRobotsDisallowed) from Get.
+func (d *fakeDownloader) fail(url string, err error) {
+	d.results[url] = getResult{err: err}
+}
+
+// requested returns the URLs Get was called with, in order, under the mutex.
+func (d *fakeDownloader) requested() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string{}, d.gotURLs...)
+}
+
 func (d *fakeDownloader) Get(_ context.Context, url string) (*downloader.Response, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

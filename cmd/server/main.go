@@ -92,6 +92,12 @@ const (
 	defaultATSMaxWorkers   = 8
 	defaultATSRateInterval = 250 * time.Millisecond
 
+	// defaultRefetchRateInterval is the minimum spacing between refetch-lane GETs
+	// to one Politeness Domain (registrable domain), enforced by the shared
+	// HostLimiter the politeDownloader waits on (ADR-0040). 1s — the Frontier's
+	// blessed rate for arbitrary web servers, gentler than the ATS lane's 250ms.
+	defaultRefetchRateInterval = time.Second
+
 	// llmMaxBacklog is the high-water cap on a per-run LLM stream's outstanding
 	// entries. Past it, the crawl's Enqueue blocks until the classify/extract
 	// consumer group catches up, so a crawl that outruns the model applies
@@ -660,13 +666,22 @@ func newFactory(
 				},
 			})
 
+			// Refetch-lane politeness (ADR-0040): ONE shared limiter + decorator across all
+			// refetch workers, so a page's probe + its N listings and two workers hitting
+			// the same platform share one per-registrable-domain spacing bucket. Reuses the
+			// already-cache-warm robotsTxtChecker (no new robots cache). onRobotsBlocked taps
+			// collectionMetrics.RobotsBlocked — the single choke point covering both the page
+			// probe and per-listing robots blocks (ADR-0040 / #239).
+			refetchLimiter := atsingest.NewHostLimiter(defaultRefetchRateInterval)
+			politeRefetchDownloader := collection.NewPoliteDownloader(retryHTTPClient, robotsTxtChecker, refetchLimiter, collectionMetrics.RobotsBlocked)
+
 			// Refetch + dormancy lane (ADR-0035): probes each crawled Career Page and
 			// refetches its known-open postings for liveness, re-enqueueing changed pages
 			// onto the extract stage.
 			refetchLane := pool.NewPool(ctx, "collection_refetch_pool",
 				func() processor.Processor[crawler.CollectionSeed] {
 					return collection.NewRefetchProcessor(&collection.RefetchConfig{
-						Downloader: retryHTTPClient,
+						Downloader: politeRefetchDownloader,
 						Parser:     htmlParser,
 						Liveness:   corpusRepository,
 						Dormancy:   careerPageRepository,

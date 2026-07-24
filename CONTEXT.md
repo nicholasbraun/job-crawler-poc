@@ -59,7 +59,7 @@ The recorded origin of a Company's stored name, and so how far to trust it: a pa
 _Avoid_: name confidence (bare), label origin
 
 **Politeness Domain**:
-The host the Frontier rate-limits against (e.g. `boards.greenhouse.io`). Deliberately distinct from Company — many Companies can share one Politeness Domain.
+The unit of serving infrastructure a lane rate-limits against — deliberately distinct from Company, since many Companies can share one Politeness Domain (every tenant of a multi-tenant ATS or platform). The two lanes approximate it differently: the Frontier walk keys on the full host (e.g. `boards.greenhouse.io`), while the refetch lane keys on the registrable domain (eTLD+1), because politeness is owed to the platform, not the tenant subdomain. That the walk still keys on the full host is a known divergence (ADR-0040).
 _Avoid_: domain, host (unqualified)
 
 **Career Page**:

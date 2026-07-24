@@ -25,6 +25,8 @@ func TestClassifyStatus(t *testing.T) {
 		{"429 is inconclusive", &downloader.StatusError{StatusCode: 429, Retryable: true}, crawler.ProbeInconclusive},
 		{"transport/timeout error is inconclusive", errors.New("dial tcp: timeout"), crawler.ProbeInconclusive},
 		{"wrapped 404 is still dead", fmt.Errorf("get: %w", &downloader.StatusError{StatusCode: 404}), crawler.ProbeDead},
+		{"robots-disallowed (bare) is inconclusive", ErrRobotsDisallowed, crawler.ProbeInconclusive},
+		{"robots-disallowed (wrapped) is inconclusive", fmt.Errorf("get: %w", ErrRobotsDisallowed), crawler.ProbeInconclusive},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -56,6 +58,8 @@ func TestClassifyPageProbe(t *testing.T) {
 		{"reachable + no longer classifies is dead", nil, false, nil, crawler.ProbeDead},
 		{"reachable + classify error is inconclusive", nil, false, errors.New("llm down"), crawler.ProbeInconclusive},
 		{"classify error dominates a would-be-alive verdict", nil, true, errors.New("llm down"), crawler.ProbeInconclusive},
+		{"robots-disallowed page GET (bare) is inconclusive", ErrRobotsDisallowed, true, nil, crawler.ProbeInconclusive},
+		{"robots-disallowed page GET (wrapped) is inconclusive", fmt.Errorf("probe: %w", ErrRobotsDisallowed), true, nil, crawler.ProbeInconclusive},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

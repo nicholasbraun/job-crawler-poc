@@ -2,6 +2,7 @@ package collection_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
@@ -283,5 +284,90 @@ func TestRefetchStructurallyCertainPageStaysAliveDespiteLLM(t *testing.T) {
 	probes := dorm.recorded()
 	if len(probes) != 1 || probes[0].outcome != crawler.ProbeAlive {
 		t.Fatalf("dormancy probes = %+v, want one Alive (structural certain-accept beats the LLM)", probes)
+	}
+}
+
+// TestRefetchRobotsDisallowedListingDecays is the ADR-0040 decay rule at the
+// Process seam: a per-listing refetch that the politeDownloader short-circuits
+// with ErrRobotsDisallowed records an Inconclusive crawl probe — NOT Dead — so a
+// fresh robots block rides the staleness backstop instead of hard-closing.
+func TestRefetchRobotsDisallowedListingDecays(t *testing.T) {
+	page := uuid.New()
+	dl := newFakeDownloader()
+	dl.ok("https://acme.com/careers", "hub") // page reachable → not dormant
+	live := newFakeLiveness()
+
+	// A non-hub listing URL so it passes the IsHubOrRootURL re-gate and reaches the
+	// GET, where the (fake) downloader returns the bare robots sentinel.
+	blocked := &crawler.JobListing{CanonicalURL: "c-blocked", URL: "https://acme.com/j/blocked", SourceHash: "x", CompanyKey: "acme.com"}
+	dl.fail(blocked.URL, collection.ErrRobotsDisallowed)
+	live.open[page] = []*crawler.JobListing{blocked}
+
+	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
+		Downloader:        dl,
+		Parser:            fakeParser{},
+		Liveness:          live,
+		Dormancy:          &fakeDormancy{},
+		Classifier:        newFakeClassifier(),
+		SourceHash:        identityHash,
+		EnqueueExtract:    (&captureExtract{}).enqueue,
+		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+		DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+	})
+
+	seed := &crawler.CollectionSeed{URL: "https://acme.com/careers", CompanyKey: "acme.com", CareerPageID: page}
+	if err := proc.Process(t.Context(), seed); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	probes := live.recordedProbes()
+	if len(probes) != 1 || probes[0].canonicalURL != "c-blocked" || probes[0].outcome != crawler.ProbeInconclusive {
+		t.Fatalf("crawl probes = %+v, want one Inconclusive for c-blocked (robots decay, not Dead)", probes)
+	}
+}
+
+// TestRefetchRobotsDisallowedPageProbeLingersNonDormant is the ADR-0040
+// wholesale-block rule at the Process seam: a page probe the politeDownloader
+// short-circuits (wrapped sentinel here, exercising the wrapped classify path)
+// folds to an Inconclusive dormancy probe, leaves the page non-dormant, and its
+// listings are still refetched — a blocked page path never short-circuits its
+// listings' own checks.
+func TestRefetchRobotsDisallowedPageProbeLingersNonDormant(t *testing.T) {
+	page := uuid.New()
+	const pageURL = "https://acme.com/careers"
+	dl := newFakeDownloader()
+	dl.fail(pageURL, fmt.Errorf("robots: %w", collection.ErrRobotsDisallowed)) // page probe blocked (wrapped)
+
+	// One open listing that refetches cleanly, proving listings still run despite
+	// the blocked page probe.
+	alive := &crawler.JobListing{CanonicalURL: "c-alive", URL: "https://acme.com/j/alive", SourceHash: "same", CompanyKey: "acme.com"}
+	dl.ok(alive.URL, "same") // identityHash unchanged → Alive
+	live := newFakeLiveness()
+	live.open[page] = []*crawler.JobListing{alive}
+
+	dorm := &fakeDormancy{} // default BecameDormant:false
+	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
+		Downloader:        dl,
+		Parser:            fakeParser{},
+		Liveness:          live,
+		Dormancy:          dorm,
+		Classifier:        newFakeClassifier(),
+		SourceHash:        identityHash,
+		EnqueueExtract:    (&captureExtract{}).enqueue,
+		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+		DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+	})
+
+	seed := &crawler.CollectionSeed{URL: pageURL, CompanyKey: "acme.com", CareerPageID: page}
+	if err := proc.Process(t.Context(), seed); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	dp := dorm.recorded()
+	if len(dp) != 1 || dp[0].outcome != crawler.ProbeInconclusive {
+		t.Fatalf("dormancy probes = %+v, want one Inconclusive (blocked page never counts toward dormancy)", dp)
+	}
+	probes := live.recordedProbes()
+	if len(probes) != 1 || probes[0].canonicalURL != "c-alive" || probes[0].outcome != crawler.ProbeAlive {
+		t.Fatalf("crawl probes = %+v, want one Alive for c-alive (listings still refetched under a blocked page)", probes)
 	}
 }

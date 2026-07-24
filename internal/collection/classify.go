@@ -21,6 +21,13 @@ func classifyStatus(err error) crawler.ProbeOutcome {
 	if err == nil {
 		return crawler.ProbeAlive
 	}
+	// A robots.txt re-check that now disallows the URL (ADR-0040) is "cannot
+	// verify," not death: fold it to Inconclusive so a fresh Disallow — or a
+	// transient robots.txt outage the checker reports as disallow-all — rides the
+	// staleness backstop over StaleThreshold Cycles instead of hard-closing.
+	if errors.Is(err, ErrRobotsDisallowed) {
+		return crawler.ProbeInconclusive
+	}
 	var se *downloader.StatusError
 	if errors.As(err, &se) && (se.StatusCode == http.StatusNotFound || se.StatusCode == http.StatusGone) {
 		return crawler.ProbeDead
@@ -38,6 +45,8 @@ func classifyStatus(err error) crawler.ProbeOutcome {
 //
 //   - getErr != nil → classifyStatus(getErr): 404/410 Dead, everything else
 //     Inconclusive. The page was never reached, so the classification args are ignored.
+//     A wholesale robots.txt block (ErrRobotsDisallowed, ADR-0040) folds through here
+//     to Inconclusive, so a blocked page probe never counts toward dormancy.
 //   - getErr == nil, classifyErr != nil → Inconclusive: the page reached 200 but no
 //     classification signal was obtained (a parse or LLM failure). Do-least-harm, so a
 //     classify blip never counts toward dormancy — exactly like a transient GET.

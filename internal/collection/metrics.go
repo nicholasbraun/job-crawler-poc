@@ -21,6 +21,7 @@ type Metrics struct {
 	closed           metric.Int64Counter
 	boardsFetched    metric.Int64Counter
 	boardsIncomplete metric.Int64Counter
+	robotsBlocked    metric.Int64Counter
 	cycleDuration    metric.Float64Histogram
 }
 
@@ -35,6 +36,7 @@ func NewMetrics() *Metrics {
 		closed:           counter(meter, "collection.listings.closed"),
 		boardsFetched:    counter(meter, "collection.boards.fetched"),
 		boardsIncomplete: counter(meter, "collection.boards.incomplete"),
+		robotsBlocked:    counter(meter, "collection.refetch.robots_blocked"),
 		cycleDuration:    histogram(meter, "collection.cycle.duration_ms"),
 	}
 }
@@ -69,6 +71,13 @@ func (m *Metrics) BoardFetched(ctx context.Context) { m.boardsFetched.Add(ctx, 1
 
 // BoardIncomplete tallies one incomplete (presence-only) ATS board fetch.
 func (m *Metrics) BoardIncomplete(ctx context.Context) { m.boardsIncomplete.Add(ctx, 1) }
+
+// RobotsBlocked tallies one refetch short-circuited by the robots re-check (page
+// probe or per-listing), from the politeDownloader's single choke point
+// (ADR-0040). It is a friction gauge: it deliberately conflates a real Disallow
+// with a transient robots.txt 5xx the checker folds to disallow-all, so a spike
+// reads as a robots.txt outage more than mass Disallow adoption.
+func (m *Metrics) RobotsBlocked(ctx context.Context) { m.robotsBlocked.Add(ctx, 1) }
 
 // RecordCycle records one whole-Cycle wall-clock duration in milliseconds.
 func (m *Metrics) RecordCycle(ctx context.Context, d time.Duration) {
