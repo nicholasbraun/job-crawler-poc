@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -116,7 +117,19 @@ func (h *Handler) importCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dryRun := r.URL.Query().Get("dryRun") == "true"
+	// dryRun defaults to false (a real, catalog-mutating import) when the flag is
+	// absent. Parse a present value permissively (ParseBool accepts 1/t/T/true/…),
+	// but reject a malformed one with 400 rather than silently defaulting to a real
+	// import — this is a destructive toggle where a typo must not fall through.
+	dryRun := false
+	if raw := r.URL.Query().Get("dryRun"); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid dryRun value; expected a boolean (e.g. true or false)")
+			return
+		}
+		dryRun = parsed
+	}
 	idempotencyKey := r.Header.Get("Idempotency-Key")
 	job, replay, err := h.cfg.Importer.Submit(r.Context(), header.Filename, payload, dryRun, idempotencyKey)
 	if err != nil {

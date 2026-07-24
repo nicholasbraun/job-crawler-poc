@@ -424,6 +424,51 @@ func TestImportMalformedUploadIs400(t *testing.T) {
 	})
 }
 
+// TestImportDryRunFlagParsing covers the dryRun query flag: it is parsed with
+// strconv.ParseBool so common truthy/falsy spellings work, defaults to false (a
+// real import) when absent, and a malformed value is a 400 rather than silently
+// running a destructive import.
+func TestImportDryRunFlagParsing(t *testing.T) {
+	t.Run("accepted values", func(t *testing.T) {
+		cases := []struct {
+			query string
+			want  bool
+		}{
+			{"", false},        // absent: default to a real import
+			{"dryRun=", false}, // present but empty: still the default
+			{"dryRun=true", true},
+			{"dryRun=1", true},
+			{"dryRun=false", false},
+			{"dryRun=0", false},
+		}
+		for _, tc := range cases {
+			t.Run(tc.query, func(t *testing.T) {
+				srv, _ := newImportHandler(t)
+
+				rec := httptest.NewRecorder()
+				srv.ServeHTTP(rec, newImportRequest(t, "catalog.ndjson", validImportLine, tc.query))
+				if rec.Code != http.StatusAccepted {
+					t.Fatalf("status: got %d, want 202; body=%s", rec.Code, rec.Body)
+				}
+				if got := decodeImportJob(t, rec.Body); got.DryRun != tc.want {
+					t.Errorf("dryRun: got %v, want %v", got.DryRun, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("malformed value is 400", func(t *testing.T) {
+		srv, repo := newImportHandler(t)
+
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, newImportRequest(t, "catalog.ndjson", validImportLine, "dryRun=yes"))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status: got %d, want 400; body=%s", rec.Code, rec.Body)
+		}
+		assertNoJobsCreated(t, repo)
+	})
+}
+
 func TestImportOversizeUploadIs413(t *testing.T) {
 	srv, repo := newImportHandler(t)
 
