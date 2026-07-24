@@ -71,7 +71,7 @@ type CorpusListing struct {
 // separate interface so a query caller depends only on the read surface.
 type CorpusSearchRepository interface {
 	// SearchListings returns the Corpus listings matching q — keyword match over the
-	// weighted title/description/company tsvector with a pg_trgm fuzzy tail, composed
+	// weighted title/description tsvector with a pg_trgm fuzzy tail on the title, composed
 	// with the country / work-arrangement / open-closed structured filters — ordered
 	// per q.Sort (relevance with a recency tiebreak by default) and paged by
 	// q.Limit/q.Offset. Open-only unless q.IncludeClosed. Never returns nil; no match

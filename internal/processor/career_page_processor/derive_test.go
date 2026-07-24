@@ -33,6 +33,12 @@ func TestTitleName(t *testing.T) {
 		{"bare name sharing a boilerplate word abstains", "Landing AI", ""},
 		{"empty title abstains", "", ""},
 
+		// A leading German definite article is cleanup, not a structural cue (on its own
+		// it is no evidence a real name follows), so an otherwise-uncued title still
+		// abstains -- the "neuesten Angebote" mis-catalog regression.
+		{"bare 'Die neuesten Angebote' heading abstains", "Die neuesten Angebote", ""},
+		{"leading article alone grants no cue", "Der Stellenmarkt", ""},
+
 		// A cue fired but left only boilerplate -> "".
 		{"leading-word strip leaves nothing", "Careers", ""},
 

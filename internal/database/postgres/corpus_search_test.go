@@ -122,8 +122,8 @@ func TestSearchListingsRanking(t *testing.T) {
 	})
 }
 
-// TestSearchListingsFuzzy asserts the pg_trgm fuzzy tail: a misspelled keyword that never
-// tokenizes to the indexed term still matches via word_similarity, while an unrelated term
+// TestSearchListingsFuzzy asserts the pg_trgm strict-word-similarity fuzzy tail: a misspelled
+// keyword that never tokenizes to the indexed term still matches, while an unrelated term
 // matches nothing (which also pins fuzzyMatchThreshold).
 func TestSearchListingsFuzzy(t *testing.T) {
 	pool := newTestPool(t)
@@ -151,6 +151,43 @@ func TestSearchListingsFuzzy(t *testing.T) {
 		}
 		if len(got) != 0 {
 			t.Errorf("an unrelated keyword should match nothing, got %v", searchURLOrder(got))
+		}
+	})
+
+	// Regression: a short techy keyword must not fuzzily match unrelated words that merely
+	// share a few trigrams. The mis-extracted company "neuesten Angebote" scored exactly the
+	// 0.30 cutoff against "nestjs" under the old word_similarity tail (%>), flooding the
+	// "nestjs" search with unrelated German postings; strict_word_similarity (%>>) drops it
+	// below the cutoff while still returning the genuine hit.
+	t.Run("short keyword does not fuzzily match an unrelated company", func(t *testing.T) {
+		real := saveSearchable(t, repo, "https://ex.com/fuzzy/nestjs-real", "Backend Developer", "Node.js, TypeScript und NestJS", "cosinex", "DE", crawler.WorkArrangementOnsite)
+		noise := saveSearchable(t, repo, "https://ex.com/fuzzy/neuesten", "Ausbildung zum Verwaltungswirt", "", "neuesten Angebote", "DE", crawler.WorkArrangementOnsite)
+
+		got, err := repo.SearchListings(t.Context(), crawler.ListingQuery{Keywords: []string{"nestjs"}})
+		if err != nil {
+			t.Fatalf("SearchListings: %v", err)
+		}
+		set := searchURLSet(got)
+		if !set[real.CanonicalURL] {
+			t.Errorf("\"nestjs\" should return the genuine NestJS listing %q; got %v", real.CanonicalURL, searchURLOrder(got))
+		}
+		if set[noise.CanonicalURL] {
+			t.Errorf("\"nestjs\" must not fuzzily match the \"neuesten Angebote\" company; got %v", searchURLOrder(got))
+		}
+	})
+
+	// Company is not a keyword-match surface at all (migration 0025 dropped it from search_tsv
+	// and removed its trigram index): a keyword that appears only in the company name, not in
+	// the title or description, must not match its listing.
+	t.Run("company name is not a keyword-match surface", func(t *testing.T) {
+		companyOnly := saveSearchable(t, repo, "https://ex.com/fuzzy/company-only", "Backend Developer", "we build web services", "Zalando", "DE", crawler.WorkArrangementRemote)
+
+		got, err := repo.SearchListings(t.Context(), crawler.ListingQuery{Keywords: []string{"Zalando"}})
+		if err != nil {
+			t.Fatalf("SearchListings: %v", err)
+		}
+		if searchURLSet(got)[companyOnly.CanonicalURL] {
+			t.Errorf("a keyword matching only the company name must not return its listing; got %v", searchURLOrder(got))
 		}
 	})
 }

@@ -23,11 +23,20 @@ var nameSeparators = []string{" — ", " – ", " - ", " | ", " · ", " :: "}
 // "Acme Careers" -> "Acme").
 var nameSuffixes = []string{" careers", " career", " jobs", " hiring", " job board"}
 
-// nameLeadingWords are single leading words stripped from a title -- hiring
-// boilerplate ("Join Acme" -> "Acme") and leading German articles
-// ("der Commerzbank" -> "Commerzbank"). English "the" is deliberately excluded:
-// it is commonly part of a real name (e.g. "The Guardian").
-var nameLeadingWords = []string{"join", "careers", "career", "jobs", "der", "die", "das"}
+// hiringLeadingWords are single leading hiring-boilerplate words stripped from a
+// title ("Join Acme" -> "Acme"). The word itself is hiring boilerplate, so its
+// presence is a structural cue that a company name follows: stripping one earns the
+// title trust (see stripTitleBoilerplate's cued return).
+var hiringLeadingWords = []string{"join", "careers", "career", "jobs"}
+
+// articleLeadingWords are leading German definite articles stripped from a title as
+// cleanup ("der Commerzbank" -> "Commerzbank"). Unlike hiringLeadingWords, an article
+// is grammar, not a hiring cue: on its own it is no evidence a real name follows -- a
+// bare "Die neuesten Angebote" is a list heading, not a company -- so stripping one
+// does NOT earn the title trust, and an otherwise-uncued title still abstains to the
+// domain rung (ADR-0025). English "the" is deliberately excluded: it is commonly part
+// of a real name (e.g. "The Guardian").
+var articleLeadingWords = []string{"der", "die", "das"}
 
 // boilerplateWords are the words that, on their own, make a title part generic
 // hiring boilerplate rather than a company name.
@@ -161,12 +170,22 @@ func stripTitleBoilerplate(name string) (result string, cued bool) {
 		}
 	}
 
-	// A leading word like "Join <Company>" (or a title that is only boilerplate).
+	// A leading hiring word ("Join <Company>") is a structural cue; a leading German
+	// article ("der <Company>") is cleanup only and grants no cue, so an otherwise-uncued
+	// "Die neuesten Angebote" stays uncued and abstains to the domain rung (ADR-0025). The
+	// two checks read the same original first token, so at most one strip fires.
 	if fields := strings.Fields(name); len(fields) >= 1 {
-		for _, w := range nameLeadingWords {
-			if strings.EqualFold(fields[0], w) {
-				name = strings.TrimSpace(name[len(fields[0]):])
+		first := fields[0]
+		for _, w := range hiringLeadingWords {
+			if strings.EqualFold(first, w) {
+				name = strings.TrimSpace(name[len(first):])
 				cued = true
+				break
+			}
+		}
+		for _, w := range articleLeadingWords {
+			if strings.EqualFold(first, w) {
+				name = strings.TrimSpace(name[len(first):])
 				break
 			}
 		}
