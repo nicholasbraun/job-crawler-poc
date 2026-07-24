@@ -279,7 +279,18 @@ func Identify(u crawler.URL) Identity {
 		return id
 	}
 
-	id.CompanyKey = eTLDPlusOne(host)
+	// On a multi-tenant shared-hosting platform each subdomain is an independent
+	// tenant, so key on the full (already url.normalize-lowercased) host to confine
+	// the Scope fence to that one subdomain instead of the whole registrable domain.
+	// eTLD+1 stays the default for a real company, so a crawl still follows onto the
+	// sibling subdomains it owns (careers.acme.com -> jobs.acme.com); on a shared
+	// host those siblings are different entities, so there is no discovery to lose.
+	registrable := eTLDPlusOne(host)
+	if _, ok := sharedHostSuffixes[registrable]; ok {
+		id.CompanyKey = host
+		return id
+	}
+	id.CompanyKey = registrable
 	return id
 }
 
@@ -478,6 +489,37 @@ var aggregatorHosts = map[string]struct{}{
 	"lakestar.com":             {},
 	"techstars.com":            {},
 	"ycombinator.com":          {}, // portfolio; folds in news.ycombinator.com (already a negative fixture)
+}
+
+// sharedHostSuffixes are registrable domains (eTLD+1) that front many INDEPENDENT
+// tenants on distinct subdomains — one newsletter, blog, or site per
+// {tenant}.{suffix}. When a host's eTLD+1 is listed here, Identify keys the Scope
+// fence on the FULL host instead of the eTLD+1, confining a seed to its own
+// subdomain rather than opening it onto the whole platform. This TIGHTENS the
+// ADR-0021 fence (see ADR-0039, #202): a live audit found an acme.substack.com seed
+// keyed to "substack.com" swept all 1,830 newsletters (164K URLs, 6.6% of the
+// frontier) into one crawl, because every tenant shares that one registrable domain.
+//
+// The set is a Public-Suffix-List SUPPLEMENT: it lists only multi-tenant hosts the
+// PSL does NOT already fence in its PRIVATE section. Classic platforms that ARE in
+// the PSL (github.io, blogspot.com, wixsite.com, notion.site, myshopify.com,
+// webflow.io, …) already return their full host from eTLDPlusOne, so a seed on them
+// never leaked and an entry here would be a pure no-op — they are deliberately
+// omitted. Path-tenancy platforms (medium.com/@tenant on a shared www host) are
+// omitted too: full-host keying does nothing for a tenant that is not on its own
+// subdomain, and would wrongly confine the shared host.
+//
+// Matched on eTLD+1; keys are lowercase to match eTLDPlusOne output. Curated and
+// extended over time exactly like aggregatorHosts, and each entry is PSL-verified
+// un-fenced before it is added. Mega-institution / government / university umbrellas
+// are deliberately OUT: karriere.tum.de and jobs.tum.de are the same employer, so
+// full-host keying would both split one company and drop the 22.4% cross-subdomain
+// discovery that eTLD+1 preserves — that volume is owned by #203/#204, not here.
+var sharedHostSuffixes = map[string]struct{}{
+	"substack.com":  {}, // newsletters, one per {tenant}.substack.com — the proven #1 live leaker (#202)
+	"beehiiv.com":   {}, // newsletters, one per {tenant}.beehiiv.com — same cross-promo link trap as Substack
+	"ghost.io":      {}, // Ghost(Pro), one publication per {tenant}.ghost.io
+	"wordpress.com": {}, // blogs, thousands of independent sites at {tenant}.wordpress.com
 }
 
 // IsAggregatorHost reports whether u sits on a known multi-company aggregator,
