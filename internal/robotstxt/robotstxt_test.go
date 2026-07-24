@@ -256,36 +256,78 @@ func TestCheckerCachesPerHost(t *testing.T) {
 	}
 }
 
-type ctxRecordingGetter struct {
-	receivedCtxErr error
-	response       *robotstxt.Response
+// TestCheckerCancelledCallerStillReturnsCancellation confirms a caller's own wait
+// is cancellable: cancelling the context passed to Check unblocks it promptly with
+// context.Canceled rather than hanging on the shared fetch.
+func TestCheckerCancelledCallerStillReturnsCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		getter := &fakeGetter{
+			response: &robotstxt.Response{StatusCode: 200, Content: []byte("body")},
+			gate:     make(chan struct{}),
+		}
+		checker := robotstxt.NewChecker(&fakeParser{rules: &fakeRules{}}, getter)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		errCh := make(chan error, 1)
+		go func() { errCh <- checker.Check(ctx, "http://example.com/path") }()
+		synctest.Wait() // fetch goroutine durably blocked in the gated getter
+
+		// Cancel the caller while the fetch is still in flight: its wait must unblock.
+		cancel()
+		synctest.Wait()
+		if err := <-errCh; !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled caller: got %v, want context.Canceled", err)
+		}
+
+		close(getter.gate) // let the decoupled fetch drain so no goroutine lingers
+	})
 }
 
-func (g *ctxRecordingGetter) Get(ctx context.Context, url string) (*robotstxt.Response, error) {
-	g.receivedCtxErr = ctx.Err()
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	return g.response, nil
-}
+// TestCheckerDecouplesFetchFromCallerCancellation is the core of the singleflight
+// hardening: when the worker that owns a shared /robots.txt fetch cancels mid-fetch,
+// its own Check unblocks with context.Canceled, but the fetch keeps running on its
+// decoupled context and still serves the co-sharers waiting on it — one shared
+// fetch serves the whole group instead of the owner's cancellation failing everyone.
+func TestCheckerDecouplesFetchFromCallerCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		allowed := &fakeRules{allowed: map[string]bool{"/path": true}}
+		getter := &fakeGetter{
+			response: &robotstxt.Response{StatusCode: 200, Content: []byte("body")},
+			gate:     make(chan struct{}),
+		}
+		checker := robotstxt.NewChecker(&fakeParser{rules: allowed}, getter)
 
-func TestCheckerPropagatesCtxCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
+		const u = "http://example.com/path"
 
-	getter := &ctxRecordingGetter{response: &robotstxt.Response{StatusCode: 200}}
-	checker := robotstxt.NewChecker(&fakeParser{}, getter)
+		// Owner A starts the shared fetch and blocks inside the gated getter.
+		ctxA, cancelA := context.WithCancel(t.Context())
+		errA := make(chan error, 1)
+		go func() { errA <- checker.Check(ctxA, u) }()
+		synctest.Wait() // A's fetch goroutine is durably blocked in the getter
 
-	err := checker.Check(ctx, "http://example.com/")
-	if err == nil {
-		t.Fatalf("expected error from cancelled ctx, got nil")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled in chain, got %v", err)
-	}
-	if getter.receivedCtxErr == nil {
-		t.Fatalf("expected getter to observe cancelled ctx, got nil")
-	}
+		// Co-sharer B joins the same in-flight fetch under a live context.
+		errB := make(chan error, 1)
+		go func() { errB <- checker.Check(t.Context(), u) }()
+		synctest.Wait() // B is durably blocked waiting on the shared result
+
+		// Cancel A mid-fetch: only A's own wait unblocks, with context.Canceled.
+		cancelA()
+		synctest.Wait()
+		if err := <-errA; !errors.Is(err, context.Canceled) {
+			t.Fatalf("owner Check: got %v, want context.Canceled", err)
+		}
+
+		// The fetch is decoupled from A, so releasing the gate lets it complete and
+		// serve B — A's cancellation did not poison the group.
+		close(getter.gate)
+		synctest.Wait()
+		if err := <-errB; err != nil {
+			t.Fatalf("co-sharer Check: got %v, want nil (shared fetch served the group)", err)
+		}
+		if got := getter.callCount(); got != 1 {
+			t.Fatalf("getter calls: got %d, want 1 (one shared fetch, coalesced)", got)
+		}
+	})
 }
 
 func TestCheckerEvictsAtCacheSize(t *testing.T) {

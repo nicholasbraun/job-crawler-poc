@@ -108,9 +108,12 @@ func (s *Stage[T]) reclaimOnce(proc processor.Processor[T], consumer string) {
 		if s.readCtx.Err() != nil {
 			return
 		}
-		// RetryCount is the delivery count; once it exceeds maxAttempts the entry
-		// is judged poison and moved to the dead-letter stream.
-		if p.RetryCount > int64(s.maxAttempts) {
+		// RetryCount is the delivery count: the number of times this entry has been
+		// handed to a worker and thus processed. Dead-letter once it reaches
+		// maxAttempts, so a poison entry is processed exactly maxAttempts times —
+		// matching the documented attempt count (WithMaxAttempts) — before it is
+		// judged poison, rather than one extra time under a strict-greater test.
+		if p.RetryCount >= int64(s.maxAttempts) {
 			s.deadLetterPending(p)
 			continue
 		}

@@ -67,6 +67,13 @@ const (
 	DefaultCacheSize = 16384
 )
 
+// robotsFetchTimeout bounds the shared /robots.txt fetch once it is decoupled
+// from the caller's ctx (see Check). Detaching the fetch drops any caller
+// deadline, so this ceiling keeps a wedged Getter from hanging the singleflight
+// group forever. The production downloader already enforces a shorter 5s HTTP
+// timeout, so in practice this is only a backstop.
+const robotsFetchTimeout = 30 * time.Second
+
 // Checker decides whether URLs are allowed by the target host's robots.txt.
 // Rules are cached per hostname (bounded in size and age, see cache);
 // concurrent fetches to the same host are deduplicated via singleflight.
@@ -122,10 +129,21 @@ func (c *Checker) Check(ctx context.Context, u string) error {
 	hostname := parsedURL.Hostname()
 
 	fetchFn := func() (Rules, error) {
-		res, err, _ := c.sf.Do(hostname, func() (any, error) {
-			baseURL := parsedURL.Scheme + "://" + hostname
-			robotsURL := baseURL + "/robots.txt"
-			response, err := c.downloader.Get(ctx, robotsURL)
+		baseURL := parsedURL.Scheme + "://" + hostname
+		robotsURL := baseURL + "/robots.txt"
+
+		// Decouple the shared /robots.txt fetch from the caller's ctx. The fetch is
+		// coalesced across every worker checking this host (singleflight), so the
+		// worker that happens to own the flight shutting down mid-fetch must not
+		// cancel it and fail the whole group — the co-sharers, whose own contexts are
+		// still alive, would spuriously drop their URLs this round. Run it under a
+		// bounded background context instead (mirrors the DNS cache's shared
+		// resolution in internal/downloader/resolver.go); each caller still cancels
+		// only its own wait, in the select below.
+		ch := c.sf.DoChan(hostname, func() (any, error) {
+			fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), robotsFetchTimeout)
+			defer cancel()
+			response, err := c.downloader.Get(fetchCtx, robotsURL)
 			if err != nil {
 				return nil, fmt.Errorf("robotstxt: error downloading '%s': %w", robotsURL, err)
 			}
@@ -143,13 +161,19 @@ func (c *Checker) Check(ctx context.Context, u string) error {
 
 			return c.parser.Parse(response.Content)
 		})
-		if err != nil {
-			return nil, err
+
+		select {
+		case res := <-ch:
+			if res.Err != nil {
+				return nil, res.Err
+			}
+			if rules, ok := res.Val.(Rules); ok {
+				return rules, nil
+			}
+			return nil, fmt.Errorf("robotstxt: could not convert to Rules: %v", res.Val)
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
-		if rules, ok := res.(Rules); ok {
-			return rules, nil
-		}
-		return nil, fmt.Errorf("robotstxt: could not convert to Rules: %v", res)
 	}
 
 	rules, err := c.cache.getOrFetch(hostname, fetchFn)
