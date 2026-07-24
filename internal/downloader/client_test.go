@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -443,6 +444,30 @@ func TestRetry(t *testing.T) {
 				}
 			})
 		})
+	})
+
+	t.Run("maxTries <= 0 returns a clean error without a nil wrap", func(t *testing.T) {
+		// Degenerate config: the loop never runs, so there is no underlying error to
+		// wrap. The terminal error must not %w-wrap a nil (which renders fmt's
+		// %!w(<nil>) artifact). The empty mock would panic on an out-of-range index if
+		// Get were called, so callCount == 0 also confirms no attempt was made.
+		mock := &mockDownloader{}
+		retryClient := downloader.NewRetryClient(mock, downloader.WithMaxTries(0))
+
+		res, err := retryClient.Get(t.Context(), "http://something.de")
+
+		if res != nil {
+			t.Errorf("res = %v, want nil", res)
+		}
+		if err == nil {
+			t.Fatal("err = nil, want a non-nil terminal error")
+		}
+		if strings.Contains(err.Error(), "%!") {
+			t.Errorf("terminal error contains a bad format verb from wrapping nil: %v", err)
+		}
+		if mock.callCount != 0 {
+			t.Errorf("inner.Get called %d times, want 0 for maxTries=0", mock.callCount)
+		}
 	})
 
 	t.Run("Honors Retry-After hint over backoff", func(t *testing.T) {

@@ -107,8 +107,13 @@ func (rc *RetryClient) Get(ctx context.Context, url string) (*Response, error) {
 		}
 	}
 
-	// Wrap the last underlying failure so callers can errors.Is/errors.As it
-	// (e.g. to a *StatusError or a timeout) after retries are exhausted.
+	// Every attempt was a retryable failure. Wrap the last one so callers can
+	// errors.Is/errors.As it (e.g. to a *StatusError or a timeout) after retries
+	// are exhausted. lastErr is nil only in the degenerate maxTries <= 0 case,
+	// where the loop never ran and there is no underlying error to wrap.
+	if lastErr == nil {
+		return nil, fmt.Errorf("could not GET %s after %d tries", url, rc.maxTries)
+	}
 	return nil, fmt.Errorf("could not GET %s after %d tries: %w", url, rc.maxTries, lastErr)
 }
 
