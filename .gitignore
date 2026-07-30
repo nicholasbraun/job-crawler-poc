@@ -8,6 +8,16 @@
 # llmbench local A/B run artifacts (bench -json output, diffed across runs)
 /cmd/llmbench/results/
 
+# Live-captured Extract Gold Set from the extract-decision tap (#116): raw pages
+# harvested via scripts/capture-goldset.sh, curated before any land in the
+# committed extract-testdata set.
+/cmd/llmbench/extract-goldset-live/
+
+# Extract-capture experiment (#116): local-only compose override + the captured
+# JSONL bind-mount output. Both are working artifacts, never committed.
+/docker-compose.override.yml
+/capture/
+
 # stray binary from `go build ./cmd/llmbench` (the Makefile builds to /bin)
 /llmbench
 

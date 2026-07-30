@@ -48,6 +48,15 @@ type Config struct {
 	// Save, so an Extractor Abstain or an extraction/save error never fires it
 	// (e.g. the run's saved-listings counter tap, #119). Optional: nil is a no-op.
 	OnSaved func(ctx context.Context)
+	// CaptureDecision, if non-nil, is called once per completed extraction with the
+	// source URL, the extractor's verdict (true = a single job posting was
+	// extracted, false = an abstain), and the parsed page Content the extractor and
+	// Extract Gate saw. It taps the extract stream to harvest a verdict-tagged page
+	// sample for the Extract Gold Set (#116) -- capturing Content lets the gate be
+	// replayed against the exact bytes with no re-fetch. It fires for both accepts
+	// and abstains but never on an extraction error (no verdict exists). Optional:
+	// nil is a no-op.
+	CaptureDecision func(ctx context.Context, url string, isJobPosting bool, content any)
 }
 
 // JobListingProcessor extracts structured job data from raw crawled pages
@@ -60,6 +69,7 @@ type JobListingProcessor struct {
 	companyNames                map[string]string
 	attributeCareerPage         func(companyKey, postingURL string) uuid.UUID
 	onSaved                     func(ctx context.Context)
+	captureDecision             func(ctx context.Context, url string, isJobPosting bool, content any)
 }
 
 func NewProcessor(cfg *Config) *JobListingProcessor {
@@ -83,6 +93,7 @@ func NewProcessor(cfg *Config) *JobListingProcessor {
 		companyNames:                cfg.CompanyNames,
 		attributeCareerPage:         cfg.AttributeCareerPage,
 		onSaved:                     cfg.OnSaved,
+		captureDecision:             cfg.CaptureDecision,
 	}
 }
 
@@ -108,6 +119,14 @@ func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.Raw
 	w.recorder.Call(ctx, llmobs.KindExtract, outcome, time.Since(start))
 	if err != nil {
 		return fmt.Errorf("job_listing_processor: error extracting job listing %v: %w", *workload, err)
+	}
+
+	// Capture tap (#116): emit the source URL + verdict for the Extract Gold Set
+	// harvest. Placed after the error return so only completed extractions (a real
+	// verdict) are sampled, and before the abstain short-circuit so abstains are
+	// captured too -- the negative stratum the gate's precision is measured against.
+	if w.captureDecision != nil {
+		w.captureDecision(ctx, workload.URL.RawURL, extraction.IsJobPosting, &workload.Content)
 	}
 
 	if !extraction.IsJobPosting {

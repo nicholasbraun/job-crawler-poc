@@ -37,6 +37,8 @@ func main() {
 		os.Exit(runExtract(rest))
 	case "capture":
 		os.Exit(runCapture(rest))
+	case "score-capture":
+		os.Exit(runScoreCapture(rest))
 	case "diff":
 		os.Exit(runDiff(rest))
 	default:

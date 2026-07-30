@@ -30,6 +30,7 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/collection"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/postgres"
 	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
+	"github.com/nicholasbraun/job-crawler-poc/internal/extractcapture"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
 	urlfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/url"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
@@ -627,6 +628,9 @@ func newFactory(
 							counters.ListingsFound.Add(1)
 							collectionMetrics.Found(ctx)
 						},
+						// Extract Gold Set harvest tap (#116): off unless EXTRACT_CAPTURE_PATH
+						// is set. Emits {url, verdict} per extraction for later `llmbench capture`.
+						CaptureDecision: extractcapture.FromEnv(),
 					})
 				},
 				llmstream.WithWorkers[crawler.RawJobListing](llmMaxWorkers),
