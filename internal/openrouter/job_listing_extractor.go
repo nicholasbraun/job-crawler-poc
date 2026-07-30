@@ -249,7 +249,7 @@ func NewJobListingExtractor(cfg Config) *JobListingExtractor {
 		baseURL:         cfg.BaseURL,
 		model:           cfg.Model,
 		extractMaxChars: cfg.ExtractMaxChars,
-		httpClient:      &http.Client{Timeout: cfg.Timeout},
+		httpClient:      newLLMHTTPClient(cfg.Timeout),
 	}
 }
 

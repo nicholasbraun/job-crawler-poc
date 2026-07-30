@@ -77,7 +77,7 @@ func NewCareerPageClassifier(cfg Config) *CareerPageClassifier {
 		baseURL:          cfg.BaseURL,
 		model:            cfg.Model,
 		classifyMaxChars: cfg.ClassifyMaxChars,
-		httpClient:       &http.Client{Timeout: cfg.Timeout},
+		httpClient:       newLLMHTTPClient(cfg.Timeout),
 	}
 }
 
