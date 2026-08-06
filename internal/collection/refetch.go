@@ -39,7 +39,7 @@ type RefetchConfig struct {
 	// by an LLM blip, and the LLM runs only for a structurally-ambiguous page.
 	GateConfig crawler.LLMGateConfig
 	// SourceHash computes the extraction-cache key over a page's main content —
-	// bound to openrouter.SourceHash with the extractor's ExtractMaxChars so the key
+	// bound to crawler.SourceHash with the extractor's ExtractMaxChars so the key
 	// is byte-identical to the one the extractor stored (ADR-0035).
 	SourceHash func(mainContent string) string
 	// EnqueueExtract hands a changed page to the shared extract stage for

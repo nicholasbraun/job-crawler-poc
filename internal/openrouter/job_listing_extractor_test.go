@@ -341,10 +341,11 @@ func TestExtractSetsSourceHash(t *testing.T) {
 	}
 }
 
-// TestSourceHashMatchesExtract asserts the exported SourceHash (the refetch pass's
-// cache key, ADR-0035) is byte-identical to the hash the extractor stamps on Extract
-// — the load-bearing invariant that lets an unchanged refetch skip the LLM. It also
-// checks the cap is applied so content beyond maxChars never shifts the key.
+// TestSourceHashMatchesExtract asserts the domain's crawler.SourceHash (the refetch
+// pass's cache key, ADR-0035) is byte-identical to the hash the extractor stamps on
+// Extract — the load-bearing invariant that lets an unchanged refetch skip the LLM.
+// The cache key's own contract (cap, rune boundary, golden vectors) is pinned in
+// internal/source_hash_test.go; this test only pins the cross-package agreement.
 func TestSourceHashMatchesExtract(t *testing.T) {
 	const content = "some page text"
 
@@ -358,13 +359,7 @@ func TestSourceHashMatchesExtract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
-	if h := openrouter.SourceHash(content, 8000); h != got.Listing.SourceHash {
+	if h := crawler.SourceHash(content, 8000); h != got.Listing.SourceHash {
 		t.Errorf("SourceHash(%q) = %q, want %q (must match the extractor's stamp)", content, h, got.Listing.SourceHash)
-	}
-
-	// The cap makes content beyond maxChars invisible to the key.
-	base := strings.Repeat("a", 10)
-	if openrouter.SourceHash(base, 5) != openrouter.SourceHash(base+"IGNORED", 5) {
-		t.Error("SourceHash must hash only the first maxChars runes")
 	}
 }

@@ -695,7 +695,7 @@ func newFactory(
 						// Structural pre-gate for the re-classification, so a page discovery
 						// certain-accepted on structure is not dormant-closed by an LLM blip.
 						GateConfig:        gateConfig,
-						SourceHash:        func(mc string) string { return openrouter.SourceHash(mc, llmConfig.ExtractMaxChars) },
+						SourceHash:        func(mc string) string { return crawler.SourceHash(mc, llmConfig.ExtractMaxChars) },
 						EnqueueExtract:    extractStage.Enqueue,
 						StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
 						DormancyThreshold: crawler.DefaultPageDormancyThreshold,
