@@ -58,10 +58,25 @@ const (
 type JobListing struct {
 	// URL is the source page this listing was extracted from. Not populated
 	// by JSON unmarshaling — set explicitly after extraction.
-	URL         string
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Company     string `json:"company"`
+	URL   string
+	Title string `json:"title"`
+	// Description is the Posting Body (ADR-0041 / CONTEXT "Posting Body"): the
+	// posting's OWN text, never model-authored. The save processor derives it from
+	// the page the crawler already downloaded (crawler.PostingBody) on the crawl
+	// lane, and each provider mapper takes it from the board API on the ATS lane.
+	// The json:"-" tag keeps LLM-response unmarshaling from ever reaching it, so a
+	// model that still emits a description field cannot leak a summary in.
+	Description string `json:"-"`
+	// DescriptionSource records where Description came from (ADR-0041 / CONTEXT
+	// "Description Source"): the closed enum in posting_body.go, stamped at save by
+	// whichever lane produced the text — structured_data or page_content from
+	// crawler.PostingBody on the crawl lane, ats_board on an ATS Fetch. The legacy
+	// llm_summary value marks a body written before ADR-0041; no code path writes it
+	// any more. The json:"-" tag keeps LLM-response unmarshaling from ever reaching
+	// it, so a hallucinated marker can never create a silent third state. Stored in
+	// job_listing.description_source.
+	DescriptionSource DescriptionSource `json:"-"`
+	Company           string            `json:"company"`
 	// CompanyKey is the Owner CompanyKey (ADR-0021) the saved listing is attributed
 	// to. The processor sets it from the source URL's Owner at save time; the
 	// json:"-" tag keeps the extractor's LLM-response unmarshaling from ever
@@ -108,10 +123,12 @@ type JobListing struct {
 	// on the ATS lane and folded into the CanonicalURL via listingid.FromATS so a URL
 	// re-slug never forges a new posting (ADR-0034). Empty on the crawl lane.
 	SourceID string `json:"-"`
-	// SourceHash is the SHA-256 (hex) of the EXACT capped MainContent fed to the
-	// extractor — the extraction-cache key the later crawl-lane refetch pass compares
-	// against (ADR-0035), replacing the vestigial output content_hash. Set by the
-	// extractor on the crawl lane; empty on the ATS lane (absence-from-board liveness).
+	// SourceHash is the SHA-256 (hex) of the page's MainContent capped to the
+	// extractor's prompt window — the extraction-cache key the later crawl-lane
+	// refetch pass compares against (ADR-0035), replacing the vestigial output
+	// content_hash. Set by the SAVE PROCESSOR on the crawl lane, from the same cap the
+	// refetch lane hashes with, so the stored key stays byte-identical to the one a
+	// refetch recomputes; empty on the ATS lane (absence-from-board liveness).
 	SourceHash string `json:"-"`
 	// CareerPageID links the listing to the Career Page it was collected under (FK to
 	// career_page). uuid.Nil when unknown (stored as SQL NULL). Not populated in #187 —
@@ -149,7 +166,10 @@ type CorpusRepository interface {
 	// Save upserts jl into the Corpus keyed on jl.CanonicalURL: re-saving the same
 	// posting refreshes its mutable fields in place, preserves first_seen, advances
 	// last_seen, and reopens it (clears closed_at) if it had been closed (ADR-0035).
-	// It stamps the Source Lane, source_id, source_hash, and career_page_id.
+	// It stamps the Source Lane, source_id, source_hash, career_page_id, and
+	// description_source. Every caller MUST set a DescriptionSource: the column's
+	// CHECK rejects an unset marker rather than admitting a silent third state that
+	// the later refetch heal would skip and the Corpus audit would not count.
 	Save(ctx context.Context, jl *JobListing) error
 }
 
@@ -161,9 +181,13 @@ type CorpusRepository interface {
 type CorpusLivenessRepository interface {
 	// ListOpen returns every currently-Open (closed_at IS NULL) Job Listing collected
 	// under careerPageID, so a Cycle can refetch them for liveness. Each carries
-	// CanonicalURL, URL, Source, SourceID, SourceHash, CompanyKey, and CareerPageID
-	// (the fields a refetch needs — CompanyKey rebuilds the re-extraction's Owner
-	// attribution); never returns nil (an empty board yields an empty slice).
+	// CanonicalURL, URL, Source, SourceID, SourceHash, CompanyKey, DescriptionSource,
+	// and CareerPageID (the fields a refetch needs — CompanyKey rebuilds the
+	// re-extraction's Owner attribution, and the Description Source lets the refetch
+	// heal decide which stored bodies are legacy without a second query per listing).
+	// The description TEXT is deliberately not projected: the heal rewrites the body
+	// from the page it already fetched, so reading every Open body would be a large
+	// pointless read. Never returns nil (an empty board yields an empty slice).
 	ListOpen(ctx context.Context, careerPageID uuid.UUID) ([]*JobListing, error)
 
 	// CloseAbsent runs the ATS-lane absence-sweep for ONE board (ADR-0035): when
@@ -179,4 +203,20 @@ type CorpusLivenessRepository interface {
 	// it reaches staleThreshold. Attempt-gated by construction — only a probed listing is
 	// touched, so a down collector closes nothing. Returns the resulting LifecycleState.
 	ApplyCrawlProbe(ctx context.Context, canonicalURL string, outcome ProbeOutcome, staleThreshold int) (LifecycleState, error)
+}
+
+// CorpusDescriptionRepository rewrites a Job Listing's stored Posting Body in place,
+// the write the refetch lane's legacy-summary heal needs (ADR-0041). Deliberately
+// separate from CorpusRepository.Save: a heal rewrites a legacy, model-authored body
+// WITHOUT touching Liveness, and a Save would advance last_seen, clear closed_at and
+// reset the inconclusive streak — the heal would masquerade as a fresh sighting and
+// could resurrect a Closed posting. Implemented by the same store as CorpusRepository;
+// kept its own port so the heal cannot reach anything wider.
+type CorpusDescriptionRepository interface {
+	// UpdateDescription sets description and its Description Source marker for the
+	// listing keyed on canonicalURL and NOTHING else — no liveness, last_seen,
+	// closed_at, or inconclusive_streak. Writing the marker in the same statement is
+	// what makes the heal one write per listing rather than one per Cycle. Returns
+	// ErrNotFound when no listing carries that canonical URL.
+	UpdateDescription(ctx context.Context, canonicalURL, description string, source DescriptionSource) error
 }

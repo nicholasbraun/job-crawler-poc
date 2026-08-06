@@ -3,6 +3,7 @@ package joblistingprocessor_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +65,11 @@ func newURL(t *testing.T, raw string) crawler.URL {
 	return u
 }
 
+// testSourceHash stands in for the extraction-cache key: prefixing the page's main
+// content makes both the stamped value and the input it was computed from assertable
+// without pulling sha256 into the test.
+func testSourceHash(mainContent string) string { return "key:" + mainContent }
+
 func TestJobListingProcessorRecordsExtractCall(t *testing.T) {
 	repo := &spyJobListingRepo{}
 	rec := &spyRecorder{}
@@ -71,6 +77,7 @@ func TestJobListingProcessorRecordsExtractCall(t *testing.T) {
 		Corpus:              repo,
 		JobListingExtractor: &stubExtractor{result: crawler.JobListing{Title: "Engineer"}, isPosting: true},
 		Recorder:            rec,
+		SourceHash:          testSourceHash,
 	})
 
 	raw := &crawler.RawJobListing{
@@ -113,6 +120,7 @@ func TestJobListingProcessorOnSaved(t *testing.T) {
 			Corpus:              &spyJobListingRepo{},
 			JobListingExtractor: &stubExtractor{result: crawler.JobListing{Title: "Engineer"}, isPosting: true},
 			OnSaved:             func(context.Context) { saved++ },
+			SourceHash:          testSourceHash,
 		})
 
 		raw := &crawler.RawJobListing{
@@ -134,6 +142,7 @@ func TestJobListingProcessorOnSaved(t *testing.T) {
 			Corpus:              &spyJobListingRepo{},
 			JobListingExtractor: &stubExtractor{result: crawler.JobListing{Title: "Careers"}, isPosting: false},
 			OnSaved:             func(context.Context) { saved++ },
+			SourceHash:          testSourceHash,
 		})
 
 		raw := &crawler.RawJobListing{
@@ -160,6 +169,7 @@ func TestJobListingProcessorAbstainSuppressesSave(t *testing.T) {
 		Corpus:              repo,
 		JobListingExtractor: &stubExtractor{result: crawler.JobListing{Title: "Careers"}, isPosting: false},
 		Recorder:            rec,
+		SourceHash:          testSourceHash,
 	})
 
 	raw := &crawler.RawJobListing{
@@ -194,6 +204,7 @@ func TestJobListingProcessorAttributesOwnerFromSnapshot(t *testing.T) {
 			Corpus:              repo,
 			JobListingExtractor: &stubExtractor{result: crawler.JobListing{Title: "Engineer", Company: "WrongGuess"}, isPosting: true},
 			CompanyNames:        map[string]string{"acme.com": "Acme Inc"},
+			SourceHash:          testSourceHash,
 		})
 
 		u := newURL(t, "https://acme.com/jobs/1")
@@ -221,6 +232,7 @@ func TestJobListingProcessorAttributesOwnerFromSnapshot(t *testing.T) {
 			Corpus:              repo,
 			JobListingExtractor: &stubExtractor{result: crawler.JobListing{Title: "Engineer", Company: "WrongGuess"}, isPosting: true},
 			CompanyNames:        map[string]string{"other.com": "Other Inc"},
+			SourceHash:          testSourceHash,
 		})
 
 		u := newURL(t, "https://acme.com/jobs/1")
@@ -270,6 +282,7 @@ func TestJobListingProcessorResolvesCountryAtSave(t *testing.T) {
 			proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
 				Corpus:              repo,
 				JobListingExtractor: &stubExtractor{result: crawler.JobListing{Title: "Engineer", Location: tt.location}, isPosting: true},
+				SourceHash:          testSourceHash,
 			})
 
 			raw := &crawler.RawJobListing{
@@ -294,6 +307,140 @@ func TestJobListingProcessorResolvesCountryAtSave(t *testing.T) {
 	}
 }
 
+// TestJobListingProcessorStoresPostingBody asserts the headline behaviour of
+// ADR-0041: a saved crawl-lane listing carries the posting's OWN text, derived at
+// save from the page the crawler already downloaded, with the Description Source
+// naming the branch that produced it. Everything is asserted on the SAVED listing —
+// the derivation itself is crawler.PostingBody's own contract.
+func TestJobListingProcessorStoresPostingBody(t *testing.T) {
+	const structuredBody = "We need a Go engineer who knows Kubernetes."
+
+	tests := []struct {
+		name       string
+		content    crawler.Content
+		maxChars   int
+		extracted  crawler.JobListing
+		wantBody   string
+		wantSource crawler.DescriptionSource
+	}{
+		{
+			name: "page carrying structured data",
+			content: crawler.Content{
+				MainContent: "site chrome and nav",
+				JSONLD:      []string{`{"@type":"JobPosting","description":"` + structuredBody + `"}`},
+			},
+			extracted:  crawler.JobListing{Title: "Engineer"},
+			wantBody:   structuredBody,
+			wantSource: crawler.DescriptionSourceStructuredData,
+		},
+		{
+			name:       "page without structured data falls back to main content",
+			content:    crawler.Content{MainContent: "we are hiring a backend engineer"},
+			extracted:  crawler.JobListing{Title: "Engineer"},
+			wantBody:   "we are hiring a backend engineer",
+			wantSource: crawler.DescriptionSourcePageContent,
+		},
+		{
+			// The cap comes from the processor's OWN knob (DESCRIPTION_MAX_CHARS);
+			// nothing in the Config touches the extractor's prompt window.
+			name:       "page over the cap is truncated",
+			content:    crawler.Content{MainContent: strings.Repeat("a", 50)},
+			maxChars:   20,
+			extracted:  crawler.JobListing{Title: "Engineer"},
+			wantBody:   strings.Repeat("a", 20),
+			wantSource: crawler.DescriptionSourcePageContent,
+		},
+		{
+			// A model that still emits a description — and a marker it has no business
+			// asserting — cannot leak either: transcription is not a judgment task, and
+			// provenance is a save-time fact about the pipeline.
+			name:    "model-emitted description and marker are both overwritten",
+			content: crawler.Content{MainContent: "the page's own posting text"},
+			extracted: crawler.JobListing{
+				Title:             "Engineer",
+				Description:       "a short model-written summary",
+				DescriptionSource: crawler.DescriptionSourceStructuredData,
+			},
+			wantBody:   "the page's own posting text",
+			wantSource: crawler.DescriptionSourcePageContent,
+		},
+		{
+			// A page whose body is injected by JS parses to nothing. Stamping
+			// page_content here would put the row beyond the refetch heal's reach
+			// forever, since the heal only revisits the legacy marker.
+			name:       "page that parses to nothing stays in the heal's queue",
+			content:    crawler.Content{},
+			extracted:  crawler.JobListing{Title: "Engineer"},
+			wantBody:   "",
+			wantSource: crawler.DescriptionSourceLLMSummary,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &spyJobListingRepo{}
+			proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
+				Corpus:              repo,
+				JobListingExtractor: &stubExtractor{result: tt.extracted, isPosting: true},
+				DescriptionMaxChars: tt.maxChars,
+				SourceHash:          testSourceHash,
+			})
+
+			raw := &crawler.RawJobListing{
+				URL:     newURL(t, "https://careers.acme.com/jobs/1"),
+				Content: tt.content,
+			}
+			if err := proc.Process(t.Context(), raw); err != nil {
+				t.Fatalf("Process returned error: %v", err)
+			}
+
+			if len(repo.saved) != 1 {
+				t.Fatalf("want 1 listing saved, got %d", len(repo.saved))
+			}
+			got := repo.saved[0]
+			if got.Description != tt.wantBody {
+				t.Errorf("Description = %q, want the Posting Body %q", got.Description, tt.wantBody)
+			}
+			if got.DescriptionSource != tt.wantSource {
+				t.Errorf("DescriptionSource = %q, want %q", got.DescriptionSource, tt.wantSource)
+			}
+		})
+	}
+}
+
+// TestJobListingProcessorStampsSourceHash asserts the extraction-cache key
+// (ADR-0035) is stamped at SAVE from the page's main content via the injected key
+// function — the same closure the refetch lane recomputes with, so an unchanged page
+// is confirmed alive with no model call.
+func TestJobListingProcessorStampsSourceHash(t *testing.T) {
+	repo := &spyJobListingRepo{}
+	proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
+		Corpus: repo,
+		// The extractor no longer returns a key; a stray one must not survive.
+		JobListingExtractor: &stubExtractor{
+			result:    crawler.JobListing{Title: "Engineer", SourceHash: "stale-extractor-key"},
+			isPosting: true,
+		},
+		SourceHash: testSourceHash,
+	})
+
+	raw := &crawler.RawJobListing{
+		URL:     newURL(t, "https://careers.acme.com/jobs/1"),
+		Content: crawler.Content{MainContent: "we are hiring"},
+	}
+	if err := proc.Process(t.Context(), raw); err != nil {
+		t.Fatalf("Process returned error: %v", err)
+	}
+
+	if len(repo.saved) != 1 {
+		t.Fatalf("want 1 listing saved, got %d", len(repo.saved))
+	}
+	if want := testSourceHash(raw.Content.MainContent); repo.saved[0].SourceHash != want {
+		t.Errorf("SourceHash = %q, want %q (keyed on the page's main content at save)",
+			repo.saved[0].SourceHash, want)
+	}
+}
+
 // TestJobListingProcessorExtractErrorNotAbstain guards the err==nil half of the
 // abstain classification. On an extraction failure the extractor returns the zero
 // Extraction (IsJobPosting=false); without the err==nil guard the false verdict
@@ -308,6 +455,7 @@ func TestJobListingProcessorExtractErrorNotAbstain(t *testing.T) {
 		Corpus:              repo,
 		JobListingExtractor: &stubExtractor{err: extractErr},
 		Recorder:            rec,
+		SourceHash:          testSourceHash,
 	})
 
 	raw := &crawler.RawJobListing{

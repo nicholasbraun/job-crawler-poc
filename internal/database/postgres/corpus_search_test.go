@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,14 +16,15 @@ import (
 func saveSearchable(t *testing.T, repo *postgres.CorpusRepository, canonicalURL, title, description, company, country string, arrangement crawler.WorkArrangement) *crawler.JobListing {
 	t.Helper()
 	jl := &crawler.JobListing{
-		CanonicalURL:    canonicalURL,
-		URL:             canonicalURL,
-		Source:          crawler.SourceLaneCrawl,
-		Title:           title,
-		Description:     description,
-		Company:         company,
-		Country:         country,
-		WorkArrangement: arrangement,
+		CanonicalURL:      canonicalURL,
+		URL:               canonicalURL,
+		Source:            crawler.SourceLaneCrawl,
+		Title:             title,
+		Description:       description,
+		DescriptionSource: crawler.DescriptionSourceLLMSummary,
+		Company:           company,
+		Country:           country,
+		WorkArrangement:   arrangement,
 	}
 	if err := repo.Save(t.Context(), jl); err != nil {
 		t.Fatalf("saving searchable listing %q: %v", canonicalURL, err)
@@ -418,14 +420,15 @@ func TestSearchListingsReturnsDepartment(t *testing.T) {
 	repo := postgres.NewCorpusRepository(pool)
 
 	jl := &crawler.JobListing{
-		CanonicalURL:    "https://ex.com/dept/1",
-		URL:             "https://ex.com/dept/1",
-		Source:          crawler.SourceLaneATS,
-		Title:           "Platform Engineer",
-		Company:         "acme",
-		Country:         "DE",
-		Department:      "Platform",
-		WorkArrangement: crawler.WorkArrangementRemote,
+		CanonicalURL:      "https://ex.com/dept/1",
+		URL:               "https://ex.com/dept/1",
+		Source:            crawler.SourceLaneATS,
+		Title:             "Platform Engineer",
+		DescriptionSource: crawler.DescriptionSourceATSBoard,
+		Company:           "acme",
+		Country:           "DE",
+		Department:        "Platform",
+		WorkArrangement:   crawler.WorkArrangementRemote,
 	}
 	if err := repo.Save(t.Context(), jl); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -440,6 +443,124 @@ func TestSearchListingsReturnsDepartment(t *testing.T) {
 	}
 	if got[0].Department != "Platform" {
 		t.Errorf("department: got %q, want %q", got[0].Department, "Platform")
+	}
+}
+
+// TestSearchListingsMatchesPostingBodyTerm is the end-to-end payoff of ADR-0041,
+// verified against a real Postgres: a crawled posting is stored with its Posting
+// Body, so a SavedSearch for a term that appears ONLY in that body — never in the
+// title — returns the listing. With the pre-ADR-0041 model summary the same search
+// silently missed it, biasing results toward whichever sites happen to publish a
+// board API. The body is derived exactly as the save processor derives it.
+func TestSearchListingsMatchesPostingBodyTerm(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCorpusRepository(pool)
+
+	// The page the crawler downloaded: a lone structured-data posting whose text
+	// names the term.
+	content := crawler.Content{
+		MainContent: "site chrome and nav",
+		JSONLD: []string{
+			`{"@type":"JobPosting","description":"You will run our clusters on Kubernetes every day."}`,
+		},
+	}
+	body, source := crawler.PostingBody(&content, crawler.DefaultDescriptionMaxChars)
+	if source != crawler.DescriptionSourceStructuredData {
+		t.Fatalf("PostingBody source = %q, want %q", source, crawler.DescriptionSourceStructuredData)
+	}
+
+	jl := &crawler.JobListing{
+		CanonicalURL: "https://ex.com/body/1",
+		URL:          "https://ex.com/body/1",
+		Source:       crawler.SourceLaneCrawl,
+		// Deliberately term-free, so only the weight-B body can match.
+		Title:             "Site Reliability Engineer",
+		Description:       body,
+		DescriptionSource: source,
+		Company:           "acme",
+		Country:           "DE",
+		WorkArrangement:   crawler.WorkArrangementRemote,
+	}
+	if err := repo.Save(t.Context(), jl); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := repo.SearchListings(t.Context(), crawler.ListingQuery{Keywords: []string{"Kubernetes"}})
+	if err != nil {
+		t.Fatalf("SearchListings: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 match on a body-only term, got %d (%v)", len(got), searchURLOrder(got))
+	}
+	if got[0].CanonicalURL != jl.CanonicalURL {
+		t.Errorf("canonical_url: got %q, want %q", got[0].CanonicalURL, jl.CanonicalURL)
+	}
+	if !strings.Contains(got[0].Description, "Kubernetes") {
+		t.Errorf("description: got %q, want it to contain the Posting Body term", got[0].Description)
+	}
+}
+
+// TestSearchListingsHealedBodyBecomesSearchable is the payoff of the refetch heal
+// (ADR-0041), verified against a real Postgres: a legacy listing whose stored summary
+// never names a term is missed by a SavedSearch for it, and the narrow
+// UpdateDescription the heal performs makes it match — because search_tsv is a STORED
+// generated column over title/description that Postgres recomputes on the UPDATE, so a
+// healed body reaches the index with no extra work and no index change.
+func TestSearchListingsHealedBodyBecomesSearchable(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCorpusRepository(pool)
+
+	// Pre-heal: a term-free title and a model-written summary that never says
+	// "Kubernetes", which is exactly what the page's own text says.
+	const canonical = "https://ex.com/heal/1"
+	legacy := &crawler.JobListing{
+		CanonicalURL:      canonical,
+		URL:               canonical,
+		Source:            crawler.SourceLaneCrawl,
+		Title:             "Site Reliability Engineer",
+		Description:       "An infrastructure role at a growing company.",
+		DescriptionSource: crawler.DescriptionSourceLLMSummary,
+		Company:           "acme",
+		Country:           "DE",
+		WorkArrangement:   crawler.WorkArrangementRemote,
+	}
+	if err := repo.Save(t.Context(), legacy); err != nil {
+		t.Fatalf("saving legacy listing: %v", err)
+	}
+
+	got, err := repo.SearchListings(t.Context(), crawler.ListingQuery{Keywords: []string{"Kubernetes"}})
+	if err != nil {
+		t.Fatalf("SearchListings (before the heal): %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("want 0 matches while the listing carries a legacy summary, got %d (%v)", len(got), searchURLOrder(got))
+	}
+
+	// The heal derives the body from the page the refetch already fetched, exactly as
+	// the processor does, and writes it through the narrow update.
+	content := crawler.Content{
+		MainContent: "site chrome and nav",
+		JSONLD: []string{
+			`{"@type":"JobPosting","description":"You will run our clusters on Kubernetes every day."}`,
+		},
+	}
+	body, source := crawler.PostingBody(&content, crawler.DefaultDescriptionMaxChars)
+	if err := repo.UpdateDescription(t.Context(), canonical, body, source); err != nil {
+		t.Fatalf("UpdateDescription: %v", err)
+	}
+
+	got, err = repo.SearchListings(t.Context(), crawler.ListingQuery{Keywords: []string{"Kubernetes"}})
+	if err != nil {
+		t.Fatalf("SearchListings (after the heal): %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 match on the healed body term, got %d (%v)", len(got), searchURLOrder(got))
+	}
+	if got[0].CanonicalURL != canonical {
+		t.Errorf("canonical_url: got %q, want %q", got[0].CanonicalURL, canonical)
+	}
+	if !strings.Contains(got[0].Description, "Kubernetes") {
+		t.Errorf("description: got %q, want it to contain the healed Posting Body term", got[0].Description)
 	}
 }
 

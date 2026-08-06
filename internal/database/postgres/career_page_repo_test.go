@@ -248,8 +248,8 @@ func TestCareerPageRecordProbe(t *testing.T) {
 
 		// One crawl-lane and one ATS-lane Open listing under the page.
 		for _, jl := range []*crawler.JobListing{
-			{CanonicalURL: "https://ex.com/j/crawl", URL: "https://ex.com/j/crawl", Source: crawler.SourceLaneCrawl, CareerPageID: page, Title: "Crawl role"},
-			{CanonicalURL: "greenhouse:probe/1", URL: "https://ex.com/j/ats", Source: crawler.SourceLaneATS, SourceID: "1", CareerPageID: page, Title: "ATS role"},
+			{CanonicalURL: "https://ex.com/j/crawl", URL: "https://ex.com/j/crawl", Source: crawler.SourceLaneCrawl, DescriptionSource: crawler.DescriptionSourceLLMSummary, CareerPageID: page, Title: "Crawl role"},
+			{CanonicalURL: "greenhouse:probe/1", URL: "https://ex.com/j/ats", Source: crawler.SourceLaneATS, DescriptionSource: crawler.DescriptionSourceATSBoard, SourceID: "1", CareerPageID: page, Title: "ATS role"},
 		} {
 			if err := corpus.Save(t.Context(), jl); err != nil {
 				t.Fatalf("seeding listing: %v", err)
@@ -509,11 +509,12 @@ func TestCareerPageRepositoryDeleteWithListings(t *testing.T) {
 	id := careerPageIDByURL(t, repo, url)
 
 	listing := &crawler.JobListing{
-		CanonicalURL: url,
-		URL:          url,
-		Source:       crawler.SourceLaneCrawl,
-		CareerPageID: id,
-		Title:        "Backend Engineer",
+		CanonicalURL:      url,
+		URL:               url,
+		Source:            crawler.SourceLaneCrawl,
+		DescriptionSource: crawler.DescriptionSourceLLMSummary,
+		CareerPageID:      id,
+		Title:             "Backend Engineer",
 	}
 	if err := corpus.Save(t.Context(), listing); err != nil {
 		t.Fatalf("seeding listing: %v", err)

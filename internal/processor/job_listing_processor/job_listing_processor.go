@@ -48,6 +48,18 @@ type Config struct {
 	// Save, so an Extractor Abstain or an extraction/save error never fires it
 	// (e.g. the run's saved-listings counter tap, #119). Optional: nil is a no-op.
 	OnSaved func(ctx context.Context)
+	// DescriptionMaxChars caps the stored Posting Body in runes (DESCRIPTION_MAX_CHARS,
+	// default crawler.DefaultDescriptionMaxChars). Deliberately NOT the extractor's
+	// prompt window (ADR-0041): that dial tunes local-model latency and must never
+	// decide what the Corpus stores. Zero or negative falls back to the default.
+	DescriptionMaxChars int
+	// SourceHash computes the extraction-cache key over a page's main content
+	// (ADR-0035). REQUIRED, and it must be the SAME closure the refetch lane is given
+	// — bound to crawler.SourceHash with the extractor's prompt-window cap — so the
+	// stamped key is byte-identical to the one a refetch recomputes and an unchanged
+	// page skips the model. Deliberately without a fallback: a substituted default
+	// would silently re-extract the whole Corpus every Cycle.
+	SourceHash func(mainContent string) string
 	// CaptureDecision, if non-nil, is called once per completed extraction with the
 	// source URL, the extractor's verdict (true = a single job posting was
 	// extracted, false = an abstain), and the parsed page Content the extractor and
@@ -69,6 +81,8 @@ type JobListingProcessor struct {
 	companyNames                map[string]string
 	attributeCareerPage         func(companyKey, postingURL string) uuid.UUID
 	onSaved                     func(ctx context.Context)
+	descriptionMaxChars         int
+	sourceHash                  func(mainContent string) string
 	captureDecision             func(ctx context.Context, url string, isJobPosting bool, content any)
 }
 
@@ -93,17 +107,23 @@ func NewProcessor(cfg *Config) *JobListingProcessor {
 		companyNames:                cfg.CompanyNames,
 		attributeCareerPage:         cfg.AttributeCareerPage,
 		onSaved:                     cfg.OnSaved,
+		descriptionMaxChars:         cfg.DescriptionMaxChars,
+		sourceHash:                  cfg.SourceHash,
 		captureDecision:             cfg.CaptureDecision,
 	}
 }
 
-// Process extracts structured job listing fields from the raw page content via
-// the configured JobListingExtractor, saves the result, increments the processed
-// counter, and fires OnSaved. When the extractor abstains (the page is not a single
-// job posting) the extraction is discarded, not saved, OnSaved does not fire, and
-// the call is recorded as an abstain; Process still returns nil so the durable
-// extract stream acks the task (an abstain is a completed decision, not a failure
-// to retry). Returns an error only when extraction or persistence fails.
+// Process extracts structured job listing fields from the raw page content via the
+// configured JobListingExtractor, stamps the save-time fields the model does not
+// decide — company attribution, career page, country, Corpus identity, discovered
+// depth, and (ADR-0041) the Posting Body with its Description Source plus the
+// extraction-cache key, both derived from the page itself — saves the result,
+// increments the processed counter, and fires OnSaved. When the extractor abstains
+// (the page is not a single job posting) the extraction is discarded, not saved,
+// OnSaved does not fire, and the call is recorded as an abstain; Process still
+// returns nil so the durable extract stream acks the task (an abstain is a completed
+// decision, not a failure to retry). Returns an error only when extraction or
+// persistence fails.
 func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.RawJobListing) error {
 	slog.Info("process job listing", "url", workload.URL.RawURL)
 	w.recorder.Content(ctx, llmobs.KindExtract, workload.Content.MainContent)
@@ -157,14 +177,38 @@ func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.Raw
 	extraction.Listing.Country = geo.Resolve(extraction.Listing.Location)
 
 	// Stamp the Corpus identity (ADR-0034): the crawl lane keys on the canonicalized
-	// source URL. SourceID stays empty (crawl lane); SourceHash was set by the
-	// extractor from the exact capped input it saw.
+	// source URL. SourceID stays empty (crawl lane).
 	extraction.Listing.Source = crawler.SourceLaneCrawl
 	extraction.Listing.CanonicalURL = listingid.FromURL(workload.URL.RawURL)
 
 	// Record the crawl depth of the source page (instrumentation only, migration 0024):
 	// lets us tune the frontier maxDepth cap from where postings are actually found.
 	extraction.Listing.DiscoveredDepth = workload.URL.Depth
+
+	// Store the posting's OWN text (ADR-0041): the Posting Body derived from the page
+	// the crawler already downloaded — its lone structured-data posting's description,
+	// else its main content — capped by DESCRIPTION_MAX_CHARS, with the marker saying
+	// which branch produced it. Both overwrite whatever the extractor returned:
+	// transcription is not a judgment task, and provenance is a save-time fact about
+	// the pipeline, never something the model may assert.
+	extraction.Listing.Description, extraction.Listing.DescriptionSource =
+		crawler.PostingBody(&workload.Content, w.descriptionMaxChars)
+
+	// A page that parses to nothing (a body injected by JS, say) yields an empty body.
+	// Marking that page_content would be terminal: the refetch heal only revisits the
+	// legacy marker, so the row could never be repaired short of the page's hash
+	// changing. Leave it legacy instead — the same "needs a real body" queue the
+	// pre-ADR-0041 rows sit in. The heal skips an empty parse too, so this costs no
+	// write per Cycle and resolves by itself once the page becomes parseable.
+	if extraction.Listing.Description == "" {
+		extraction.Listing.DescriptionSource = crawler.DescriptionSourceLLMSummary
+	}
+
+	// Stamp the extraction-cache key (ADR-0035) from the page's main content, capped
+	// by the same prompt window the refetch lane hashes with, so an unchanged page is
+	// confirmed alive with no model call. SourceHash caps internally, so this is
+	// byte-identical to the extractor's historical stamp over the already-capped text.
+	extraction.Listing.SourceHash = w.sourceHash(workload.Content.MainContent)
 
 	if err := w.corpus.Save(ctx, &extraction.Listing); err != nil {
 		return fmt.Errorf("job_listing_processor: error saving processed job listing %v: %w", *workload, err)

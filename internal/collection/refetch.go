@@ -39,9 +39,22 @@ type RefetchConfig struct {
 	// by an LLM blip, and the LLM runs only for a structurally-ambiguous page.
 	GateConfig crawler.LLMGateConfig
 	// SourceHash computes the extraction-cache key over a page's main content —
-	// bound to openrouter.SourceHash with the extractor's ExtractMaxChars so the key
+	// bound to crawler.SourceHash with the extractor's ExtractMaxChars so the key
 	// is byte-identical to the one the extractor stored (ADR-0035).
 	SourceHash func(mainContent string) string
+	// Descriptions rewrites a legacy, model-authored description in place on the
+	// unchanged-content branch (ADR-0041), from the page this refetch has ALREADY
+	// downloaded and parsed — no model call and no extra fetch. Deliberately not the
+	// full CorpusRepository: a Save would advance last_seen, clear closed_at and reset
+	// the inconclusive streak. REQUIRED, like EnqueueExtract and SourceHash: a
+	// nil-tolerant fallback would silently leave the Corpus on legacy summaries
+	// forever with nothing to notice it.
+	Descriptions crawler.CorpusDescriptionRepository
+	// DescriptionMaxChars caps a healed Posting Body in runes — the SAME
+	// DESCRIPTION_MAX_CHARS knob the save processor uses (ADR-0041), so a healed body
+	// and a freshly-extracted one are bounded identically. Zero or negative falls back
+	// to crawler.DefaultDescriptionMaxChars.
+	DescriptionMaxChars int
 	// EnqueueExtract hands a changed page to the shared extract stage for
 	// re-extraction (which re-Saves, reopening and advancing the listing).
 	EnqueueExtract func(ctx context.Context, raw *crawler.RawJobListing) error
@@ -60,8 +73,9 @@ type RefetchConfig struct {
 // RefetchProcessor is the crawl-lane liveness worker (ADR-0035): for one crawled
 // Career Page it probes the page for dormancy, then refetches each known-open
 // posting to judge its liveness directly — 404/410 closes it, an unchanged 200
-// keeps it open with no LLM call (source_hash cache), a changed 200 re-extracts.
-// Only listed-open URLs are touched, so a down collector closes nothing
+// keeps it open with no LLM call (source_hash cache) and heals a legacy,
+// model-authored description from the page already in hand (ADR-0041), a changed 200
+// re-extracts. Only listed-open URLs are touched, so a down collector closes nothing
 // (attempt-gated by construction). It implements
 // processor.Processor[crawler.CollectionSeed].
 //
@@ -69,18 +83,20 @@ type RefetchConfig struct {
 // extractor abstains, so the listing stays open on a stale last_seen: an accepted
 // v1 gap (deterministic soft-404 detection is out of this ticket's scope).
 type RefetchProcessor struct {
-	downloader        downloader.Downloader
-	parser            parser.Parser
-	liveness          crawler.CorpusLivenessRepository
-	dormancy          DormancyRecorder
-	classifier        careerpageprocessor.Confirmer
-	gateConfig        crawler.LLMGateConfig
-	sourceHash        func(mainContent string) string
-	enqueueExtract    func(ctx context.Context, raw *crawler.RawJobListing) error
-	staleThreshold    int
-	dormancyThreshold int
-	onRefreshed       func(ctx context.Context)
-	onClosed          func(ctx context.Context, n int)
+	downloader          downloader.Downloader
+	parser              parser.Parser
+	liveness            crawler.CorpusLivenessRepository
+	dormancy            DormancyRecorder
+	classifier          careerpageprocessor.Confirmer
+	gateConfig          crawler.LLMGateConfig
+	sourceHash          func(mainContent string) string
+	descriptions        crawler.CorpusDescriptionRepository
+	descriptionMaxChars int
+	enqueueExtract      func(ctx context.Context, raw *crawler.RawJobListing) error
+	staleThreshold      int
+	dormancyThreshold   int
+	onRefreshed         func(ctx context.Context)
+	onClosed            func(ctx context.Context, n int)
 }
 
 var _ processor.Processor[crawler.CollectionSeed] = (*RefetchProcessor)(nil)
@@ -88,18 +104,20 @@ var _ processor.Processor[crawler.CollectionSeed] = (*RefetchProcessor)(nil)
 // NewRefetchProcessor builds a crawl-lane refetch processor.
 func NewRefetchProcessor(cfg *RefetchConfig) *RefetchProcessor {
 	return &RefetchProcessor{
-		downloader:        cfg.Downloader,
-		parser:            cfg.Parser,
-		liveness:          cfg.Liveness,
-		dormancy:          cfg.Dormancy,
-		classifier:        cfg.Classifier,
-		gateConfig:        cfg.GateConfig,
-		sourceHash:        cfg.SourceHash,
-		enqueueExtract:    cfg.EnqueueExtract,
-		staleThreshold:    cfg.StaleThreshold,
-		dormancyThreshold: cfg.DormancyThreshold,
-		onRefreshed:       cfg.OnRefreshed,
-		onClosed:          cfg.OnClosed,
+		downloader:          cfg.Downloader,
+		parser:              cfg.Parser,
+		liveness:            cfg.Liveness,
+		dormancy:            cfg.Dormancy,
+		classifier:          cfg.Classifier,
+		gateConfig:          cfg.GateConfig,
+		sourceHash:          cfg.SourceHash,
+		descriptions:        cfg.Descriptions,
+		descriptionMaxChars: cfg.DescriptionMaxChars,
+		enqueueExtract:      cfg.EnqueueExtract,
+		staleThreshold:      cfg.StaleThreshold,
+		dormancyThreshold:   cfg.DormancyThreshold,
+		onRefreshed:         cfg.OnRefreshed,
+		onClosed:            cfg.OnClosed,
 	}
 }
 
@@ -191,8 +209,10 @@ func (p *RefetchProcessor) stillCareerPage(ctx context.Context, url string, resp
 
 // refetchOne refetches one open posting and applies its Liveness Outcome (ADR-0035):
 // a 404/410 closes it (Dead); a transient error is Inconclusive; an unchanged 200
-// keeps it open with no LLM call (source_hash matches); a changed 200 is re-enqueued
-// for re-extraction (which re-Saves, reopening/advancing it) with no probe.
+// keeps it open with no LLM call (source_hash matches) and heals a legacy description
+// from the page in hand (ADR-0041); a changed 200 is re-enqueued for re-extraction
+// (which re-Saves, reopening/advancing it and stamping a real body and marker) with no
+// probe.
 func (p *RefetchProcessor) refetchOne(ctx context.Context, listing *crawler.JobListing) error {
 	// Re-gate: a known listing whose URL the extract gate now rejects on structure
 	// alone -- a bare/locale root or a terminal jobs-index segment -- is a stale false
@@ -227,11 +247,17 @@ func (p *RefetchProcessor) refetchOne(ctx context.Context, listing *crawler.JobL
 	}
 
 	if p.sourceHash(content.MainContent) == listing.SourceHash {
-		// Unchanged source content: confirmed alive with NO LLM call.
+		// Unchanged source content: confirmed alive with NO LLM call. The probe is
+		// applied first and independently of the heal — liveness is this lane's job and
+		// must never hinge on a description rewrite — and the two errors are joined so
+		// one failure neither hides the other nor drops the remaining postings (Process
+		// joins the per-listing errors already). errors.Join(nil, nil) is nil, so a
+		// clean pass still returns nil.
+		var errs error
 		if _, aerr := p.liveness.ApplyCrawlProbe(ctx, listing.CanonicalURL, crawler.ProbeAlive, p.staleThreshold); aerr != nil {
-			return fmt.Errorf("collection: applying refetch probe for %q: %w", listing.CanonicalURL, aerr)
+			errs = errors.Join(errs, fmt.Errorf("collection: applying refetch probe for %q: %w", listing.CanonicalURL, aerr))
 		}
-		return nil
+		return errors.Join(errs, p.healLegacyDescription(ctx, listing, content))
 	}
 
 	// Changed content: re-extract. The re-Save reopens/advances the listing and
@@ -245,6 +271,44 @@ func (p *RefetchProcessor) refetchOne(ctx context.Context, listing *crawler.JobL
 	}
 	if p.onRefreshed != nil {
 		p.onRefreshed(ctx)
+	}
+	return nil
+}
+
+// healLegacyDescription rewrites a listing still carrying a LEGACY, model-authored
+// summary with the Posting Body derived from the page this refetch already downloaded
+// and parsed (ADR-0041): no model call, no extra fetch, one write per listing. It is a
+// no-op for every other Description Source, and that marker guard is the whole exclusion
+// rule: the refetch loop iterates every Open listing under a crawl seed with NO
+// source-lane filter, so nothing structural in THIS function keeps board text safe.
+//
+// No ATS-lane listing actually arrives here today, by three independent accidents rather
+// than by design: an ATS Embed board is submitted with a Nil CareerPageID, so its
+// listings are saved with career_page_id NULL and can never match ListOpen's
+// career_page_id filter; an ATS-routed seed is diverted to the fetch lane before
+// refetchPages is built (collection.RouteSeeds); and an ATS row's source_hash is empty,
+// which no sha256 digest equals, so it would take the changed-content branch regardless.
+// The ats_board marker is defence in depth against any of those three changing.
+//
+// Writing the marker alongside the body is what makes this one write per listing rather
+// than one per Cycle: next Cycle the row is no longer legacy.
+//
+// Only the refetch lane can heal: SeedVisited (ADR-0035) seeds every Open listing's URL
+// into the visited set at Cycle start, so the walk only ever surfaces new postings.
+func (p *RefetchProcessor) healLegacyDescription(ctx context.Context, listing *crawler.JobListing, content *crawler.Content) error {
+	if listing.DescriptionSource != crawler.DescriptionSourceLLMSummary {
+		return nil
+	}
+	body, source := crawler.PostingBody(content, p.descriptionMaxChars)
+	if body == "" {
+		// A page that parsed to nothing has no body to heal with. Keep the legacy text
+		// and marker so a later Cycle with a real parse still heals it, rather than
+		// trading a stale summary for an empty description (and an empty weight-B index
+		// entry).
+		return nil
+	}
+	if err := p.descriptions.UpdateDescription(ctx, listing.CanonicalURL, body, source); err != nil {
+		return fmt.Errorf("collection: healing legacy description for %q: %w", listing.CanonicalURL, err)
 	}
 	return nil
 }

@@ -132,6 +132,7 @@ via [godotenv](https://github.com/joho/godotenv)):
 | `LLM_MAX_WORKERS`    | `2`                                         | Concurrent LLM calls; keep low for a serial local model, raise for a parallel cloud API |
 | `LLM_CLASSIFY_MAX_CHARS` | `1500`                                  | Cap (runes) on page text sent to the career-page classifier; the signal is near the top of the page |
 | `LLM_EXTRACT_MAX_CHARS`  | `8000`                                  | Cap (runes) on page text sent to the job-listing extractor |
+| `DESCRIPTION_MAX_CHARS`  | `16000`                                 | Cap (runes) on the stored Posting Body; its own knob, independent of the extractor's prompt window |
 | `DATABASE_URL`       | `postgres://crawler:crawler@localhost:5432/crawler?sslmode=disable` | Postgres DSN |
 | `REDIS_ADDR`         | `localhost:6379`                            | Redis `host:port`                    |
 | `LOG_LEVEL`          | `INFO`                                      | slog level (DEBUG/INFO/WARN/ERROR)   |

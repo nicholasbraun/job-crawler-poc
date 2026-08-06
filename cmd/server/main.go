@@ -167,6 +167,15 @@ func main() {
 		ExtractMaxChars:  llmExtractMaxChars,
 	}
 
+	// DESCRIPTION_MAX_CHARS caps the stored Posting Body (ADR-0041). Its own knob, NOT
+	// LLM_EXTRACT_MAX_CHARS: the prompt window is a latency dial for local models and
+	// must never decide what the Corpus stores. 16000 sits above the p99 of real
+	// postings (~12k), so it only fires on a pathological parse.
+	descriptionMaxChars, err := strconv.Atoi(pgenv.EnvOr("DESCRIPTION_MAX_CHARS", strconv.Itoa(crawler.DefaultDescriptionMaxChars)))
+	if err != nil || descriptionMaxChars < 1 {
+		log.Fatalf("error parsing DESCRIPTION_MAX_CHARS: must be a positive integer, got %q", os.Getenv("DESCRIPTION_MAX_CHARS"))
+	}
+
 	// CRAWL_MAX_WORKERS sizes the per-run discovery worker pool — how many pages
 	// are downloaded and processed in parallel per run. Crawl workers are
 	// I/O-bound (blocked on network downloads), so this
@@ -256,8 +265,8 @@ func main() {
 	importJobRepository := postgres.NewImportJobRepository(pgPool)
 	savedSearchRepository := postgres.NewSavedSearchRepository(pgPool)
 
-	factory := newFactory(crawlMaxWorkers, visitedCap, robotsCacheTTL, robotsCacheSize, llmMaxWorkers, llmConfig, redisClient,
-		companyRepository, careerPageRepository, corpusRepository)
+	factory := newFactory(crawlMaxWorkers, visitedCap, robotsCacheTTL, robotsCacheSize, llmMaxWorkers, llmConfig,
+		descriptionMaxChars, redisClient, companyRepository, careerPageRepository, corpusRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory,
 		// One cleaner sweeps all of a run's transient Redis state on a terminal
 		// status or factory error: the frontier keys and the LLM stage's streams
@@ -387,6 +396,7 @@ func newFactory(
 	robotsCacheSize int,
 	llmMaxWorkers int,
 	llmConfig openrouter.Config,
+	descriptionMaxChars int,
 	redisClient *redis.Client,
 	companyRepository crawler.CompanyRepository,
 	careerPageRepository crawler.CareerPageRepository,
@@ -407,6 +417,12 @@ func newFactory(
 
 	careerPageConfirmer := openrouter.NewCareerPageClassifier(llmConfig)
 	jobListingExtractor := openrouter.NewJobListingExtractor(llmConfig)
+
+	// The extraction-cache key (ADR-0035): ONE closure over the extractor's prompt
+	// window, handed to both the save processor that stamps it and the refetch lane
+	// that recomputes it. Sharing the closure is what keeps the two byte-identical —
+	// a drift would re-extract the whole Corpus every Cycle.
+	sourceHash := func(mainContent string) string { return crawler.SourceHash(mainContent, llmConfig.ExtractMaxChars) }
 
 	// ATS Fetch lane (ADR-0022): the provider→board-API-client registry, shared
 	// across Collection Cycles. Its clients use their own board-API HTTP client
@@ -622,6 +638,11 @@ func newFactory(
 						Recorder:            llmRecorder,
 						CompanyNames:        companySnapshot,
 						AttributeCareerPage: attributor,
+						// The Posting Body cap and the extraction-cache key the save
+						// processor stamps (ADR-0041/0035); the key closure is the one the
+						// refetch lane below also uses, so the two never drift.
+						DescriptionMaxChars: descriptionMaxChars,
+						SourceHash:          sourceHash,
 						// A saved listing (found or refreshed) increments the reused
 						// ListingsFound run counter and the collection.found metric.
 						OnSaved: func(ctx context.Context) {
@@ -694,13 +715,19 @@ func newFactory(
 						Classifier: careerPageConfirmer,
 						// Structural pre-gate for the re-classification, so a page discovery
 						// certain-accepted on structure is not dormant-closed by an LLM blip.
-						GateConfig:        gateConfig,
-						SourceHash:        func(mc string) string { return openrouter.SourceHash(mc, llmConfig.ExtractMaxChars) },
-						EnqueueExtract:    extractStage.Enqueue,
-						StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
-						DormancyThreshold: crawler.DefaultPageDormancyThreshold,
-						OnRefreshed:       collectionMetrics.Refreshed,
-						OnClosed:          collectionMetrics.Closed,
+						GateConfig: gateConfig,
+						SourceHash: sourceHash,
+						// Legacy-summary heal (ADR-0041): rewrite a model-authored body from
+						// the page the refetch already fetched, under the same
+						// DESCRIPTION_MAX_CHARS cap the save processor above uses, so a healed
+						// body and a freshly-extracted one are bounded identically.
+						Descriptions:        corpusRepository,
+						DescriptionMaxChars: descriptionMaxChars,
+						EnqueueExtract:      extractStage.Enqueue,
+						StaleThreshold:      crawler.DefaultCrawlStaleThreshold,
+						DormancyThreshold:   crawler.DefaultPageDormancyThreshold,
+						OnRefreshed:         collectionMetrics.Refreshed,
+						OnClosed:            collectionMetrics.Closed,
 					})
 				}, pool.WithMaxWorkers[crawler.CollectionSeed](maxWorkers))
 

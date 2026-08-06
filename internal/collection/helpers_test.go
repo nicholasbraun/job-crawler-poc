@@ -77,6 +77,19 @@ func (fakeParser) Parse(b []byte) (*crawler.Content, error) {
 	return &crawler.Content{MainContent: string(b)}, nil
 }
 
+// jsonLDParser is an inline parser.Parser that lifts the raw bytes into MainContent
+// (so identityHash still compares the stubbed body) AND publishes them as a page with
+// a lone structured-data JobPosting, so the heal's structured-data branch is reachable
+// at the processor seam.
+type jsonLDParser struct{ description string }
+
+func (p jsonLDParser) Parse(b []byte) (*crawler.Content, error) {
+	return &crawler.Content{
+		MainContent: string(b),
+		JSONLD:      []string{`{"@type":"JobPosting","description":"` + p.description + `"}`},
+	}, nil
+}
+
 // identityHash is the test SourceHash: it returns the content unchanged, so
 // "unchanged" means the stubbed page body equals the listing's stored SourceHash.
 func identityHash(mainContent string) string { return mainContent }
@@ -90,6 +103,7 @@ type fakeClassifier struct {
 	verdicts map[string]bool
 	errs     map[string]error
 	def      bool
+	calls    []string
 }
 
 func newFakeClassifier() *fakeClassifier {
@@ -99,6 +113,7 @@ func newFakeClassifier() *fakeClassifier {
 func (c *fakeClassifier) Confirm(_ context.Context, url string, _ *crawler.Content) (careerpageprocessor.Verdict, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.calls = append(c.calls, url)
 	if err, ok := c.errs[url]; ok {
 		return careerpageprocessor.Verdict{}, err
 	}
@@ -107,6 +122,14 @@ func (c *fakeClassifier) Confirm(_ context.Context, url string, _ *crawler.Conte
 		still = c.def
 	}
 	return careerpageprocessor.Verdict{IsCareerPage: still}, nil
+}
+
+// confirmed returns the URLs the classifier was asked about, so a test can assert the
+// structural pre-gate took the verdict without ever consulting the LLM.
+func (c *fakeClassifier) confirmed() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string{}, c.calls...)
 }
 
 // crawlProbe records one ApplyCrawlProbe invocation.
@@ -153,6 +176,41 @@ func (f *fakeLiveness) recordedProbes() []crawlProbe {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]crawlProbe{}, f.probes...)
+}
+
+// descriptionWrite records one UpdateDescription call.
+type descriptionWrite struct {
+	canonicalURL string
+	description  string
+	source       crawler.DescriptionSource
+}
+
+// fakeDescriptions is an inline crawler.CorpusDescriptionRepository recording every
+// heal write, with an optional per-canonical-URL error so a heal failure can be driven.
+type fakeDescriptions struct {
+	mu     sync.Mutex
+	writes []descriptionWrite
+	errs   map[string]error
+}
+
+func newFakeDescriptions() *fakeDescriptions {
+	return &fakeDescriptions{errs: map[string]error{}}
+}
+
+func (f *fakeDescriptions) UpdateDescription(_ context.Context, canonicalURL, description string, source crawler.DescriptionSource) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err, ok := f.errs[canonicalURL]; ok {
+		return err // a failed write records nothing, like a rejected UPDATE
+	}
+	f.writes = append(f.writes, descriptionWrite{canonicalURL, description, source})
+	return nil
+}
+
+func (f *fakeDescriptions) recorded() []descriptionWrite {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]descriptionWrite{}, f.writes...)
 }
 
 // dormProbe records one dormancy RecordProbe invocation.

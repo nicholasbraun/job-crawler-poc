@@ -17,7 +17,8 @@ import (
 
 // TestProcessorSavesEveryPosting asserts a Collection Cycle has NO keyword pruning
 // (ADR-0038): every fetched posting is saved, each carrying the fetcher's canonical
-// posting URL and the Corpus identity stamped from the provider posting id (ADR-0034).
+// posting URL and the Corpus identity stamped from the provider posting id (ADR-0034),
+// plus the board-text Description Source (ADR-0041) the processor stamps on all of them.
 func TestProcessorSavesEveryPosting(t *testing.T) {
 	fetcher := &stubFetcher{listings: []*crawler.JobListing{
 		{Title: "Go Engineer", URL: "https://boards.greenhouse.io/acme/jobs/1", SourceID: "1", Description: "build services"},
@@ -40,6 +41,16 @@ func TestProcessorSavesEveryPosting(t *testing.T) {
 	}
 	if len(repo.saved) != 2 {
 		t.Fatalf("saved %d listings, want 2 (no keyword pruning)", len(repo.saved))
+	}
+	for _, jl := range repo.saved {
+		// Board text is excluded from the crawl-lane heal by DATA, not by an implicit
+		// rule: that heal filters on the marker alone, so a listing left unmarked here
+		// would be eligible to have good board text overwritten with scraped page
+		// furniture the moment one reached it.
+		if jl.DescriptionSource != crawler.DescriptionSourceATSBoard {
+			t.Errorf("DescriptionSource for %q = %q, want %q",
+				jl.CanonicalURL, jl.DescriptionSource, crawler.DescriptionSourceATSBoard)
+		}
 	}
 	got := repo.saved[0]
 	if got.Source != crawler.SourceLaneATS {

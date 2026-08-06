@@ -19,6 +19,21 @@ import (
 // daemon surfaces as a test failure so CI can't silently drop coverage.
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
+
+	dsn := startPostgres(t)
+	if err := postgres.Migrate(t.Context(), dsn); err != nil {
+		t.Fatalf("error applying migrations: %v", err)
+	}
+	return openTestPool(t, dsn)
+}
+
+// startPostgres starts a throwaway PostgreSQL container with an EMPTY schema and
+// returns its DSN, terminating the container via t.Cleanup. Split out of
+// newTestPool so a migration test can stage the schema at an older version before
+// the row it seeds exists. Requires a running Docker daemon; skips nothing — a
+// missing daemon surfaces as a test failure so CI can't silently drop coverage.
+func startPostgres(t *testing.T) string {
+	t.Helper()
 	ctx := t.Context()
 
 	ctr, err := tcpostgres.Run(ctx, "postgres:17",
@@ -44,12 +59,15 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	if err != nil {
 		t.Fatalf("error building connection string: %v", err)
 	}
+	return dsn
+}
 
-	if err := postgres.Migrate(ctx, dsn); err != nil {
-		t.Fatalf("error applying migrations: %v", err)
-	}
+// openTestPool opens an application pool against dsn, closed via t.Cleanup. It
+// applies no migrations — the caller decides which schema version the pool sees.
+func openTestPool(t *testing.T, dsn string) *pgxpool.Pool {
+	t.Helper()
 
-	pool, err := postgres.Open(ctx, dsn)
+	pool, err := postgres.Open(t.Context(), dsn)
 	if err != nil {
 		t.Fatalf("error opening postgres pool: %v", err)
 	}

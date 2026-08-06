@@ -18,13 +18,16 @@ type liveRow struct {
 	streak int
 }
 
-// stubCorpus is a stateful, in-memory crawler.CorpusLivenessRepository: it drives
-// the real NextLiveness reducer through ApplyCrawlProbe so a multi-cycle smoke test
-// exercises open→refresh→close→reopen without a database. reSaveByURL models the
-// extract stage reopening/advancing a changed (or re-discovered) posting.
+// stubCorpus is a stateful, in-memory crawler.CorpusLivenessRepository (and
+// crawler.CorpusDescriptionRepository): it drives the real NextLiveness reducer
+// through ApplyCrawlProbe so a multi-cycle smoke test exercises
+// open→refresh→close→reopen without a database, and persists the heal's description
+// write so a later Cycle re-reads the marker it wrote. reSaveByURL models the extract
+// stage reopening/advancing a changed (or re-discovered) posting.
 type stubCorpus struct {
-	mu   sync.Mutex
-	rows map[string]*liveRow // keyed by canonical_url
+	mu           sync.Mutex
+	rows         map[string]*liveRow // keyed by canonical_url
+	descriptions int                 // UpdateDescription calls, across all Cycles
 }
 
 func newStubCorpus() *stubCorpus { return &stubCorpus{rows: map[string]*liveRow{}} }
@@ -60,6 +63,34 @@ func (c *stubCorpus) ApplyCrawlProbe(_ context.Context, canonicalURL string, out
 	r.open = next.Open
 	r.streak = next.InconclusiveStreak
 	return next, nil
+}
+
+// UpdateDescription rewrites one row's stored body and marker in place, like the
+// narrow Postgres write: nothing else on the row moves, so a later Cycle's ListOpen
+// serves the marker the heal wrote.
+func (c *stubCorpus) UpdateDescription(_ context.Context, canonicalURL, description string, source crawler.DescriptionSource) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.descriptions++
+	r := c.rows[canonicalURL]
+	r.jl.Description = description
+	r.jl.DescriptionSource = source
+	return nil
+}
+
+// healWrites returns how many times UpdateDescription was called across all Cycles.
+func (c *stubCorpus) healWrites() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.descriptions
+}
+
+// storedDescription returns one row's stored body and Description Source marker.
+func (c *stubCorpus) storedDescription(canonicalURL string) (string, crawler.DescriptionSource) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	r := c.rows[canonicalURL]
+	return r.jl.Description, r.jl.DescriptionSource
 }
 
 // reSaveByURL reopens and advances the listing at url, stamping newHash — the
@@ -290,5 +321,66 @@ func TestCollectionNonClassifyingPageGoesDormantAcrossCycles(t *testing.T) {
 	}
 	if corpus.isOpen("m-1") || corpus.isOpen("m-2") {
 		t.Error("cycle 2: a page that no longer classifies must go dormant and close its listings")
+	}
+}
+
+// TestCollectionHealsLegacySummaryOncePerListing is the ADR-0041 idempotence claim
+// end to end, over the stateful stub Corpus across two consecutive Cycles: a listing
+// carrying a legacy model-authored summary is healed from the page the refetch already
+// fetched, and the marker written alongside the body is what stops the NEXT Cycle from
+// rewriting it — so the heal costs one write per listing, not one per Cycle. Without
+// the marker write the whole table would be rewritten every Cycle forever.
+func TestCollectionHealsLegacySummaryOncePerListing(t *testing.T) {
+	page := uuid.New()
+	corpus := newStubCorpus()
+	corpus.add(crawler.JobListing{
+		CanonicalURL: "c-legacy", URL: "https://acme.com/j/legacy", SourceHash: "the posting's own text",
+		CareerPageID: page, CompanyKey: "acme.com", Source: crawler.SourceLaneCrawl,
+		Description: "A short model-written summary.", DescriptionSource: crawler.DescriptionSourceLLMSummary,
+	})
+
+	dl := newFakeDownloader()
+	dl.ok("https://acme.com/careers", "hub")                     // page reachable → never dormant
+	dl.ok("https://acme.com/j/legacy", "the posting's own text") // unchanged under identityHash
+
+	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
+		Downloader:        dl,
+		Parser:            fakeParser{},
+		Liveness:          corpus,
+		Dormancy:          newStubDormancy(corpus),
+		Classifier:        newFakeClassifier(),
+		GateConfig:        crawler.DefaultLLMGateConfig(),
+		SourceHash:        identityHash,
+		Descriptions:      corpus,
+		EnqueueExtract:    (&captureExtract{}).enqueue,
+		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+		DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+	})
+	seed := &crawler.CollectionSeed{URL: "https://acme.com/careers", CompanyKey: "acme.com", CareerPageID: page}
+
+	// --- Cycle 1: the legacy row is healed from the page in hand ---
+	if err := proc.Process(t.Context(), seed); err != nil {
+		t.Fatalf("cycle 1: %v", err)
+	}
+	if got := corpus.healWrites(); got != 1 {
+		t.Fatalf("cycle 1: %d heal writes, want 1", got)
+	}
+	body, source := corpus.storedDescription("c-legacy")
+	if body != "the posting's own text" {
+		t.Errorf("cycle 1: stored body = %q, want the page's own text", body)
+	}
+	if source != crawler.DescriptionSourcePageContent {
+		t.Errorf("cycle 1: stored marker = %q, want %q", source, crawler.DescriptionSourcePageContent)
+	}
+
+	// --- Cycle 2: the row is no longer legacy, so it is not rewritten ---
+	if err := proc.Process(t.Context(), seed); err != nil {
+		t.Fatalf("cycle 2: %v", err)
+	}
+	if got := corpus.healWrites(); got != 1 {
+		t.Errorf("cycle 2: %d heal writes in total, want 1 (an already-healed listing is never rewritten)", got)
+	}
+	if !corpus.isOpen("c-legacy") {
+		t.Error("cycle 2: the healed listing must stay open (unchanged, alive)")
 	}
 }

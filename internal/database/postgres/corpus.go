@@ -17,9 +17,10 @@ type CorpusRepository struct {
 }
 
 var (
-	_ crawler.CorpusRepository         = &CorpusRepository{}
-	_ crawler.CorpusLivenessRepository = &CorpusRepository{}
-	_ crawler.CorpusSearchRepository   = &CorpusRepository{}
+	_ crawler.CorpusRepository            = &CorpusRepository{}
+	_ crawler.CorpusLivenessRepository    = &CorpusRepository{}
+	_ crawler.CorpusSearchRepository      = &CorpusRepository{}
+	_ crawler.CorpusDescriptionRepository = &CorpusRepository{}
 )
 
 func NewCorpusRepository(pool *pgxpool.Pool) *CorpusRepository {
@@ -32,7 +33,11 @@ func NewCorpusRepository(pool *pgxpool.Pool) *CorpusRepository {
 // first_seen is preserved. A re-seen posting is confirmed alive, so the crawl-lane
 // inconclusive_streak is reset to 0. career_page_id is written NULL when unknown
 // (uuid.Nil). department is a display-only ATS-lane attribute ("" on the crawl
-// lane, ADR-0022) — stamped here but deliberately absent from search_tsv.
+// lane, ADR-0022) — stamped here but deliberately absent from search_tsv, as is
+// description_source, which records where the stored description came from
+// (ADR-0041) and IS refreshed on re-save: a re-extraction re-derives the body, so
+// its provenance must follow. An unset marker fails the column's CHECK rather than
+// writing a silent third state.
 func (r *CorpusRepository) Save(ctx context.Context, jl *crawler.JobListing) error {
 	var careerPageID any
 	if jl.CareerPageID != uuid.Nil {
@@ -49,8 +54,8 @@ func (r *CorpusRepository) Save(ctx context.Context, jl *crawler.JobListing) err
 		INSERT INTO job_listing
 			(canonical_url, url, source, source_id, source_hash, career_page_id,
 			 company, title, description, location, work_arrangement, company_key, country, department,
-			 discovered_depth)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+			 discovered_depth, description_source)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT (canonical_url) DO UPDATE SET
 			url              = EXCLUDED.url,
 			source           = EXCLUDED.source,
@@ -65,15 +70,17 @@ func (r *CorpusRepository) Save(ctx context.Context, jl *crawler.JobListing) err
 			company_key         = EXCLUDED.company_key,
 			country             = EXCLUDED.country,
 			department          = EXCLUDED.department,
+			description_source  = EXCLUDED.description_source,
 			last_seen           = now(),
 			closed_at           = NULL,
 			inconclusive_streak = 0
 		`,
-		// Pass the underlying strings, not the named Source/WorkArrangement types, to
-		// avoid any pgx encode ambiguity for a named string type.
+		// Pass the underlying strings, not the named Source/WorkArrangement/
+		// DescriptionSource types, to avoid any pgx encode ambiguity for a named string
+		// type.
 		jl.CanonicalURL, jl.URL, string(jl.Source), jl.SourceID, jl.SourceHash, careerPageID,
 		jl.Company, jl.Title, jl.Description, jl.Location, string(jl.WorkArrangement),
-		jl.CompanyKey, jl.Country, jl.Department, discoveredDepth,
+		jl.CompanyKey, jl.Country, jl.Department, discoveredDepth, string(jl.DescriptionSource),
 	)
 	if err != nil {
 		return fmt.Errorf("postgres: error saving job listing: %w", err)
@@ -85,11 +92,14 @@ func (r *CorpusRepository) Save(ctx context.Context, jl *crawler.JobListing) err
 // ListOpen returns every Open (closed_at IS NULL) listing under careerPageID,
 // ordered by first_seen, carrying the identity/hash fields a liveness refetch needs.
 // company_key is included so a changed-page re-extraction can rebuild the Owner
-// attribution (ADR-0021) from the listing's stored key. Never returns nil — an
-// empty board yields an empty slice.
+// attribution (ADR-0021) from the listing's stored key, and description_source so the
+// refetch heal (ADR-0041) can tell a legacy model-authored body from a real Posting
+// Body without a second query per listing. The description TEXT is deliberately not
+// projected — the heal rewrites it from the page it already fetched. Never returns
+// nil — an empty board yields an empty slice.
 func (r *CorpusRepository) ListOpen(ctx context.Context, careerPageID uuid.UUID) ([]*crawler.JobListing, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT canonical_url, url, source, source_id, source_hash, company_key
+		SELECT canonical_url, url, source, source_id, source_hash, company_key, description_source
 		FROM job_listing
 		WHERE career_page_id = $1 AND closed_at IS NULL
 		ORDER BY first_seen`,
@@ -103,11 +113,13 @@ func (r *CorpusRepository) ListOpen(ctx context.Context, careerPageID uuid.UUID)
 	listings := []*crawler.JobListing{}
 	for rows.Next() {
 		jl := &crawler.JobListing{CareerPageID: careerPageID}
-		var source string
-		if err := rows.Scan(&jl.CanonicalURL, &jl.URL, &source, &jl.SourceID, &jl.SourceHash, &jl.CompanyKey); err != nil {
+		var source, descriptionSource string
+		if err := rows.Scan(&jl.CanonicalURL, &jl.URL, &source, &jl.SourceID, &jl.SourceHash,
+			&jl.CompanyKey, &descriptionSource); err != nil {
 			return nil, fmt.Errorf("postgres: error scanning open listing: %w", err)
 		}
 		jl.Source = crawler.SourceLane(source)
+		jl.DescriptionSource = crawler.DescriptionSource(descriptionSource)
 		listings = append(listings, jl)
 	}
 	if err := rows.Err(); err != nil {
@@ -115,6 +127,34 @@ func (r *CorpusRepository) ListOpen(ctx context.Context, careerPageID uuid.UUID)
 	}
 
 	return listings, nil
+}
+
+// UpdateDescription rewrites one listing's stored Posting Body and its Description
+// Source marker, and touches nothing else (ADR-0041): not closed_at, last_seen or
+// inconclusive_streak, so a heal can never resurrect a Closed posting nor forge a
+// sighting. The STORED generated search_tsv is recomputed by Postgres from the new
+// description, so a healed body becomes searchable with no extra work and no index
+// change (migrations 0025/0026). Deliberately unguarded SQL — the heal decision (which
+// markers are legacy) belongs to the refetch processor, the same policy/SQL split
+// CloseAbsent and ApplyCrawlProbe follow. Reports ErrNotFound when no row carries
+// canonicalURL, mirroring ApplyCrawlProbe.
+func (r *CorpusRepository) UpdateDescription(ctx context.Context, canonicalURL, description string, source crawler.DescriptionSource) error {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE job_listing
+		SET description = $2, description_source = $3
+		WHERE canonical_url = $1`,
+		// Pass the underlying string, not the named DescriptionSource type, to avoid
+		// any pgx encode ambiguity for a named string type (as Save does).
+		canonicalURL, description, string(source),
+	)
+	if err != nil {
+		return fmt.Errorf("postgres: error updating listing description: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("postgres: description update for unknown listing %q: %w", canonicalURL, crawler.ErrNotFound)
+	}
+
+	return nil
 }
 
 // CloseAbsent runs the ATS absence-sweep for one board (ADR-0035). A partial or
