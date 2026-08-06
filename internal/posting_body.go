@@ -63,9 +63,35 @@ func PostingBody(content *Content, maxChars int) (body string, source Descriptio
 		return "", DescriptionSourcePageContent
 	}
 	if structured := htmlToText(lonePostingDescription(content.JSONLD)); structured != "" {
-		return capChars(structured, maxChars), DescriptionSourceStructuredData
+		return capChars(validUTF8(structured), maxChars), DescriptionSourceStructuredData
 	}
-	return capChars(content.MainContent, maxChars), DescriptionSourcePageContent
+	return capChars(validUTF8(content.MainContent), maxChars), DescriptionSourcePageContent
+}
+
+// validUTF8 drops bytes that are not valid UTF-8. A page served as ISO-8859-1 — or
+// declaring a charset it does not honour — reaches the parser as bytes Go never
+// re-encodes, so a body taken straight from it can carry them, and Postgres REJECTS
+// such a write outright (SQLSTATE 22021, "invalid byte sequence for encoding UTF8").
+// Observed live: a lone 0xe4 (Latin-1 "ä") failing a refetch heal.
+//
+// This is load-bearing on the MAIN-CONTENT branch, which is the only one carrying raw
+// page bytes: before ADR-0041 the description came from the model's JSON response and
+// was valid by construction, so without this a mis-encoded page fails its Save and the
+// posting is lost entirely, and fails its heal on every Cycle forever. On the
+// structured-data branch it is belt-and-braces — json.Unmarshal already substitutes
+// U+FFFD while decoding the block (pinned by a test), so nothing invalid survives that
+// far. Applied to both so the guarantee holds if either input path changes.
+//
+// The bytes are DROPPED rather than replaced with U+FFFD: the original character is
+// unrecoverable either way, and a replacement char would only add junk lexemes to the
+// weight-B search index. Recovering the text properly means honouring the response's
+// charset at download time — a separate concern from bounding what is stored.
+//
+// Deliberately NOT applied to SourceHash's input: that hash is over raw bytes, and
+// changing what it digests would invalidate every stored extraction-cache key.
+func validUTF8(s string) string {
+	// ToValidUTF8 returns s unchanged when it is already valid, which is the common case.
+	return strings.ToValidUTF8(s, "")
 }
 
 // lonePostingDescription returns the raw description of the page's single

@@ -68,6 +68,33 @@ func TestPostingBody(t *testing.T) {
 			wantSource: crawler.DescriptionSourceStructuredData,
 		},
 		{
+			// A page served as ISO-8859-1 reaches the parser as bytes Go never
+			// re-encodes. Postgres rejects such a write (SQLSTATE 22021), so the body
+			// must be valid UTF-8 by the time it leaves this function. 0xe4 is Latin-1
+			// "ä"; it is unrecoverable here, so it is dropped rather than replaced.
+			name: "invalid UTF-8 from a mis-encoded page is dropped from main content",
+			content: &crawler.Content{
+				MainContent: "Qualit\xe4tssicherung engineer",
+			},
+			maxChars:   1000,
+			wantBody:   "Qualittssicherung engineer",
+			wantSource: crawler.DescriptionSourcePageContent,
+		},
+		{
+			// The structured branch reaches Postgres valid WITHOUT the drop above,
+			// because json.Unmarshal already substitutes U+FFFD for a bad byte while
+			// decoding the block. Pinned so the asymmetry is a known property rather
+			// than a surprise: only the main-content branch carries raw page bytes.
+			name: "structured-data description arrives already sanitized by the JSON decode",
+			content: &crawler.Content{
+				MainContent: "fallback",
+				JSONLD:      []string{"{\"@type\":\"JobPosting\",\"description\":\"Softwareentwickler f\xfcr Backend\"}"},
+			},
+			maxChars:   1000,
+			wantBody:   "Softwareentwickler f�r Backend",
+			wantSource: crawler.DescriptionSourceStructuredData,
+		},
+		{
 			name: "two JobPosting nodes are an openings index, not a lone posting",
 			content: &crawler.Content{
 				MainContent: "two roles on this page",
