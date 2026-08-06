@@ -821,3 +821,130 @@ func TestCorpusListOpen(t *testing.T) {
 		}
 	})
 }
+
+// TestCorpusUpdateDescription asserts the narrow heal write (ADR-0041): it rewrites
+// description and its Description Source marker and touches NOTHING else — not
+// liveness, last_seen, closed_at or the inconclusive streak — so a heal can never
+// forge a sighting nor resurrect a Closed posting, which reusing Save would do.
+func TestCorpusUpdateDescription(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCorpusRepository(pool)
+	page := seedCareerPage(t, pool, "heal")
+
+	// A pre-heal row: a real legacy summary plus every field the heal must leave
+	// alone, including a non-zero inconclusive streak.
+	const canonical = "https://ex.com/j/legacy"
+	legacy := &crawler.JobListing{
+		CanonicalURL:      canonical,
+		URL:               canonical + "?utm_source=x",
+		Source:            crawler.SourceLaneCrawl,
+		SourceHash:        "h-legacy",
+		CareerPageID:      page,
+		Company:           "acme",
+		CompanyKey:        "acme.com",
+		Title:             "Site Reliability Engineer",
+		Description:       "A short model-written summary.",
+		DescriptionSource: crawler.DescriptionSourceLLMSummary,
+		Location:          "Berlin, Germany",
+		Country:           "DE",
+		WorkArrangement:   crawler.WorkArrangementHybrid,
+		DiscoveredDepth:   3,
+	}
+	if err := repo.Save(t.Context(), legacy); err != nil {
+		t.Fatalf("saving legacy listing: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(),
+		`UPDATE job_listing SET inconclusive_streak = 2 WHERE canonical_url = $1`, canonical,
+	); err != nil {
+		t.Fatalf("seeding inconclusive streak: %v", err)
+	}
+
+	t.Run("writes the body and marker and nothing else", func(t *testing.T) {
+		before := getListing(t, pool, canonical)
+		// Any clock-driven column (last_seen) would move measurably if the heal
+		// touched it.
+		time.Sleep(10 * time.Millisecond)
+
+		const body = "the full posting body"
+		if err := repo.UpdateDescription(t.Context(), canonical, body, crawler.DescriptionSourcePageContent); err != nil {
+			t.Fatalf("UpdateDescription: %v", err)
+		}
+
+		after := getListing(t, pool, canonical)
+		if after.description != body {
+			t.Errorf("description: want %q, got %q", body, after.description)
+		}
+		if after.descriptionSource != string(crawler.DescriptionSourcePageContent) {
+			t.Errorf("description_source: want %q, got %q", crawler.DescriptionSourcePageContent, after.descriptionSource)
+		}
+		// Compare field by field: corpusRow carries pointers and time.Time, for which
+		// == / reflect.DeepEqual are not trustworthy.
+		unchanged := []struct {
+			field       string
+			before, got string
+		}{
+			{"url", before.url, after.url},
+			{"source", before.source, after.source},
+			{"source_id", before.sourceID, after.sourceID},
+			{"source_hash", before.sourceHash, after.sourceHash},
+			{"company", before.company, after.company},
+			{"title", before.title, after.title},
+			{"location", before.location, after.location},
+			{"work_arrangement", before.workArrangement, after.workArrangement},
+			{"company_key", before.companyKey, after.companyKey},
+			{"country", before.country, after.country},
+		}
+		for _, u := range unchanged {
+			if u.before != u.got {
+				t.Errorf("%s: the heal must not touch it, was %q, got %q", u.field, u.before, u.got)
+			}
+		}
+		if after.inconclusiveStreak != 2 {
+			t.Errorf("inconclusive_streak: want 2 preserved, got %d", after.inconclusiveStreak)
+		}
+		if !after.firstSeen.Equal(before.firstSeen) {
+			t.Errorf("first_seen: want %v preserved, got %v", before.firstSeen, after.firstSeen)
+		}
+		if !after.lastSeen.Equal(before.lastSeen) {
+			t.Errorf("last_seen: the heal must not forge a sighting, was %v, got %v", before.lastSeen, after.lastSeen)
+		}
+		if after.closedAt != nil {
+			t.Errorf("closed_at: want NULL, got %v", after.closedAt)
+		}
+		if after.careerPageID == nil || *after.careerPageID != page {
+			t.Errorf("career_page_id: want %v, got %v", page, after.careerPageID)
+		}
+		if after.discoveredDepth == nil || *after.discoveredDepth != 3 {
+			t.Errorf("discovered_depth: want 3, got %v", after.discoveredDepth)
+		}
+	})
+
+	t.Run("does not reopen a closed listing", func(t *testing.T) {
+		closed := saveCrawl(t, repo, "https://ex.com/j/closed-legacy", page)
+		if _, err := pool.Exec(t.Context(),
+			`UPDATE job_listing SET closed_at = now() WHERE canonical_url = $1`, closed.CanonicalURL,
+		); err != nil {
+			t.Fatalf("closing listing: %v", err)
+		}
+
+		const body = "the full posting body of a closed posting"
+		if err := repo.UpdateDescription(t.Context(), closed.CanonicalURL, body, crawler.DescriptionSourcePageContent); err != nil {
+			t.Fatalf("UpdateDescription: %v", err)
+		}
+
+		got := getListing(t, pool, closed.CanonicalURL)
+		if got.closedAt == nil {
+			t.Errorf("closed_at: the heal must never resurrect a Closed posting")
+		}
+		if got.description != body {
+			t.Errorf("description: want %q, got %q", body, got.description)
+		}
+	})
+
+	t.Run("an unknown canonical url reports ErrNotFound", func(t *testing.T) {
+		err := repo.UpdateDescription(t.Context(), "https://ex.com/j/nope", "body", crawler.DescriptionSourcePageContent)
+		if !errors.Is(err, crawler.ErrNotFound) {
+			t.Errorf("updating an unknown listing: got %v, want it to wrap crawler.ErrNotFound", err)
+		}
+	})
+}

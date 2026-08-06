@@ -204,3 +204,19 @@ type CorpusLivenessRepository interface {
 	// touched, so a down collector closes nothing. Returns the resulting LifecycleState.
 	ApplyCrawlProbe(ctx context.Context, canonicalURL string, outcome ProbeOutcome, staleThreshold int) (LifecycleState, error)
 }
+
+// CorpusDescriptionRepository rewrites a Job Listing's stored Posting Body in place,
+// the write the refetch lane's legacy-summary heal needs (ADR-0041). Deliberately
+// separate from CorpusRepository.Save: a heal rewrites a legacy, model-authored body
+// WITHOUT touching Liveness, and a Save would advance last_seen, clear closed_at and
+// reset the inconclusive streak — the heal would masquerade as a fresh sighting and
+// could resurrect a Closed posting. Implemented by the same store as CorpusRepository;
+// kept its own port so the heal cannot reach anything wider.
+type CorpusDescriptionRepository interface {
+	// UpdateDescription sets description and its Description Source marker for the
+	// listing keyed on canonicalURL and NOTHING else — no liveness, last_seen,
+	// closed_at, or inconclusive_streak. Writing the marker in the same statement is
+	// what makes the heal one write per listing rather than one per Cycle. Returns
+	// ErrNotFound when no listing carries that canonical URL.
+	UpdateDescription(ctx context.Context, canonicalURL, description string, source DescriptionSource) error
+}

@@ -2,7 +2,9 @@ package collection_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -12,20 +14,26 @@ import (
 
 // TestRefetchPerListingLiveness drives the crawl-lane refetch outcomes (ADR-0035):
 // 404 → Dead, unchanged 200 → Alive with no re-extraction, changed 200 → enqueue
-// with no probe, transient error → Inconclusive.
+// with no probe, transient error → Inconclusive. The dead and changed listings carry
+// the LEGACY description marker to pin that neither branch heals (ADR-0041): a dead
+// posting has nothing to heal, and a changed page is re-extracted, whose Save stamps a
+// real body and marker.
 func TestRefetchPerListingLiveness(t *testing.T) {
 	page := uuid.New()
 	dl := newFakeDownloader()
 	live := newFakeLiveness()
 	extract := &captureExtract{}
+	heal := newFakeDescriptions()
 
 	// The page itself is reachable, so it never goes dormant this probe.
 	dl.ok("https://acme.com/careers", "hub")
 
 	// Four open listings, one per outcome.
-	dead := &crawler.JobListing{CanonicalURL: "c-dead", URL: "https://acme.com/j/dead", SourceHash: "old", CompanyKey: "acme.com"}
+	dead := &crawler.JobListing{CanonicalURL: "c-dead", URL: "https://acme.com/j/dead", SourceHash: "old", CompanyKey: "acme.com",
+		DescriptionSource: crawler.DescriptionSourceLLMSummary}
 	unchanged := &crawler.JobListing{CanonicalURL: "c-unchanged", URL: "https://acme.com/j/unchanged", SourceHash: "same-body", CompanyKey: "acme.com"}
-	changed := &crawler.JobListing{CanonicalURL: "c-changed", URL: "https://acme.com/j/changed", SourceHash: "old-body", CompanyKey: "acme.com"}
+	changed := &crawler.JobListing{CanonicalURL: "c-changed", URL: "https://acme.com/j/changed", SourceHash: "old-body", CompanyKey: "acme.com",
+		DescriptionSource: crawler.DescriptionSourceLLMSummary}
 	transient := &crawler.JobListing{CanonicalURL: "c-transient", URL: "https://acme.com/j/transient", SourceHash: "old", CompanyKey: "acme.com"}
 	live.open[page] = []*crawler.JobListing{dead, unchanged, changed, transient}
 
@@ -42,6 +50,7 @@ func TestRefetchPerListingLiveness(t *testing.T) {
 		Dormancy:          &fakeDormancy{}, // Alive result (BecameDormant=false)
 		Classifier:        newFakeClassifier(),
 		SourceHash:        identityHash,
+		Descriptions:      heal,
 		EnqueueExtract:    extract.enqueue,
 		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
 		DormancyThreshold: crawler.DefaultPageDormancyThreshold,
@@ -84,6 +93,242 @@ func TestRefetchPerListingLiveness(t *testing.T) {
 	}
 	if closed != 0 {
 		t.Errorf("OnClosed = %d, want 0 (no dormancy this Cycle)", closed)
+	}
+	// Neither the dead nor the changed listing is healed, despite both being legacy.
+	if writes := heal.recorded(); len(writes) != 0 {
+		t.Errorf("the dead and changed branches must not heal, got %d writes: %+v", len(writes), writes)
+	}
+}
+
+// TestRefetchHealsLegacyDescription is the ADR-0041 heal at the Process seam: on the
+// unchanged-content branch, a listing still marked with the legacy model-authored
+// source has its description and marker rewritten from the page the refetch already
+// downloaded and parsed — while an already-healed listing and an ATS-lane listing (which
+// does reach this loop, since it iterates every Open listing under the seed with no
+// source-lane filter) are left alone. The whole heal runs with NO model call: the
+// extract enqueue fails the test if invoked, and the page URL is structurally certain so
+// the dormancy probe never consults the classifier either.
+func TestRefetchHealsLegacyDescription(t *testing.T) {
+	page := uuid.New()
+	const pageURL = "https://acme.com/careers" // careerHubRoot → structurally certain
+	dl := newFakeDownloader()
+	dl.ok(pageURL, "hub")
+	live := newFakeLiveness()
+	heal := newFakeDescriptions()
+	classifier := newFakeClassifier()
+
+	legacy := &crawler.JobListing{CanonicalURL: "c-legacy", URL: "https://acme.com/j/legacy", SourceHash: "legacy body text",
+		CompanyKey: "acme.com", Source: crawler.SourceLaneCrawl, DescriptionSource: crawler.DescriptionSourceLLMSummary}
+	healed := &crawler.JobListing{CanonicalURL: "c-healed", URL: "https://acme.com/j/healed", SourceHash: "healed body text",
+		CompanyKey: "acme.com", Source: crawler.SourceLaneCrawl, DescriptionSource: crawler.DescriptionSourcePageContent}
+	board := &crawler.JobListing{CanonicalURL: "c-board", URL: "https://acme.com/j/board", SourceHash: "board body text",
+		CompanyKey: "acme.com", Source: crawler.SourceLaneATS, DescriptionSource: crawler.DescriptionSourceATSBoard}
+	live.open[page] = []*crawler.JobListing{legacy, healed, board}
+
+	// Every page body equals the stored SourceHash under identityHash → unchanged.
+	for _, l := range live.open[page] {
+		dl.ok(l.URL, l.SourceHash)
+	}
+
+	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
+		Downloader: dl,
+		Parser:     fakeParser{},
+		Liveness:   live,
+		Dormancy:   &fakeDormancy{},
+		Classifier: classifier,
+		GateConfig: crawler.DefaultLLMGateConfig(),
+		SourceHash: identityHash,
+		EnqueueExtract: func(_ context.Context, raw *crawler.RawJobListing) error {
+			t.Errorf("the heal must make no LLM call: %q was enqueued for re-extraction", raw.URL.RawURL)
+			return nil
+		},
+		Descriptions:      heal,
+		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+		DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+	})
+
+	seed := &crawler.CollectionSeed{URL: pageURL, CompanyKey: "acme.com", CareerPageID: page}
+	if err := proc.Process(t.Context(), seed); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	writes := heal.recorded()
+	if len(writes) != 1 {
+		t.Fatalf("healed %d listings, want exactly 1 (only the legacy one): %+v", len(writes), writes)
+	}
+	if writes[0].canonicalURL != legacy.CanonicalURL {
+		t.Errorf("healed %q, want the legacy listing %q", writes[0].canonicalURL, legacy.CanonicalURL)
+	}
+	if writes[0].description != "legacy body text" {
+		t.Errorf("healed body = %q, want the page's own text", writes[0].description)
+	}
+	if writes[0].source != crawler.DescriptionSourcePageContent {
+		t.Errorf("healed marker = %q, want %q", writes[0].source, crawler.DescriptionSourcePageContent)
+	}
+
+	// All three stay alive: the heal rides alongside liveness, it never replaces it.
+	probes := live.recordedProbes()
+	if len(probes) != 3 {
+		t.Fatalf("recorded %d probes, want 3 (one Alive per unchanged listing): %+v", len(probes), probes)
+	}
+	for _, p := range probes {
+		if p.outcome != crawler.ProbeAlive {
+			t.Errorf("probe %q outcome = %v, want Alive", p.canonicalURL, p.outcome)
+		}
+	}
+	if calls := classifier.confirmed(); len(calls) != 0 {
+		t.Errorf("the heal Cycle must make no classify call, got %v", calls)
+	}
+}
+
+// TestRefetchHealUsesStructuredDataWhenPagePublishesIt pins that the heal derives the
+// body with crawler.PostingBody rather than blindly storing main content: a page
+// publishing a lone structured-data JobPosting heals from THAT description — stripped of
+// HTML, entity-unescaped and whitespace-collapsed — and records the structured_data
+// marker, so the heal and the save path share one derivation.
+func TestRefetchHealUsesStructuredDataWhenPagePublishesIt(t *testing.T) {
+	page := uuid.New()
+	const pageURL = "https://acme.com/careers"
+	dl := newFakeDownloader()
+	dl.ok(pageURL, "hub")
+	live := newFakeLiveness()
+	heal := newFakeDescriptions()
+
+	legacy := &crawler.JobListing{CanonicalURL: "c-legacy", URL: "https://acme.com/j/legacy", SourceHash: "page chrome",
+		CompanyKey: "acme.com", Source: crawler.SourceLaneCrawl, DescriptionSource: crawler.DescriptionSourceLLMSummary}
+	live.open[page] = []*crawler.JobListing{legacy}
+	dl.ok(legacy.URL, "page chrome") // unchanged under identityHash
+
+	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
+		Downloader:        dl,
+		Parser:            jsonLDParser{description: "We run <b>Kubernetes</b>&nbsp;clusters."},
+		Liveness:          live,
+		Dormancy:          &fakeDormancy{},
+		Classifier:        newFakeClassifier(),
+		GateConfig:        crawler.DefaultLLMGateConfig(),
+		SourceHash:        identityHash,
+		Descriptions:      heal,
+		EnqueueExtract:    (&captureExtract{}).enqueue,
+		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+		DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+	})
+
+	seed := &crawler.CollectionSeed{URL: pageURL, CompanyKey: "acme.com", CareerPageID: page}
+	if err := proc.Process(t.Context(), seed); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	writes := heal.recorded()
+	if len(writes) != 1 {
+		t.Fatalf("healed %d listings, want 1: %+v", len(writes), writes)
+	}
+	if want := "We run Kubernetes clusters."; writes[0].description != want {
+		t.Errorf("healed body = %q, want the structured posting's text %q", writes[0].description, want)
+	}
+	if writes[0].source != crawler.DescriptionSourceStructuredData {
+		t.Errorf("healed marker = %q, want %q", writes[0].source, crawler.DescriptionSourceStructuredData)
+	}
+}
+
+// TestRefetchHealFailureDoesNotAbortRemainingListings asserts a per-listing heal
+// failure is joined with the page's other errors rather than dropping the remaining
+// postings, and that liveness is unaffected: both listings still record Alive.
+func TestRefetchHealFailureDoesNotAbortRemainingListings(t *testing.T) {
+	page := uuid.New()
+	const pageURL = "https://acme.com/careers"
+	dl := newFakeDownloader()
+	dl.ok(pageURL, "hub")
+	live := newFakeLiveness()
+	heal := newFakeDescriptions()
+
+	first := &crawler.JobListing{CanonicalURL: "c-first", URL: "https://acme.com/j/first", SourceHash: "first body",
+		CompanyKey: "acme.com", Source: crawler.SourceLaneCrawl, DescriptionSource: crawler.DescriptionSourceLLMSummary}
+	second := &crawler.JobListing{CanonicalURL: "c-second", URL: "https://acme.com/j/second", SourceHash: "second body",
+		CompanyKey: "acme.com", Source: crawler.SourceLaneCrawl, DescriptionSource: crawler.DescriptionSourceLLMSummary}
+	live.open[page] = []*crawler.JobListing{first, second}
+	dl.ok(first.URL, first.SourceHash)
+	dl.ok(second.URL, second.SourceHash)
+	heal.errs[first.CanonicalURL] = errors.New("boom")
+
+	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
+		Downloader:        dl,
+		Parser:            fakeParser{},
+		Liveness:          live,
+		Dormancy:          &fakeDormancy{},
+		Classifier:        newFakeClassifier(),
+		GateConfig:        crawler.DefaultLLMGateConfig(),
+		SourceHash:        identityHash,
+		Descriptions:      heal,
+		EnqueueExtract:    (&captureExtract{}).enqueue,
+		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+		DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+	})
+
+	seed := &crawler.CollectionSeed{URL: pageURL, CompanyKey: "acme.com", CareerPageID: page}
+	err := proc.Process(t.Context(), seed)
+	if err == nil {
+		t.Fatal("Process: want the heal failure reported, got nil")
+	}
+	if !strings.Contains(err.Error(), first.CanonicalURL) {
+		t.Errorf("Process error = %v, want it to name the failing listing %q", err, first.CanonicalURL)
+	}
+
+	writes := heal.recorded()
+	if len(writes) != 1 || writes[0].canonicalURL != second.CanonicalURL {
+		t.Fatalf("healed %+v, want the second listing healed despite the first failing", writes)
+	}
+	probes := live.recordedProbes()
+	if len(probes) != 2 {
+		t.Fatalf("recorded %d probes, want 2 (liveness is unaffected by a heal failure): %+v", len(probes), probes)
+	}
+	for _, p := range probes {
+		if p.outcome != crawler.ProbeAlive {
+			t.Errorf("probe %q outcome = %v, want Alive", p.canonicalURL, p.outcome)
+		}
+	}
+}
+
+// TestRefetchHealSkipsEmptyParse asserts a page that parses to nothing never trades a
+// stale summary for an empty description (and an empty weight-B index entry): no write,
+// and the listing still records Alive so a later Cycle with a real parse can heal it.
+func TestRefetchHealSkipsEmptyParse(t *testing.T) {
+	page := uuid.New()
+	const pageURL = "https://acme.com/careers"
+	dl := newFakeDownloader()
+	dl.ok(pageURL, "hub")
+	live := newFakeLiveness()
+	heal := newFakeDescriptions()
+
+	// Stored hash "" and an empty body: the unchanged branch is reached with no content.
+	empty := &crawler.JobListing{CanonicalURL: "c-empty", URL: "https://acme.com/j/empty", SourceHash: "",
+		CompanyKey: "acme.com", Source: crawler.SourceLaneCrawl, DescriptionSource: crawler.DescriptionSourceLLMSummary}
+	live.open[page] = []*crawler.JobListing{empty}
+	dl.ok(empty.URL, "")
+
+	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
+		Downloader:        dl,
+		Parser:            fakeParser{},
+		Liveness:          live,
+		Dormancy:          &fakeDormancy{},
+		Classifier:        newFakeClassifier(),
+		GateConfig:        crawler.DefaultLLMGateConfig(),
+		SourceHash:        identityHash,
+		Descriptions:      heal,
+		EnqueueExtract:    (&captureExtract{}).enqueue,
+		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+		DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+	})
+
+	seed := &crawler.CollectionSeed{URL: pageURL, CompanyKey: "acme.com", CareerPageID: page}
+	if err := proc.Process(t.Context(), seed); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if writes := heal.recorded(); len(writes) != 0 {
+		t.Errorf("an empty parse must not heal, got %+v", writes)
+	}
+	probes := live.recordedProbes()
+	if len(probes) != 1 || probes[0].outcome != crawler.ProbeAlive {
+		t.Fatalf("crawl probes = %+v, want one Alive (liveness is unaffected by the skipped heal)", probes)
 	}
 }
 

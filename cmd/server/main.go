@@ -715,13 +715,19 @@ func newFactory(
 						Classifier: careerPageConfirmer,
 						// Structural pre-gate for the re-classification, so a page discovery
 						// certain-accepted on structure is not dormant-closed by an LLM blip.
-						GateConfig:        gateConfig,
-						SourceHash:        sourceHash,
-						EnqueueExtract:    extractStage.Enqueue,
-						StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
-						DormancyThreshold: crawler.DefaultPageDormancyThreshold,
-						OnRefreshed:       collectionMetrics.Refreshed,
-						OnClosed:          collectionMetrics.Closed,
+						GateConfig: gateConfig,
+						SourceHash: sourceHash,
+						// Legacy-summary heal (ADR-0041): rewrite a model-authored body from
+						// the page the refetch already fetched, under the same
+						// DESCRIPTION_MAX_CHARS cap the save processor above uses, so a healed
+						// body and a freshly-extracted one are bounded identically.
+						Descriptions:        corpusRepository,
+						DescriptionMaxChars: descriptionMaxChars,
+						EnqueueExtract:      extractStage.Enqueue,
+						StaleThreshold:      crawler.DefaultCrawlStaleThreshold,
+						DormancyThreshold:   crawler.DefaultPageDormancyThreshold,
+						OnRefreshed:         collectionMetrics.Refreshed,
+						OnClosed:            collectionMetrics.Closed,
 					})
 				}, pool.WithMaxWorkers[crawler.CollectionSeed](maxWorkers))
 

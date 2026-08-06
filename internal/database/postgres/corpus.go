@@ -17,9 +17,10 @@ type CorpusRepository struct {
 }
 
 var (
-	_ crawler.CorpusRepository         = &CorpusRepository{}
-	_ crawler.CorpusLivenessRepository = &CorpusRepository{}
-	_ crawler.CorpusSearchRepository   = &CorpusRepository{}
+	_ crawler.CorpusRepository            = &CorpusRepository{}
+	_ crawler.CorpusLivenessRepository    = &CorpusRepository{}
+	_ crawler.CorpusSearchRepository      = &CorpusRepository{}
+	_ crawler.CorpusDescriptionRepository = &CorpusRepository{}
 )
 
 func NewCorpusRepository(pool *pgxpool.Pool) *CorpusRepository {
@@ -126,6 +127,34 @@ func (r *CorpusRepository) ListOpen(ctx context.Context, careerPageID uuid.UUID)
 	}
 
 	return listings, nil
+}
+
+// UpdateDescription rewrites one listing's stored Posting Body and its Description
+// Source marker, and touches nothing else (ADR-0041): not closed_at, last_seen or
+// inconclusive_streak, so a heal can never resurrect a Closed posting nor forge a
+// sighting. The STORED generated search_tsv is recomputed by Postgres from the new
+// description, so a healed body becomes searchable with no extra work and no index
+// change (migrations 0025/0026). Deliberately unguarded SQL — the heal decision (which
+// markers are legacy) belongs to the refetch processor, the same policy/SQL split
+// CloseAbsent and ApplyCrawlProbe follow. Reports ErrNotFound when no row carries
+// canonicalURL, mirroring ApplyCrawlProbe.
+func (r *CorpusRepository) UpdateDescription(ctx context.Context, canonicalURL, description string, source crawler.DescriptionSource) error {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE job_listing
+		SET description = $2, description_source = $3
+		WHERE canonical_url = $1`,
+		// Pass the underlying string, not the named DescriptionSource type, to avoid
+		// any pgx encode ambiguity for a named string type (as Save does).
+		canonicalURL, description, string(source),
+	)
+	if err != nil {
+		return fmt.Errorf("postgres: error updating listing description: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("postgres: description update for unknown listing %q: %w", canonicalURL, crawler.ErrNotFound)
+	}
+
+	return nil
 }
 
 // CloseAbsent runs the ATS absence-sweep for one board (ADR-0035). A partial or
