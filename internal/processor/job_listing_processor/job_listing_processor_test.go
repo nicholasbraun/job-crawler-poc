@@ -364,6 +364,16 @@ func TestJobListingProcessorStoresPostingBody(t *testing.T) {
 			wantBody:   "the page's own posting text",
 			wantSource: crawler.DescriptionSourcePageContent,
 		},
+		{
+			// A page whose body is injected by JS parses to nothing. Stamping
+			// page_content here would put the row beyond the refetch heal's reach
+			// forever, since the heal only revisits the legacy marker.
+			name:       "page that parses to nothing stays in the heal's queue",
+			content:    crawler.Content{},
+			extracted:  crawler.JobListing{Title: "Engineer"},
+			wantBody:   "",
+			wantSource: crawler.DescriptionSourceLLMSummary,
+		},
 	}
 
 	for _, tt := range tests {

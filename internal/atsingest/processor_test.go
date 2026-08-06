@@ -44,9 +44,9 @@ func TestProcessorSavesEveryPosting(t *testing.T) {
 	}
 	for _, jl := range repo.saved {
 		// Board text is excluded from the crawl-lane heal by DATA, not by an implicit
-		// rule: the refetch lane iterates every Open listing under a crawl seed with no
-		// source-lane filter, so a listing left unmarked here could have good board text
-		// overwritten with scraped page furniture.
+		// rule: that heal filters on the marker alone, so a listing left unmarked here
+		// would be eligible to have good board text overwritten with scraped page
+		// furniture the moment one reached it.
 		if jl.DescriptionSource != crawler.DescriptionSourceATSBoard {
 			t.Errorf("DescriptionSource for %q = %q, want %q",
 				jl.CanonicalURL, jl.DescriptionSource, crawler.DescriptionSourceATSBoard)

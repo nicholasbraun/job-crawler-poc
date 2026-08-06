@@ -344,11 +344,17 @@ func TestExtractReturnsJudgmentOnly(t *testing.T) {
 	}
 }
 
-// TestExtractPromptOmitsDescription asserts the request the extractor sends the LLM
-// no longer asks for a description anywhere (ADR-0041) — that is what shrinks the
-// generated response from a summary plus four fields to four short fields. The
-// shared newExtractorServer discards the request, so this uses a local server that
-// records the raw request body.
+// TestExtractPromptOmitsDescription asserts the SYSTEM PROMPT the extractor sends no
+// longer asks the model to write a description (ADR-0041) — that is what shrinks the
+// generated response from a summary plus four fields to four short fields. The shared
+// newExtractorServer discards the request, so this uses a local server that records the
+// raw request body.
+//
+// It asserts on the system message alone, not the whole serialized request: the user
+// message carries the page text, and "description" is ordinary English that a realistic
+// page fixture would contain ("job description"), which would turn a fixture change into
+// a false failure. It also rejects "summary", so rewording the prompt to ask for one
+// under a different name cannot slip past.
 func TestExtractPromptOmitsDescription(t *testing.T) {
 	var captured string
 
@@ -376,15 +382,38 @@ func TestExtractPromptOmitsDescription(t *testing.T) {
 	ext := openrouter.NewJobListingExtractor(openrouter.Config{BaseURL: srv.URL, APIKey: "test"})
 	raw := crawler.RawJobListing{
 		URL: newURL(t, "https://careers.acme.com/jobs/1"),
-		// Page text free of the word, so a hit can only come from the prompt.
-		Content: crawler.Content{MainContent: "some page text"},
+		// Deliberately contains the words the prompt must not: the assertion reads the
+		// system message only, so page text can say anything a real posting would.
+		Content: crawler.Content{MainContent: "Job description: build things. Summary of the role follows."},
 	}
 
 	if _, err := ext.Extract(t.Context(), raw); err != nil {
 		t.Fatalf("Extract returned error: %v", err)
 	}
 
-	if strings.Contains(captured, "description") {
-		t.Errorf("extractor request should not ask for a description, got:\n%s", captured)
+	var sent struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(captured), &sent); err != nil {
+		t.Fatalf("unmarshal captured request: %v", err)
+	}
+
+	var systemPrompt string
+	for _, m := range sent.Messages {
+		if m.Role == "system" {
+			systemPrompt = m.Content
+		}
+	}
+	if systemPrompt == "" {
+		t.Fatalf("captured request carries no system message: %s", captured)
+	}
+
+	for _, banned := range []string{"description", "summary"} {
+		if strings.Contains(strings.ToLower(systemPrompt), banned) {
+			t.Errorf("system prompt should not ask the model for a %s, got:\n%s", banned, systemPrompt)
+		}
 	}
 }

@@ -89,9 +89,11 @@ const searchTsvExprQuery = `
 // TestDescriptionSourceBackfill asserts migration 0026 gives every pre-existing row a
 // TRUTHFUL Description Source (ADR-0041): an ATS-lane row already carries the board
 // API's own text, a crawl-lane row carries a legacy model-authored summary, and that
-// holds for Closed rows too. Marking ATS rows legacy would let the later refetch heal
-// overwrite good board text with scraped page furniture, since the refetch lane
-// iterates every Open listing under a crawl seed with no source-lane filter.
+// holds for Closed rows too. Marking ATS rows legacy would arm the later refetch heal —
+// which filters on the marker alone, not the source lane — to overwrite good board text
+// with scraped page furniture. No ATS row reaches that heal today (three separate
+// reasons, listed at collection.healLegacyDescription), so this is defence in depth; it
+// is also what makes the operator audit's per-source counts mean anything.
 //
 // It also pins what the migration must NOT do: no stored description may change, the
 // table must not be rewritten, and the search index expression must stay exactly as

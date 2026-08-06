@@ -278,12 +278,20 @@ func (p *RefetchProcessor) refetchOne(ctx context.Context, listing *crawler.JobL
 // healLegacyDescription rewrites a listing still carrying a LEGACY, model-authored
 // summary with the Posting Body derived from the page this refetch already downloaded
 // and parsed (ADR-0041): no model call, no extra fetch, one write per listing. It is a
-// no-op for every other Description Source, and that marker guard is the whole
-// exclusion rule — the refetch loop iterates every Open listing under a crawl seed with
-// NO source-lane filter, so an ATS-lane listing hanging off an ATS Embed page does reach
-// here, and only its ats_board marker keeps good board text from being overwritten with
-// scraped page furniture. Writing the marker alongside the body is what makes this one
-// write per listing rather than one per Cycle: next Cycle the row is no longer legacy.
+// no-op for every other Description Source, and that marker guard is the whole exclusion
+// rule: the refetch loop iterates every Open listing under a crawl seed with NO
+// source-lane filter, so nothing structural in THIS function keeps board text safe.
+//
+// No ATS-lane listing actually arrives here today, by three independent accidents rather
+// than by design: an ATS Embed board is submitted with a Nil CareerPageID, so its
+// listings are saved with career_page_id NULL and can never match ListOpen's
+// career_page_id filter; an ATS-routed seed is diverted to the fetch lane before
+// refetchPages is built (collection.RouteSeeds); and an ATS row's source_hash is empty,
+// which no sha256 digest equals, so it would take the changed-content branch regardless.
+// The ats_board marker is defence in depth against any of those three changing.
+//
+// Writing the marker alongside the body is what makes this one write per listing rather
+// than one per Cycle: next Cycle the row is no longer legacy.
 //
 // Only the refetch lane can heal: SeedVisited (ADR-0035) seeds every Open listing's URL
 // into the visited set at Cycle start, so the walk only ever surfaces new postings.

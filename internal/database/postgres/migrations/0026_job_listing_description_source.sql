@@ -18,15 +18,32 @@
 -- and it is also the safe value for any future insert that omits the column: legacy
 -- is the one marker that invites re-derivation from the page instead of asserting a
 -- provenance the row does not have.
+--
+-- LOCK DURATION, since "no rewrite" is not the same as "no wait": goose runs a
+-- migration file in ONE transaction, and ADD COLUMN takes ACCESS EXCLUSIVE on
+-- job_listing immediately and holds it to COMMIT. The backfill UPDATE and the CHECK's
+-- validation scan below therefore both run with the whole table locked against readers
+-- and writers. That is startup latency here — docker compose replaces the single
+-- container, so nothing is serving during it — but on a Corpus large enough to care,
+-- split it with goose's NO TRANSACTION annotation: ADD COLUMN alone, then the backfill
+-- in batches, then ADD CONSTRAINT ... NOT VALID followed by VALIDATE CONSTRAINT. NOT
+-- VALID buys nothing while the statements share one transaction. (The annotation is
+-- spelled out rather than quoted here on purpose: goose parses its marker anywhere in a
+-- comment line, so writing it literally would break this migration's own parse.)
 ALTER TABLE job_listing ADD COLUMN description_source text NOT NULL DEFAULT 'llm_summary';
 
--- Truthful backfill, not a placeholder. An ATS-lane row already carries the board
--- API's own text (ADR-0022/0023), so mark it as such: the refetch lane iterates EVERY
--- Open listing under a crawl seed with no source-lane filter, so an ATS-lane listing
--- hanging off an ATS Embed page does reach the heal path — a placeholder marker there
--- would let scraped page furniture overwrite good board text. This is a row-level
--- UPDATE (ROW EXCLUSIVE, no rewrite); it recomputes each touched row's generated
--- search_tsv from the unchanged title/description, so stored text is byte-identical.
+-- Truthful backfill, not a placeholder. An ATS-lane row already carries the board API's
+-- own text (ADR-0022/0023), so mark it as such rather than letting it default to legacy,
+-- which is what the heal treats as "rewrite me from the page".
+--
+-- No ATS-lane row can actually reach the heal today — an embed board is fetched with a
+-- Nil CareerPageID so its listings are invisible to ListOpen's career_page_id filter, an
+-- ATS-routed seed never enters refetchPages at all (collection.RouteSeeds), and an ATS
+-- row's empty source_hash could never match a sha256 digest anyway. This backfill is
+-- defence in depth against that stack changing, and it is what makes the operator audit
+-- below mean anything. This is a row-level UPDATE (ROW EXCLUSIVE, no rewrite); it
+-- recomputes each touched row's generated search_tsv from the unchanged
+-- title/description, so stored text is byte-identical.
 UPDATE job_listing SET description_source = 'ats_board' WHERE source = 'ats';
 
 -- Closed set with teeth, matching the source column's CHECK in migration 0017: a lane

@@ -194,6 +194,16 @@ func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.Raw
 	extraction.Listing.Description, extraction.Listing.DescriptionSource =
 		crawler.PostingBody(&workload.Content, w.descriptionMaxChars)
 
+	// A page that parses to nothing (a body injected by JS, say) yields an empty body.
+	// Marking that page_content would be terminal: the refetch heal only revisits the
+	// legacy marker, so the row could never be repaired short of the page's hash
+	// changing. Leave it legacy instead — the same "needs a real body" queue the
+	// pre-ADR-0041 rows sit in. The heal skips an empty parse too, so this costs no
+	// write per Cycle and resolves by itself once the page becomes parseable.
+	if extraction.Listing.Description == "" {
+		extraction.Listing.DescriptionSource = crawler.DescriptionSourceLLMSummary
+	}
+
 	// Stamp the extraction-cache key (ADR-0035) from the page's main content, capped
 	// by the same prompt window the refetch lane hashes with, so an unchanged page is
 	// confirmed alive with no model call. SourceHash caps internally, so this is

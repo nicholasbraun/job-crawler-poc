@@ -169,8 +169,11 @@ func (p *Processor) Process(ctx context.Context, task *FetchTask) error {
 		jl.Source = crawler.SourceLaneATS
 		// The board API supplied this text, so record that (ADR-0041). Declaring it
 		// explicitly is what keeps an ATS-lane listing out of the crawl-lane heal by
-		// DATA rather than by an implicit rule — the refetch lane iterates every Open
-		// listing under a crawl seed with no source-lane filter.
+		// DATA rather than by an implicit rule: the refetch lane iterates every Open
+		// listing under a crawl seed with no source-lane filter, and only the marker
+		// tells it to leave board text alone. Nothing routes an ATS listing there today
+		// (see collection.healLegacyDescription for the three reasons), so this is
+		// defence in depth — but it is also what makes the operator audit truthful.
 		jl.DescriptionSource = crawler.DescriptionSourceATSBoard
 		jl.CareerPageID = task.CareerPageID
 		if jl.SourceID != "" {

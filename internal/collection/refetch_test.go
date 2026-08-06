@@ -103,9 +103,10 @@ func TestRefetchPerListingLiveness(t *testing.T) {
 // TestRefetchHealsLegacyDescription is the ADR-0041 heal at the Process seam: on the
 // unchanged-content branch, a listing still marked with the legacy model-authored
 // source has its description and marker rewritten from the page the refetch already
-// downloaded and parsed — while an already-healed listing and an ATS-lane listing (which
-// does reach this loop, since it iterates every Open listing under the seed with no
-// source-lane filter) are left alone. The whole heal runs with NO model call: the
+// downloaded and parsed — while an already-healed listing and an ATS-lane listing are
+// left alone. The ATS case is defence in depth: the loop filters on the marker alone, so
+// an ats_board row placed in it directly (as here) must survive untouched, even though
+// no live path delivers one. The whole heal runs with NO model call: the
 // extract enqueue fails the test if invoked, and the page URL is structurally certain so
 // the dormancy probe never consults the classifier either.
 func TestRefetchHealsLegacyDescription(t *testing.T) {

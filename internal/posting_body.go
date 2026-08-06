@@ -160,19 +160,30 @@ func isLDType(t any, want string) bool {
 
 var htmlTagRegex = regexp.MustCompile("<[^>]*>")
 
-// htmlToText reduces a structured-data description — plain text or single-encoded
-// HTML — to flat text. Tags are stripped to SPACES before the single unescape:
-// unescaping first would turn an entity-encoded angle bracket in the text ("team of
-// &lt;10 engineers") into a literal "<" the tag regex would then swallow along with
-// the run of text up to the next real tag; stripping to "" instead of " " would glue
-// words across block tags. Whitespace — including the NBSP that &nbsp; unescapes to,
-// which Fields treats as space — is then collapsed to single spaces and trimmed,
-// matching how the parser already normalizes MainContent. Mirrors
-// ats.htmlSingleEncodedToText, which cannot be reused: internal/ats imports this
-// package.
+// htmlToText reduces a structured-data description — plain text, single-encoded HTML,
+// or double-encoded HTML — to flat text. Tags are stripped to SPACES before the single
+// unescape: unescaping first would turn an entity-encoded angle bracket in the text
+// ("team of &lt;10 engineers") into a literal "<" the tag regex would then swallow along
+// with the run of text up to the next real tag; stripping to "" instead of " " would glue
+// words across block tags.
+//
+// The strip is then repeated after the unescape, because a JSON-LD block is raw text to
+// the HTML tokenizer: goquery's .Text() does not decode entities inside <script>, and
+// json.Unmarshal only undoes JSON escaping, so a site whose templating auto-escapes its
+// ld+json ships "&lt;p&gt;…" and the first strip finds no tags at all. Without the second
+// pass that markup would reach the stored body and the weight-B search index (the same
+// trap ats.htmlDoubleEncodedToText exists for, one layer later). The second strip cannot
+// eat the "&lt;10 engineers" case: a lone "<" with no closing ">" never matches the tag
+// regex.
+//
+// Whitespace — including the NBSP that &nbsp; unescapes to, which Fields treats as space
+// — is then collapsed to single spaces and trimmed, matching how the parser already
+// normalizes MainContent. Mirrors ats.htmlSingleEncodedToText, which cannot be reused:
+// internal/ats imports this package.
 func htmlToText(s string) string {
 	stripped := htmlTagRegex.ReplaceAllString(s, " ")
-	return strings.Join(strings.Fields(html.UnescapeString(stripped)), " ")
+	unescaped := htmlTagRegex.ReplaceAllString(html.UnescapeString(stripped), " ")
+	return strings.Join(strings.Fields(unescaped), " ")
 }
 
 // capChars truncates s to at most maxChars RUNES (never bytes: a byte cut could

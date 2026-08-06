@@ -55,6 +55,19 @@ func TestPostingBody(t *testing.T) {
 			wantSource: crawler.DescriptionSourceStructuredData,
 		},
 		{
+			// A JSON-LD block is raw text to the HTML tokenizer, so a templating
+			// engine that auto-escapes it ships entity-encoded markup that the FIRST
+			// strip cannot see. Without the second strip this stores "<p>...</p>".
+			name: "double-encoded markup is reduced, not revealed",
+			content: &crawler.Content{
+				MainContent: "fallback",
+				JSONLD:      []string{`{"@type":"JobPosting","description":"&lt;p&gt;Build things&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Kubernetes&lt;/li&gt;&lt;/ul&gt;"}`},
+			},
+			maxChars:   1000,
+			wantBody:   "Build things Kubernetes",
+			wantSource: crawler.DescriptionSourceStructuredData,
+		},
+		{
 			name: "two JobPosting nodes are an openings index, not a lone posting",
 			content: &crawler.Content{
 				MainContent: "two roles on this page",
