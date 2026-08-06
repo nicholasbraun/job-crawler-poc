@@ -1,8 +1,6 @@
 package openrouter_test
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -318,15 +316,16 @@ func TestExtractPromptNudgesCountryName(t *testing.T) {
 	}
 }
 
-// TestExtractSetsSourceHash asserts the extractor stamps SourceHash with the
-// SHA-256 (hex) of the exact input it fed the model (ADR-0035). The test content
-// is short (below the extract cap), so the hash is over the content verbatim.
-func TestExtractSetsSourceHash(t *testing.T) {
-	const content = "some page text"
-	ext := newExtractorServer(t, `{"title":"X","is_job_posting":true}`)
+// TestExtractReturnsJudgmentOnly asserts the port answers judgment only
+// (ADR-0041): the title is still parsed, but a response that STILL carries a
+// description cannot leak it into the listing, and the extractor no longer stamps
+// the extraction-cache key — the save processor derives both from the page. The
+// key's own contract stays pinned by internal/source_hash_test.go.
+func TestExtractReturnsJudgmentOnly(t *testing.T) {
+	ext := newExtractorServer(t, `{"title":"Backend Engineer","description":"a model-written summary","is_job_posting":true}`)
 	raw := crawler.RawJobListing{
 		URL:     newURL(t, "https://careers.acme.com/jobs/1"),
-		Content: crawler.Content{MainContent: content},
+		Content: crawler.Content{MainContent: "some page text"},
 	}
 
 	got, err := ext.Extract(t.Context(), raw)
@@ -334,32 +333,58 @@ func TestExtractSetsSourceHash(t *testing.T) {
 		t.Fatalf("Extract returned error: %v", err)
 	}
 
-	sum := sha256.Sum256([]byte(content))
-	want := hex.EncodeToString(sum[:])
-	if got.Listing.SourceHash != want {
-		t.Errorf("SourceHash = %q, want %q (sha256 of the exact capped input)", got.Listing.SourceHash, want)
+	if got.Listing.Title != "Backend Engineer" {
+		t.Errorf("Listing.Title = %q, want %q", got.Listing.Title, "Backend Engineer")
+	}
+	if got.Listing.Description != "" {
+		t.Errorf("Listing.Description = %q, want empty (a model summary must not leak)", got.Listing.Description)
+	}
+	if got.Listing.SourceHash != "" {
+		t.Errorf("Listing.SourceHash = %q, want empty (the save processor stamps the cache key)", got.Listing.SourceHash)
 	}
 }
 
-// TestSourceHashMatchesExtract asserts the domain's crawler.SourceHash (the refetch
-// pass's cache key, ADR-0035) is byte-identical to the hash the extractor stamps on
-// Extract — the load-bearing invariant that lets an unchanged refetch skip the LLM.
-// The cache key's own contract (cap, rune boundary, golden vectors) is pinned in
-// internal/source_hash_test.go; this test only pins the cross-package agreement.
-func TestSourceHashMatchesExtract(t *testing.T) {
-	const content = "some page text"
+// TestExtractPromptOmitsDescription asserts the request the extractor sends the LLM
+// no longer asks for a description anywhere (ADR-0041) — that is what shrinks the
+// generated response from a summary plus four fields to four short fields. The
+// shared newExtractorServer discards the request, so this uses a local server that
+// records the raw request body.
+func TestExtractPromptOmitsDescription(t *testing.T) {
+	var captured string
 
-	// Same cap the extractor uses in TestExtractSetsSourceHash (default 8000) → the
-	// hash is over the content verbatim, matching Extract's stamped SourceHash.
-	ext := newExtractorServer(t, `{"title":"X","is_job_posting":true}`)
-	got, err := ext.Extract(t.Context(), crawler.RawJobListing{
-		URL:     newURL(t, "https://careers.acme.com/jobs/1"),
-		Content: crawler.Content{MainContent: content},
-	})
-	if err != nil {
-		t.Fatalf("Extract: %v", err)
+	var env chatEnvelope
+	env.Choices = make([]struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}, 1)
+	env.Choices[0].Message.Content = `{"title":"X","is_job_posting":true}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		captured = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(env); err != nil {
+			t.Errorf("encode envelope: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	ext := openrouter.NewJobListingExtractor(openrouter.Config{BaseURL: srv.URL, APIKey: "test"})
+	raw := crawler.RawJobListing{
+		URL: newURL(t, "https://careers.acme.com/jobs/1"),
+		// Page text free of the word, so a hit can only come from the prompt.
+		Content: crawler.Content{MainContent: "some page text"},
 	}
-	if h := crawler.SourceHash(content, 8000); h != got.Listing.SourceHash {
-		t.Errorf("SourceHash(%q) = %q, want %q (must match the extractor's stamp)", content, h, got.Listing.SourceHash)
+
+	if _, err := ext.Extract(t.Context(), raw); err != nil {
+		t.Fatalf("Extract returned error: %v", err)
+	}
+
+	if strings.Contains(captured, "description") {
+		t.Errorf("extractor request should not ask for a description, got:\n%s", captured)
 	}
 }

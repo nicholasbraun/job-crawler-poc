@@ -58,16 +58,22 @@ const (
 type JobListing struct {
 	// URL is the source page this listing was extracted from. Not populated
 	// by JSON unmarshaling — set explicitly after extraction.
-	URL         string
-	Title       string `json:"title"`
-	Description string `json:"description"`
+	URL   string
+	Title string `json:"title"`
+	// Description is the Posting Body (ADR-0041 / CONTEXT "Posting Body"): the
+	// posting's OWN text, never model-authored. The save processor derives it from
+	// the page the crawler already downloaded (crawler.PostingBody) on the crawl
+	// lane, and each provider mapper takes it from the board API on the ATS lane.
+	// The json:"-" tag keeps LLM-response unmarshaling from ever reaching it, so a
+	// model that still emits a description field cannot leak a summary in.
+	Description string `json:"-"`
 	// DescriptionSource records where Description came from (ADR-0041 / CONTEXT
 	// "Description Source"): the closed enum in posting_body.go, stamped at save by
-	// whichever lane produced the text — the board API on an ATS Fetch, and the
-	// legacy model-authored value on the crawl lane, which is the honest marker
-	// while the extractor's summary is still what gets stored. The json:"-" tag
-	// keeps LLM-response unmarshaling from ever reaching it, so a hallucinated
-	// marker can never create a silent third state. Stored in
+	// whichever lane produced the text — structured_data or page_content from
+	// crawler.PostingBody on the crawl lane, ats_board on an ATS Fetch. The legacy
+	// llm_summary value marks a body written before ADR-0041; no code path writes it
+	// any more. The json:"-" tag keeps LLM-response unmarshaling from ever reaching
+	// it, so a hallucinated marker can never create a silent third state. Stored in
 	// job_listing.description_source.
 	DescriptionSource DescriptionSource `json:"-"`
 	Company           string            `json:"company"`
@@ -117,10 +123,12 @@ type JobListing struct {
 	// on the ATS lane and folded into the CanonicalURL via listingid.FromATS so a URL
 	// re-slug never forges a new posting (ADR-0034). Empty on the crawl lane.
 	SourceID string `json:"-"`
-	// SourceHash is the SHA-256 (hex) of the EXACT capped MainContent fed to the
-	// extractor — the extraction-cache key the later crawl-lane refetch pass compares
-	// against (ADR-0035), replacing the vestigial output content_hash. Set by the
-	// extractor on the crawl lane; empty on the ATS lane (absence-from-board liveness).
+	// SourceHash is the SHA-256 (hex) of the page's MainContent capped to the
+	// extractor's prompt window — the extraction-cache key the later crawl-lane
+	// refetch pass compares against (ADR-0035), replacing the vestigial output
+	// content_hash. Set by the SAVE PROCESSOR on the crawl lane, from the same cap the
+	// refetch lane hashes with, so the stored key stays byte-identical to the one a
+	// refetch recomputes; empty on the ATS lane (absence-from-board liveness).
 	SourceHash string `json:"-"`
 	// CareerPageID links the listing to the Career Page it was collected under (FK to
 	// career_page). uuid.Nil when unknown (stored as SQL NULL). Not populated in #187 —

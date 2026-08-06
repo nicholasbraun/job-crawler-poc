@@ -26,7 +26,6 @@ func stripHTML(s string) string {
 func sanitizeJobListing(j crawler.JobListing) crawler.JobListing {
 	sanitizedJobListing := crawler.JobListing{}
 	sanitizedJobListing.Title = stripHTML(j.Title)
-	sanitizedJobListing.Description = stripHTML(j.Description)
 	sanitizedJobListing.Company = stripHTML(j.Company)
 	sanitizedJobListing.Location = stripHTML(j.Location)
 	// Fold the LLM's free-form work_arrangement onto the enum here; an off-enum or
@@ -55,7 +54,6 @@ const (
 	openrouterPrompt = `
 	Parse the crawled page text and return only a valid json string with the following fields:
 	- "title": title of the document. Usually the first prominent heading on the page (type: string)
-	- "description": a short description of the job listing (type: string)
 	- "company": the name of the company that this job listing is for (type: string)
 	- "location": the office location where the job is available; always name the country in plain words within this text (e.g. "Berlin, Germany"). Never output a country code -- just the country name (type: string)
 	- "work_arrangement": the working mode. Exactly one of "remote", "onsite", "hybrid", or "unspecified". Use "unspecified" when the posting does not clearly state the mode; never guess "onsite" when the mode is not stated (type: string)
@@ -230,8 +228,12 @@ type extractionResult struct {
 	IsJobPosting *bool `json:"is_job_posting"`
 }
 
-// JobListingExtractor sends raw page content to the OpenRouter chat API
-// and parses the LLM's JSON response into a JobListing.
+// JobListingExtractor sends raw page content to the OpenRouter chat API and
+// parses the LLM's JSON response into a JobListing. It answers JUDGMENT ONLY
+// (ADR-0041): whether the page is a single posting, and its title, company,
+// location and work arrangement. The posting's text and the extraction-cache key
+// are pure functions of the fetched page, so the save processor derives both —
+// transcription is not a judgment task.
 type JobListingExtractor struct {
 	apiKey          string
 	baseURL         string
@@ -256,10 +258,14 @@ func NewJobListingExtractor(cfg Config) *JobListingExtractor {
 // structured JobListing plus the extractor's verdict on whether the page is a
 // single job posting (a false verdict is an Extractor Abstain). The returned
 // Listing.URL is set to the source page URL.
+//
+// It returns judgment only (ADR-0041): no Description and no SourceHash. Both are
+// derived from the fetched page by the save processor, so a model response that
+// still carries a description field cannot leak into the saved listing.
 func (jle *JobListingExtractor) Extract(ctx context.Context, raw crawler.RawJobListing) (crawler.Extraction, error) {
-	// The cap lives here, so the extractor is the single source of truth for the
-	// exact input the model saw. The same capped string feeds both the prompt and
-	// crawler.SourceHash, which owns the extraction-cache key (ADR-0035).
+	// The cap bounds the prompt window only — how much page text the model is asked
+	// to judge, tuned for local-model latency. What the Corpus stores and the
+	// extraction-cache key are both derived at save from the full page instead.
 	capped := capChars(raw.Content.MainContent, jle.extractMaxChars)
 	reqBody := chatRequest{
 		Model: jle.model,
@@ -323,9 +329,6 @@ func (jle *JobListingExtractor) Extract(ctx context.Context, raw crawler.RawJobL
 
 	listing := sanitizeJobListing(result.JobListing)
 	listing.URL = raw.URL.RawURL
-	// Re-capping the already-capped string is a no-op, so the stamped key is the
-	// hash of exactly the text the model saw.
-	listing.SourceHash = crawler.SourceHash(capped, jle.extractMaxChars)
 
 	return crawler.Extraction{Listing: listing, IsJobPosting: isPosting}, nil
 }

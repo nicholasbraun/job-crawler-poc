@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -442,6 +443,60 @@ func TestSearchListingsReturnsDepartment(t *testing.T) {
 	}
 	if got[0].Department != "Platform" {
 		t.Errorf("department: got %q, want %q", got[0].Department, "Platform")
+	}
+}
+
+// TestSearchListingsMatchesPostingBodyTerm is the end-to-end payoff of ADR-0041,
+// verified against a real Postgres: a crawled posting is stored with its Posting
+// Body, so a SavedSearch for a term that appears ONLY in that body — never in the
+// title — returns the listing. With the pre-ADR-0041 model summary the same search
+// silently missed it, biasing results toward whichever sites happen to publish a
+// board API. The body is derived exactly as the save processor derives it.
+func TestSearchListingsMatchesPostingBodyTerm(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCorpusRepository(pool)
+
+	// The page the crawler downloaded: a lone structured-data posting whose text
+	// names the term.
+	content := crawler.Content{
+		MainContent: "site chrome and nav",
+		JSONLD: []string{
+			`{"@type":"JobPosting","description":"You will run our clusters on Kubernetes every day."}`,
+		},
+	}
+	body, source := crawler.PostingBody(&content, crawler.DefaultDescriptionMaxChars)
+	if source != crawler.DescriptionSourceStructuredData {
+		t.Fatalf("PostingBody source = %q, want %q", source, crawler.DescriptionSourceStructuredData)
+	}
+
+	jl := &crawler.JobListing{
+		CanonicalURL: "https://ex.com/body/1",
+		URL:          "https://ex.com/body/1",
+		Source:       crawler.SourceLaneCrawl,
+		// Deliberately term-free, so only the weight-B body can match.
+		Title:             "Site Reliability Engineer",
+		Description:       body,
+		DescriptionSource: source,
+		Company:           "acme",
+		Country:           "DE",
+		WorkArrangement:   crawler.WorkArrangementRemote,
+	}
+	if err := repo.Save(t.Context(), jl); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := repo.SearchListings(t.Context(), crawler.ListingQuery{Keywords: []string{"Kubernetes"}})
+	if err != nil {
+		t.Fatalf("SearchListings: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 match on a body-only term, got %d (%v)", len(got), searchURLOrder(got))
+	}
+	if got[0].CanonicalURL != jl.CanonicalURL {
+		t.Errorf("canonical_url: got %q, want %q", got[0].CanonicalURL, jl.CanonicalURL)
+	}
+	if !strings.Contains(got[0].Description, "Kubernetes") {
+		t.Errorf("description: got %q, want it to contain the Posting Body term", got[0].Description)
 	}
 }
 
