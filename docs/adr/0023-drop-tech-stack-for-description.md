@@ -1,5 +1,10 @@
 # Job Listings drop tech_stack for a description, so the ATS lane needs no LLM
 
+> **Amended by ADR-0041.** Dropping `tech_stack` stands. "The extractor's summary for a
+> crawled page" does not: once the Corpus became the product, a summary made SavedSearch
+> silently miss body-term matches on crawled listings. The description is now the Posting
+> Body on every lane, and the extractor no longer authors it.
+
 ## Context
 
 An ATS board API returns a posting's title, location, department, and a free-text description, but not a normalized technology list. `tech_stack` was therefore the one Job Listing field an ATS Fetch could not supply — extracting it would force a per-posting LLM call and negate the ATS Fetch's cost and simplicity.

@@ -1,5 +1,11 @@
 # Classifier benchmark: two-layer scoring over a human-owned Gold Set
 
+> **Scope note (ADR-0043).** Everything here governs the classifier Gold Set, which keeps raw
+> HTML. The rejection of pre-parsed `Content` fixtures is reversed for the *Extract* Gold Set
+> only, where re-fetch drift corrupts the label worse than parser-blindness does; the
+> bootstrap-then-human-confirm rule carries over, with confirmation targeted at that set's
+> Boundary Stratum.
+
 The career-page classifier is measured by `cmd/llmbench`: a single pass of the
 **real** pipeline (`parser.Parse` → `pagegate.CareerPage` → `openrouter`
 classifier) over one Gold Set of labeled HTML fixtures, emitting layered reports.

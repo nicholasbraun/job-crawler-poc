@@ -124,6 +124,14 @@ _Avoid_: gone, missing, delisted
 Which of the two paths collected a Job Listing — an ATS Fetch (structured board API, the primary lane) or a Crawl (fetch-and-extract the posting page, the fallback). It decides how the listing's Liveness is judged.
 _Avoid_: source type, method, channel
 
+**Posting Body**:
+The posting's own text as stored on a Job Listing — the page's structured-data description where there is one, otherwise its main content, and the board API's text on an ATS Fetch. Never model-authored: the LLM judges a page, it does not transcribe it.
+_Avoid_: description (bare), summary, body text
+
+**Description Source**:
+The recorded origin of a Job Listing's Posting Body — structured data, page content, or the ATS board — and so how clean that text is. A listing still marked model-authored carries a legacy summary, which the refetch lane heals from the page it already fetched.
+_Avoid_: provenance (bare), origin, description type
+
 **Career-Page Dormancy**:
 A Career Page repeatedly found dead — a 404 board, or a page that no longer classifies — goes dormant and drops out of the Collection seed set, Closing its remaining Open Job Listings. Reversible: re-discovery revives it.
 _Avoid_: dead page, disabled, removed
@@ -217,15 +225,23 @@ The last path segment of a deep career URL that keeps it a Career Page rather th
 _Avoid_: listing keyword, hub keyword
 
 **Extract Gate**:
-The collection lane's counterpart to the Gate: a deterministic, pre-LLM pass that decides whether a candidate posting page reaches the LLM extractor. It *rejects* the page shapes the Gate accepts as hubs — an ATS Embed, a structured-data openings index, a link-saturated page — reading the same Structural Signals with opposite polarity. Verdict is binary (extract or skip), not the Gate's three-way band, and it is tuned separately so its calibration never shifts the Gate.
+The collection lane's counterpart to the Gate: a deterministic, pre-LLM pass that decides whether a candidate posting page reaches the LLM extractor. It first *rejects* the page shapes the Gate accepts as hubs — an ATS Embed, a structured-data openings index, a link-saturated page — reading the same Structural Signals with opposite polarity, and then requires Positive Evidence of a single posting from whatever survives. Verdict is binary (extract or skip), not the Gate's three-way band, and it is tuned separately so its calibration never shifts the Gate.
 _Avoid_: extract filter, relevance gate, ShouldExtract (in prose)
+
+**Positive Evidence**:
+The mark the Extract Gate requires before spending an extractor call: that a page *is* one posting, not merely that it is not a hub. Tiered — a posting-shaped URL or a lone structured-data posting stands on its own, while the text marks (an apply affordance, dense posting vocabulary) count only in agreement with each other.
+_Avoid_: accept signal, positive signal (bare), allowlist
+
+**Free Extraction**:
+A Job Listing read straight from a page's lone structured-data posting, with no LLM call. It fires only where the structured data is unambiguous — exactly one posting node and no openings index — so it never overrules a model verdict it was not entitled to overrule.
+_Avoid_: bypass, JSON-LD extract, shortcut
 
 **Extractor Abstain**:
 The LLM extractor's self-report that a page it was handed is not a single Job Listing — a hub, index, or career-landing page — so the extraction is discarded rather than saved. The extract path's last-resort net for a non-posting the Extract Gate let through.
 _Avoid_: skip, empty extraction, reject
 
 **Empty-Extraction Rate**:
-The share of extractor calls that end in an Extractor Abstain (`abstain / sent`) — the live measure of wasted extract calls the Extract Gate exists to drive down.
+The share of extractor calls that end in an Extractor Abstain (`abstain / sent`) — the live measure of wasted extract calls the Extract Gate exists to drive down. It counts model calls only, so a Free Extraction never enters it: it is a measure of wasted spend, not of Corpus precision.
 _Avoid_: waste rate, abstain rate (bare), miss rate
 
 **Leak**:
@@ -247,5 +263,13 @@ The curated collection of real HTML pages, each stored with its true URL, a huma
 _Avoid_: test set, fixtures (bare), corpus, sample
 
 **Extract Gold Set**:
-The Extract Gate's counterpart to the Gold Set: candidate real posting pages, each labelled single-posting **detail**, **hub/index**, or structurally-silent **residue**, scored on the binary extract-or-skip decision (a false-drop is the hard failure). Distinct from the Gold Set, which labels Career-Page-vs-not over a discovery sample.
+The Extract Gate's counterpart to the Gold Set: real pages the live extract stream was sampled from, each labelled single-posting **detail**, **hub/index**, or structurally-silent **residue**, scored on the binary extract-or-skip decision (a false-drop is the hard failure). Stored as the parsed page content the pipeline itself produced rather than as re-fetchable HTML, since a page re-fetched later is a different page. Distinct from the Gold Set, which labels Career-Page-vs-not over a discovery sample.
 _Avoid_: extract test set, second gold set
+
+**Boundary Stratum**:
+The part of the Extract Gold Set drawn from pages where candidate gate variants disagree, rather than sampled from the stream — where a false-drop hides, and the only labels that must be human-confirmed. Its counterpart random stratum carries sampling weights instead, so stream-level numbers stay honest.
+_Avoid_: hard cases, edge sample, review queue
+
+**Shadow Extraction**:
+A sampled page the Extract Gate rejected that is extracted anyway, purely to score the gate — the extractor's verdict on it is the live false-drop measurement, which nothing else can observe. It saves nothing by construction: a Shadow Extraction can never reach the Corpus.
+_Avoid_: dry run, canary, A/B test

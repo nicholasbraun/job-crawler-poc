@@ -1,5 +1,11 @@
 # Extract gate: reject non-postings and let the extractor abstain, rather than positively accept
 
+> **Superseded in part by ADR-0044.** The reject-only decision below rests on the keyword
+> relevance filter standing in front of the extractor; ADR-0038 retired that filter, so the
+> gate now also requires Positive Evidence on its final rung. The reject rungs, the reject-
+> polarity reuse of the Structural Signals, and the Extractor Abstain net all still stand.
+> The deferred L2 cheap-confirm is closed rather than pending — see ADR-0044.
+
 The Keyword Crawl's Extract Gate (`pagegate.ShouldExtract`) sheds non–single-posting
 pages by *rejecting* them and by letting the extractor *abstain* — not by positively
 accepting confirmed postings. The originating design (#111) proposed a deterministic
