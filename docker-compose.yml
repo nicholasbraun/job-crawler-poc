@@ -65,11 +65,12 @@ services:
       - LLM_MAX_WORKERS=${LLM_MAX_WORKERS}
       # Prompt-window caps (what the model READS) and the stored Posting Body cap (what
       # the Corpus KEEPS, ADR-0041) are separate knobs; all three must be listed here or
-      # tuning them in .env has no effect on the container. An unset var expands to "",
-      # which pgenv.EnvOr treats as "use the built-in default".
-      - LLM_CLASSIFY_MAX_CHARS=${LLM_CLASSIFY_MAX_CHARS}
-      - LLM_EXTRACT_MAX_CHARS=${LLM_EXTRACT_MAX_CHARS}
-      - DESCRIPTION_MAX_CHARS=${DESCRIPTION_MAX_CHARS}
+      # tuning them in .env has no effect on the container. The ":-" spelling expands an
+      # unset var to "" WITHOUT a compose warning, and pgenv.EnvOr reads "" as "use the
+      # built-in default" — so the default stays defined once, in Go, not duplicated here.
+      - LLM_CLASSIFY_MAX_CHARS=${LLM_CLASSIFY_MAX_CHARS:-}
+      - LLM_EXTRACT_MAX_CHARS=${LLM_EXTRACT_MAX_CHARS:-}
+      - DESCRIPTION_MAX_CHARS=${DESCRIPTION_MAX_CHARS:-}
       - CRAWL_MAX_WORKERS=${CRAWL_MAX_WORKERS:-50}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DATABASE_URL=postgres://crawler:crawler@postgres:5432/crawler?sslmode=disable
