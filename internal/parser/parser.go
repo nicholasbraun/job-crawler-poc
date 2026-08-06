@@ -58,11 +58,38 @@ func getMainContent(doc *goquery.Document) string {
 			// which would delete the ld+json <script> blocks getJSONLD reads next.
 			clone := selection.Clone()
 			clone.Find("script, style, noscript, svg, template").Remove()
-			return normalizeWS(clone.Text())
+			return withoutChrome(clone)
 		}
 	}
 
 	return ""
+}
+
+// withoutChrome drops site furniture — nav, header, footer, aside — from an already
+// script-stripped selection (#270).
+//
+// It matters most on the <body> fallback, where a page with no semantic container
+// otherwise contributes its whole navigation menu. A site that lists its openings in a
+// global nav then puts a job-openings list on EVERY page, which measurably breaks three
+// consumers at once: the career-page classifier reads a cheese shop's contact page as a
+// careers hub, the extractor is handed a menu instead of a posting, and the Corpus stores
+// and indexes the menu as a Posting Body (ADR-0041).
+//
+// A page whose only text lives inside that furniture keeps it, rather than being reduced
+// to nothing: dropping to empty would lose the page entirely at the Extract Gate, which is
+// a worse failure than a noisy body. So this never returns less than the unstripped text
+// would have.
+func withoutChrome(sel *goquery.Selection) string {
+	chrome := sel.Find("nav, header, footer, aside")
+	if chrome.Length() == 0 {
+		return normalizeWS(sel.Text())
+	}
+	withChrome := normalizeWS(sel.Text())
+	chrome.Remove()
+	if body := normalizeWS(sel.Text()); body != "" {
+		return body
+	}
+	return withChrome
 }
 
 // normalizeWS collapses every run of whitespace (including the newlines and tabs

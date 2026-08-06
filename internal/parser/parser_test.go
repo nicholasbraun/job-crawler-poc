@@ -110,6 +110,97 @@ Engineer</h1>
 		}
 	})
 
+	t.Run("site chrome is stripped from the body fallback", func(t *testing.T) {
+		// The #270 shape: no semantic container, and a global nav listing the site's
+		// openings on EVERY page. Without stripping, this page reads as a careers hub
+		// to the classifier and as a menu to the extractor.
+		html := `
+<html>
+	<body>
+		<header>Gratisversand ab 60 Euro</header>
+		<nav>
+			<a href="/stellen">Stellenangebote</a>
+			<a href="/s/1">Maschinen- und Anlagenfuehrer (m/w/d)</a>
+			<a href="/s/2">Buerokraft Versand</a>
+		</nav>
+		<aside><a href="/newsletter">Newsletter abonnieren</a></aside>
+		<div>Service und Kontakt: Telefon 08861 12345.</div>
+		<footer>Impressum Datenschutz</footer>
+	</body>
+</html>
+`
+		content, err := parser.NewHTMLParser().Parse([]byte(html))
+		if err != nil {
+			t.Fatalf("error parsing content: %v", err)
+		}
+
+		for _, chrome := range []string{
+			"Stellenangebote",
+			"Maschinen- und Anlagenfuehrer",
+			"Buerokraft Versand",
+			"Gratisversand",
+			"Newsletter abonnieren",
+			"Impressum",
+		} {
+			if strings.Contains(content.MainContent, chrome) {
+				t.Errorf("chrome %q leaked into main content: %q", chrome, content.MainContent)
+			}
+		}
+
+		want := "Service und Kontakt: Telefon 08861 12345."
+		if content.MainContent != want {
+			t.Errorf("expected %q, got: %q", want, content.MainContent)
+		}
+	})
+
+	t.Run("chrome inside the main region is stripped too", func(t *testing.T) {
+		html := `
+<html>
+	<body>
+		<main>
+			<nav><a href="/jobs">All openings</a></nav>
+			<h1>Senior Go Engineer</h1>
+			<p>Build crawlers.</p>
+			<footer>Share this job</footer>
+		</main>
+	</body>
+</html>
+`
+		content, err := parser.NewHTMLParser().Parse([]byte(html))
+		if err != nil {
+			t.Fatalf("error parsing content: %v", err)
+		}
+
+		want := "Senior Go Engineer Build crawlers."
+		if content.MainContent != want {
+			t.Errorf("expected %q, got: %q", want, content.MainContent)
+		}
+	})
+
+	t.Run("a page whose only text is chrome keeps it rather than going empty", func(t *testing.T) {
+		// Dropping to empty would lose the page at the Extract Gate, which is a worse
+		// failure than a noisy body — so the strip never returns less than nothing.
+		html := `
+<html>
+	<body>
+		<header>
+			<h1>Senior Go Engineer</h1>
+			<p>Build crawlers.</p>
+		</header>
+	</body>
+</html>
+`
+		content, err := parser.NewHTMLParser().Parse([]byte(html))
+		if err != nil {
+			t.Fatalf("error parsing content: %v", err)
+		}
+
+		want := "Senior Go Engineer Build crawlers."
+		if content.MainContent != want {
+			t.Errorf("expected the chrome-only text to survive, got: %q", content.MainContent)
+		}
+	})
+
 	t.Run("ld+json survives a script inside the main region", func(t *testing.T) {
 		html := `
 <html>
