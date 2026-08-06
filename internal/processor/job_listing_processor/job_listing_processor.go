@@ -166,6 +166,13 @@ func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.Raw
 	// lets us tune the frontier maxDepth cap from where postings are actually found.
 	extraction.Listing.DiscoveredDepth = workload.URL.Depth
 
+	// Record where the stored description came from (ADR-0041). Until the crawl lane
+	// derives the Posting Body from the page it still stores the extractor's summary,
+	// so the legacy model-authored marker is the HONEST value — and the refetch heal
+	// keys off it to find exactly these rows. Stamped unconditionally: provenance is a
+	// save-time fact about the pipeline, never something the model may assert.
+	extraction.Listing.DescriptionSource = crawler.DescriptionSourceLLMSummary
+
 	if err := w.corpus.Save(ctx, &extraction.Listing); err != nil {
 		return fmt.Errorf("job_listing_processor: error saving processed job listing %v: %w", *workload, err)
 	}

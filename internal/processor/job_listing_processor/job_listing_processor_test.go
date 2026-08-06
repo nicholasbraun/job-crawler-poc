@@ -294,6 +294,50 @@ func TestJobListingProcessorResolvesCountryAtSave(t *testing.T) {
 	}
 }
 
+// TestJobListingProcessorStampsDescriptionSource asserts the crawl lane records where
+// the stored description came from (ADR-0041), and that the processor's stamp always
+// wins over anything the extractor claims: provenance is a save-time fact about the
+// pipeline, never something the model may assert. The legacy model-authored marker is
+// the HONEST value today — the crawl lane still stores the extractor's summary — and
+// the refetch heal keys off it to find exactly these rows. The description text itself
+// is left untouched here.
+func TestJobListingProcessorStampsDescriptionSource(t *testing.T) {
+	const summary = "a short model-written summary"
+	repo := &spyJobListingRepo{}
+	proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
+		Corpus: repo,
+		JobListingExtractor: &stubExtractor{
+			result: crawler.JobListing{
+				Title:       "Engineer",
+				Description: summary,
+				// A marker the extractor has no business asserting.
+				DescriptionSource: crawler.DescriptionSourceStructuredData,
+			},
+			isPosting: true,
+		},
+	})
+
+	raw := &crawler.RawJobListing{
+		URL:     newURL(t, "https://careers.acme.com/jobs/1"),
+		Content: crawler.Content{MainContent: "we are hiring"},
+	}
+	if err := proc.Process(t.Context(), raw); err != nil {
+		t.Fatalf("Process returned error: %v", err)
+	}
+
+	if len(repo.saved) != 1 {
+		t.Fatalf("want 1 listing saved, got %d", len(repo.saved))
+	}
+	got := repo.saved[0]
+	if got.DescriptionSource != crawler.DescriptionSourceLLMSummary {
+		t.Errorf("DescriptionSource = %q, want %q (the processor's stamp overrides the extractor)",
+			got.DescriptionSource, crawler.DescriptionSourceLLMSummary)
+	}
+	if got.Description != summary {
+		t.Errorf("Description = %q, want the extractor's summary %q unchanged", got.Description, summary)
+	}
+}
+
 // TestJobListingProcessorExtractErrorNotAbstain guards the err==nil half of the
 // abstain classification. On an extraction failure the extractor returns the zero
 // Extraction (IsJobPosting=false); without the err==nil guard the false verdict

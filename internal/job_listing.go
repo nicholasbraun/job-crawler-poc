@@ -61,7 +61,16 @@ type JobListing struct {
 	URL         string
 	Title       string `json:"title"`
 	Description string `json:"description"`
-	Company     string `json:"company"`
+	// DescriptionSource records where Description came from (ADR-0041 / CONTEXT
+	// "Description Source"): the closed enum in posting_body.go, stamped at save by
+	// whichever lane produced the text — the board API on an ATS Fetch, and the
+	// legacy model-authored value on the crawl lane, which is the honest marker
+	// while the extractor's summary is still what gets stored. The json:"-" tag
+	// keeps LLM-response unmarshaling from ever reaching it, so a hallucinated
+	// marker can never create a silent third state. Stored in
+	// job_listing.description_source.
+	DescriptionSource DescriptionSource `json:"-"`
+	Company           string            `json:"company"`
 	// CompanyKey is the Owner CompanyKey (ADR-0021) the saved listing is attributed
 	// to. The processor sets it from the source URL's Owner at save time; the
 	// json:"-" tag keeps the extractor's LLM-response unmarshaling from ever
@@ -149,7 +158,10 @@ type CorpusRepository interface {
 	// Save upserts jl into the Corpus keyed on jl.CanonicalURL: re-saving the same
 	// posting refreshes its mutable fields in place, preserves first_seen, advances
 	// last_seen, and reopens it (clears closed_at) if it had been closed (ADR-0035).
-	// It stamps the Source Lane, source_id, source_hash, and career_page_id.
+	// It stamps the Source Lane, source_id, source_hash, career_page_id, and
+	// description_source. Every caller MUST set a DescriptionSource: the column's
+	// CHECK rejects an unset marker rather than admitting a silent third state that
+	// the later refetch heal would skip and the Corpus audit would not count.
 	Save(ctx context.Context, jl *JobListing) error
 }
 
@@ -161,9 +173,13 @@ type CorpusRepository interface {
 type CorpusLivenessRepository interface {
 	// ListOpen returns every currently-Open (closed_at IS NULL) Job Listing collected
 	// under careerPageID, so a Cycle can refetch them for liveness. Each carries
-	// CanonicalURL, URL, Source, SourceID, SourceHash, CompanyKey, and CareerPageID
-	// (the fields a refetch needs — CompanyKey rebuilds the re-extraction's Owner
-	// attribution); never returns nil (an empty board yields an empty slice).
+	// CanonicalURL, URL, Source, SourceID, SourceHash, CompanyKey, DescriptionSource,
+	// and CareerPageID (the fields a refetch needs — CompanyKey rebuilds the
+	// re-extraction's Owner attribution, and the Description Source lets the refetch
+	// heal decide which stored bodies are legacy without a second query per listing).
+	// The description TEXT is deliberately not projected: the heal rewrites the body
+	// from the page it already fetched, so reading every Open body would be a large
+	// pointless read. Never returns nil (an empty board yields an empty slice).
 	ListOpen(ctx context.Context, careerPageID uuid.UUID) ([]*JobListing, error)
 
 	// CloseAbsent runs the ATS-lane absence-sweep for ONE board (ADR-0035): when

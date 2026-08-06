@@ -167,6 +167,11 @@ func (p *Processor) Process(ctx context.Context, task *FetchTask) error {
 		// new posting; a posting the fetcher could not id falls back to its canonicalized
 		// URL rather than collapsing the whole tenant to one key.
 		jl.Source = crawler.SourceLaneATS
+		// The board API supplied this text, so record that (ADR-0041). Declaring it
+		// explicitly is what keeps an ATS-lane listing out of the crawl-lane heal by
+		// DATA rather than by an implicit rule — the refetch lane iterates every Open
+		// listing under a crawl seed with no source-lane filter.
+		jl.DescriptionSource = crawler.DescriptionSourceATSBoard
 		jl.CareerPageID = task.CareerPageID
 		if jl.SourceID != "" {
 			jl.CanonicalURL = listingid.FromATS(task.Provider, task.TenantSlug, jl.SourceID)

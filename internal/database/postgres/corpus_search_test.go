@@ -15,14 +15,15 @@ import (
 func saveSearchable(t *testing.T, repo *postgres.CorpusRepository, canonicalURL, title, description, company, country string, arrangement crawler.WorkArrangement) *crawler.JobListing {
 	t.Helper()
 	jl := &crawler.JobListing{
-		CanonicalURL:    canonicalURL,
-		URL:             canonicalURL,
-		Source:          crawler.SourceLaneCrawl,
-		Title:           title,
-		Description:     description,
-		Company:         company,
-		Country:         country,
-		WorkArrangement: arrangement,
+		CanonicalURL:      canonicalURL,
+		URL:               canonicalURL,
+		Source:            crawler.SourceLaneCrawl,
+		Title:             title,
+		Description:       description,
+		DescriptionSource: crawler.DescriptionSourceLLMSummary,
+		Company:           company,
+		Country:           country,
+		WorkArrangement:   arrangement,
 	}
 	if err := repo.Save(t.Context(), jl); err != nil {
 		t.Fatalf("saving searchable listing %q: %v", canonicalURL, err)
@@ -418,14 +419,15 @@ func TestSearchListingsReturnsDepartment(t *testing.T) {
 	repo := postgres.NewCorpusRepository(pool)
 
 	jl := &crawler.JobListing{
-		CanonicalURL:    "https://ex.com/dept/1",
-		URL:             "https://ex.com/dept/1",
-		Source:          crawler.SourceLaneATS,
-		Title:           "Platform Engineer",
-		Company:         "acme",
-		Country:         "DE",
-		Department:      "Platform",
-		WorkArrangement: crawler.WorkArrangementRemote,
+		CanonicalURL:      "https://ex.com/dept/1",
+		URL:               "https://ex.com/dept/1",
+		Source:            crawler.SourceLaneATS,
+		Title:             "Platform Engineer",
+		DescriptionSource: crawler.DescriptionSourceATSBoard,
+		Company:           "acme",
+		Country:           "DE",
+		Department:        "Platform",
+		WorkArrangement:   crawler.WorkArrangementRemote,
 	}
 	if err := repo.Save(t.Context(), jl); err != nil {
 		t.Fatalf("Save: %v", err)

@@ -22,6 +22,7 @@ type corpusRow struct {
 	company            string
 	title              string
 	description        string
+	descriptionSource  string
 	location           string
 	workArrangement    string
 	companyKey         string
@@ -39,12 +40,12 @@ func getListing(t *testing.T, pool *pgxpool.Pool, canonicalURL string) corpusRow
 	t.Helper()
 	var r corpusRow
 	err := pool.QueryRow(context.Background(), `
-		SELECT url, source, source_id, source_hash, company, title, description,
+		SELECT url, source, source_id, source_hash, company, title, description, description_source,
 		       location, work_arrangement, company_key, country, inconclusive_streak,
 		       first_seen, last_seen, closed_at, career_page_id, discovered_depth
 		FROM job_listing WHERE canonical_url = $1`, canonicalURL,
 	).Scan(
-		&r.url, &r.source, &r.sourceID, &r.sourceHash, &r.company, &r.title, &r.description,
+		&r.url, &r.source, &r.sourceID, &r.sourceHash, &r.company, &r.title, &r.description, &r.descriptionSource,
 		&r.location, &r.workArrangement, &r.companyKey, &r.country, &r.inconclusiveStreak,
 		&r.firstSeen, &r.lastSeen, &r.closedAt, &r.careerPageID, &r.discoveredDepth,
 	)
@@ -106,17 +107,18 @@ func TestCorpusUpsertDedupsByCanonicalURL(t *testing.T) {
 	repo := postgres.NewCorpusRepository(pool)
 
 	listing := &crawler.JobListing{
-		CanonicalURL:    "https://ex.com/j/1",
-		URL:             "https://ex.com/j/1?utm_source=x",
-		Source:          crawler.SourceLaneCrawl,
-		SourceHash:      "h1",
-		Title:           "Senior Software Engineer",
-		Description:     "cool stuff",
-		Company:         "netflix",
-		CompanyKey:      "netflix.com",
-		Location:        "Germany",
-		Country:         "DE",
-		WorkArrangement: crawler.WorkArrangementRemote,
+		CanonicalURL:      "https://ex.com/j/1",
+		URL:               "https://ex.com/j/1?utm_source=x",
+		Source:            crawler.SourceLaneCrawl,
+		SourceHash:        "h1",
+		Title:             "Senior Software Engineer",
+		Description:       "cool stuff",
+		DescriptionSource: crawler.DescriptionSourceLLMSummary,
+		Company:           "netflix",
+		CompanyKey:        "netflix.com",
+		Location:          "Germany",
+		Country:           "DE",
+		WorkArrangement:   crawler.WorkArrangementRemote,
 	}
 
 	t.Run("first Save inserts and round-trips", func(t *testing.T) {
@@ -196,11 +198,12 @@ func TestCorpusStampsLaneIdentityHash(t *testing.T) {
 	repo := postgres.NewCorpusRepository(pool)
 
 	ats := &crawler.JobListing{
-		CanonicalURL: "greenhouse:acme:123",
-		URL:          "https://boards.greenhouse.io/acme/jobs/123",
-		Source:       crawler.SourceLaneATS,
-		SourceID:     "123",
-		Title:        "Go Engineer",
+		CanonicalURL:      "greenhouse:acme:123",
+		URL:               "https://boards.greenhouse.io/acme/jobs/123",
+		Source:            crawler.SourceLaneATS,
+		SourceID:          "123",
+		Title:             "Go Engineer",
+		DescriptionSource: crawler.DescriptionSourceATSBoard,
 	}
 	if err := repo.Save(t.Context(), ats); err != nil {
 		t.Fatalf("saving ats listing: %v", err)
@@ -217,11 +220,12 @@ func TestCorpusStampsLaneIdentityHash(t *testing.T) {
 	}
 
 	crawl := &crawler.JobListing{
-		CanonicalURL: "https://ex.com/j/1",
-		URL:          "https://ex.com/j/1",
-		Source:       crawler.SourceLaneCrawl,
-		SourceHash:   "h1",
-		Title:        "Backend Engineer",
+		CanonicalURL:      "https://ex.com/j/1",
+		URL:               "https://ex.com/j/1",
+		Source:            crawler.SourceLaneCrawl,
+		SourceHash:        "h1",
+		Title:             "Backend Engineer",
+		DescriptionSource: crawler.DescriptionSourceLLMSummary,
 	}
 	if err := repo.Save(t.Context(), crawl); err != nil {
 		t.Fatalf("saving crawl listing: %v", err)
@@ -246,11 +250,12 @@ func TestCorpusReopensOnResave(t *testing.T) {
 	repo := postgres.NewCorpusRepository(pool)
 
 	listing := &crawler.JobListing{
-		CanonicalURL: "https://ex.com/j/1",
-		URL:          "https://ex.com/j/1",
-		Source:       crawler.SourceLaneCrawl,
-		SourceHash:   "h1",
-		Title:        "Engineer",
+		CanonicalURL:      "https://ex.com/j/1",
+		URL:               "https://ex.com/j/1",
+		Source:            crawler.SourceLaneCrawl,
+		SourceHash:        "h1",
+		Title:             "Engineer",
+		DescriptionSource: crawler.DescriptionSourceLLMSummary,
 	}
 	if err := repo.Save(t.Context(), listing); err != nil {
 		t.Fatalf("saving listing: %v", err)
@@ -297,10 +302,11 @@ func TestCorpusWorkArrangementRoundTrip(t *testing.T) {
 		t.Run(string(arr), func(t *testing.T) {
 			canonical := "https://example.com/jobs/" + string(arr)
 			jl := &crawler.JobListing{
-				CanonicalURL:    canonical,
-				URL:             canonical,
-				Source:          crawler.SourceLaneCrawl,
-				WorkArrangement: arr,
+				CanonicalURL:      canonical,
+				URL:               canonical,
+				Source:            crawler.SourceLaneCrawl,
+				DescriptionSource: crawler.DescriptionSourceLLMSummary,
+				WorkArrangement:   arr,
 			}
 			if err := repo.Save(t.Context(), jl); err != nil {
 				t.Fatalf("saving %q listing: %v", arr, err)
@@ -311,6 +317,74 @@ func TestCorpusWorkArrangementRoundTrip(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCorpusDescriptionSourceRoundTrip asserts every Description Source enum value
+// (ADR-0041) survives Save -> the description_source column -> read back unchanged,
+// and that a re-save refreshes the marker: a re-extraction re-derives the body, so
+// its provenance must follow — that refresh is how the refetch heal turns a legacy
+// row into a real Posting Body row. Distinct canonical URLs keep the rows apart.
+func TestCorpusDescriptionSourceRoundTrip(t *testing.T) {
+	pool := newTestPool(t)
+	repo := postgres.NewCorpusRepository(pool)
+
+	sources := []crawler.DescriptionSource{
+		crawler.DescriptionSourceStructuredData,
+		crawler.DescriptionSourcePageContent,
+		crawler.DescriptionSourceATSBoard,
+		crawler.DescriptionSourceLLMSummary,
+	}
+	for _, src := range sources {
+		t.Run(string(src), func(t *testing.T) {
+			canonical := "https://example.com/jobs/desc-source/" + string(src)
+			jl := &crawler.JobListing{
+				CanonicalURL:      canonical,
+				URL:               canonical,
+				Source:            crawler.SourceLaneCrawl,
+				Title:             "Engineer",
+				Description:       "the posting body",
+				DescriptionSource: src,
+			}
+			if err := repo.Save(t.Context(), jl); err != nil {
+				t.Fatalf("saving %q listing: %v", src, err)
+			}
+			got := getListing(t, pool, canonical)
+			if got.descriptionSource != string(src) {
+				t.Errorf("description_source round-trip: want %q, got %q", src, got.descriptionSource)
+			}
+		})
+	}
+
+	t.Run("re-save overwrites the marker", func(t *testing.T) {
+		const canonical = "https://example.com/jobs/desc-source/healed"
+		legacy := &crawler.JobListing{
+			CanonicalURL:      canonical,
+			URL:               canonical,
+			Source:            crawler.SourceLaneCrawl,
+			Title:             "Engineer",
+			Description:       "a short model-written summary",
+			DescriptionSource: crawler.DescriptionSourceLLMSummary,
+		}
+		if err := repo.Save(t.Context(), legacy); err != nil {
+			t.Fatalf("saving legacy listing: %v", err)
+		}
+
+		healed := *legacy
+		healed.Description = "the posting's own text, straight off the page"
+		healed.DescriptionSource = crawler.DescriptionSourceStructuredData
+		if err := repo.Save(t.Context(), &healed); err != nil {
+			t.Fatalf("re-saving healed listing: %v", err)
+		}
+
+		got := getListing(t, pool, canonical)
+		if got.descriptionSource != string(crawler.DescriptionSourceStructuredData) {
+			t.Errorf("description_source after re-save: want %q, got %q",
+				crawler.DescriptionSourceStructuredData, got.descriptionSource)
+		}
+		if got.description != healed.Description {
+			t.Errorf("description after re-save: want %q, got %q", healed.Description, got.description)
+		}
+	})
 }
 
 // TestCorpusCountryRoundTrip asserts the resolved Country (ADR-0029) survives
@@ -331,10 +405,11 @@ func TestCorpusCountryRoundTrip(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			canonical := "https://example.com/jobs/country/" + tc.name
 			jl := &crawler.JobListing{
-				CanonicalURL: canonical,
-				URL:          canonical,
-				Source:       crawler.SourceLaneCrawl,
-				Country:      tc.country,
+				CanonicalURL:      canonical,
+				URL:               canonical,
+				Source:            crawler.SourceLaneCrawl,
+				DescriptionSource: crawler.DescriptionSourceLLMSummary,
+				Country:           tc.country,
 			}
 			if err := repo.Save(t.Context(), jl); err != nil {
 				t.Fatalf("saving listing: %v", err)
@@ -357,11 +432,12 @@ func TestCorpusDiscoveredDepth(t *testing.T) {
 
 	t.Run("crawl lane persists depth", func(t *testing.T) {
 		jl := &crawler.JobListing{
-			CanonicalURL:    "https://ex.com/j/depth",
-			URL:             "https://ex.com/j/depth",
-			Source:          crawler.SourceLaneCrawl,
-			Title:           "Engineer",
-			DiscoveredDepth: 3,
+			CanonicalURL:      "https://ex.com/j/depth",
+			URL:               "https://ex.com/j/depth",
+			Source:            crawler.SourceLaneCrawl,
+			DescriptionSource: crawler.DescriptionSourceLLMSummary,
+			Title:             "Engineer",
+			DiscoveredDepth:   3,
 		}
 		if err := repo.Save(t.Context(), jl); err != nil {
 			t.Fatalf("saving crawl listing: %v", err)
@@ -377,10 +453,11 @@ func TestCorpusDiscoveredDepth(t *testing.T) {
 
 	t.Run("ats lane leaves depth NULL", func(t *testing.T) {
 		jl := &crawler.JobListing{
-			CanonicalURL: "greenhouse:acme:1",
-			URL:          "https://boards.greenhouse.io/acme/jobs/1",
-			Source:       crawler.SourceLaneATS,
-			Title:        "Engineer",
+			CanonicalURL:      "greenhouse:acme:1",
+			URL:               "https://boards.greenhouse.io/acme/jobs/1",
+			Source:            crawler.SourceLaneATS,
+			DescriptionSource: crawler.DescriptionSourceATSBoard,
+			Title:             "Engineer",
 			// DiscoveredDepth left 0 -- must not be written on the ATS lane.
 		}
 		if err := repo.Save(t.Context(), jl); err != nil {
@@ -394,11 +471,12 @@ func TestCorpusDiscoveredDepth(t *testing.T) {
 
 	t.Run("re-save preserves first-discovery depth", func(t *testing.T) {
 		jl := &crawler.JobListing{
-			CanonicalURL:    "https://ex.com/j/resave",
-			URL:             "https://ex.com/j/resave",
-			Source:          crawler.SourceLaneCrawl,
-			Title:           "Engineer",
-			DiscoveredDepth: 2,
+			CanonicalURL:      "https://ex.com/j/resave",
+			URL:               "https://ex.com/j/resave",
+			Source:            crawler.SourceLaneCrawl,
+			DescriptionSource: crawler.DescriptionSourceLLMSummary,
+			Title:             "Engineer",
+			DiscoveredDepth:   2,
 		}
 		if err := repo.Save(t.Context(), jl); err != nil {
 			t.Fatalf("first save: %v", err)
@@ -419,12 +497,13 @@ func TestCorpusDiscoveredDepth(t *testing.T) {
 func saveATS(t *testing.T, repo *postgres.CorpusRepository, canonicalURL string, careerPageID uuid.UUID) *crawler.JobListing {
 	t.Helper()
 	jl := &crawler.JobListing{
-		CanonicalURL: canonicalURL,
-		URL:          canonicalURL,
-		Source:       crawler.SourceLaneATS,
-		SourceID:     canonicalURL,
-		CareerPageID: careerPageID,
-		Title:        "Engineer",
+		CanonicalURL:      canonicalURL,
+		URL:               canonicalURL,
+		Source:            crawler.SourceLaneATS,
+		SourceID:          canonicalURL,
+		CareerPageID:      careerPageID,
+		Title:             "Engineer",
+		DescriptionSource: crawler.DescriptionSourceATSBoard,
 	}
 	if err := repo.Save(t.Context(), jl); err != nil {
 		t.Fatalf("saving ats listing %q: %v", canonicalURL, err)
@@ -436,12 +515,13 @@ func saveATS(t *testing.T, repo *postgres.CorpusRepository, canonicalURL string,
 func saveCrawl(t *testing.T, repo *postgres.CorpusRepository, canonicalURL string, careerPageID uuid.UUID) *crawler.JobListing {
 	t.Helper()
 	jl := &crawler.JobListing{
-		CanonicalURL: canonicalURL,
-		URL:          canonicalURL,
-		Source:       crawler.SourceLaneCrawl,
-		SourceHash:   "h-" + canonicalURL,
-		CareerPageID: careerPageID,
-		Title:        "Engineer",
+		CanonicalURL:      canonicalURL,
+		URL:               canonicalURL,
+		Source:            crawler.SourceLaneCrawl,
+		SourceHash:        "h-" + canonicalURL,
+		CareerPageID:      careerPageID,
+		Title:             "Engineer",
+		DescriptionSource: crawler.DescriptionSourceLLMSummary,
 	}
 	if err := repo.Save(t.Context(), jl); err != nil {
 		t.Fatalf("saving crawl listing %q: %v", canonicalURL, err)
@@ -684,12 +764,13 @@ func TestCorpusListOpen(t *testing.T) {
 
 	t.Run("returns company_key for re-extraction attribution", func(t *testing.T) {
 		keyed := &crawler.JobListing{
-			CanonicalURL: "https://ex.com/j/keyed",
-			URL:          "https://ex.com/j/keyed",
-			Source:       crawler.SourceLaneCrawl,
-			CareerPageID: page,
-			CompanyKey:   "acme.com",
-			Title:        "Keyed role",
+			CanonicalURL:      "https://ex.com/j/keyed",
+			URL:               "https://ex.com/j/keyed",
+			Source:            crawler.SourceLaneCrawl,
+			DescriptionSource: crawler.DescriptionSourceLLMSummary,
+			CareerPageID:      page,
+			CompanyKey:        "acme.com",
+			Title:             "Keyed role",
 		}
 		if err := repo.Save(t.Context(), keyed); err != nil {
 			t.Fatalf("saving keyed listing: %v", err)
@@ -709,6 +790,34 @@ func TestCorpusListOpen(t *testing.T) {
 		}
 		if !found {
 			t.Fatal("keyed listing missing from ListOpen")
+		}
+	})
+
+	t.Run("returns the Description Source so the heal needs no second query", func(t *testing.T) {
+		page := seedCareerPage(t, pool, "list-open-desc-source")
+		legacy := saveCrawl(t, repo, "https://ex.com/j/legacy-body", page)
+		board := saveATS(t, repo, "ats:desc:1", page)
+
+		open, err := repo.ListOpen(t.Context(), page)
+		if err != nil {
+			t.Fatalf("ListOpen: %v", err)
+		}
+		want := map[string]crawler.DescriptionSource{
+			legacy.CanonicalURL: crawler.DescriptionSourceLLMSummary,
+			board.CanonicalURL:  crawler.DescriptionSourceATSBoard,
+		}
+		for _, jl := range open {
+			wantSource, ok := want[jl.CanonicalURL]
+			if !ok {
+				t.Fatalf("unexpected open listing %q", jl.CanonicalURL)
+			}
+			if jl.DescriptionSource != wantSource {
+				t.Errorf("DescriptionSource for %q = %q, want %q", jl.CanonicalURL, jl.DescriptionSource, wantSource)
+			}
+			delete(want, jl.CanonicalURL)
+		}
+		if len(want) != 0 {
+			t.Errorf("open listings missing from ListOpen: %v", want)
 		}
 	})
 }
