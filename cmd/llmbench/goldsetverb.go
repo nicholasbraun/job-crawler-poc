@@ -392,6 +392,12 @@ func applyLabels(rows []goldRow, sheet, proposed []sheetRow, proposedBy, confirm
 		if s.Verdict != merged[i].Verdict {
 			return nil, fmt.Errorf("sheet row %q: verdict %v disagrees with the substrate (%v)", s.URL, s.Verdict, merged[i].Verdict)
 		}
+		// A confirmed label that changes retracts its confirmation, for the same
+		// reason applyExpected retracts one whose values changed: the human confirmed
+		// the old label, not this one.
+		if merged[i].LabelProvenance.ConfirmedBy != "" && merged[i].Label != s.Label {
+			merged[i].LabelProvenance.ConfirmedBy, merged[i].LabelProvenance.ConfirmedAt = "", ""
+		}
 		merged[i].Label = s.Label
 		if s.Note != "" {
 			merged[i].LabelProvenance.Note = s.Note
@@ -488,6 +494,17 @@ func applyExpected(rows []goldRow, sheet []expectedSheetRow, proposedBy, confirm
 		expected := goldExpected{}
 		if merged[i].Expected != nil {
 			expected = *merged[i].Expected
+		}
+		// A confirmation is a statement about specific values, so an edit to any of
+		// them retracts it: without this a re-proposal could silently change a title
+		// -- or re-arm a free_ok acceptance a human had withdrawn -- and leave it
+		// stamped with that human's name.
+		if expected.ConfirmedBy != "" && (expected.Title != s.Title ||
+			expected.Location != s.Location ||
+			expected.WorkArrangement != s.WorkArrangement ||
+			expected.FreeOK != s.FreeOK ||
+			expected.FreeOKNote != s.FreeOKNote) {
+			expected.ConfirmedBy, expected.ConfirmedAt = "", ""
 		}
 		expected.Title, expected.Location, expected.WorkArrangement = s.Title, s.Location, s.WorkArrangement
 		expected.FreeOK, expected.FreeOKNote = s.FreeOK, s.FreeOKNote

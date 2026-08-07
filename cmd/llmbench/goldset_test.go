@@ -953,6 +953,69 @@ func TestApplyMergesExpectedAndStampsProvenance(t *testing.T) {
 		}
 	})
 
+	// A confirmation names specific values. If a re-proposal may change them while the
+	// human's name stays on the row, the whole confirmation record is worthless: the
+	// guard would read "a human accepted this" about something no human ever saw.
+	t.Run("editing a confirmed value retracts the confirmation", func(t *testing.T) {
+		edits := []struct {
+			name   string
+			mutate func(*expectedSheetRow)
+		}{
+			{"the title changes", func(r *expectedSheetRow) { r.Title = "Staff Go Engineer" }},
+			{"the location changes", func(r *expectedSheetRow) { r.Location = "Munich, DE" }},
+			{"the work arrangement changes", func(r *expectedSheetRow) { r.WorkArrangement = "remote" }},
+		}
+		for _, e := range edits {
+			t.Run(e.name, func(t *testing.T) {
+				rows := base()
+				rows[0].Expected = &goldExpected{
+					Title: "Senior Go Engineer", Location: "Berlin, DE", WorkArrangement: "unspecified",
+					ProposedBy: "script:first", ConfirmedBy: "A Human", ConfirmedAt: "2026-01-01T00:00:00Z",
+				}
+				got, err := applyExpected(rows, sheetFor(0, e.mutate), "", "", stamp)
+				if err != nil {
+					t.Fatalf("applyExpected: %v", err)
+				}
+				if got[0].Expected.ConfirmedBy != "" || got[0].Expected.ConfirmedAt != "" {
+					t.Errorf("confirmation survived an edit to what it confirmed: %+v", got[0].Expected)
+				}
+			})
+		}
+
+		t.Run("re-arming a withdrawn acceptance retracts the confirmation", func(t *testing.T) {
+			rows := base()
+			rows[1].Expected = &goldExpected{
+				Title: "Senior Go Engineer", Location: "Berlin, DE", WorkArrangement: "unspecified",
+				FreeOK: false, ProposedBy: "script:first", ConfirmedBy: "A Human", ConfirmedAt: "2026-01-01T00:00:00Z",
+			}
+			sheet := sheetFor(1, func(r *expectedSheetRow) {
+				r.FreeOK, r.FreeOKNote = true, "re-armed by a regenerated sheet"
+			})
+			got, err := applyExpected(rows, sheet, "", "", stamp)
+			if err != nil {
+				t.Fatalf("applyExpected: %v", err)
+			}
+			if got[1].Expected.ConfirmedBy != "" {
+				t.Errorf("a re-armed free_ok stayed stamped as human-confirmed: %+v", got[1].Expected)
+			}
+		})
+
+		t.Run("an unchanged re-proposal keeps the confirmation", func(t *testing.T) {
+			rows := base()
+			rows[0].Expected = &goldExpected{
+				Title: "Senior Go Engineer", Location: "Berlin, DE", WorkArrangement: "unspecified",
+				ProposedBy: "script:first", ConfirmedBy: "A Human", ConfirmedAt: "2026-01-01T00:00:00Z",
+			}
+			got, err := applyExpected(rows, sheetFor(0, nil), "", "", stamp)
+			if err != nil {
+				t.Fatalf("applyExpected: %v", err)
+			}
+			if got[0].Expected.ConfirmedBy != "A Human" {
+				t.Errorf("an identical re-proposal dropped the confirmation: %+v", got[0].Expected)
+			}
+		})
+	})
+
 	t.Run("an existing proposer is never overwritten or re-stamped", func(t *testing.T) {
 		rows := base()
 		rows[0].Expected = &goldExpected{Title: "old", ProposedBy: "script:first", ProposedAt: "2026-01-01T00:00:00Z"}
@@ -973,7 +1036,12 @@ func TestApplyMergesExpectedAndStampsProvenance(t *testing.T) {
 
 	t.Run("a human confirmation lands only where none is recorded", func(t *testing.T) {
 		rows := base()
-		rows[0].Expected = &goldExpected{Title: "old", ProposedBy: "script:first", ConfirmedBy: "First Human", ConfirmedAt: "2026-01-01T00:00:00Z"}
+		// The stored values match the sheet, so this isolates "a confirmer is never
+		// overwritten" from the separate rule that an EDIT retracts the confirmation.
+		rows[0].Expected = &goldExpected{
+			Title: "Senior Go Engineer", Location: "Berlin, DE", WorkArrangement: "unspecified",
+			ProposedBy: "script:first", ConfirmedBy: "First Human", ConfirmedAt: "2026-01-01T00:00:00Z",
+		}
 		got, err := applyExpected(rows, sheetFor(0, nil), "", "Second Human", stamp)
 		if err != nil {
 			t.Fatalf("applyExpected: %v", err)
