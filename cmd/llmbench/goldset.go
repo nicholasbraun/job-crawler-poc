@@ -73,14 +73,35 @@ type goldProvenance struct {
 }
 
 // goldExpected is the field-fidelity ground truth #256 scores a Free Extraction
-// against: what a correct extraction of this page must produce. #254 leaves it
-// absent on every row.
+// against: what a correct extraction of this page must produce. It is carried on
+// every row the Free Extraction fires on -- the lone-posting stratum -- and on no
+// other, since an expectation for a page the mechanism never serves is unscorable.
+//
+// The values are read off the page's own structured data by a reading INDEPENDENT
+// of the Go traversal they score (scripts/propose-expected.sh). Proposing them by
+// running the decorator would make the guard a tautology: it could then only ever
+// catch a future regression, never a bug that exists today.
 type goldExpected struct {
 	Title           string `json:"title"`
 	Location        string `json:"location"`
 	WorkArrangement string `json:"work_arrangement"`
-	ConfirmedBy     string `json:"confirmed_by"`
-	ConfirmedAt     string `json:"confirmed_at"`
+	// FreeOK accepts a Free Extraction on a page that is NOT a posting as a known,
+	// argued exception instead of a fatal precision failure. It is honoured for a
+	// residue row only -- a hub-index is the exact shape ADR-0042's predicate
+	// rejects structurally, so excusing one would mean the predicate itself is
+	// broken. Never set by tooling on its own behalf.
+	FreeOK bool `json:"free_ok,omitempty"`
+	// FreeOKNote is the one-line argument for that acceptance, in the reviewer's own
+	// words. Required whenever FreeOK is set: an exception with no stated reason
+	// cannot be reviewed or withdrawn.
+	FreeOKNote string `json:"free_ok_note,omitempty"`
+	// ProposedBy names who read these values off the page's structured data,
+	// prefixed "script:" or "llm:" for an automated reading. ConfirmedBy is EMPTY
+	// until a human has actually seen the row, exactly like goldProvenance.
+	ProposedBy  string `json:"proposed_by"`
+	ProposedAt  string `json:"proposed_at"` // RFC3339 UTC
+	ConfirmedBy string `json:"confirmed_by"`
+	ConfirmedAt string `json:"confirmed_at"`
 }
 
 // goldStratum is a row's structural sampling cell: what the page's structured
@@ -153,6 +174,13 @@ const (
 	// compact line per row, the file a reviewer reads in a diff and edits to
 	// correct a label.
 	labelsFile = "labels.tsv"
+	// expectedFile is the SECOND review surface (#256): one line per row carrying
+	// an expected extraction, i.e. exactly the rows the Free Extraction fires on.
+	// It is deliberately not four more columns on labelsFile -- that file is 150
+	// lines a reviewer already worked through for #254, and widening it would
+	// change parseSheet's column contract. This one focuses the #256 review on its
+	// own 70 rows.
+	expectedFile = "expected.tsv"
 	// defaultSeed keys the deterministic within-cell selection. Changing it is a
 	// deliberate resample, which is why it is a flag rather than a constant use.
 	defaultSeed = "extract-goldset-v1"
@@ -757,6 +785,116 @@ func parseSheet(data []byte) ([]sheetRow, error) {
 	return rows, nil
 }
 
+// expectedSheetHeader names the expected-extraction sheet's columns, written as a
+// leading comment line so the file is self-describing in a diff.
+const expectedSheetHeader = "#id\turl\tlabel\ttitle\tlocation\twork_arrangement\tfree_ok\tfree_ok_note\tproposed_by\tconfirmed_by"
+
+// expectedSheetColumns is the exact column count parseExpectedSheet requires. A
+// line of any other width is a sheet edited against a different renderer, which is
+// rejected rather than half-applied.
+const expectedSheetColumns = 10
+
+// expectedSheetRow is one parsed line of expected.tsv: the review surface for the
+// field-fidelity ground truth, not the substrate. id keys the merge and label is
+// echoed so a sheet edited against an older sample is detected rather than
+// silently applied.
+type expectedSheetRow struct {
+	ID              string
+	URL             string
+	Label           bench.ExtractLabel
+	Title           string
+	Location        string
+	WorkArrangement string
+	FreeOK          bool
+	FreeOKNote      string
+	ProposedBy      string
+	ConfirmedBy     string
+}
+
+// renderExpectedSheet renders the rows that carry an expected extraction as the
+// #256 review sheet, sorted by URL, every field flattened so a page title carrying
+// a tab or a newline can never split or widen a line.
+func renderExpectedSheet(rows []goldRow) []byte {
+	ordered := make([]goldRow, len(rows))
+	copy(ordered, rows)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].URL < ordered[j].URL })
+
+	var b strings.Builder
+	b.WriteString(expectedSheetHeader)
+	b.WriteString("\n")
+	for _, row := range ordered {
+		if row.Expected == nil {
+			continue
+		}
+		fields := []string{
+			rowID(row.URL),
+			row.URL,
+			string(row.Label),
+			row.Expected.Title,
+			row.Expected.Location,
+			row.Expected.WorkArrangement,
+			strconv.FormatBool(row.Expected.FreeOK),
+			row.Expected.FreeOKNote,
+			row.Expected.ProposedBy,
+			row.Expected.ConfirmedBy,
+		}
+		for i, f := range fields {
+			if i > 0 {
+				b.WriteString("\t")
+			}
+			b.WriteString(flattenField(f))
+		}
+		b.WriteString("\n")
+	}
+	return []byte(b.String())
+}
+
+// parseExpectedSheet parses a rendered expected-extraction sheet back into rows,
+// skipping the header and any blank line. A wrong column count, an unparseable
+// free_ok, an unknown non-empty label, a work_arrangement outside the domain's
+// enum, or a free_ok with no stated reason is an error: a half-applied sheet is
+// worse than a rejected one, and an unreviewable exception is worse than none.
+func parseExpectedSheet(data []byte) ([]expectedSheetRow, error) {
+	rows := []expectedSheetRow{}
+	for i, line := range strings.Split(string(data), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) != expectedSheetColumns {
+			return nil, fmt.Errorf("expected sheet line %d: got %d columns, want %d", i+1, len(fields), expectedSheetColumns)
+		}
+		label := bench.ExtractLabel(fields[2])
+		if label != "" && !label.Valid() {
+			return nil, fmt.Errorf("expected sheet line %d: unknown label %q", i+1, label)
+		}
+		arrangement := fields[5]
+		if string(crawler.NormalizeWorkArrangement(arrangement)) != arrangement {
+			return nil, fmt.Errorf("expected sheet line %d: work_arrangement %q is not one of the domain's values", i+1, arrangement)
+		}
+		freeOK, err := strconv.ParseBool(fields[6])
+		if err != nil {
+			return nil, fmt.Errorf("expected sheet line %d: free_ok %q: %w", i+1, fields[6], err)
+		}
+		if freeOK && strings.TrimSpace(fields[7]) == "" {
+			return nil, fmt.Errorf("expected sheet line %d: free_ok with no stated reason; an exception nobody can read is one nobody can withdraw", i+1)
+		}
+		rows = append(rows, expectedSheetRow{
+			ID:              fields[0],
+			URL:             fields[1],
+			Label:           label,
+			Title:           fields[3],
+			Location:        fields[4],
+			WorkArrangement: arrangement,
+			FreeOK:          freeOK,
+			FreeOKNote:      fields[7],
+			ProposedBy:      fields[8],
+			ConfirmedBy:     fields[9],
+		})
+	}
+	return rows, nil
+}
+
 // flattenField collapses every whitespace run -- tabs and newlines included -- to
 // a single space so a field can never break the sheet's line/column structure.
 func flattenField(s string) string { return strings.Join(strings.Fields(s), " ") }
@@ -854,3 +992,6 @@ func worksheetFor(row goldRow) worksheetRow {
 func goldSetPaths(dir string) (substrate, sheet string) {
 	return filepath.Join(dir, goldSetFile), filepath.Join(dir, labelsFile)
 }
+
+// expectedSheetPath returns the expected-extraction review sheet's path under dir.
+func expectedSheetPath(dir string) string { return filepath.Join(dir, expectedFile) }

@@ -39,6 +39,15 @@ import (
 // RATCHET -- lower it as confirmations land, never raise it.
 const pendingHumanConfirmations = 70
 
+// pendingExpectedConfirmations is how many rows carry an agent-proposed expected
+// extraction -- and, on a residue row, an agent-proposed acceptance of the fire --
+// that no human has confirmed. #256 requires 0: the values were read off each
+// page's own JSON-LD by scripts/propose-expected.sh and a human confirms them at
+// the review gate, so this starts at the full lone-posting stratum count. Like
+// pendingHumanConfirmations it is a RATCHET -- lower it as confirmations land,
+// never raise it.
+const pendingExpectedConfirmations = 70
+
 // loadCommittedGoldSet reads the committed Extract Gold Set. The working directory
 // under `go test` is the package directory, so the relative path resolves without
 // configuration.
@@ -680,8 +689,26 @@ func TestCommittedGoldSetIsWellFormed(t *testing.T) {
 		if row.Content.Title == "" && row.Content.MainContent == "" && len(row.Content.JSONLD) == 0 && row.Label == bench.ExtractDetail {
 			t.Errorf("%s: labelled detail but the captured content is entirely empty", row.URL)
 		}
-		if row.Expected != nil && row.Expected.Title == "" {
-			t.Errorf("%s: expected extraction has no title", row.URL)
+		// The expected extraction is #256's field-fidelity ground truth. It exists
+		// on exactly the rows the Free Extraction fires on -- an expectation
+		// anywhere else could never be scored -- and it carries its own provenance,
+		// because it is a label like any other.
+		if row.Expected != nil {
+			if row.Expected.Title == "" {
+				t.Errorf("%s: expected extraction has no title", row.URL)
+			}
+			if row.Stratum != stratumLonePosting {
+				t.Errorf("%s: carries an expected extraction in stratum %q, where a Free Extraction never fires", row.URL, row.Stratum)
+			}
+			if row.Expected.ProposedBy == "" || row.Expected.ProposedAt == "" {
+				t.Errorf("%s: expected extraction has no proposer (%+v)", row.URL, row.Expected)
+			}
+			if row.Expected.FreeOK && (row.Label != bench.ExtractResidue || row.Expected.FreeOKNote == "") {
+				t.Errorf("%s: free_ok on a %q row with note %q; only an argued residue fire is excusable", row.URL, row.Label, row.Expected.FreeOKNote)
+			}
+		}
+		if row.Stratum == stratumLonePosting && row.Expected == nil {
+			t.Errorf("%s: the Free Extraction fires on it but it carries no expected extraction to score against", row.URL)
 		}
 		byLabel[row.Label]++
 		byStratum[row.Stratum]++
@@ -773,6 +800,244 @@ func TestCommittedGoldSetScoresThroughScoreCapture(t *testing.T) {
 		report.Extract.ResidueExtracted, report.Extract.ResidueCount)
 	for _, url := range report.Extract.FalseDrops {
 		t.Logf("false-drop: %s", url)
+	}
+}
+
+// TestCommittedGoldSetExpectedConfirmation is the honest ratchet on the #256
+// ground truth: the expected title, location and working mode -- and every accepted
+// residue fire resting on them -- are proposed by a script and must be confirmed by
+// a human. It refuses a machine confirmer outright, so the gap can never be closed
+// by the tooling that opened it.
+func TestCommittedGoldSetExpectedConfirmation(t *testing.T) {
+	rows := loadCommittedGoldSet(t)
+
+	pending := []string{}
+	for _, row := range rows {
+		if row.Expected == nil {
+			continue
+		}
+		if strings.HasPrefix(row.Expected.ConfirmedBy, "llm:") || strings.HasPrefix(row.Expected.ConfirmedBy, "script:") {
+			t.Errorf("%s: expected confirmed_by %q is a machine; a confirmation must come from a human", row.URL, row.Expected.ConfirmedBy)
+		}
+		if row.Expected.ConfirmedBy != "" && row.Expected.ConfirmedAt == "" {
+			t.Errorf("%s: expected extraction confirmed by %q with no timestamp", row.URL, row.Expected.ConfirmedBy)
+		}
+		if row.Expected.ConfirmedBy == "" {
+			pending = append(pending, row.URL)
+		}
+	}
+
+	if len(pending) > pendingExpectedConfirmations {
+		t.Errorf("%d expected extractions await human confirmation, above the ratchet of %d", len(pending), pendingExpectedConfirmations)
+	}
+	if len(pending) < pendingExpectedConfirmations {
+		t.Errorf("only %d expected extractions await confirmation but the ratchet is %d; lower pendingExpectedConfirmations to %d", len(pending), pendingExpectedConfirmations, len(pending))
+	}
+	if len(pending) > 0 {
+		t.Logf("awaiting human confirmation on %d expected extractions (see extract-goldset/README.md)", len(pending))
+	}
+}
+
+// TestExpectedSheetRoundTrip proves the #256 review surface is lossless for the
+// fields it owns, and that a captured page title -- arbitrary page text -- carrying
+// a tab, a newline or a leading '#' still yields exactly one parseable line.
+func TestExpectedSheetRoundTrip(t *testing.T) {
+	rows := []goldRow{
+		{
+			URL: "https://b.test/jobs/2", Stratum: stratumLonePosting, Label: bench.ExtractResidue,
+			Expected: &goldExpected{
+				Title: "#Cook\tat\nB Corp", Location: "", WorkArrangement: "remote",
+				FreeOK: true, FreeOKNote: "expired ad still serving its posting node",
+				ProposedBy: "script:test", ConfirmedBy: "A Human",
+			},
+		},
+		{
+			URL: "https://a.test/jobs/1", Stratum: stratumLonePosting, Label: bench.ExtractDetail,
+			Expected: &goldExpected{Title: "Senior Go Engineer", Location: "Berlin, DE", WorkArrangement: "unspecified", ProposedBy: "script:test"},
+		},
+		{URL: "https://c.test/about", Stratum: stratumNoPosting, Label: bench.ExtractResidue},
+	}
+
+	data := renderExpectedSheet(rows)
+	if lines := strings.Count(strings.TrimRight(string(data), "\n"), "\n") + 1; lines != 3 {
+		t.Fatalf("sheet has %d lines, want 1 header + the 2 rows carrying an expectation", lines)
+	}
+	parsed, err := parseExpectedSheet(data)
+	if err != nil {
+		t.Fatalf("parseExpectedSheet: %v", err)
+	}
+	if len(parsed) != 2 {
+		t.Fatalf("parsed %d rows, want 2", len(parsed))
+	}
+	want := expectedSheetRow{
+		ID: rowID("https://a.test/jobs/1"), URL: "https://a.test/jobs/1", Label: bench.ExtractDetail,
+		Title: "Senior Go Engineer", Location: "Berlin, DE", WorkArrangement: "unspecified", ProposedBy: "script:test",
+	}
+	if parsed[0] != want {
+		t.Errorf("round-tripped row = %+v, want %+v", parsed[0], want)
+	}
+	if parsed[1].Title != "#Cook at B Corp" || parsed[1].Location != "" || !parsed[1].FreeOK || parsed[1].ConfirmedBy != "A Human" {
+		t.Errorf("round-tripped row = %+v, want the flattened title, an empty location and the acceptance", parsed[1])
+	}
+
+	t.Run("a malformed sheet is rejected", func(t *testing.T) {
+		const ok = "id\turl\tdetail\tTitle\tBerlin, DE\tunspecified\tfalse\t\t\t"
+		for name, bad := range map[string]string{
+			"too few columns":        expectedSheetHeader + "\nid\turl\tdetail\tTitle\n",
+			"unknown label":          expectedSheetHeader + "\nid\turl\tposting\tTitle\tBerlin, DE\tunspecified\tfalse\t\t\t\n",
+			"bad free_ok":            expectedSheetHeader + "\nid\turl\tdetail\tTitle\tBerlin, DE\tunspecified\tmaybe\t\t\t\n",
+			"unknown work mode":      expectedSheetHeader + "\nid\turl\tdetail\tTitle\tBerlin, DE\tanywhere\tfalse\t\t\t\n",
+			"empty work mode":        expectedSheetHeader + "\nid\turl\tdetail\tTitle\tBerlin, DE\t\tfalse\t\t\t\n",
+			"free_ok with no reason": expectedSheetHeader + "\nid\turl\tresidue\tTitle\tBerlin, DE\tunspecified\ttrue\t\t\t\n",
+			"a well-formed sheet is not rejected (control)": expectedSheetHeader + "\n" + ok + "\n",
+		} {
+			_, err := parseExpectedSheet([]byte(bad))
+			if strings.HasPrefix(name, "a well-formed") {
+				if err != nil {
+					t.Errorf("parseExpectedSheet rejected a well-formed sheet: %v", err)
+				}
+				continue
+			}
+			if err == nil {
+				t.Errorf("parseExpectedSheet accepted a sheet with %s", name)
+			}
+		}
+	})
+}
+
+// TestApplyMergesExpectedAndStampsProvenance covers the #256 half of the merge: the
+// expected extraction lands on the row, its provenance is stamped truthfully and
+// never rewritten, an acceptance is only allowed where it means something, and
+// every disagreement with the substrate aborts the whole merge rather than
+// half-applying it.
+func TestApplyMergesExpectedAndStampsProvenance(t *testing.T) {
+	const stamp = "2026-08-07T12:00:00Z"
+	base := func() []goldRow {
+		return []goldRow{
+			{URL: "https://a.test/jobs/1", Stratum: stratumLonePosting, Label: bench.ExtractDetail},
+			{URL: "https://b.test/jobs/2", Stratum: stratumLonePosting, Label: bench.ExtractResidue},
+			{URL: "https://c.test/careers", Stratum: stratumNoPosting, Label: bench.ExtractHubIndex},
+		}
+	}
+	sheetFor := func(i int, mutate func(*expectedSheetRow)) []expectedSheetRow {
+		rows := base()
+		row := expectedSheetRow{
+			ID: rowID(rows[i].URL), URL: rows[i].URL, Label: rows[i].Label,
+			Title: "Senior Go Engineer", Location: "Berlin, DE", WorkArrangement: "unspecified",
+		}
+		if mutate != nil {
+			mutate(&row)
+		}
+		return []expectedSheetRow{row}
+	}
+
+	t.Run("an expectation lands and is stamped with its proposer", func(t *testing.T) {
+		got, err := applyExpected(base(), sheetFor(0, nil), "script:test", "", stamp)
+		if err != nil {
+			t.Fatalf("applyExpected: %v", err)
+		}
+		if got[0].Expected == nil {
+			t.Fatal("no expected block was created")
+		}
+		if got[0].Expected.Title != "Senior Go Engineer" || got[0].Expected.Location != "Berlin, DE" {
+			t.Errorf("expected = %+v, want the sheet's values", got[0].Expected)
+		}
+		if got[0].Expected.ProposedBy != "script:test" || got[0].Expected.ProposedAt != stamp {
+			t.Errorf("provenance = %+v, want the script stamped at %s", got[0].Expected, stamp)
+		}
+		if got[0].Expected.ConfirmedBy != "" {
+			t.Error("a proposal must never fill confirmed_by")
+		}
+		if got[1].Expected != nil || got[2].Expected != nil {
+			t.Error("a row with no sheet line gained an expected block")
+		}
+	})
+
+	t.Run("an existing proposer is never overwritten or re-stamped", func(t *testing.T) {
+		rows := base()
+		rows[0].Expected = &goldExpected{Title: "old", ProposedBy: "script:first", ProposedAt: "2026-01-01T00:00:00Z"}
+		got, err := applyExpected(rows, sheetFor(0, nil), "script:second", "", stamp)
+		if err != nil {
+			t.Fatalf("applyExpected: %v", err)
+		}
+		if got[0].Expected.ProposedBy != "script:first" || got[0].Expected.ProposedAt != "2026-01-01T00:00:00Z" {
+			t.Errorf("provenance = %+v, want the original proposer untouched", got[0].Expected)
+		}
+		if got[0].Expected.Title != "Senior Go Engineer" {
+			t.Errorf("title = %q, want the sheet's corrected value", got[0].Expected.Title)
+		}
+		if rows[0].Expected.Title != "old" {
+			t.Error("the caller's row was mutated by the merge")
+		}
+	})
+
+	t.Run("a human confirmation lands only where none is recorded", func(t *testing.T) {
+		rows := base()
+		rows[0].Expected = &goldExpected{Title: "old", ProposedBy: "script:first", ConfirmedBy: "First Human", ConfirmedAt: "2026-01-01T00:00:00Z"}
+		got, err := applyExpected(rows, sheetFor(0, nil), "", "Second Human", stamp)
+		if err != nil {
+			t.Fatalf("applyExpected: %v", err)
+		}
+		if got[0].Expected.ConfirmedBy != "First Human" {
+			t.Errorf("confirmer = %q, want the original untouched", got[0].Expected.ConfirmedBy)
+		}
+	})
+
+	t.Run("an acceptance is refused where it means nothing", func(t *testing.T) {
+		accept := func(row *expectedSheetRow) { row.FreeOK, row.FreeOKNote = true, "expired ad" }
+		for name, sheet := range map[string][]expectedSheetRow{
+			"free_ok on a detail row":    sheetFor(0, accept),
+			"free_ok on a hub-index row": sheetFor(2, accept),
+		} {
+			if _, err := applyExpected(base(), sheet, "", "", stamp); err == nil {
+				t.Errorf("applyExpected accepted %s", name)
+			}
+		}
+		got, err := applyExpected(base(), sheetFor(1, accept), "", "", stamp)
+		if err != nil {
+			t.Fatalf("applyExpected refused an acceptance on a residue row: %v", err)
+		}
+		if !got[1].Expected.FreeOK || got[1].Expected.FreeOKNote != "expired ad" {
+			t.Errorf("expected = %+v, want the acceptance and its reason", got[1].Expected)
+		}
+	})
+
+	t.Run("a disagreeing or unscorable sheet aborts the merge", func(t *testing.T) {
+		staleLabel := sheetFor(0, func(row *expectedSheetRow) { row.Label = bench.ExtractResidue })
+		unknown := sheetFor(0, func(row *expectedSheetRow) { row.URL, row.ID = "https://gone.test/x", rowID("https://gone.test/x") })
+		duplicate := append(sheetFor(0, nil), sheetFor(0, nil)...)
+
+		for name, sheet := range map[string][]expectedSheetRow{
+			"the label disagrees":                    staleLabel,
+			"the url is unknown":                     unknown,
+			"the row appears twice":                  duplicate,
+			"the row is not sampled as lone-posting": sheetFor(2, nil),
+		} {
+			before := base()
+			if _, err := applyExpected(before, sheet, "script:test", "", stamp); err == nil {
+				t.Errorf("applyExpected accepted a sheet where %s", name)
+			}
+			for _, row := range before {
+				if row.Expected != nil {
+					t.Errorf("%s: the caller's rows were mutated by a failed merge", name)
+				}
+			}
+		}
+	})
+}
+
+// TestCommittedExpectedSheetMatchesTheGoldSet keeps the #256 review surface from
+// drifting from the substrate: expected.tsv is the 70 lines a reviewer confirms,
+// so a sheet that no longer renders from goldset.jsonl would have them confirming
+// values that are not the ones being scored.
+func TestCommittedExpectedSheetMatchesTheGoldSet(t *testing.T) {
+	rows := loadCommittedGoldSet(t)
+	committed, err := os.ReadFile(filepath.Join("extract-goldset", expectedFile))
+	if err != nil {
+		t.Fatalf("read committed expected sheet: %v", err)
+	}
+	if got := renderExpectedSheet(rows); string(got) != string(committed) {
+		t.Error("expected.tsv is not the sheet rendered from goldset.jsonl; re-run `llmbench goldset-apply`")
 	}
 }
 

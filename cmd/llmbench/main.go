@@ -16,7 +16,11 @@
 // from the extract-decision tap's capture; goldset-worksheet renders the labeler's
 // view of it with the structured data withheld; goldset-apply folds labels and
 // their provenance back in. score-capture (#116) is what scores the resulting file
-// through the Extract Gate, with no network and no model.
+// through the Extract Gate, with no network and no model. score-free (#256)
+// replays the real Free Extraction decorator over the same file with a stub in
+// place of the model (ADR-0042), exiting non-zero when a Free Extraction fires on a
+// page that is not a posting or reads a field that diverges from its confirmed
+// expected value.
 package main
 
 import (
@@ -47,6 +51,8 @@ func main() {
 		os.Exit(runCapture(rest))
 	case "score-capture":
 		os.Exit(runScoreCapture(rest))
+	case "score-free":
+		os.Exit(runScoreFree(rest))
 	case "goldset-sample":
 		os.Exit(runGoldSetSample(rest))
 	case "goldset-worksheet":

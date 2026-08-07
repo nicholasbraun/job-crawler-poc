@@ -18,6 +18,7 @@ survive as cheap regression cases for the reject rungs and nothing more.
 |---|---|
 | `goldset.jsonl` | The substrate. One `goldRow` per line, sorted by URL, ~2.2 MB. **Generated — never hand-edited.** |
 | `labels.tsv` | The review surface rendered from the substrate: one line per row. This is the file a reviewer reads in a diff and edits to correct a label. A test asserts the two never drift. |
+| `expected.tsv` | The second review surface (#256): one line per row the Free Extraction fires on — its expected title, location and working mode, plus any accepted fire. 70 lines. Also rendered from the substrate, also drift-tested. |
 
 `goldRow` is the extract-capture record (`internal/extractcapture`: `url`, `verdict`,
 `ts`, `content`) **extended in place**, not a new format. An unlabeled capture file and
@@ -167,6 +168,67 @@ measures the gate's **leak** side honestly and its **drop** side essentially not
 — an extract-call rate of 0.99 is the sampling frame showing through, not a
 measurement. ADR-0044's random stratum and Shadow Extraction are what close that gap.
 
+## The Free Extraction fidelity check (#256)
+
+A Free Extraction (ADR-0042) saves a Job Listing with **no model veto anywhere in the
+loop**, so both of its failure modes are silent: it fires on a page that is not a single
+posting, or it fires correctly but mis-reads a field. Neither shows up in any live
+metric — a wrong listing looks exactly like a right one.
+
+```bash
+go run ./cmd/llmbench score-free          # exit 1 on either failure mode
+go test ./cmd/llmbench/ -run FreeExtraction   # the same check, enforced by CI
+```
+
+`score-free` replays the **real** `freeextraction.Extractor` over every row with a stub in
+place of the model, so "served free" is observed from a stub that was never called rather
+than read off the extraction's own `Free` marker. No network, no model, no Docker.
+
+**Fatal** (prints red, exits non-zero): a fire on a `hub-index` or `residue` row that is
+not explicitly accepted; a field diverging from its expected value; a fire with no
+expected value to score it against; an expected value on a row it did not fire on. The
+last two exist so that deleting an `expected` block cannot silently disarm the guard, and
+a mechanism that stopped firing entirely cannot produce a clean scorecard.
+
+**Soft, no threshold** (ADR-0020's split between a hard structural guard and
+composition-dependent measurement), as measured today:
+
+```
+total             149      free              70
+free-rate         0.4698   stream-free-share 0.1534  (sampling-weighted)
+detail            75 (free 51)
+coverage          0.6800   weighted-coverage 0.4996
+```
+
+### Where the expected values come from
+
+An **independent** `jq` + `python3` read of the same JSON-LD bytes
+(`scripts/propose-expected.sh`), never the Go traversal under test — generating them by
+running `crawler.LonePosting` would make the check a tautology, able to catch a future
+regression but never a bug that exists today. All 210 values (70 titles, 70 locations, 70
+working modes) matched the Go read exactly on the first pass, including the 6 rows whose
+`jobLocation` is a multi-office array, the 2 whose address is a bare string, and the
+entity-encoded titles (`Vendeur.se &quot;Ville&quot;`, `People &amp; Culture Manager`).
+
+### Accepted fires — 19 residue rows
+
+The mechanism fires on **19 rows labelled `residue`**. They are counted and printed but
+not fatal, because each carries an explicit `free_ok` flag and a written reason **on the
+row** (never a softened threshold and never a code-side allowlist). A `hub-index` row can
+never be excused: a hub is the exact shape ADR-0042's predicate rejects structurally, so
+excusing one would mean the predicate itself is broken.
+
+| kind | n | hosts |
+|---|---:|---|
+| stale ad — withdrawn or filled, `JobPosting` JSON-LD still served | 16 | `career.avenga.com`, `career.happysocks.com` ×3, `careerpoland.autoliv.com`, `careers.atlantishealth.com`, `careers.beyond-vision.com` ×2, `careers.patria.com`, `careers.pit.com`, `careers.spacelift.io`, `careers.sundayapp.com`, `careers.tekever.com`, `careers.worldpackers.com` ×2, `jobs.pwc.de` |
+| evergreen non-role — talent pool / general application / enquiry page | 3 | `careers.coverflex.com`, `karriere.mri.bund.de`, `www.fluidstack.io` |
+
+The 16 stale ads are a **liveness** problem (ADR-0035's territory): the fields are read
+correctly and the job is gone. The 3 evergreen pages are genuine **precision** failures
+and the strongest argument for narrowing ADR-0042. Stated plainly: against the labels as
+they stand, the check passes *because those 19 are explicitly accepted*, not because they
+do not happen.
+
 ## Findings
 
 **1. A false-drop the synthetic fixtures cannot produce.**
@@ -189,6 +251,10 @@ fires on structure alone would resurrect them. Whether that matters depends on l
 handling downstream — but it is the opposite of the shape ADR-0042's measurement
 implied, and it deserves a second look before that decorator ships on by default.
 
+**#256 measured exactly that risk.** The Free Extraction fires on **70 of the 149 rows**
+— precisely the `lone-posting` stratum — and **19 of those 70 are labelled `residue`**:
+16 stale ads and 3 evergreen non-roles. See "The Free Extraction fidelity check" above.
+
 **3. 24 of the 75 `detail` pages publish no structured data at all.** A structured-data
 path can never reach them; whatever admits and extracts those pages stays the cost
 driver.
@@ -206,8 +272,14 @@ go run ./cmd/llmbench goldset-worksheet -out /tmp/worksheet.jsonl
 go run ./cmd/llmbench goldset-apply -proposals /tmp/proposals.tsv \
     -proposed-by "llm:<model id> (…)"
 
-# 4. score it
+# 4. propose the expected extractions from an independent read of the JSON-LD
+scripts/propose-expected.sh
+go run ./cmd/llmbench goldset-apply \
+    -expected-proposed-by "script:propose-expected.sh (…)"
+
+# 5. score it
 go run ./cmd/llmbench score-capture -in cmd/llmbench/extract-goldset/goldset.jsonl
+go run ./cmd/llmbench score-free
 ```
 
 To **correct a label**, edit the `label` column of `labels.tsv` and run
@@ -231,5 +303,38 @@ go run ./cmd/llmbench goldset-apply -confirmed-by "<your name>" -confirm-stratum
 # then set pendingHumanConfirmations to 0 in cmd/llmbench/goldset_test.go and commit.
 ```
 
-`goldset-apply` rejects an `llm:` name for `-confirmed-by`, and a test fails if any row
-claims a machine confirmer — the gap cannot be closed by the tooling that opened it.
+### Second pass — the 70 expected extractions (#256)
+
+Everything in `expected.tsv` is **proposed by an automated script and confirmed by
+nobody**. `pendingExpectedConfirmations` in `../goldset_test.go` is the machine-visible
+count of that gap.
+
+```bash
+# the entire #256 review surface is 70 lines, not the 2.2 MB substrate
+column -t -s$'\t' cmd/llmbench/extract-goldset/expected.tsv | less -S
+```
+
+**(a) the 19 `free_ok` acceptances first** — they are what decides whether ADR-0042 ships
+as written. If you refuse any, refuse the 3 evergreen non-roles
+(`careers.coverflex.com/…spontaneous-application…`,
+`karriere.mri.bund.de/Anfragen-fuer-Praktikumsplaetze-…`, `www.fluidstack.io/jobs/05c2e69c-…`).
+A refused acceptance means lowering `acceptedFreeOnResidue` in `../scorefree_test.go`, and
+the check then goes red until the **mechanism** is narrowed — the fix belongs there, not
+in the benchmark.
+
+**(b) the 70 title / location / work_arrangement values.** They are the page's own
+declared data, so a wrong one is usually obvious against the `url` column. 13 rows should
+read `remote`, 57 `unspecified`.
+
+```bash
+# edit any wrong value or drop any free_ok you refuse, then:
+go run ./cmd/llmbench goldset-apply -expected-confirmed-by "<your name>"
+# then set pendingExpectedConfirmations to 0 in cmd/llmbench/goldset_test.go
+```
+
+These acceptances rest on the labels underneath them, so confirming (a) without confirming
+the `lone-posting` labels above is confirming half a claim.
+
+`goldset-apply` rejects an `llm:` name for `-confirmed-by` and an `llm:`/`script:` name for
+`-expected-confirmed-by`, and a test fails if any row claims a machine confirmer — the gap
+cannot be closed by the tooling that opened it.

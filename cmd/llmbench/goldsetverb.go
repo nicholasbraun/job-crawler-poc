@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -200,11 +201,15 @@ func runGoldSetWorksheet(args []string) int {
 	return 0
 }
 
-// runGoldSetApply folds labels and provenance into the committed Extract Gold Set.
-// It reads the review sheet (and, with -proposals, a proposer's id/label/note
-// file), merges both into the substrate by row, stamps the provenance the flags
-// authorize, and rewrites the substrate and the sheet canonically so the two can
-// never drift.
+// runGoldSetApply folds labels, expected extractions and their provenance into the
+// committed Extract Gold Set. It reads both review sheets (and, with -proposals, a
+// proposer's id/label/note file), merges them into the substrate by row, stamps the
+// provenance the flags authorize, and rewrites the substrate and both sheets
+// canonically so the three can never drift.
+//
+// The expected extractions live in the same verb as the labels because they ARE
+// labels -- the field-fidelity ground truth the #256 guard rests on -- so they get
+// the same total-validation-then-write discipline.
 //
 // Nothing is written unless every row validates, so a stale sheet fails loudly
 // rather than half-applying. An existing proposer or confirmer is NEVER
@@ -218,6 +223,8 @@ func runGoldSetApply(args []string) int {
 	proposedBy := fs.String("proposed-by", "", "name to stamp as the proposer on labelled rows that have none; prefix an automated proposer with \"llm:\"")
 	confirmedBy := fs.String("confirmed-by", "", "HUMAN name to stamp as the confirmer on labelled rows that have none; an \"llm:\" name is rejected")
 	confirmStratum := fs.String("confirm-stratum", "", "restrict -confirmed-by to one stratum; empty confirms every labelled row")
+	expectedProposedBy := fs.String("expected-proposed-by", "", "name to stamp as the proposer on expected extractions that have none; prefix an automated reading with \"script:\" or \"llm:\"")
+	expectedConfirmedBy := fs.String("expected-confirmed-by", "", "HUMAN name to stamp as the confirmer on expected extractions that have none; an \"llm:\" or \"script:\" name is rejected")
 	now := fs.String("now", "", "RFC3339 UTC timestamp to stamp; empty uses the current time")
 	_ = fs.Parse(args)
 
@@ -232,6 +239,10 @@ func runGoldSetApply(args []string) int {
 	}
 	if strings.HasPrefix(*confirmedBy, "llm:") {
 		fmt.Fprintf(os.Stderr, "llmbench goldset-apply: -confirmed-by %q is not a human; confirmation cannot be automated (ADR-0043)\n", *confirmedBy)
+		return 2
+	}
+	if machineName(*expectedConfirmedBy) {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-apply: -expected-confirmed-by %q is not a human; confirmation cannot be automated (ADR-0043)\n", *expectedConfirmedBy)
 		return 2
 	}
 	if *confirmStratum != "" && !goldStratum(*confirmStratum).Valid() {
@@ -269,7 +280,27 @@ func runGoldSetApply(args []string) int {
 		}
 	}
 
+	// A missing expected.tsv is the bootstrap path, before propose-expected.sh has
+	// ever run, so it reads as an empty sheet rather than an error.
+	expectedPath := expectedSheetPath(*dir)
+	var expected []expectedSheetRow
+	if expectedData, err := os.ReadFile(expectedPath); err == nil {
+		expected, err = parseExpectedSheet(expectedData)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "llmbench goldset-apply: %v\n", err)
+			return 2
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-apply: read %q: %v\n", expectedPath, err)
+		return 1
+	}
+
 	merged, err := applyLabels(rows, sheet, proposed, *proposedBy, *confirmedBy, goldStratum(*confirmStratum), stamp)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-apply: %v\n", err)
+		return 2
+	}
+	merged, err = applyExpected(merged, expected, *expectedProposedBy, *expectedConfirmedBy, stamp)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench goldset-apply: %v\n", err)
 		return 2
@@ -283,9 +314,20 @@ func runGoldSetApply(args []string) int {
 		fmt.Fprintf(os.Stderr, "llmbench goldset-apply: write %q: %v\n", sheetPath, err)
 		return 1
 	}
+	if err := os.WriteFile(expectedPath, renderExpectedSheet(merged), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-apply: write %q: %v\n", expectedPath, err)
+		return 1
+	}
 
 	printApplySummary(os.Stdout, merged)
 	return 0
+}
+
+// machineName reports whether a confirmer name announces an automated author. A
+// confirmation is only meaningful from a person (ADR-0043), and the expected
+// extractions are proposed by a script, so both prefixes are refused here.
+func machineName(name string) bool {
+	return strings.HasPrefix(name, "llm:") || strings.HasPrefix(name, "script:")
 }
 
 // parseProposals parses a proposer's output: id<TAB>label<TAB>note, one row per
@@ -398,13 +440,104 @@ func applyLabels(rows []goldRow, sheet, proposed []sheetRow, proposedBy, confirm
 	return merged, nil
 }
 
+// applyExpected is the pure merge behind goldset-apply's expected-extraction half
+// (#256): it validates the expected sheet against the substrate, folds its values
+// into each row's Expected block, and stamps the provenance the caller authorized.
+// Like applyLabels it returns a new slice and mutates nothing, so a validation
+// failure leaves the caller's rows -- and therefore the files on disk -- untouched.
+//
+// Validation is total and fails on the first fault: a sheet row that is not in the
+// substrate, a duplicate, a label that disagrees with the substrate (the signature
+// of a sheet edited against an older sample), an expectation on a row outside the
+// lone-posting stratum (the Free Extraction never fires there, so it could never be
+// scored), and an acceptance on a row that is not residue -- a detail row has
+// nothing to excuse, and a hub-index row is the exact shape ADR-0042's predicate
+// rejects structurally, so excusing one would mean the predicate itself is broken.
+func applyExpected(rows []goldRow, sheet []expectedSheetRow, proposedBy, confirmedBy, stamp string) ([]goldRow, error) {
+	byID := map[string]int{}
+	for i, row := range rows {
+		byID[rowID(row.URL)] = i
+	}
+
+	merged := make([]goldRow, len(rows))
+	copy(merged, rows)
+
+	seen := map[string]struct{}{}
+	for _, s := range sheet {
+		i, ok := byID[s.ID]
+		if !ok || merged[i].URL != s.URL {
+			return nil, fmt.Errorf("expected row %q (%s) is not in the gold set: regenerate the sheet from the substrate", s.URL, s.ID)
+		}
+		if _, dup := seen[s.ID]; dup {
+			return nil, fmt.Errorf("expected row %q appears twice", s.URL)
+		}
+		seen[s.ID] = struct{}{}
+		if s.Label != merged[i].Label {
+			return nil, fmt.Errorf("expected row %q: label %q disagrees with the substrate (%q)", s.URL, s.Label, merged[i].Label)
+		}
+		if merged[i].Stratum != stratumLonePosting {
+			return nil, fmt.Errorf("expected row %q is in stratum %q: a Free Extraction never fires on it, so an expectation there is unscorable", s.URL, merged[i].Stratum)
+		}
+		if s.FreeOK && s.Label != bench.ExtractResidue {
+			return nil, fmt.Errorf("expected row %q: free_ok on a %q row; only a residue fire is excusable (ADR-0042)", s.URL, s.Label)
+		}
+
+		// Copy the block before writing: merged shares its pointers with the
+		// caller's rows, so mutating in place would edit the input on a later
+		// failure.
+		expected := goldExpected{}
+		if merged[i].Expected != nil {
+			expected = *merged[i].Expected
+		}
+		expected.Title, expected.Location, expected.WorkArrangement = s.Title, s.Location, s.WorkArrangement
+		expected.FreeOK, expected.FreeOKNote = s.FreeOK, s.FreeOKNote
+		if s.ProposedBy != "" && expected.ProposedBy == "" {
+			expected.ProposedBy, expected.ProposedAt = s.ProposedBy, stamp
+		}
+		if s.ConfirmedBy != "" && expected.ConfirmedBy == "" {
+			expected.ConfirmedBy, expected.ConfirmedAt = s.ConfirmedBy, stamp
+		}
+		merged[i].Expected = &expected
+	}
+
+	if proposedBy == "" && confirmedBy == "" {
+		return merged, nil
+	}
+	for i := range merged {
+		if merged[i].Expected == nil {
+			continue
+		}
+		expected := *merged[i].Expected
+		if proposedBy != "" && expected.ProposedBy == "" {
+			expected.ProposedBy, expected.ProposedAt = proposedBy, stamp
+		}
+		if confirmedBy != "" && expected.ConfirmedBy == "" {
+			expected.ConfirmedBy, expected.ConfirmedAt = confirmedBy, stamp
+		}
+		merged[i].Expected = &expected
+	}
+	return merged, nil
+}
+
 // printApplySummary reports the labeling state after a merge: how many rows carry
 // each label, and -- the number the acceptance criterion turns on -- how many
-// lone-posting rows still have no human confirmation.
+// lone-posting rows still have no human confirmation. The expected-extraction
+// block gets the same treatment, since it is the ground truth the #256 fidelity
+// guard rests on.
 func printApplySummary(w io.Writer, rows []goldRow) {
 	byLabel := map[bench.ExtractLabel]int{}
 	labelled, proposedOnly, pending := 0, 0, 0
+	expected, acceptedFires, expectedPending := 0, 0, 0
 	for _, row := range rows {
+		if row.Expected != nil {
+			expected++
+			if row.Expected.FreeOK {
+				acceptedFires++
+			}
+			if row.Expected.ConfirmedBy == "" {
+				expectedPending++
+			}
+		}
 		if !row.Label.Valid() {
 			continue
 		}
@@ -425,6 +558,9 @@ func printApplySummary(w io.Writer, rows []goldRow) {
 	}
 	fmt.Fprintf(w, "  unconfirmed       %d\n", proposedOnly)
 	fmt.Fprintf(w, "  pending human     %d (lone-posting rows awaiting confirmation)\n", pending)
+	fmt.Fprintf(w, "  expected          %d\n", expected)
+	fmt.Fprintf(w, "  expected-accepted-fires %d (residue rows carrying an argued exception)\n", acceptedFires)
+	fmt.Fprintf(w, "  expected pending human  %d (rows awaiting confirmation)\n", expectedPending)
 }
 
 // weightSum is the file's total sampling weight, which must equal its row count:
