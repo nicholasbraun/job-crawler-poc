@@ -153,15 +153,19 @@ Engineer</h1>
 		}
 	})
 
-	t.Run("chrome inside the main region is stripped too", func(t *testing.T) {
+	t.Run("chrome inside a semantic container is KEPT", func(t *testing.T) {
+		// Regression guard. Stripping here flipped karriere.maritim.de/en — a real
+		// Career Page — to a false verdict: on a compact page the surrounding nav
+		// carries the load-bearing signal ("Open positions"), and dropping it left
+		// the classifier nothing to go on. A page that declares <main> has already
+		// scoped its own content, so that region is taken as-is.
 		html := `
 <html>
 	<body>
 		<main>
-			<nav><a href="/jobs">All openings</a></nav>
-			<h1>Senior Go Engineer</h1>
-			<p>Build crawlers.</p>
-			<footer>Share this job</footer>
+			<nav><a href="/jobs">Open positions</a></nav>
+			<h1>Career at Acme</h1>
+			<p>Join us.</p>
 		</main>
 	</body>
 </html>
@@ -171,9 +175,8 @@ Engineer</h1>
 			t.Fatalf("error parsing content: %v", err)
 		}
 
-		want := "Senior Go Engineer Build crawlers."
-		if content.MainContent != want {
-			t.Errorf("expected %q, got: %q", want, content.MainContent)
+		if !strings.Contains(content.MainContent, "Open positions") {
+			t.Errorf("nav inside <main> should be kept, got: %q", content.MainContent)
 		}
 	})
 

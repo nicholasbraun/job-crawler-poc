@@ -43,37 +43,49 @@ func NewHTMLParser() *HTMLParser {
 }
 
 func getMainContent(doc *goquery.Document) string {
-	matchers := []goquery.Matcher{
+	// A page that declares a semantic container has already told us where its content
+	// is, so that region is taken as-is. Chrome INSIDE it is left alone deliberately:
+	// on a compact career page the surrounding nav often carries the load-bearing
+	// signal ("Open positions", "Career at X"), and removing it flipped a real Career
+	// Page to a false verdict when #270 first stripped unconditionally.
+	semantic := []goquery.Matcher{
 		goquery.Single("main"),
 		goquery.Single("div[role=main]"),
 		goquery.Single("div#content"),
 		goquery.Single("article"),
-		goquery.Single("body"),
 	}
-
-	for _, m := range matchers {
+	for _, m := range semantic {
 		selection := doc.FindMatcher(m)
 		if selection.Length() == 1 {
 			// Clone before stripping: Remove detaches nodes from the shared doc,
 			// which would delete the ld+json <script> blocks getJSONLD reads next.
 			clone := selection.Clone()
 			clone.Find("script, style, noscript, svg, template").Remove()
-			return withoutChrome(clone)
+			return normalizeWS(clone.Text())
 		}
+	}
+
+	// No semantic container: everything, chrome included, would otherwise become
+	// content. This is the only case where site furniture is dropped (#270).
+	if body := doc.FindMatcher(goquery.Single("body")); body.Length() == 1 {
+		clone := body.Clone()
+		clone.Find("script, style, noscript, svg, template").Remove()
+		return withoutChrome(clone)
 	}
 
 	return ""
 }
 
 // withoutChrome drops site furniture — nav, header, footer, aside — from an already
-// script-stripped selection (#270).
+// script-stripped <body> selection (#270). Callers with a semantic container must not
+// use it; see getMainContent for why.
 //
-// It matters most on the <body> fallback, where a page with no semantic container
-// otherwise contributes its whole navigation menu. A site that lists its openings in a
-// global nav then puts a job-openings list on EVERY page, which measurably breaks three
-// consumers at once: the career-page classifier reads a cheese shop's contact page as a
-// careers hub, the extractor is handed a menu instead of a posting, and the Corpus stores
-// and indexes the menu as a Posting Body (ADR-0041).
+// A page with no semantic container otherwise contributes its whole navigation menu as
+// content. A site that lists its openings in a global nav then puts a job-openings list
+// on EVERY page, which measurably breaks three consumers at once: the career-page
+// classifier reads a cheese shop's contact page as a careers hub, the extractor is handed
+// a menu instead of a posting, and the Corpus stores and indexes the menu as a Posting
+// Body (ADR-0041).
 //
 // A page whose only text lives inside that furniture keeps it, rather than being reduced
 // to nothing: dropping to empty would lose the page entirely at the Extract Gate, which is
