@@ -8,7 +8,7 @@ import (
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 )
 
-// The committed Extract Gold Set baseline, produced by running the real
+// The committed reject-rung regression set baseline, produced by running the real
 // parser -> ShouldExtract pipeline over cmd/llmbench/extract-testdata with the
 // default gate config (see the extract-testdata README and #114). The false-drop
 // count is the AC-critical hard guard; the leak count and extract-call rate are
@@ -33,7 +33,7 @@ const (
 // TestExtractGate_CommittedSetNoFalseDrop is the automated counterpart to the
 // manual `go run ./cmd/llmbench extract`: it drives the SAME live pipeline
 // (replayExtractGate: parser.Parse -> pagegate.ShouldExtract) over the committed
-// Extract Gold Set so the false-drop hard guard the ticket exists to protect
+// reject-rung regression set so the false-drop hard guard the ticket exists to protect
 // (#114 AC7) runs in `go test`, not only by hand. Without it, adding a `detail`
 // fixture the gate skips -- e.g. a German /karriere/<slug> posting -- or changing
 // jobPathSegments/CareerPathSignals would silently redden the baseline while the
@@ -44,7 +44,7 @@ func TestExtractGate_CommittedSetNoFalseDrop(t *testing.T) {
 		t.Fatalf("replayExtractGate(extract-testdata): %v", err)
 	}
 	if len(rows) == 0 {
-		t.Fatal("replayExtractGate produced no rows over the committed Extract Gold Set")
+		t.Fatal("replayExtractGate produced no rows over the committed reject-rung regression set")
 	}
 
 	report := bench.ScoreExtract(rows)

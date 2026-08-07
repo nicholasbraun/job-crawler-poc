@@ -54,7 +54,7 @@ func TestScoreCaptureEquivalentToExtract(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse %s: %v", e.File, err)
 		}
-		if err := enc.Encode(captureRecord{URL: e.URL, Verdict: e.Label.Positive(), Label: e.Label, Content: *content}); err != nil {
+		if err := enc.Encode(goldRow{URL: e.URL, Verdict: e.Label.Positive(), Label: e.Label, Content: *content}); err != nil {
 			t.Fatalf("encode %s: %v", e.File, err)
 		}
 	}

@@ -649,8 +649,10 @@ func newFactory(
 							counters.ListingsFound.Add(1)
 							collectionMetrics.Found(ctx)
 						},
-						// Extract Gold Set harvest tap (#116): off unless EXTRACT_CAPTURE_PATH
-						// is set. Emits {url, verdict} per extraction for later `llmbench capture`.
+						// Extract Gold Set harvest tap (#116, ADR-0043): off unless
+						// EXTRACT_CAPTURE_PATH is set. Emits {url, verdict, ts, content} per
+						// extraction; `llmbench goldset-sample` commits a stratified,
+						// weighted sample of it as the gold set.
 						CaptureDecision: extractcapture.FromEnv(),
 					})
 				},

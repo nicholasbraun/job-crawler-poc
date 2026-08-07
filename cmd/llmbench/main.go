@@ -3,12 +3,20 @@
 // through the real pipeline (parser.Parse -> pagegate.CareerPage) and prints a
 // Gate scorecard (or, with -json, the full machine-readable Report), exiting
 // non-zero on any Leak, False-Certain, or structural violation. The extract verb
-// (ADR-0020, #114) scores the Extract Gate over a separate Extract Gold Set
-// (parser.Parse -> pagegate.ShouldExtract), exiting non-zero on any false-drop (a
-// real single-posting detail the gate rejected). The capture verb (#49) fetches a
-// page through the crawler downloader and freezes it as a fixture (-kind selects
-// the classify or extract manifest shape); the diff verb (#53) reads two -json
-// reports and prints the per-metric delta between them.
+// (ADR-0020, #114) scores the Extract Gate over the synthetic reject-rung
+// regression fixtures (parser.Parse -> pagegate.ShouldExtract), exiting non-zero
+// on any false-drop (a real single-posting detail the gate rejected). The capture
+// verb (#49) fetches a page through the crawler downloader and freezes it as a
+// fixture (-kind selects the classify or extract manifest shape); the diff verb
+// (#53) reads two -json reports and prints the per-metric delta between them.
+//
+// The goldset-* verbs (ADR-0043, #254) build and maintain the Extract Gold Set --
+// real pages the live extract stage decided on, stored as the parsed Content the
+// pipeline itself produced. goldset-sample draws the stratified, weighted sample
+// from the extract-decision tap's capture; goldset-worksheet renders the labeler's
+// view of it with the structured data withheld; goldset-apply folds labels and
+// their provenance back in. score-capture (#116) is what scores the resulting file
+// through the Extract Gate, with no network and no model.
 package main
 
 import (
@@ -39,6 +47,12 @@ func main() {
 		os.Exit(runCapture(rest))
 	case "score-capture":
 		os.Exit(runScoreCapture(rest))
+	case "goldset-sample":
+		os.Exit(runGoldSetSample(rest))
+	case "goldset-worksheet":
+		os.Exit(runGoldSetWorksheet(rest))
+	case "goldset-apply":
+		os.Exit(runGoldSetApply(rest))
 	case "diff":
 		os.Exit(runDiff(rest))
 	default:

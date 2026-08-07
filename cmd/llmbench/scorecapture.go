@@ -12,18 +12,6 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/pagegate"
 )
 
-// captureRecord is one line of the extract-capture JSONL (internal/extractcapture)
-// after a human has added a `label`. content is the parsed page the live extractor
-// and Extract Gate saw, so scoring replays pagegate.ShouldExtract against the exact
-// bytes the pipeline produced -- no re-fetch, no drift. verdict is the extractor's
-// own accept/abstain, kept for stratification but not used by the gate score.
-type captureRecord struct {
-	URL     string             `json:"url"`
-	Verdict bool               `json:"verdict"`
-	Label   bench.ExtractLabel `json:"label"`
-	Content crawler.Content    `json:"content"`
-}
-
 // runScoreCapture replays the Extract Gate over a labeled extract-capture JSONL
 // file (-in) and prints the same extract scorecard as the `extract` verb, but
 // sourcing each row from a captured *Content instead of re-parsing an HTML
@@ -80,6 +68,11 @@ func runScoreCapture(args []string) int {
 // parsed and carries every field the gate reads). Returns the scored rows, the
 // count of skipped unlabeled lines, and any read/parse error. A line with an
 // invalid label is skipped (not fatal) so an operator can label incrementally.
+//
+// Lines decode as goldRow, the Extract Gold Set row: a superset of the tap's own
+// record, so a raw capture and a committed, labelled, weighted gold-set file both
+// score through this one path (ADR-0043). Only url, label and content are read
+// here -- the gate has no business seeing a row's stratum or weight.
 func replayCaptured(path string, cfg crawler.LLMGateConfig) (rows []bench.ExtractVerdictRow, skipped int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -98,7 +91,7 @@ func replayCaptured(path string, cfg crawler.LLMGateConfig) (rows []bench.Extrac
 		if len(sc.Bytes()) == 0 {
 			continue
 		}
-		var rec captureRecord
+		var rec goldRow
 		if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
 			return nil, skipped, fmt.Errorf("line %d: %w", lineNo, err)
 		}

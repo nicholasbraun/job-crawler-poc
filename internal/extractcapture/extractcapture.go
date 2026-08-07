@@ -1,12 +1,17 @@
 // Package extractcapture taps the extract stage to harvest a verdict-tagged
-// sample of crawled pages for the Extract Gold Set (#116). It is a short-lived
-// experiment aid: when EXTRACT_CAPTURE_PATH is set, every completed extractor
-// decision appends one JSONL record {url, verdict, ts} to that file, capped per
-// verdict so the rare positives are not drowned by abstains. The captured URLs
-// are later re-fetched into raw-HTML fixtures by `llmbench capture -kind extract`
-// (a fixture needs the raw bytes; the live pipeline keeps only parsed content).
-// With EXTRACT_CAPTURE_PATH unset the tap is off and Hook is nil -- a no-op at the
-// call site.
+// sample of crawled pages for the Extract Gold Set (#116). When
+// EXTRACT_CAPTURE_PATH is set, every completed extractor decision appends one
+// JSONL record {url, verdict, ts, content} to that file, capped per verdict so
+// the rare positives are not drowned by abstains. With EXTRACT_CAPTURE_PATH unset
+// the tap is off and Hook is nil -- a no-op at the call site.
+//
+// What this file writes IS the gold-set substrate (ADR-0043): the captured
+// content is the parsed page the live gate and extractor saw, and
+// `llmbench goldset-sample` stratifies, weights and commits a sample of it
+// verbatim. It is deliberately never re-fetched into raw-HTML fixtures -- a page
+// re-fetched months later is a different page, and that drift corrupts the label.
+// Because the caps decide which records survive, they ARE the sampling design and
+// the weights are derived from them.
 package extractcapture
 
 import (

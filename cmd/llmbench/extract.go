@@ -13,18 +13,23 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
 )
 
-// runExtract loads the Extract Gold Set, replays each fixture through the real
-// parser and the Extract Gate (parser.Parse -> pagegate.ShouldExtract) to produce
-// binary extract-vs-skip verdict rows, scores them, prints the extract scorecard,
-// and returns the process exit code: 1 on any false-drop (a real single-posting
-// detail the gate rejected), 2 on a wiring error, 0 otherwise. The LLM extractor
-// stage is deliberately not invoked here -- every scored artifact (false-drop
-// guard, extract-call rate, per-class slices, residue counts) is produced entirely
-// by the URL-only ShouldExtract decision, and the descriptive Empty-Extraction
-// layer is owned by #113. Mirrors runBench's structure.
+// runExtract loads the synthetic reject-rung regression fixtures, replays each
+// through the real parser and the Extract Gate (parser.Parse ->
+// pagegate.ShouldExtract) to produce binary extract-vs-skip verdict rows, scores
+// them, prints the extract scorecard, and returns the process exit code: 1 on any
+// false-drop (a real single-posting detail the gate rejected), 2 on a wiring
+// error, 0 otherwise. The LLM extractor stage is deliberately not invoked here --
+// every scored artifact (false-drop guard, extract-call rate, per-class slices,
+// residue counts) is produced entirely by the ShouldExtract decision, and the
+// descriptive Empty-Extraction layer is owned by #113.
+//
+// The fixtures are synthetic and are EVIDENCE OF NOTHING (ADR-0043): they are
+// cheap regression cases for the reject rungs. Scoring the gate against real
+// pages is `score-capture` over the Extract Gold Set. Mirrors runBench's
+// structure.
 func runExtract(args []string) int {
 	fs := flag.NewFlagSet("extract", flag.ExitOnError)
-	gold := fs.String("gold", "cmd/llmbench/extract-testdata", "Extract Gold-Set directory holding manifest.json and pages/*.html")
+	gold := fs.String("gold", "cmd/llmbench/extract-testdata", "reject-rung regression fixture directory holding manifest.json and pages/*.html")
 	gateConfig := fs.String("gate-config", "", "path to a JSON LLMGateConfig override applied on top of DefaultLLMGateConfig; keys are the Go field names (the struct has no json tags), so a partial file overrides only the fields it names; empty uses DefaultLLMGateConfig unchanged")
 	jsonOut := fs.Bool("json", false, "emit the full extract scorecard as JSON to stdout instead of the human-readable report; the exit code is unchanged")
 	_ = fs.Parse(args)
@@ -56,8 +61,8 @@ func runExtract(args []string) int {
 	return 0
 }
 
-// replayExtractGate loads the Extract Gold Set from fsys and replays every
-// fixture through the real parser and Extract Gate (parser.Parse -> gateDecision)
+// replayExtractGate loads the reject-rung regression fixtures from fsys and
+// replays every fixture through the real parser and Extract Gate (parser.Parse -> gateDecision)
 // into binary extract-vs-skip verdict rows. It is the shared body of the extract
 // verb and its committed-set regression test, so both drive the identical live
 // pipeline. Any wiring fault (bad manifest, unparseable HTML, invalid URL) is

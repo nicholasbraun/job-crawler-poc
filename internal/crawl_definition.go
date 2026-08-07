@@ -122,13 +122,18 @@ type LLMGateConfig struct {
 	// count (ADR-0019, #115): the number of distinct same-host Job Listing links at
 	// which ShouldExtract rejects a page as a jobs index rather than send it to the
 	// extractor. It is deliberately SEPARATE from JobLinkSaturationCount (the
-	// Discovery Gate's K) so calibrating the extract path against the Extract Gold
-	// Set (ADR-0020) can never shift the Discovery Gate — the config coupling hazard
-	// ADR-0019 calls out. The value is drawn from the Extract Gold Set: openings-index
-	// hubs there carry 5 distinct same-host job links while single postings carry <=1,
-	// so 5 rejects every gold hub while giving a real self-hosted posting's
-	// "more openings" sidebar up to 4 sibling links of headroom (ATS postings, which
-	// carry the largest sidebars, are exempt one rung earlier). It is the FIRST reject
+	// Discovery Gate's K) so calibrating the extract path can never shift the
+	// Discovery Gate — the config coupling hazard ADR-0019 calls out.
+	//
+	// The value is drawn from the SYNTHETIC reject-rung fixtures
+	// (cmd/llmbench/extract-testdata), where openings-index hubs carry 5 distinct
+	// same-host job links while single postings carry <=1, so 5 rejects every
+	// fixture hub while giving a real self-hosted posting's "more openings" sidebar
+	// up to 4 sibling links of headroom (ATS postings, which carry the largest
+	// sidebars, are exempt one rung earlier). Those fixtures are invented, and
+	// ADR-0043 declares them evidence of nothing: the first real captured page
+	// scored against this rung (a hiring.cafe posting with an 8-link "similar jobs"
+	// rail) is a false-drop, so 5 is under-evidenced and low. It is the FIRST reject
 	// signal to raise or cut if production shows over-drops. A value <= 0 leaves the
 	// signal silent (jobLinkSaturation returns 0), the same fail-safe as the Discovery
 	// count — the escape hatch for dropping saturation entirely.
@@ -218,9 +223,10 @@ func DefaultLLMGateConfig() LLMGateConfig {
 		RejectThreshold:        0.75,
 
 		// Extract Gate saturation count (ADR-0019, #115), separate from the
-		// Discovery Gate's JobLinkSaturationCount above. Drawn from the Extract Gold
-		// Set: openings-index hubs carry 5 distinct same-host job links, single
-		// postings carry <=1, so 5 rejects every gold hub with zero false-drops.
+		// Discovery Gate's JobLinkSaturationCount above. Drawn from the SYNTHETIC
+		// reject-rung fixtures, where openings-index hubs carry 5 distinct same-host
+		// job links and single postings carry <=1. See the field comment: real
+		// captured pages already show 5 is low.
 		ExtractJobLinkSaturationCount: 5,
 	}
 }

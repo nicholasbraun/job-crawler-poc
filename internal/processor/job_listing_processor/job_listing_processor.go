@@ -64,8 +64,9 @@ type Config struct {
 	// source URL, the extractor's verdict (true = a single job posting was
 	// extracted, false = an abstain), and the parsed page Content the extractor and
 	// Extract Gate saw. It taps the extract stream to harvest a verdict-tagged page
-	// sample for the Extract Gold Set (#116) -- capturing Content lets the gate be
-	// replayed against the exact bytes with no re-fetch. It fires for both accepts
+	// sample for the Extract Gold Set (#116, ADR-0043) -- the captured Content IS
+	// the gold-set substrate, so the gate replays against the exact bytes the live
+	// pipeline produced, with no re-fetch. It fires for both accepts
 	// and abstains but never on an extraction error (no verdict exists). Optional:
 	// nil is a no-op.
 	CaptureDecision func(ctx context.Context, url string, isJobPosting bool, content any)
@@ -141,8 +142,9 @@ func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.Raw
 		return fmt.Errorf("job_listing_processor: error extracting job listing %v: %w", *workload, err)
 	}
 
-	// Capture tap (#116): emit the source URL + verdict for the Extract Gold Set
-	// harvest. Placed after the error return so only completed extractions (a real
+	// Capture tap (#116): emit the source URL, verdict and parsed page for the
+	// Extract Gold Set harvest (ADR-0043 -- what is captured here is the committed
+	// substrate). Placed after the error return so only completed extractions (a real
 	// verdict) are sampled, and before the abstain short-circuit so abstains are
 	// captured too -- the negative stratum the gate's precision is measured against.
 	if w.captureDecision != nil {
