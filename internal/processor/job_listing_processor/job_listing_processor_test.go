@@ -504,6 +504,11 @@ const (
 		"jobLocation":{"@type":"Place","address":{"addressLocality":"Berlin","addressRegion":"Berlin","addressCountry":"DE"}}}`
 	twoPostingsLD      = `[{"@type":"JobPosting","title":"Backend Engineer"},{"@type":"JobPosting","title":"Frontend Engineer"}]`
 	titlelessPostingLD = `{"@type":"JobPosting","description":"We are hiring."}`
+	// A non-US posting whose addressRegion is spelled like a US state abbreviation.
+	// Composed, it reads "Perth, WA, AU", which the Country Resolver answers US.
+	collidingRegionLD = `{"@type":"JobPosting","title":"Backend Engineer",
+		"description":"We are hiring a Go engineer.",
+		"jobLocation":{"@type":"Place","address":{"addressLocality":"Perth","addressRegion":"WA","addressCountry":"AU"}}}`
 )
 
 // TestJobListingProcessorFreeExtraction asserts the whole Free Extraction behaviour
@@ -592,6 +597,38 @@ func TestJobListingProcessorFreeExtraction(t *testing.T) {
 					t.Errorf("content probes = %d, want 1 (the probe measures the extract stream)", rec.content)
 				}
 			})
+		}
+	})
+
+	// The Free Extraction is the first path to hand the Country Resolver a location
+	// carrying an ISO country code — the model path's prompt forbids them — and the
+	// Resolver keys US state abbreviations but not bare alpha-2 countries. Without the
+	// page's own addressCountry as a hint, every "<city>, <US-state-lookalike>, <ISO>"
+	// posting is filed under the wrong country.
+	t.Run("a country declared as an ISO code beats a region that looks like a US state", func(t *testing.T) {
+		stub := &stubExtractor{result: crawler.JobListing{Title: "model-extracted"}, isPosting: true}
+		repo := &spyJobListingRepo{}
+		rec := &spyRecorder{}
+
+		raw := &crawler.RawJobListing{
+			URL:     newURL(t, "https://careers.acme.com/jobs/perth"),
+			Content: crawler.Content{MainContent: pageText, JSONLD: []string{collidingRegionLD}},
+		}
+		if err := newProcessor(stub, repo, rec).Process(t.Context(), raw); err != nil {
+			t.Fatalf("Process returned error: %v", err)
+		}
+
+		if len(repo.saved) != 1 {
+			t.Fatalf("want 1 listing saved, got %d", len(repo.saved))
+		}
+		got := repo.saved[0]
+		if got.Country != "AU" {
+			t.Errorf("Country = %q, want %q — the page declares AU; %q resolves to US on the region alone",
+				got.Country, "AU", got.Location)
+		}
+		// Location stays verbatim (ADR-0029): the hint decides the Country, not the text.
+		if got.Location != "Perth, WA, AU" {
+			t.Errorf("Location = %q, want the page's composed address verbatim", got.Location)
 		}
 	})
 

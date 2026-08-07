@@ -75,6 +75,7 @@ func (e *Extractor) Extract(ctx context.Context, raw crawler.RawJobListing) (cra
 			URL:             raw.URL.RawURL,
 			Title:           posting.Title,
 			Location:        posting.Location,
+			CountryHint:     posting.Country,
 			WorkArrangement: posting.WorkArrangement,
 		},
 		IsJobPosting: true,

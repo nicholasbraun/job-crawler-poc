@@ -83,6 +83,35 @@ func TestResolve(t *testing.T) {
 	}
 }
 
+// TestResolveHinted pins the precedence a source's own declared country takes over
+// the free-text location, and the trap that makes the hint necessary: a composed
+// location carrying an ISO country code resolves on a colliding region long before
+// it reaches the country.
+func TestResolveHinted(t *testing.T) {
+	tests := []struct {
+		name     string
+		hint     string
+		location string
+		want     string
+	}{
+		{"a valid ISO hint wins over a location that would resolve elsewhere", "AU", "Perth, WA, AU", "AU"},
+		{"without the hint the same location resolves to the colliding US state", "", "Perth, WA, AU", "US"},
+		{"a lowercase ISO hint is uppercased, not resolved", "au", "Perth, WA, AU", "AU"},
+		{"a name-shaped hint is resolved", "Japan", "Minato, Tokyo, Japan", "JP"},
+		{"an unresolvable hint falls back to the location", "Middle-earth", "Berlin, Germany", "DE"},
+		{"an empty hint falls back to the location", "", "Berlin, Germany", "DE"},
+		{"unresolvable throughout yields the empty Country", "", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := geo.ResolveHinted(tt.hint, tt.location); got != tt.want {
+				t.Errorf("ResolveHinted(%q, %q) = %q, want %q", tt.hint, tt.location, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestValid(t *testing.T) {
 	tests := []struct {
 		name string

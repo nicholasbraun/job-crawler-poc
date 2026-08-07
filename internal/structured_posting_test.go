@@ -27,6 +27,7 @@ func TestLonePosting(t *testing.T) {
 				Title:           "Backend Engineer",
 				Description:     "We are hiring.",
 				Location:        "Berlin, DE",
+				Country:         "DE",
 				WorkArrangement: crawler.WorkArrangementUnspecified,
 			},
 			wantOK: true,
@@ -127,6 +128,7 @@ func TestLonePosting(t *testing.T) {
 			want: crawler.StructuredPosting{
 				Title:           "Engineer",
 				Location:        "Berlin, Berlin, DE",
+				Country:         "DE",
 				WorkArrangement: crawler.WorkArrangementUnspecified,
 			},
 			wantOK: true,
@@ -139,6 +141,7 @@ func TestLonePosting(t *testing.T) {
 			want: crawler.StructuredPosting{
 				Title:           "Engineer",
 				Location:        "Minato, Tokyo, Japan",
+				Country:         "Japan",
 				WorkArrangement: crawler.WorkArrangementUnspecified,
 			},
 			wantOK: true,
@@ -153,6 +156,25 @@ func TestLonePosting(t *testing.T) {
 			want: crawler.StructuredPosting{
 				Title:           "Engineer",
 				Location:        "Walldürn, DE",
+				Country:         "DE",
+				WorkArrangement: crawler.WorkArrangementUnspecified,
+			},
+			wantOK: true,
+		},
+		{
+			// Country is carried separately because the composed Location cannot be
+			// resolved safely on its own: the Country Resolver has no bare alpha-2
+			// country keys but does key US state abbreviations, so "Perth, WA, AU"
+			// resolves to US on the region and never reaches AU. Same shape for
+			// "Almere, FL, NL" and "Milano, MI, IT".
+			name: "a region colliding with a US state still declares its own country",
+			content: &crawler.Content{JSONLD: []string{`{"@type":"JobPosting","title":"Engineer",
+				"jobLocation":{"@type":"Place","address":{"@type":"PostalAddress",
+					"addressLocality":"Perth","addressRegion":"WA","addressCountry":"AU"}}}`}},
+			want: crawler.StructuredPosting{
+				Title:           "Engineer",
+				Location:        "Perth, WA, AU",
+				Country:         "AU",
 				WorkArrangement: crawler.WorkArrangementUnspecified,
 			},
 			wantOK: true,
@@ -167,6 +189,7 @@ func TestLonePosting(t *testing.T) {
 			want: crawler.StructuredPosting{
 				Title:           "Engineer",
 				Location:        "Austin, TX, US",
+				Country:         "US",
 				WorkArrangement: crawler.WorkArrangementUnspecified,
 			},
 			wantOK: true,
@@ -179,6 +202,7 @@ func TestLonePosting(t *testing.T) {
 			want: crawler.StructuredPosting{
 				Title:           "Engineer",
 				Location:        "Hamburg, DE",
+				Country:         "DE",
 				WorkArrangement: crawler.WorkArrangementUnspecified,
 			},
 			wantOK: true,
@@ -201,6 +225,7 @@ func TestLonePosting(t *testing.T) {
 			want: crawler.StructuredPosting{
 				Title:           "Engineer",
 				Location:        "DE",
+				Country:         "DE",
 				WorkArrangement: crawler.WorkArrangementUnspecified,
 			},
 			wantOK: true,

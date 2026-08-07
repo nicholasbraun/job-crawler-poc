@@ -31,6 +31,14 @@ type StructuredPosting struct {
 	// Country Resolver reads (ADR-0029): locality, region and country joined with
 	// ", ". Empty when the page publishes no address.
 	Location string
+	// Country is the same place's addressCountry verbatim — an ISO code ("AU") or a
+	// name ("Japan"), whichever the page published — carried separately as the
+	// Country Resolver's hint. It must not be resolved out of Location alone: the
+	// Resolver has no bare alpha-2 country keys but does key US state abbreviations,
+	// so "Perth, WA, AU" resolves to US on the region and never reaches the country.
+	// Read from the same Place that produced Location, so the two never disagree.
+	// Empty when the page publishes no country.
+	Country string
 	// WorkArrangement is WorkArrangementRemote when the posting positively declares
 	// remote work, and WorkArrangementUnspecified for everything else (ADR-0030) — a
 	// page that does not state its mode is never guessed Onsite.
@@ -148,9 +156,11 @@ func scanNode(v any) structuredScan {
 // — a value published as a string, as a named node, or as an array of either — is
 // resolved here so no caller ever touches decoded JSON.
 func postingFields(node map[string]any) StructuredPosting {
+	location, country := structuredLocation(node["jobLocation"])
 	posting := StructuredPosting{
 		Title:           ldText(node["title"]),
-		Location:        structuredLocation(node["jobLocation"]),
+		Location:        location,
+		Country:         country,
 		WorkArrangement: WorkArrangementUnspecified,
 	}
 	// Read as a raw string, deliberately unlike every other field: the body reduction
@@ -170,40 +180,46 @@ func postingFields(node map[string]any) StructuredPosting {
 }
 
 // structuredLocation composes the free-text Location the save-time Country Resolver
-// reads (ADR-0029) from a posting's jobLocation. jobLocation is a Place or an ARRAY of
-// them (19% of live posting nodes carry an array, up to 21 offices); the first Place
-// that composes to a non-empty string wins. Joining them all was rejected: it would
-// hand the Resolver several countries at once and read as noise wherever the listing
-// is displayed.
-func structuredLocation(v any) string {
+// reads (ADR-0029) from a posting's jobLocation, and returns that Place's declared
+// country alongside it as the Resolver's hint (see StructuredPosting.Country).
+// jobLocation is a Place or an ARRAY of them (19% of live posting nodes carry an
+// array, up to 21 offices); the first Place that composes to a non-empty string wins,
+// and the country returned is that same Place's. Joining them all was rejected: it
+// would hand the Resolver several countries at once and read as noise wherever the
+// listing is displayed.
+func structuredLocation(v any) (location, country string) {
 	switch node := v.(type) {
 	case []any:
 		for _, item := range node {
-			if location := structuredLocation(item); location != "" {
-				return location
+			if location, country = structuredLocation(item); location != "" {
+				return location, country
 			}
 		}
 	case map[string]any:
 		return addressText(node["address"])
 	}
-	return ""
+	return "", ""
 }
 
 // addressText composes one postal address into "locality, region, country", skipping
 // the parts the page leaves empty, and takes an address published as a bare string
-// ("Edmonton, AB", 8 of 1167 live posting nodes) verbatim.
+// ("Edmonton, AB", 8 of 1167 live posting nodes) verbatim. It returns the
+// addressCountry separately as well, so the save-time Country Resolver can be given
+// the country the page actually declared instead of having to find it inside the
+// composed string (see StructuredPosting.Country). A bare-string address declares no
+// country and yields "".
 //
 // Redundant parts are deliberately NOT de-duplicated: real addresses compose to
 // "Berlin, Berlin, DE" and "Hamburg, Germany, Germany", and ADR-0042 pins that those
 // resolve correctly through the real Country Resolver, so no normalization is
 // introduced here. This is where it parts company with ats.softgardenLocation, which
 // dedupes one provider's feed for display.
-func addressText(v any) string {
+func addressText(v any) (text, country string) {
 	switch address := v.(type) {
 	case []any:
 		for _, item := range address {
-			if text := addressText(item); text != "" {
-				return text
+			if text, country = addressText(item); text != "" {
+				return text, country
 			}
 		}
 	case map[string]any:
@@ -213,11 +229,11 @@ func addressText(v any) string {
 				parts = append(parts, part)
 			}
 		}
-		return strings.Join(parts, ", ")
+		return strings.Join(parts, ", "), ldText(address["addressCountry"])
 	case string:
-		return htmlToText(address)
+		return htmlToText(address), ""
 	}
-	return ""
+	return "", ""
 }
 
 // ldText reads a short display value out of a JSON-LD field, whichever of the shapes

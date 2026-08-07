@@ -197,12 +197,17 @@ func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.Raw
 		extraction.Listing.CareerPageID = w.attributeCareerPage(owner, workload.URL.RawURL)
 	}
 
-	// Resolve the Country from the LLM's free-text location at save (ADR-0029): the
-	// resolver is the sole authority on the ISO code, and Location is left verbatim.
-	// An unresolvable location yields the empty Country. The Country is recorded for
+	// Resolve the Country from the free-text location at save (ADR-0029): the resolver
+	// is the sole authority on the ISO code, and Location is left verbatim. An
+	// unresolvable location yields the empty Country. The Country is recorded for
 	// downstream querying; it no longer gates the save (the Country Constraint died
 	// with the Keyword Crawl lane, ADR-0038).
-	extraction.Listing.Country = geo.Resolve(extraction.Listing.Location)
+	//
+	// A Free Extraction supplies CountryHint from the page's own addressCountry, which
+	// takes precedence: its Location can carry an ISO code the resolver would otherwise
+	// read as a US state ("Perth, WA, AU" -> US). The model path declares no hint — its
+	// prompt forbids country codes — so it is unaffected.
+	extraction.Listing.Country = geo.ResolveHinted(extraction.Listing.CountryHint, extraction.Listing.Location)
 
 	// Stamp the Corpus identity (ADR-0034): the crawl lane keys on the canonicalized
 	// source URL. SourceID stays empty (crawl lane).
