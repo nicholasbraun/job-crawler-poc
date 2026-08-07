@@ -71,8 +71,8 @@
     {
       "type": "stat",
       "id": 2,
-      "title": "LLM calls avoided by gating (range)",
-      "description": "Pages the pre-LLM heuristics resolved without an LLM call — the calls (and cost) saved.",
+      "title": "Pages resolved without an LLM call, by reason (range)",
+      "description": "Gate resolutions over the range, split by reason — never read as one number. structured_data is a Free Extraction (ADR-0042): a Job Listing SAVED with no model call. Every other reason (certain, irrelevant, url_structure) means the page was SHED and nothing was saved.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
       "fieldConfig": {
@@ -88,13 +88,13 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "value"
+        "textMode": "value_and_name"
       },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(increase(crawler_llm_gated_total[$__range]))",
-          "legendFormat": "gated",
+          "expr": "sum by (reason) (increase(crawler_llm_gated_total[$__range]))",
+          "legendFormat": "{{reason}}",
           "refId": "A"
         }
       ]
@@ -103,7 +103,7 @@
       "type": "stat",
       "id": 3,
       "title": "Gate rate",
-      "description": "Share of gate decisions resolved without an LLM call: gated / (gated + called). Higher means more cost avoided.",
+      "description": "Share of gate decisions resolved without an LLM call: gated / (gated + called). Higher means more cost avoided. Since ADR-0042 its numerator mixes two opposite outcomes — pages shed and pages saved for free — so read it beside the by-reason split.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
       "fieldConfig": {
@@ -282,7 +282,7 @@
       "type": "timeseries",
       "id": 7,
       "title": "Calls avoided, by gate reason",
-      "description": "Rate of pages short-circuited before the LLM, split by the heuristic that resolved them (certain, irrelevant, url_structure).",
+      "description": "Rate of pages short-circuited before the LLM, split by the heuristic that resolved them (certain, irrelevant, url_structure, structured_data). structured_data is the odd one out: it is a Free Extraction (ADR-0042) that SAVED a Job Listing with no model call, while every other reason shed the page and saved nothing.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
       "fieldConfig": {
@@ -358,11 +358,44 @@
       ]
     },
     {
+      "type": "stat",
+      "id": 11,
+      "title": "Empty-Extraction Rate (model path)",
+      "description": "Share of MODEL extract calls that ended in an Extractor Abstain (abstain / sent). Since ADR-0042 this covers model-path extractions ONLY: a Free Extraction is recorded as a gate resolution, never a call, so it never enters this rate. Read it as wasted model spend — NOT as Corpus-wide precision.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 23 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "text" },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "100 * sum(increase(crawler_llm_calls_total{kind=\"extract\",outcome=\"abstain\"}[$__range])) / clamp_min(sum(increase(crawler_llm_calls_total{kind=\"extract\"}[$__range])), 1)",
+          "legendFormat": "empty-extraction rate",
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "type": "row",
       "id": 103,
       "title": "Reliability & durable queue",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 }
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 }
     },
     {
       "type": "timeseries",
@@ -370,7 +403,7 @@
       "title": "Retries & dead-letters",
       "description": "Durable-stage redeliveries (reclaimed pending entries) and tasks moved to the dead-letter stream after exhausting attempts.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -415,7 +448,7 @@
       "title": "Durable queue depth",
       "description": "Outstanding stream entries (backlog) and delivered-but-unacked entries (pending) per kind. Backlog growing without bound means the LLM stage cannot keep up.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },

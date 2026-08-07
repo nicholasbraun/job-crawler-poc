@@ -54,6 +54,17 @@ const (
 	// page-structure signal (an ATS embed, a JSON-LD openings index, or job-link
 	// saturation) -- rather than from keyword relevance.
 	ReasonURLStructure Reason = "url_structure"
+	// ReasonStructuredData marks an extraction the crawler produced from the page's
+	// own structured data with no model call -- a Free Extraction (ADR-0042). It is
+	// the ONE gated reason that means "a Job Listing was SAVED, for free": every
+	// other reason means "the page was shed and nothing was saved". Recording it on
+	// the gated counter is deliberate -- that counter's documented meaning is
+	// "resolved without an LLM call", which is exactly what happened -- but the two
+	// polarities must never be read as one number, which is why it has its own label
+	// and why the dashboard splits the counter by reason. The value matches
+	// DescriptionSourceStructuredData's string so an operator reading a listing's
+	// description_source and the gate reason sees one word for one mechanism.
+	ReasonStructuredData Reason = "structured_data"
 )
 
 // Classify maps the error an LLM call returned to a coarse Outcome. A nil error

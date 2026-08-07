@@ -71,6 +71,10 @@ services:
       - LLM_CLASSIFY_MAX_CHARS=${LLM_CLASSIFY_MAX_CHARS:-}
       - LLM_EXTRACT_MAX_CHARS=${LLM_EXTRACT_MAX_CHARS:-}
       - DESCRIPTION_MAX_CHARS=${DESCRIPTION_MAX_CHARS:-}
+      # Free Extraction kill switch (ADR-0042). Listed here so the dial works under
+      # Docker; ":-" expands an unset var to "" and pgenv.EnvOr reads "" as the
+      # built-in default (true), keeping the default defined once, in Go.
+      - EXTRACT_FROM_JSONLD=${EXTRACT_FROM_JSONLD:-}
       - CRAWL_MAX_WORKERS=${CRAWL_MAX_WORKERS:-50}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DATABASE_URL=postgres://crawler:crawler@postgres:5432/crawler?sslmode=disable

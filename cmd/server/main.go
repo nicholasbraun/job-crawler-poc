@@ -33,6 +33,7 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/extractcapture"
 	"github.com/nicholasbraun/job-crawler-poc/internal/filter"
 	urlfilter "github.com/nicholasbraun/job-crawler-poc/internal/filter/url"
+	"github.com/nicholasbraun/job-crawler-poc/internal/freeextraction"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 	redisfrontier "github.com/nicholasbraun/job-crawler-poc/internal/frontier/redis"
 	"github.com/nicholasbraun/job-crawler-poc/internal/importer"
@@ -176,6 +177,17 @@ func main() {
 		log.Fatalf("error parsing DESCRIPTION_MAX_CHARS: must be a positive integer, got %q", os.Getenv("DESCRIPTION_MAX_CHARS"))
 	}
 
+	// EXTRACT_FROM_JSONLD is the Free Extraction kill switch (ADR-0042), default true:
+	// a page publishing exactly one structured-data JobPosting, no openings index and a
+	// title is extracted from that data with no model call. Set false to unwrap the
+	// decorator and restore the model-only extract path exactly. It exists because this
+	// is the ONE path that can save a Job Listing with no model in the loop — if it
+	// goes wrong it goes wrong silently and at scale, and a dial beats a deploy.
+	extractFromJSONLD, err := strconv.ParseBool(pgenv.EnvOr("EXTRACT_FROM_JSONLD", "true"))
+	if err != nil {
+		log.Fatalf("error parsing EXTRACT_FROM_JSONLD: must be a boolean, got %q", os.Getenv("EXTRACT_FROM_JSONLD"))
+	}
+
 	// CRAWL_MAX_WORKERS sizes the per-run discovery worker pool — how many pages
 	// are downloaded and processed in parallel per run. Crawl workers are
 	// I/O-bound (blocked on network downloads), so this
@@ -266,7 +278,7 @@ func main() {
 	savedSearchRepository := postgres.NewSavedSearchRepository(pgPool)
 
 	factory := newFactory(crawlMaxWorkers, visitedCap, robotsCacheTTL, robotsCacheSize, llmMaxWorkers, llmConfig,
-		descriptionMaxChars, redisClient, companyRepository, careerPageRepository, corpusRepository)
+		descriptionMaxChars, extractFromJSONLD, redisClient, companyRepository, careerPageRepository, corpusRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory,
 		// One cleaner sweeps all of a run's transient Redis state on a terminal
 		// status or factory error: the frontier keys and the LLM stage's streams
@@ -397,6 +409,7 @@ func newFactory(
 	llmMaxWorkers int,
 	llmConfig openrouter.Config,
 	descriptionMaxChars int,
+	extractFromJSONLD bool,
 	redisClient *redis.Client,
 	companyRepository crawler.CompanyRepository,
 	careerPageRepository crawler.CareerPageRepository,
@@ -416,7 +429,19 @@ func newFactory(
 		robotstxt.WithCacheTTL(robotsCacheTTL), robotstxt.WithCacheSize(robotsCacheSize))
 
 	careerPageConfirmer := openrouter.NewCareerPageClassifier(llmConfig)
-	jobListingExtractor := openrouter.NewJobListingExtractor(llmConfig)
+
+	// The collection extract stage's extractor. The Free Extraction (ADR-0042) wraps
+	// it as a decorator over the same port: a page whose structured data publishes
+	// exactly one JobPosting, no openings index and a non-empty title is extracted
+	// from that data and never reaches the model; every other page is delegated
+	// unchanged. Wrapped HERE and only here — Discovery's classifier path
+	// (careerPageConfirmer above) is untouched, which is deliberate: a structured-data
+	// bypass is exactly what cost that pipeline precision in #45/#46.
+	var jobListingExtractor joblistingprocessor.JobListingExtractor = openrouter.NewJobListingExtractor(llmConfig)
+	if extractFromJSONLD {
+		jobListingExtractor = freeextraction.NewExtractor(jobListingExtractor)
+	}
+	slog.Info("free extraction (ADR-0042)", "enabled", extractFromJSONLD)
 
 	// The extraction-cache key (ADR-0035): ONE closure over the extractor's prompt
 	// window, handed to both the save processor that stamps it and the refetch lane

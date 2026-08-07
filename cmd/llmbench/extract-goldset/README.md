@@ -30,7 +30,12 @@ field-fidelity block with no migration.
 - **Source**: the extract-decision tap's local capture,
   `EXTRACT_CAPTURE_PATH=<repo>/capture/extract-capture.jsonl` (gitignored, never
   committed). 5669 records captured `2026-07-24T22:51Z` .. `2026-08-06T21:27Z` across
-  three collection sessions.
+  three collection sessions. Those records predate the Free Extraction (ADR-0042), so
+  every accept verdict in them is the model's.
+- **Re-capturing since ADR-0042**: the tap still fires on the free path, so an accept
+  row's `verdict` is now the *pipeline's*, not necessarily the model's, and the
+  per-verdict accept cap fills faster with lone-posting pages. A harvest intended as
+  model-verdict evidence must run with `EXTRACT_FROM_JSONLD=false` for its duration.
 - **Deduped by URL** to 4271 pages, latest capture winning (the newest parse is closest
   to today's parser). 1395 duplicate lines collapsed; 3 lines dropped as oversized
   (> 512 KB raw); 0 dropped for an unparseable URL.

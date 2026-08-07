@@ -22,6 +22,9 @@ import (
 // and tech stack. Implementations may call external services (e.g. an LLM API).
 // The returned Extraction also carries the extractor's verdict on whether the
 // page is a single job posting; a false verdict is an Extractor Abstain.
+// An implementation may resolve a page without calling a model at all (the Free
+// Extraction decorator, ADR-0042); it says so by setting Extraction.Free, which is
+// the only thing this processor reads it for.
 type JobListingExtractor interface {
 	Extract(ctx context.Context, raw crawler.RawJobListing) (crawler.Extraction, error)
 }
@@ -67,7 +70,11 @@ type Config struct {
 	// sample for the Extract Gold Set (#116, ADR-0043) -- the captured Content IS
 	// the gold-set substrate, so the gate replays against the exact bytes the live
 	// pipeline produced, with no re-fetch. It fires for both accepts
-	// and abstains but never on an extraction error (no verdict exists). Optional:
+	// and abstains but never on an extraction error (no verdict exists), and it does
+	// NOT distinguish paths: with the Free Extraction live (ADR-0042) an accept row's
+	// verdict may be the structured-data path's rather than the model's, and the
+	// per-verdict accept cap fills faster with lone-posting pages. A harvest that
+	// needs model verdicts sets EXTRACT_FROM_JSONLD=false for its duration. Optional:
 	// nil is a no-op.
 	CaptureDecision func(ctx context.Context, url string, isJobPosting bool, content any)
 }
@@ -125,19 +132,38 @@ func NewProcessor(cfg *Config) *JobListingProcessor {
 // returns nil so the durable extract stream acks the task (an abstain is a completed
 // decision, not a failure to retry). Returns an error only when extraction or
 // persistence fails.
+//
+// An extraction the extractor produced with no model call — a Free Extraction
+// (ADR-0042) — is recorded as a GATE RESOLUTION with its own reason rather than as a
+// call, and is otherwise attributed, country-resolved, stamped and saved identically,
+// so the two paths are indistinguishable in the Corpus.
 func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.RawJobListing) error {
 	slog.Info("process job listing", "url", workload.URL.RawURL)
+	// The dedup probe measures the EXTRACT STREAM, not the model's input: it fires for
+	// every page reaching this processor, including one a Free Extraction then resolves
+	// with no model call.
 	w.recorder.Content(ctx, llmobs.KindExtract, workload.Content.MainContent)
 	start := time.Now()
 	extraction, err := w.jobListingExtractor.Extract(ctx, *workload)
-	// Classify err first: on the error path extraction is the zero value
-	// (IsJobPosting=false), so the err==nil guard keeps a failed call out of the
-	// abstain bucket.
-	outcome := llmobs.Classify(err)
-	if err == nil && !extraction.IsJobPosting {
-		outcome = llmobs.OutcomeAbstain
+	// A Free Extraction (ADR-0042) resolved this page from its own structured data
+	// with NO model call, so it is recorded as a GATE RESOLUTION carrying its own
+	// reason rather than as a call: the call counters and the cost derived from them
+	// stay real model calls, and the Empty-Extraction Rate stays a measure of wasted
+	// model spend rather than of Corpus precision. The reason label is load-bearing --
+	// every other gated reason means "shed, nothing saved", this one means "saved,
+	// for free". The err==nil guard keeps a failed call out of the gated bucket.
+	if err == nil && extraction.Free {
+		w.recorder.Gated(ctx, llmobs.KindExtract, llmobs.ReasonStructuredData)
+	} else {
+		// Classify err first: on the error path extraction is the zero value
+		// (IsJobPosting=false), so the err==nil guard keeps a failed call out of the
+		// abstain bucket.
+		outcome := llmobs.Classify(err)
+		if err == nil && !extraction.IsJobPosting {
+			outcome = llmobs.OutcomeAbstain
+		}
+		w.recorder.Call(ctx, llmobs.KindExtract, outcome, time.Since(start))
 	}
-	w.recorder.Call(ctx, llmobs.KindExtract, outcome, time.Since(start))
 	if err != nil {
 		return fmt.Errorf("job_listing_processor: error extracting job listing %v: %w", *workload, err)
 	}
