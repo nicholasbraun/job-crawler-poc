@@ -451,14 +451,8 @@ var extractIndexTerminals = []string{
 // still leave it a site/section root, not a single posting (e.g. "acme.com/en",
 // "firma.de/de-de"). A curated set (not any two letters) so a real one-segment
 // posting slug or a department code like "/hr" is never mistaken for a locale.
-var localeRootSegments = map[string]bool{
-	"en": true, "de": true, "fr": true, "es": true, "it": true, "nl": true,
-	"pt": true, "pl": true, "da": true, "sv": true, "fi": true, "no": true,
-	"cs": true, "sk": true, "hu": true, "ro": true, "ru": true, "tr": true,
-	"ja": true, "zh": true, "ko": true,
-	"en-us": true, "en-gb": true, "de-de": true, "de-at": true, "de-ch": true,
-	"fr-fr": true, "es-es": true, "pt-br": true, "nl-nl": true, "da-dk": true,
-}
+// The locale set itself lives on the domain root as crawler.IsLocaleSegment, so
+// this rung and catalog.Classify read one definition (#270 follow-up).
 
 // isBareOrLocaleRoot reports whether rawURL points at a bare domain root (no path
 // segments) or a locale-only root (its single segment is a language/locale token).
@@ -468,7 +462,7 @@ func isBareOrLocaleRoot(rawURL string) bool {
 	if len(segs) == 0 {
 		return true
 	}
-	return len(segs) == 1 && localeRootSegments[strings.ToLower(segs[0])]
+	return len(segs) == 1 && crawler.IsLocaleSegment(segs[0])
 }
 
 // isExtractIndexTerminal reports whether rawURL's terminal path segment -- with a

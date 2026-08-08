@@ -324,6 +324,15 @@ func TestClassify(t *testing.T) {
 		{"smartrecruiters careers root is a career page", "https://careers.smartrecruiters.com/BoschGroup", catalog.RoleCareerPage},
 		{"smartrecruiters posting is a job listing", "https://jobs.smartrecruiters.com/BoschGroup/744000138449489--process-development-engineer-em", catalog.RoleJobListing},
 		{"unrecognized host is unknown", "https://careers.acme.com/jobs", catalog.RoleUnknown},
+		// A trailing locale segment is a localized view of the board root, not a
+		// posting beneath it. Read as a posting, the Catalog Doctor deletes the row
+		// -- four live softgarden tenants owning 58 listings were planned for delete.
+		{"subdomain board root with a locale is still a career page", "https://das-ee.career.softgarden.de/en", catalog.RoleCareerPage},
+		{"subdomain board root with a region locale is still a career page", "https://das-ee.career.softgarden.de/de-DE", catalog.RoleCareerPage},
+		{"path board root with a locale is still a career page", "https://job-boards.greenhouse.io/xai/en", catalog.RoleCareerPage},
+		{"a locale does not promote a posting to a board root", "https://job-boards.greenhouse.io/xai/jobs/123/en", catalog.RoleJobListing},
+		{"a two-letter tenant slug is not treated as a locale", "https://job-boards.greenhouse.io/hr", catalog.RoleCareerPage},
+		{"a posting whose slug is a non-locale two-letter word stays a listing", "https://acme.recruitee.com/o/qa", catalog.RoleJobListing},
 		{"join.com tenant root is a career page", "https://join.com/companies/fugro", catalog.RoleCareerPage},
 		{"join.com posting is a job listing", "https://join.com/companies/zara/12345-senior-engineer", catalog.RoleJobListing},
 		{"join.com index without tenant is a job listing", "https://join.com/companies", catalog.RoleJobListing},

@@ -297,13 +297,19 @@ func Identify(u crawler.URL) Identity {
 // Classify reports whether u is an ATS Career Page (the tenant board root), an
 // ATS Job Listing (a posting beneath the root), or on an unrecognized host
 // (RoleUnknown), where the caller must decide from page content.
+//
+// Depth is measured with a trailing locale segment dropped: a board's /en is the
+// same board, not a posting beneath it. Without that, every localized board root
+// read as a Job Listing, and the Catalog Doctor -- which deletes a Career Page row
+// that classifies as a posting -- planned to delete real, populated tenant boards
+// (observed live on four softgarden tenants owning 58 listings).
 func Classify(u crawler.URL) Role {
 	m, ok := matchHost(u)
 	if !ok {
 		return RoleUnknown
 	}
 
-	segs := pathSegments(u.RawURL)
+	segs := trimLocaleSuffix(pathSegments(u.RawURL))
 	switch m.kind {
 	case rulePath:
 		// A prefix rule shifts the tenant slug right by one segment; the board root
@@ -399,6 +405,17 @@ func matchATS(u crawler.URL) (provider, slug string) {
 }
 
 // pathSegments returns the non-empty path segments of rawURL.
+// trimLocaleSuffix drops a single trailing locale segment from segs, so a board
+// root and its localized view measure the same depth. Only the LAST segment is
+// considered: a locale deeper in the path still sits under whatever precedes it,
+// and a URL that is nothing but a locale ("/en") trims to the bare root.
+func trimLocaleSuffix(segs []string) []string {
+	if n := len(segs); n > 0 && crawler.IsLocaleSegment(segs[n-1]) {
+		return segs[:n-1]
+	}
+	return segs
+}
+
 func pathSegments(rawURL string) []string {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {

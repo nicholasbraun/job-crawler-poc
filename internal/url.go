@@ -80,6 +80,30 @@ var trackingParams = map[string]struct{}{
 	"ref_src": {}, "vero_id": {}, "yclid": {}, "wickedid": {}, "twclid": {},
 }
 
+// localeRootSegments are the bare language and language-region path segments a
+// site puts its whole tree under. The set is deliberately a closed list of real
+// locale codes rather than a two-letter shape test, so a genuine two-letter slug
+// (a tenant or posting named "hr", "it", or "no") is not mistaken for a locale.
+var localeRootSegments = map[string]bool{
+	"en": true, "de": true, "fr": true, "es": true, "it": true, "nl": true,
+	"pt": true, "pl": true, "da": true, "sv": true, "fi": true, "no": true,
+	"cs": true, "sk": true, "hu": true, "ro": true, "ru": true, "tr": true,
+	"ja": true, "zh": true, "ko": true,
+	"en-us": true, "en-gb": true, "de-de": true, "de-at": true, "de-ch": true,
+	"fr-fr": true, "es-es": true, "pt-br": true, "nl-nl": true, "da-dk": true,
+}
+
+// IsLocaleSegment reports whether seg is a bare locale path segment ("en",
+// "de-de"), compared case-insensitively. Such a segment is a localized VIEW of
+// the page it hangs off, not a step deeper into the site, so a URL is no more
+// specific for carrying one: /careers and /careers/en are the same hub, and a
+// board root and its /en are the same board. It is the single definition shared
+// by the Extract Gate's bare/locale-root rung and the ATS Role classifier, which
+// would otherwise disagree about the same URL.
+func IsLocaleSegment(seg string) bool {
+	return localeRootSegments[strings.ToLower(seg)]
+}
+
 // normalize canonicalizes a URL so that trivially-equivalent variants dedup
 // to the same string: lowercases scheme and host, drops the fragment, strips
 // tracking query parameters, sorts the rest, and strips a trailing slash from
