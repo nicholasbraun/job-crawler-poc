@@ -1,7 +1,6 @@
 package crawler
 
 import (
-	"encoding/json"
 	"html"
 	"regexp"
 	"strings"
@@ -43,11 +42,11 @@ const (
 const DefaultDescriptionMaxChars = 16000
 
 // PostingBody derives a Job Listing's Posting Body from a parsed page and reports
-// the Description Source that produced it (ADR-0041). Precedence: the description
-// of the page's LONE structured-data posting — exactly one JobPosting node and no
-// openings index, the exact complement of the Extract Gate's openings-index reject
-// — reduced to plain text; otherwise the page's main content. Both are capped to
-// maxChars runes.
+// the Description Source that produced it (ADR-0041). Precedence: the description of
+// the page's LONE structured-data posting (LonePosting) — exactly one JobPosting node
+// and no openings index, the exact complement of the Extract Gate's openings-index
+// reject — reduced to plain text; otherwise the page's main content. Both are capped
+// to maxChars runes.
 //
 // A page whose lone posting carries no usable description falls through to main
 // content rather than storing an empty body. A non-positive maxChars falls back to
@@ -62,8 +61,10 @@ func PostingBody(content *Content, maxChars int) (body string, source Descriptio
 	if content == nil {
 		return "", DescriptionSourcePageContent
 	}
-	if structured := htmlToText(lonePostingDescription(content.JSONLD)); structured != "" {
-		return capChars(validUTF8(structured), maxChars), DescriptionSourceStructuredData
+	if posting, ok := LonePosting(content); ok {
+		if structured := htmlToText(posting.Description); structured != "" {
+			return capChars(validUTF8(structured), maxChars), DescriptionSourceStructuredData
+		}
 	}
 	return capChars(validUTF8(content.MainContent), maxChars), DescriptionSourcePageContent
 }
@@ -92,96 +93,6 @@ func PostingBody(content *Content, maxChars int) (body string, source Descriptio
 func validUTF8(s string) string {
 	// ToValidUTF8 returns s unchanged when it is already valid, which is the common case.
 	return strings.ToValidUTF8(s, "")
-}
-
-// lonePostingDescription returns the raw description of the page's single
-// structured-data JobPosting, or "" when the structured data is ambiguous or
-// silent: two or more posting nodes, an ItemList wrapping a posting (an openings
-// index), no posting at all, or a posting with no string description. An
-// unparseable block contributes nothing and never fails the read (the same
-// fail-safe pagegate.jsonLDHub applies).
-//
-// This walk duplicates pagegate's scanJobPostings on purpose: pagegate imports this
-// package, so a shared predicate here would have to be built before the spec that
-// needs it (ADR-0042 / #253) has landed. #253 collapses the two.
-func lonePostingDescription(blocks []string) string {
-	postings, openingsIndex, description := 0, false, ""
-	for _, block := range blocks {
-		var node any
-		if err := json.Unmarshal([]byte(block), &node); err != nil {
-			continue
-		}
-		p, il, d := scanJobPostings(node)
-		postings += p
-		openingsIndex = openingsIndex || il
-		if description == "" {
-			description = d
-		}
-	}
-	if postings != 1 || openingsIndex {
-		return ""
-	}
-	return description
-}
-
-// scanJobPostings walks a decoded JSON-LD value — arrays, objects, and any @graph /
-// itemListElement / item nesting — reporting how many JobPosting nodes it contains,
-// whether an ItemList among them wraps at least one JobPosting, and the description
-// of the first JobPosting carrying one (meaningful only when exactly one node was
-// found).
-func scanJobPostings(v any) (jobPostings int, itemListOfJob bool, description string) {
-	switch node := v.(type) {
-	case []any:
-		for _, item := range node {
-			p, il, d := scanJobPostings(item)
-			jobPostings += p
-			itemListOfJob = itemListOfJob || il
-			if description == "" {
-				description = d
-			}
-		}
-	case map[string]any:
-		self := 0
-		if isLDType(node["@type"], "jobposting") {
-			self = 1
-			if s, ok := node["description"].(string); ok {
-				description = s
-			}
-		}
-		// Recurse into every value so nested JobPostings (an ItemList's
-		// itemListElement, a ListItem's item, an @graph) are all counted once.
-		descendants := 0
-		for _, val := range node {
-			p, il, d := scanJobPostings(val)
-			descendants += p
-			itemListOfJob = itemListOfJob || il
-			if description == "" {
-				description = d
-			}
-		}
-		jobPostings = self + descendants
-		if isLDType(node["@type"], "itemlist") && descendants > 0 {
-			itemListOfJob = true
-		}
-	}
-	return jobPostings, itemListOfJob, description
-}
-
-// isLDType reports whether a JSON-LD @type value (a string, or an array of strings)
-// names the given schema.org type, matched case-insensitively as a substring so a
-// bare "JobPosting" and a "https://schema.org/JobPosting" both hit.
-func isLDType(t any, want string) bool {
-	switch tv := t.(type) {
-	case string:
-		return strings.Contains(strings.ToLower(tv), want)
-	case []any:
-		for _, item := range tv {
-			if s, ok := item.(string); ok && strings.Contains(strings.ToLower(s), want) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 var htmlTagRegex = regexp.MustCompile("<[^>]*>")

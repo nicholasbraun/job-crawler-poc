@@ -183,8 +183,8 @@ func confidenceScore(u crawler.URL, content *crawler.Content, cfg crawler.LLMGat
 	// ItemList of JobPosting or two or more JobPosting nodes -- alone clears
 	// certainθ. A lone JobPosting (one Job Listing, not a hub) and absent or
 	// unparseable JSON-LD earn nothing, so this signal never certain-accepts a
-	// single posting.
-	if jsonLDHub(content) {
+	// single posting. Read via the domain's shared structured-posting read.
+	if crawler.HasOpeningsIndex(content) {
 		score += cfg.JSONLDHubWeight
 	}
 	return score
@@ -297,9 +297,10 @@ func ShouldExtract(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateC
 	if atsEmbed(content) {
 		return false // rung 5: a page embedding a whole ATS board is a hub.
 	}
-	if jsonLDHub(content) {
+	if crawler.HasOpeningsIndex(content) {
 		return false // rung 6: a JSON-LD ItemList / >=2 JobPosting nodes is an
-		// openings index; a lone JobPosting does not fire it.
+		// openings index, read via the domain's shared structured-posting read; a
+		// lone JobPosting does not fire it.
 	}
 	if jobLinkSaturation(countJobPostingLinks(u, content), cfg.ExtractJobLinkSaturationCount) >= 1 {
 		return false // rung 7: a page saturated with distinct same-host job links is

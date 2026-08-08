@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 #
-# capture-goldset.sh -- step 2 of the Extract Gold Set harvest (#116).
+# capture-goldset.sh -- grows the SYNTHETIC-style reject-rung regression fixtures
+# from real URLs. SUPERSEDED for gold-set purposes by ADR-0043 (#254): the Extract
+# Gold Set is now built by `llmbench goldset-sample` straight from the tap's
+# captured Content, because a page re-fetched later is a different page and that
+# drift corrupts the label. Use this only when you want another cheap, frozen
+# regression case for a reject rung -- never to produce evidence.
 #
 # Reads the JSONL capture file produced by the extract-decision tap
 # (EXTRACT_CAPTURE_PATH, internal/extractcapture) and re-fetches each captured URL
 # into a raw-HTML fixture via `llmbench capture -kind extract`, building an
-# unlabeled Extract Gold Set. You then hand-label it (detail / hub-index /
+# unlabeled fixture set. You then hand-label it (detail / hub-index /
 # residue, set verified:true) and score the new gate against it with
 # `llmbench extract -gold <dir>`.
 #

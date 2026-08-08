@@ -1,15 +1,23 @@
-# llmbench Extract Gold Set
+# llmbench extract reject-rung regression fixtures
 
-The committed, human-owned fixture set the `llmbench` **extract** benchmark scores
-against (ADR-0020, spec #111, ticket #114). It is a **second, separate** Gold Set
-from the classifier one under `../testdata`: where that set is Career-Page-centric
-and scores the discovery gate (`pagegate.CareerPage`), this set is
-keyword-relevant pages of **every shape** and scores the **Extract Gate**
-(`pagegate.ShouldExtract`) on its binary extract-vs-skip decision.
+These are **synthetic**, hand-authored fixtures — invented domains, every `detail`
+page carrying exactly one structured posting node and every `hub-index` / `residue`
+page carrying none at all. That structure makes them cheap, fast, deterministic
+regression cases for the Extract Gate's **reject rungs** (the URL rungs, ATS-embed,
+JSON-LD openings index, posting saturation), and **worthless as evidence**: any
+mechanism that reads structured data scores perfectly on them by construction
+(ADR-0043). Decisions have already been argued from numbers this set produced; do not
+do it again.
+
+**The Extract Gold Set — real captured pages, labelled, stratified and weighted —
+lives in [`../extract-goldset`](../extract-goldset/README.md).** That is the evidence
+base. This directory is a regression harness.
 
 Each entry in `manifest.json` pairs a frozen HTML page under `pages/` with its
-real URL and a single ground-truth `label`. The gate decides at `url`, so the
-stored bytes and the URL are the same page.
+real-world URL *shape* and a single ground-truth `label`. The gate decides at `url`, so
+the stored bytes and the URL are the same page. It is scored by
+`pagegate.ShouldExtract` on its binary extract-vs-skip decision, and is separate from
+the classifier Gold Set under `../testdata`, which scores `pagegate.CareerPage`.
 
 ## What the benchmark does
 
@@ -54,7 +62,11 @@ content-confirm work (ADR-0020).
 
 ## How it was built
 
-The intended, faithful way to grow this set is
+Growing this set with live-captured bytes is still supported, but it is no longer how
+the Extract Gate gets its evidence — `llmbench goldset-sample` is (ADR-0043). Add here
+only when you want a cheap, deterministic regression case for a reject rung.
+
+The way to do that is
 `go run ./cmd/llmbench capture -kind extract -gold cmd/llmbench/extract-testdata <url>`,
 which fetches through the crawler's **own** `downloader` (matching User-Agent, no
 JS execution) so the bytes are exactly what the live pipeline sees, then appends
@@ -71,7 +83,7 @@ URL **shape**, and each `detail` URL is one the current gate provably extracts
 (the false-drop guard would fail otherwise). The `capture -kind extract` path is
 wired and is the way to replace or extend these with live-captured bytes.
 
-## Strata (26 fixtures)
+## Composition (26 fixtures)
 
 | Label | Count | Composition |
 |---|---|---|
@@ -120,15 +132,19 @@ reports:
 
 - **0 false-drops** — `detail` recall 1.0; every committed single posting is
   extracted.
-- **4 leaks** — non-postings the gate still extracts, all `residue`:
+- **3 leaks** — non-postings the gate still extracts, all `residue`:
   `www.acme-robotics.com/about/our-culture`, `www.brightwave.io/life`,
-  `www.pixelforge.studio/work-with-us`, `www.greenharvest.co/culture/values`
-  (structurally-silent career-landing / culture pages — no job links, no JSON-LD, no
-  embed — so no content rung fires). They are the deferred-L2 population the ADR-0020
-  content confirm would target.
-- **extract-call rate 0.5385** (14 of 26) — soft, descriptive.
-- **residue: 8 total, 4 extracted** — the population the ADR-0020 L2 content
+  `www.greenharvest.co/culture/values` (structurally-silent career-landing / culture
+  pages — no job links, no JSON-LD, no embed — so no content rung fires). They are the
+  deferred-L2 population the ADR-0020 content confirm would target.
+  `www.pixelforge.studio/work-with-us` was a fourth leak until the URL rungs added the
+  terminal-index reject.
+- **extract-call rate 0.5000** (13 of 26) — soft, descriptive.
+- **residue: 8 total, 3 extracted** — the population the ADR-0020 L2 content
   confirm is measured against.
+
+These four numbers are pinned as constants in `../extract_test.go`; that test, not this
+prose, is the guard. Both were last reconciled with a live run on 2026-08-07.
 
 #115's posting-saturation rung (K=5) sheds the three former `hub-index` leaks
 (`jobs.brightwave.io/open-roles`, `careers.greenharvest.co/all-openings`,

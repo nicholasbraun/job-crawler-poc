@@ -1,8 +1,11 @@
-// This file is the bench package's Extract Gold Set scoring layer (ADR-0020,
-// #114): the parallel, additive counterpart to the classifier scorer in
-// scorer.go. It scores the Extract Gate's binary extract-vs-skip decision over
-// keyword-relevant pages labelled detail / hub-index / residue, with a false-drop
-// hard guard (a real single-posting detail the gate skips fails the run). It
+// This file is the bench package's Extract Gate scoring layer (ADR-0020, #114):
+// the parallel, additive counterpart to the classifier scorer in scorer.go. It
+// scores the Extract Gate's binary extract-vs-skip decision over pages labelled
+// detail / hub-index / residue, with a false-drop hard guard (a real
+// single-posting detail the gate skips fails the run). Both extract-gate row
+// sources feed it: the synthetic reject-rung fixtures under
+// ../extract-testdata (the extract verb) and the real captured pages of the
+// Extract Gold Set (the score-capture verb, ADR-0043). It
 // reuses the pure helpers ClassScore/scoreClass/confusion/ratio and the
 // ErrInvalidManifest sentinel unchanged; it adds no LLM, network, or parser work
 // of its own -- cmd/llmbench's extract verb drives the real parser -> ShouldExtract
@@ -16,7 +19,8 @@ import (
 	"io/fs"
 )
 
-// ExtractLabel is the human-owned ground truth for one Extract Gold Set fixture.
+// ExtractLabel is the human-owned ground truth for one extract-gate row -- a
+// reject-rung regression fixture or an Extract Gold Set page.
 // Scoring collapses it to a binary extract-vs-skip decision via Positive():
 // detail is the positive (extract) class; hub-index and residue both collapse to
 // the negative (skip) class.
@@ -51,9 +55,11 @@ func (l ExtractLabel) Positive() bool { return l == ExtractDetail }
 // AllExtractLabels is the fixed print / slice order for per-class breakdowns.
 var AllExtractLabels = []ExtractLabel{ExtractDetail, ExtractHubIndex, ExtractResidue}
 
-// ExtractEntry is one Extract Gold Set fixture: raw HTML on disk (File, under
-// pages/) plus its real URL and human-owned label. The gate decides at URL, so
-// the stored HTML and the URL must be the same page.
+// ExtractEntry is one extract reject-rung regression fixture: raw HTML on disk
+// (File, under pages/) plus its real URL and human-owned label. The gate decides
+// at URL, so the stored HTML and the URL must be the same page. The Extract Gold
+// Set does NOT use this shape -- it stores parsed Content, never re-fetchable
+// HTML (ADR-0043).
 type ExtractEntry struct {
 	File  string       `json:"file"`
 	URL   string       `json:"url"`
@@ -65,8 +71,8 @@ type ExtractEntry struct {
 	Note      string `json:"note"`
 }
 
-// ExtractManifest is the Extract Gold Set index: the ordered list of fixtures to
-// score.
+// ExtractManifest is the reject-rung fixture-set index: the ordered list of
+// fixtures to score.
 type ExtractManifest struct {
 	Entries []ExtractEntry
 }

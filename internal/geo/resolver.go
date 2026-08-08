@@ -68,6 +68,30 @@ func matchUSToken(location string) bool {
 	return usToken.MatchString(location)
 }
 
+// ResolveHinted resolves a Country from a structured country hint the source
+// declared, falling back to the free-text location when the hint is absent or
+// unresolvable (ADR-0029). A hint that is already a valid ISO code is used
+// directly; a name-shaped hint ("Japan") is resolved. Unresolvable throughout
+// yields the empty Country, which is kept (ADR-0028).
+//
+// The hint exists because a composed location cannot be resolved safely on its
+// own once it carries an ISO country code: Resolve has no bare alpha-2 country
+// keys but does key US state abbreviations, so "Perth, WA, AU" matches the region
+// and yields US. Any lane whose source declares the country as a separate field —
+// the ATS providers, and a page's own schema.org addressCountry — must pass it
+// here rather than fold it into the location and hope.
+func ResolveHinted(hint, location string) string {
+	if h := strings.TrimSpace(hint); h != "" {
+		if Valid(h) {
+			return strings.ToUpper(h)
+		}
+		if country := Resolve(h); country != "" {
+			return country
+		}
+	}
+	return Resolve(location)
+}
+
 // Valid reports whether code is a real, officially assigned ISO 3166-1 alpha-2
 // code. It is case-insensitive and trims surrounding space. Reserved and
 // user-assigned codes (e.g. "EU", "UK") are not valid — GB is the assigned code

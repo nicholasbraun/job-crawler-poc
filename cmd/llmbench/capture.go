@@ -23,8 +23,13 @@ const userAgent = "JobCrawlerBot/0.1 (+https://github.com/nicholasbraun/job-craw
 // runCapture fetches <url> through the crawler downloader (faithful bytes),
 // resolves the final URL, writes pages/NNNN-slug.html and appends an unlabeled
 // manifest stub. -kind selects the manifest stub shape: classify (a bench.Entry,
-// the classifier Gold Set) or extract (a bench.ExtractEntry, the Extract Gold
-// Set). Returns the process exit code (2 usage error, 1 fetch/IO error).
+// the classifier Gold Set) or extract (a bench.ExtractEntry, the reject-rung
+// regression fixtures). Returns the process exit code (2 usage error, 1 fetch/IO
+// error).
+//
+// This is NOT how the Extract Gold Set is built (ADR-0043): a re-fetch months
+// later is a different page, and that drift corrupts the label. Its rows come
+// from the extract-decision tap via `llmbench goldset-sample`.
 func runCapture(args []string) int {
 	fs := flag.NewFlagSet("capture", flag.ExitOnError)
 	gold := fs.String("gold", "cmd/llmbench/testdata", "Gold-Set directory holding manifest.json and pages/*.html")
@@ -91,7 +96,8 @@ func resolveFinalURL(ctx context.Context, reqURL string) (finalURL, note string)
 // slug from finalURL) and appends an unlabeled stub to <gold>/manifest.json,
 // creating pages/ and an empty manifest array when absent. kind ("classify" or
 // "extract") selects the stub shape appended to the manifest -- a bench.Entry for
-// the classifier Gold Set, a bench.ExtractEntry for the Extract Gold Set -- so the
+// the classifier Gold Set, a bench.ExtractEntry for the reject-rung regression
+// fixtures -- so the
 // committed manifest carries no vestigial fields from the other benchmark. The
 // index/slug/write-bytes path is shared; only the manifest append branches.
 func writeFixture(goldDir, kind, finalURL, note string, body []byte) error {

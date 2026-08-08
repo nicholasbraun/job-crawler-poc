@@ -335,7 +335,7 @@ func TestExtractEntryReadHTML(t *testing.T) {
 	}
 }
 
-// TestLoadExtractManifest_CommittedSet guards that the real Extract Gold Set
+// TestLoadExtractManifest_CommittedSet guards that the real reject-rung regression set
 // parses, every fixture's HTML is present and non-empty, and all three label
 // classes are populated (so every scorecard slice has data). Dependency-light: no
 // parser or gate runs here -- the real pipeline is exercised only by manual
@@ -347,7 +347,7 @@ func TestLoadExtractManifest_CommittedSet(t *testing.T) {
 		t.Fatalf("LoadExtractManifest(extract-testdata) error: %v", err)
 	}
 	if len(m.Entries) == 0 {
-		t.Fatal("committed Extract Gold Set is empty")
+		t.Fatal("committed reject-rung regression set is empty")
 	}
 	counts := map[bench.ExtractLabel]int{}
 	for _, e := range m.Entries {
@@ -363,7 +363,7 @@ func TestLoadExtractManifest_CommittedSet(t *testing.T) {
 	}
 	for _, l := range bench.AllExtractLabels {
 		if counts[l] == 0 {
-			t.Errorf("label %q has no fixtures in the committed Extract Gold Set", l)
+			t.Errorf("label %q has no fixtures in the committed reject-rung regression set", l)
 		}
 	}
 }

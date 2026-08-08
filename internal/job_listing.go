@@ -158,6 +158,16 @@ type RawJobListing struct {
 type Extraction struct {
 	Listing      JobListing
 	IsJobPosting bool
+	// Free reports that this Extraction was produced with NO model call -- a Free
+	// Extraction read straight from the page's lone structured-data posting
+	// (ADR-0042 / CONTEXT "Free Extraction"). Like IsJobPosting it is never
+	// persisted: the save processor reads it ONLY to record the work as a gate
+	// resolution instead of an LLM call, so the call counters and the cost derived
+	// from them stay real model calls and the Empty-Extraction Rate stays a
+	// model-path measure. Nothing else branches on it -- a Free-Extracted listing is
+	// saved, attributed, country-resolved and stamped exactly like a model-extracted
+	// one, which is what keeps the two indistinguishable in the Corpus.
+	Free bool
 }
 
 // CorpusRepository persists Job Listings into the global, deduplicated Corpus
