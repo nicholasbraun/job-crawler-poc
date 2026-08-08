@@ -174,7 +174,13 @@ const (
 	// The SPLIT matters more than the total. A rule that recovers non-postings faster
 	// than postings is a regression however good the total looks, and pinning the four
 	// numbers separately is what makes that visible in a diff.
-	boundaryRowsRecovered = 29
+	// It fell 29 -> 28 when "your application" left the vocabulary group it shared, by
+	// substring, with applyPhrases' "submit/start/send us your application": the
+	// overlap let one apply button score a section as well, so a page could reach the
+	// strong four-group threshold a section early. Exactly one row lost by that,
+	// vostel.de's volunteering project page, and it is AMBIGUOUS -- the detail and
+	// non-posting halves below did not move at all.
+	boundaryRowsRecovered = 28
 	// boundaryDetailRecovered is the Job Listings the widening got back: the whole
 	// point of the slice.
 	boundaryDetailRecovered = 26
@@ -183,8 +189,10 @@ const (
 	boundaryNonPostingsRecovered = 2
 	// boundaryAmbiguousRecovered is the undecidable rows it extracts. They are neither
 	// a win nor a loss, and they are counted apart so they can never be quietly
-	// credited to either side.
-	boundaryAmbiguousRecovered = 1
+	// credited to either side. Zero since the applyPhrases overlap was removed (see
+	// boundaryRowsRecovered); the one row it held is now counted in
+	// boundaryAmbiguousSkipped.
+	boundaryAmbiguousRecovered = 0
 	// boundaryFalseDropsRemaining is what the current rung still drops here: the
 	// number this stratum exists to produce, and the guard #264 must argue with. It is
 	// NOT zero, and the shapes behind it are written up in ADR-0044 rather than closed
@@ -192,8 +200,9 @@ const (
 	boundaryFalseDropsRemaining = 11
 	// boundaryAmbiguousSkipped is how many ambiguous rows are DROPPED here. It is
 	// ambiguousRows minus boundaryAmbiguousRecovered: the two numbers coincided while
-	// the rule skipped every boundary row, and #257 parted them.
-	boundaryAmbiguousSkipped = 9
+	// the rule skipped every boundary row, #257 parted them, and removing the
+	// applyPhrases overlap put them back together.
+	boundaryAmbiguousSkipped = 10
 )
 
 // loadCommittedGoldSet reads the committed Extract Gold Set. The working directory
