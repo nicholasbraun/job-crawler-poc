@@ -1164,7 +1164,7 @@ func TestCommittedGoldSetHumanConfirmation(t *testing.T) {
 	pending := []string{}
 	for _, row := range rows {
 		prov := row.LabelProvenance
-		if strings.HasPrefix(prov.ConfirmedBy, "llm:") {
+		if machineName(prov.ConfirmedBy) {
 			t.Errorf("%s: confirmed_by %q is a machine; a confirmation must come from a human", row.URL, prov.ConfirmedBy)
 		}
 		if prov.ConfirmedBy != "" && prov.ConfirmedAt == "" {
@@ -2133,9 +2133,90 @@ func TestApplyRefusesAnUnreviewableConfirmation(t *testing.T) {
 	for name, args := range map[string][]string{
 		"two selectors": {"-dir", dir, "-confirmed-by", "A Human", "-confirm-ids", idFile, "-confirm-stratum", string(stratumBoundary)},
 		"no confirmer":  {"-dir", dir, "-confirm-ids", idFile},
+		// A machine confirmer is refused by the SAME predicate on both flags. The
+		// "script:" case is the one that used to slip through: -confirmed-by tested
+		// only the "llm:" prefix while its sibling used machineName, so
+		// `-confirmed-by "script:auto-confirm"` stamped labels as human-confirmed.
+		"llm confirmer":             {"-dir", dir, "-confirmed-by", "llm:claude"},
+		"script confirmer":          {"-dir", dir, "-confirmed-by", "script:auto-confirm"},
+		"llm expected confirmer":    {"-dir", dir, "-expected-confirmed-by", "llm:claude"},
+		"script expected confirmer": {"-dir", dir, "-expected-confirmed-by", "script:propose-expected"},
 	} {
 		if code := runGoldSetApply(args); code != 2 {
 			t.Errorf("%s: exit code %d, want 2", name, code)
 		}
+	}
+}
+
+// TestApplyRefusesAMachineConfirmerOnTheSheet closes the second half of the same
+// hole: the flag guard above is worthless if the labels.tsv confirmer column is
+// copied through unchecked, because a machine-driven pass writes the column instead
+// of passing the flag. The false-drop guard arms itself on these confirmations, so
+// this is the tooling refusing to sign off the evidence its own labels are judged by
+// (ADR-0043).
+func TestApplyRefusesAMachineConfirmerOnTheSheet(t *testing.T) {
+	rows := []goldRow{
+		{URL: "https://a.test/jobs/1", Verdict: true, Stratum: stratumLonePosting, Label: bench.ExtractDetail},
+	}
+	sheet, err := parseSheet(renderSheet(rows))
+	if err != nil {
+		t.Fatalf("parseSheet: %v", err)
+	}
+
+	for _, name := range []string{"llm:claude", "script:auto-confirm"} {
+		sheet[0].ConfirmedBy = name
+		if _, err := applyLabels(rows, sheet, nil, "", "", "", nil, "2026-08-08T12:00:00Z"); err == nil {
+			t.Errorf("applyLabels accepted a sheet confirmed by %q", name)
+		}
+	}
+
+	sheet[0].ConfirmedBy = "A Human"
+	merged, err := applyLabels(rows, sheet, nil, "", "", "", nil, "2026-08-08T12:00:00Z")
+	if err != nil {
+		t.Fatalf("applyLabels rejected a human confirmer: %v", err)
+	}
+	if merged[0].LabelProvenance.ConfirmedBy != "A Human" {
+		t.Errorf("confirmer = %q, want %q", merged[0].LabelProvenance.ConfirmedBy, "A Human")
+	}
+}
+
+// TestApplyRetractsAConfirmationWhenAProposalChangesTheLabel pins the proposals
+// path to the sheet path's rule. A human confirmed the OLD label; a proposer that
+// replaces it must not inherit that signature, or the ledger's arming condition --
+// "this label was read by a person" -- becomes a statement about a label nobody
+// read. A proposal that re-states the SAME label changes nothing and keeps it.
+func TestApplyRetractsAConfirmationWhenAProposalChangesTheLabel(t *testing.T) {
+	const stamp = "2026-08-08T12:00:00Z"
+	base := func() []goldRow {
+		return []goldRow{{
+			URL: "https://a.test/jobs/1", Verdict: true, Stratum: stratumBoundary, Label: bench.ExtractDetail,
+			LabelProvenance: goldProvenance{
+				ProposedBy: "llm:test", ProposedAt: "2026-08-01T00:00:00Z",
+				ConfirmedBy: "A Human", ConfirmedAt: "2026-08-02T00:00:00Z",
+			},
+		}}
+	}
+	id := rowID("https://a.test/jobs/1")
+
+	changed, err := applyLabels(base(), nil, []sheetRow{{ID: id, Label: bench.ExtractResidue}}, "", "", "", nil, stamp)
+	if err != nil {
+		t.Fatalf("applyLabels: %v", err)
+	}
+	if changed[0].Label != bench.ExtractResidue {
+		t.Errorf("label = %q, want residue", changed[0].Label)
+	}
+	if got := changed[0].LabelProvenance.ConfirmedBy; got != "" {
+		t.Errorf("confirmed_by = %q after a proposal changed the label; the human confirmed the old one", got)
+	}
+	if got := changed[0].LabelProvenance.ConfirmedAt; got != "" {
+		t.Errorf("confirmed_at = %q after a retraction, want empty", got)
+	}
+
+	same, err := applyLabels(base(), nil, []sheetRow{{ID: id, Label: bench.ExtractDetail}}, "", "", "", nil, stamp)
+	if err != nil {
+		t.Fatalf("applyLabels: %v", err)
+	}
+	if same[0].LabelProvenance.ConfirmedBy != "A Human" || same[0].LabelProvenance.ConfirmedAt != "2026-08-02T00:00:00Z" {
+		t.Errorf("provenance = %+v; a proposal re-stating the same label retracts nothing", same[0].LabelProvenance)
 	}
 }

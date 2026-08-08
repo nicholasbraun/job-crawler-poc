@@ -610,14 +610,16 @@ func runGoldSetWorksheet(args []string) int {
 // Nothing is written unless every row validates, so a stale sheet fails loudly
 // rather than half-applying. An existing proposer or confirmer is NEVER
 // overwritten and its timestamp never re-stamped: provenance is an append-only
-// record of who actually saw the row. Exit: 2 on usage or a validation failure, 1
-// on IO, 0 otherwise.
+// record of who actually saw the row. The one way a confirmation leaves a row is
+// RETRACTION -- a label that changes invalidates the confirmation of the old label,
+// on both the sheet and the proposals path. Exit: 2 on usage or a validation
+// failure, 1 on IO, 0 otherwise.
 func runGoldSetApply(args []string) int {
 	fs := flag.NewFlagSet("goldset-apply", flag.ExitOnError)
 	dir := fs.String("dir", defaultGoldSetDir, "directory holding the Extract Gold Set")
 	proposals := fs.String("proposals", "", "optional TSV of id<TAB>label<TAB>note to merge before stamping (a proposer's output)")
 	proposedBy := fs.String("proposed-by", "", "name to stamp as the proposer on labelled rows that have none; prefix an automated proposer with \"llm:\"")
-	confirmedBy := fs.String("confirmed-by", "", "HUMAN name to stamp as the confirmer on labelled rows that have none; an \"llm:\" name is rejected")
+	confirmedBy := fs.String("confirmed-by", "", "HUMAN name to stamp as the confirmer on labelled rows that have none; an \"llm:\" or \"script:\" name is rejected")
 	confirmStratum := fs.String("confirm-stratum", "", "restrict -confirmed-by to one stratum; empty confirms every labelled row")
 	confirmIDs := fs.String("confirm-ids", "", "file of row ids (one per line) naming EXACTLY the rows -confirmed-by signs off; mutually exclusive with -confirm-stratum")
 	expectedProposedBy := fs.String("expected-proposed-by", "", "name to stamp as the proposer on expected extractions that have none; prefix an automated reading with \"script:\" or \"llm:\"")
@@ -634,7 +636,7 @@ func runGoldSetApply(args []string) int {
 		}
 		stamp = t.UTC().Format(time.RFC3339)
 	}
-	if strings.HasPrefix(*confirmedBy, "llm:") {
+	if machineName(*confirmedBy) {
 		fmt.Fprintf(os.Stderr, "llmbench goldset-apply: -confirmed-by %q is not a human; confirmation cannot be automated (ADR-0043)\n", *confirmedBy)
 		return 2
 	}
@@ -787,8 +789,8 @@ func parseProposals(data []byte) ([]sheetRow, error) {
 // Validation is total and fails on the first fault: a sheet row whose URL or ID is
 // not in the substrate, a duplicate sheet row, a sheet stratum or verdict that
 // disagrees with the substrate (the signature of a sheet edited against an older
-// sample), a proposal for an unknown row, or a confirmId naming a row that does not
-// exist or carries no label to confirm.
+// sample), a sheet confirmer that names a machine, a proposal for an unknown row, or
+// a confirmId naming a row that does not exist or carries no label to confirm.
 //
 // confirmIDs, when non-nil, names EXACTLY the rows confirmedBy signs off, so a human
 // can confirm chunk by chunk across sessions and the diff shows precisely which rows
@@ -818,6 +820,14 @@ func applyLabels(rows []goldRow, sheet, proposed []sheetRow, proposedBy, confirm
 		}
 		if s.Verdict != merged[i].Verdict {
 			return nil, fmt.Errorf("sheet row %q: verdict %v disagrees with the substrate (%v)", s.URL, s.Verdict, merged[i].Verdict)
+		}
+		// The sheet's confirmer column is subject to the SAME rule as the
+		// -confirmed-by flag. Without this check a machine-driven pass that writes the
+		// column walks straight past the flag guard, and the false-drop guard arms
+		// itself on these confirmations (ADR-0043/#264) -- so a machine could stamp the
+		// evidence its own labels are judged by.
+		if machineName(s.ConfirmedBy) {
+			return nil, fmt.Errorf("sheet row %q: confirmed_by %q is not a human; confirmation cannot be automated (ADR-0043)", s.URL, s.ConfirmedBy)
 		}
 		// A confirmed label that changes retracts its confirmation, for the same
 		// reason applyExpected retracts one whose values changed: the human confirmed
@@ -852,6 +862,13 @@ func applyLabels(rows []goldRow, sheet, proposed []sheetRow, proposedBy, confirm
 			return nil, fmt.Errorf("proposal for row id %q appears twice", p.ID)
 		}
 		proposedSeen[p.ID] = struct{}{}
+		// A confirmed label that changes retracts its confirmation, exactly as the
+		// sheet path above does: the human confirmed the OLD label, and leaving their
+		// name on a label a proposer has since replaced is the one thing the
+		// confirmation record must never say.
+		if merged[i].LabelProvenance.ConfirmedBy != "" && merged[i].Label != p.Label {
+			merged[i].LabelProvenance.ConfirmedBy, merged[i].LabelProvenance.ConfirmedAt = "", ""
+		}
 		merged[i].Label = p.Label
 		if p.Note != "" {
 			merged[i].LabelProvenance.Note = p.Note
