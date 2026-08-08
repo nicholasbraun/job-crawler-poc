@@ -79,17 +79,28 @@ func hasPositiveEvidence(u crawler.URL, content *crawler.Content) bool {
 	if titleAnnouncesVacancy(content) {
 		return true
 	}
+	// From here down every mark reads the BODY, so fold it once and hand the folded
+	// string to each of them. The marks below run on the majority of the pages this
+	// rung sheds -- everything that reaches rung 8 without a posting-shaped URL -- and
+	// the largest body observed in the capture is ~757 KB, so a fold per mark would be
+	// three full copies of it per page on the gate's hottest path. The fold sits BELOW
+	// the URL, structured-data and Title marks on purpose: a page they admit never
+	// pays for it at all.
+	body := foldedBody(content)
+	// Counted once and reused: the strong threshold and the weak tier read the same
+	// number, and re-deriving it would walk all five groups a second time.
+	groups := vocabularyGroupCount(body)
 	// Enough of a posting's sections that the page is not mentioning a posting, it is
 	// being one.
-	if vocabularyGroupCount(content) >= postingVocabularyGroupsStrong {
+	if groups >= postingVocabularyGroupsStrong {
 		return true
 	}
 	// Weak marks, in agreement only (ADR-0044). Neither admits alone: an apply
 	// affordance alone fires on 33% of non-postings, and it is the entire remaining
 	// bill in the OR form the tiered rule dominates. Dense posting vocabulary is the
 	// anchor; either corroborator completes the pair.
-	return postingVocabulary(content) &&
-		(applyAffordance(content) || titleDesignatesOneRole(content))
+	return groups >= postingVocabularyGroupsRequired &&
+		(applyAffordance(body) || titleDesignatesOneRole(content))
 }
 
 // extractPostingWords are the job words this rung reads inside a URL's path
@@ -261,11 +272,15 @@ func hostOf(rawURL string) string {
 // bare "bewerben" or "apply" token has a second reading on half the careers web
 // ("Bewerbungsprozess", "apply filters"), while a phrase this specific has none.
 //
-// They are deliberately DISJOINT from postingVocabularyGroups: a phrase counted by
-// both marks would turn the tier's agreement requirement into a disjunction for
-// that phrase, which is exactly the shape ADR-0044's measurement rejects. That is
-// why "ihre bewerbung" / "deine bewerbung" sit in the vocabulary group below and
-// not here, even though they read like an offer to apply.
+// They are deliberately DISJOINT from postingVocabularyGroups, and disjoint under
+// SUBSTRING matching, not merely as sets of strings -- both lists are read with
+// strings.Contains, so a vocabulary phrase that is a substring of an apply phrase is
+// counted by both marks off one run of text, turning the tier's agreement
+// requirement into a disjunction for that phrase. That is exactly the shape
+// ADR-0044's measurement rejects, and it is why "ihre bewerbung" / "deine bewerbung"
+// sit in the vocabulary group below and not here even though they read like an offer
+// to apply, and why "your application" is not in that group.
+// TestApplyPhrasesAndVocabularyGroupsAreDisjoint holds the invariant.
 var applyPhrases = []string{
 	// English.
 	"apply now", "apply today", "apply online", "apply for this job",
@@ -279,9 +294,10 @@ var applyPhrases = []string{
 
 // applyAffordance reports whether the page offers an application -- the leakiest of
 // the four marks (it fires on ~33% of non-postings), which is why it is weak-tier
-// and never admits a page on its own.
-func applyAffordance(content *crawler.Content) bool {
-	return containsAny(foldedBody(content), applyPhrases)
+// and never admits a page on its own. body is the page's ALREADY-FOLDED main text
+// (foldedBody); it is passed in rather than folded here so the rung folds once.
+func applyAffordance(body string) bool {
+	return containsAny(body, applyPhrases)
 }
 
 // vacancyTitlePhrases are the whole phrases a Title uses to announce that ONE role
@@ -370,7 +386,13 @@ var postingVocabularyGroups = [][]string{
 		"vollzeit", "teilzeit", "festanstellung", "unbefristet", "befristet",
 		"arbeitszeit", "eintrittsdatum", "berufserfahrung"},
 	// How to apply, and who to ask.
-	{"application process", "how to apply", "your application",
+	//
+	// "your application" is deliberately ABSENT: it is a substring of applyPhrases'
+	// "submit/start/send us your application", so an apply button alone would have
+	// scored this group AND the apply affordance -- the disjunction the tier shape
+	// exists to prevent (see applyPhrases). "how to apply" and the German forms cover
+	// the section heading itself, which is what this group is for.
+	{"application process", "how to apply",
 		"bewerbungsprozess", "ihre bewerbung", "deine bewerbung", "ansprechpartner"},
 }
 
@@ -391,11 +413,11 @@ const postingVocabularyGroupsRequired = 2
 // wrong way. FIVE recovers nothing.
 const postingVocabularyGroupsStrong = 4
 
-// vocabularyGroupCount counts the DISTINCT posting sections the page's text carries.
-// It has no early exit -- the strong-mark threshold needs the count, not a verdict --
-// and postingVocabulary is the thresholded reading of it.
-func vocabularyGroupCount(content *crawler.Content) int {
-	body := foldedBody(content)
+// vocabularyGroupCount counts the DISTINCT posting sections body carries. body is
+// the page's ALREADY-FOLDED main text (foldedBody). It has no early exit -- both
+// thresholds read the count, not a verdict -- and hasPositiveEvidence holds the
+// result in a local so the five groups are walked once per page.
+func vocabularyGroupCount(body string) int {
 	groups := 0
 	for _, group := range postingVocabularyGroups {
 		if containsAny(body, group) {
@@ -405,22 +427,18 @@ func vocabularyGroupCount(content *crawler.Content) int {
 	return groups
 }
 
-// postingVocabulary reports whether the page's text carries at least
-// postingVocabularyGroupsRequired distinct posting sections.
-func postingVocabulary(content *crawler.Content) bool {
-	return vocabularyGroupCount(content) >= postingVocabularyGroupsRequired
-}
-
 // foldedBody returns content's main text case-folded and whitespace-collapsed, so
 // a phrase split across a line break still matches. The parser already collapses
 // whitespace; this repeats it so a captured or hand-written Content is read the
 // same way.
 //
 // It lowercases here rather than leaving it to containsAny even though containsAny
-// would fold it anyway: the two marks call containsAny up to six times per page,
-// and each call would otherwise copy the whole body again. Folding once keeps the
-// rung's cost flat on a gate that runs on every walked page. Idempotent, so the
-// second fold inside containsAny is a no-op.
+// would fold it anyway: the body marks call containsAny up to six times per page,
+// and each call would otherwise copy the whole body again. hasPositiveEvidence
+// calls this ONCE and passes the result to every mark that reads the body, which is
+// what keeps the rung's cost flat on a gate that runs on every walked page. Do not
+// re-fold inside a mark. Idempotent, so the second fold inside containsAny is a
+// no-op.
 func foldedBody(content *crawler.Content) string {
 	return strings.ToLower(strings.Join(strings.Fields(content.MainContent), " "))
 }
