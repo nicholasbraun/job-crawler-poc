@@ -149,7 +149,17 @@ const (
 	// TRIPWIRE on drift, not the guard -- these labels are still LLM-proposed. The
 	// hard zero is #264's, and it may only be argued once
 	// pendingBoundaryConfirmations is 0.
-	boundaryDetailRows = 47
+	//
+	// It fell from 47 to 37 when the 57 consequential rows (every detail and every
+	// ambiguous row) were re-read blind, with the first labeller's answer stripped, and
+	// the 11 disagreements were settled by a third blind read from a different model.
+	// Ten rows lost `detail`: five are a posting header followed by a rail of unrelated
+	// postings or a title plus nothing but a PDF link -- real postings in the world
+	// whose parsed body holds no role -- and five are standing calls (a "fortlaufend"
+	// student-assistant page, an offer of a doctoral project OR a master's thesis,
+	// apprenticeships across two professions). Neither shape is one posting, so
+	// charging the rule with dropping them overstated the guard's target.
+	boundaryDetailRows = 37
 )
 
 // loadCommittedGoldSet reads the committed Extract Gold Set. The working directory
