@@ -56,6 +56,14 @@ func runScoreCapture(args []string) int {
 		s := bench.ScoreExtractStream(stream)
 		report.Stream = &s
 	}
+	// The boundary block is the Boundary Stratum's own, UNWEIGHTED view (ADR-0043,
+	// #263). It is computed separately rather than folded into the stream estimates
+	// for the same reason it is a separate drawing: it is a census of a disagreement
+	// set, so it describes no population and must never be pooled with one.
+	if boundary := boundaryRowsOf(rows); len(boundary) > 0 {
+		b := bench.ScoreExtractBoundary(boundary)
+		report.Boundary = &b
+	}
 	if *jsonOut {
 		if err := bench.EncodeExtractReport(os.Stdout, report); err != nil {
 			fmt.Fprintf(os.Stderr, "llmbench score-capture: encode json: %v\n", err)
@@ -77,6 +85,10 @@ func runScoreCapture(args []string) int {
 type captureRow struct {
 	bench.ExtractVerdictRow
 	Stratum goldStratum
+	// Confirmed records whether a human signed this row's label off. It rides along
+	// for the boundary block, which reports the confirmed/unconfirmed split rather
+	// than presenting an unconfirmed false-drop count as settled evidence.
+	Confirmed bool
 }
 
 // verdictRows projects the replayed rows onto what ScoreExtract folds.
@@ -149,7 +161,8 @@ func replayCaptured(path string, cfg crawler.LLMGateConfig) (rows []captureRow, 
 				Extract: pagegate.ShouldExtract(u, &rec.Content, cfg),
 				Weight:  rec.Weight,
 			},
-			Stratum: rec.Stratum,
+			Stratum:   rec.Stratum,
+			Confirmed: rec.LabelProvenance.ConfirmedBy != "",
 		})
 	}
 	if err := sc.Err(); err != nil {

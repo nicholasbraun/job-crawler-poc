@@ -65,11 +65,12 @@ func TestCommittedGoldSetFreeExtractionFidelity(t *testing.T) {
 		t.Errorf("skipped %d unlabeled rows, want 0 (every committed row carries a label)", skipped)
 	}
 	// The #256 ground truth was proposed over the structural drawing alone, and a
-	// fired row with no expectation is fatal, so the random stratum is out of scope
-	// here by construction. Pinning the count keeps that a decision rather than an
-	// accident: if the filter ever stops biting, this number moves.
-	if outOfScope != randomStratumRows {
-		t.Errorf("skipped %d rows outside the #256 drawing, want %d (the whole random stratum)", outOfScope, randomStratumRows)
+	// fired row with no expectation is fatal, so every later drawing -- the random
+	// stratum and the boundary stratum -- is out of scope here by construction.
+	// Pinning the count keeps that a decision rather than an accident: if the filter
+	// ever stops biting, this number moves.
+	if want := randomStratumRows + boundaryStratumRows; outOfScope != want {
+		t.Errorf("skipped %d rows outside the #256 drawing, want %d (the random and boundary strata)", outOfScope, want)
 	}
 
 	sc := bench.ScoreFreeExtraction(rows).Free

@@ -56,7 +56,7 @@ func runScoreFree(args []string) int {
 		fmt.Fprintf(os.Stderr, "note: scored %d labeled rows, skipped %d unlabeled\n", len(rows), skipped)
 	}
 	if outOfScope > 0 {
-		fmt.Fprintf(os.Stderr, "note: skipped %d rows outside the #256 drawing (the random stratum carries no expected extraction)\n", outOfScope)
+		fmt.Fprintf(os.Stderr, "note: skipped %d rows outside the #256 drawing (only the structural drawing carries expected extractions)\n", outOfScope)
 	}
 
 	report := bench.ScoreFreeExtraction(rows)

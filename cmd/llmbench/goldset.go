@@ -1,7 +1,10 @@
 // This file is llmbench's Extract Gold Set substrate (ADR-0043, #254): the row
 // format, the streaming IO over the extract-decision tap's capture, and the pure
-// sampling / stratification / weighting / review-sheet helpers the three goldset-*
-// verbs drive. It produces no crawler behaviour and touches no network or model.
+// sampling / stratification / weighting / review-sheet helpers the goldset-* verbs
+// drive. The boundary drawing's own machinery -- the two gate configs whose
+// disagreement defines it, and the confirmation sheet it is owed -- lives beside this
+// in goldsetboundary.go, because it replays the gate where nothing here does. This
+// file produces no crawler behaviour and touches no network or model.
 package main
 
 import (
@@ -129,15 +132,27 @@ const (
 	// and a different accept-rate measurement, so they are never pooled with theirs
 	// (see goldDrawing).
 	stratumRandom goldStratum = "random"
+	// stratumBoundary is the ADR-0043 Boundary Stratum (#263): the pages where
+	// TODAY'S blanket accept and the tiered Positive Evidence rule DISAGREE --
+	// computed by replaying both gate configs over the captured content, never
+	// guessed. It is where a false-drop hides, which is why it is the stratum ADR-0043
+	// requires a human to confirm.
+	//
+	// It is a CENSUS of that disagreement's accept half, not a sample: inclusion
+	// probability 1, weight 1, and no stream behind it to weight toward. Like the
+	// random stratum it is its own DRAWING, and its rows never enter the weighted
+	// stream estimates -- a census of a disagreement set describes no population.
+	stratumBoundary goldStratum = "boundary"
 )
 
 // allStrata is the fixed print / iteration order for per-stratum breakdowns.
 // Mirrors bench.AllExtractLabels.
-var allStrata = []goldStratum{stratumLonePosting, stratumAmbiguousPosting, stratumNoPosting, stratumRandom}
+var allStrata = []goldStratum{stratumLonePosting, stratumAmbiguousPosting, stratumNoPosting, stratumRandom, stratumBoundary}
 
 // Valid reports whether s is one of the known strata.
 func (s goldStratum) Valid() bool {
-	return s == stratumLonePosting || s == stratumAmbiguousPosting || s == stratumNoPosting || s == stratumRandom
+	return s == stratumLonePosting || s == stratumAmbiguousPosting || s == stratumNoPosting ||
+		s == stratumRandom || s == stratumBoundary
 }
 
 // goldDrawing groups strata into the DRAW they came from. A drawing is the scope a
@@ -160,6 +175,11 @@ const (
 	// drawingRandom is the #262 draw: a random sample of the stream, stratified on
 	// the verdict alone.
 	drawingRandom goldDrawing = "random"
+	// drawingBoundary is the #263 draw: a census of the pages two gate rules
+	// disagree on. Its weights are all 1 -- there is nothing to normalize toward,
+	// which is exactly why it is a drawing of its own rather than more rows in
+	// another one.
+	drawingBoundary goldDrawing = "boundary"
 )
 
 // Drawing returns the drawing s belongs to, or "" for a stratum-less row -- a raw,
@@ -170,6 +190,8 @@ func (s goldStratum) Drawing() goldDrawing {
 		return drawingStructural
 	case stratumRandom:
 		return drawingRandom
+	case stratumBoundary:
+		return drawingBoundary
 	default:
 		return ""
 	}

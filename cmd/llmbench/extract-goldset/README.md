@@ -2,17 +2,18 @@
 
 Real pages the **live extract stage actually decided on**, stored as the parsed
 `crawler.Content` the pipeline itself produced (ADR-0043, #254). Each row carries the
-page URL, the extractor's original verdict, a three-way label
-(`detail` / `hub-index` / `residue`), its sampling stratum, its sampling weight, and
-its label provenance.
+page URL, the extractor's original verdict, a label
+(`detail` / `hub-index` / `residue`, or `ambiguous` for a page a review could not
+settle), its sampling stratum, its sampling weight, and its label provenance.
 
-The file holds **two drawings**. They share a row format and a file; they share nothing
+The file holds **three drawings**. They share a row format and a file; they share nothing
 else, and their weights are never pooled:
 
 | drawing | strata | rows | drawn from | accept share | what it is for |
 |---|---|---:|---|---:|---|
 | **structural** (#254) | `lone-posting`, `ambiguous-posting`, `no-posting` | 149 | the July capture, 4271 deduped pages | 0.3432 | the Free Extraction's own population, sampled where the mechanism lives |
 | **random** (#262) | `random` | 120 | the August faithful frame, 5162 deduped pages | 0.0753 | a random sample of the stream, so composition, precision and cost describe production |
+| **boundary** (#263) | `boundary` | 188 | the same frame, 5042 candidates | n/a (a census) | the pages the two gate rules **disagree** on — where a false drop hides |
 
 This replaces `../extract-testdata` as the Extract Gate's **evidence base**. Those
 fixtures are synthetic — invented domains, every `detail` page carrying exactly one
@@ -24,8 +25,8 @@ survive as cheap regression cases for the reject rungs and nothing more.
 
 | File | What it is |
 |---|---|
-| `goldset.jsonl` | The substrate. One `goldRow` per line, sorted by URL, ~3.9 MB across both drawings. **Generated — never hand-edited.** |
-| `labels.tsv` | The review surface rendered from the substrate: one line per row, 269 lines. This is the file a reviewer reads in a diff and edits to correct a label. A test asserts the two never drift. |
+| `goldset.jsonl` | The substrate. One `goldRow` per line, sorted by URL, ~6.3 MB across all three drawings. **Generated — never hand-edited.** |
+| `labels.tsv` | The review surface rendered from the substrate: one line per row, 457 lines. This is the file a reviewer reads in a diff and edits to correct a label. A test asserts the two never drift. |
 | `expected.tsv` | The second review surface (#256): one line per row the Free Extraction fires on — its expected title, location and working mode, plus any accepted fire. 70 lines. Also rendered from the substrate, also drift-tested. |
 
 `goldRow` is the extract-capture record (`internal/extractcapture`: `url`, `verdict`,
@@ -303,6 +304,192 @@ from the rubric, a row read carelessly — and it establishes nothing about corr
 model that is confidently wrong the first time is confidently wrong the second. The
 human spot-check below is the only thing that measures correctness.
 
+## The Boundary Stratum (#263)
+
+### What population it describes
+
+> The population is **the 188 pages in the faithful frame where today's blanket accept and
+> the tiered Positive Evidence rule DISAGREE, and the live extractor accepted**. It is a
+> **census** of that disagreement's accept half — every one of them, not a sample of them.
+> A census of a disagreement set describes **no stream**. Nothing here is weighted, nothing
+> here estimates production, and no figure here may be pooled with the random stratum's.
+
+Why this stratum exists at all: the live stream is ~94% non-postings, so the random
+drawing's 120 rows hold only a handful of pages anywhere near the decision boundary. A
+uniform sample simply cannot detect a small false-drop rate. This drawing goes to where
+the drop can happen and takes **all of it**.
+
+Consequences of it being a census, which are also its whole design:
+
+- Inclusion probability is 1, so **every weight is exactly `1.0`** — no accept-share
+  correction, no cap correction, nothing to get wrong. The per-drawing weight balance
+  holds by construction.
+- **No seed and no sampling error** on the number that decides the guard.
+- It is byte-reproducible from (capture, `-since`, the URLs the earlier drawings already
+  committed, the two gate configs).
+
+### How it was computed — and what invalidates it
+
+```bash
+go run ./cmd/llmbench goldset-sample-boundary \
+    -capture <repo>/capture/extract-capture.jsonl \
+    -since 2026-08-07T21:13:00Z
+```
+
+The verb takes **no `-gate-config`, no `-seed` and no quota flags**. The two configs whose
+disagreement *defines* the stratum are functions in `cmd/llmbench/goldsetboundary.go`:
+
+| function | what it is |
+|---|---|
+| `boundaryBaselineConfig()` | today's blanket accept — `RequirePositiveEvidence` set **false explicitly**, so it keeps meaning "the previous behaviour" after #264 flips the default on |
+| `boundaryCandidateConfig()` | the tiered Positive Evidence rule of ADR-0044 / #258, implemented in `internal/pagegate/positive_evidence.go` |
+
+**Changing `internal/pagegate/positive_evidence.go` — or any reject rung above it —
+invalidates this stratum**, because the pages it holds are no longer the pages the two
+rules disagree on. That is not a comment anybody has to remember:
+`TestCommittedBoundaryStratumIsTheDisagreementSet` re-derives the boundary over all 188
+committed rows on every build and says exactly that when it goes red. Re-draw from the
+capture; do not patch the file.
+
+### The arithmetic
+
+| step | count |
+|---|---:|
+| capture lines | 11,772 |
+| dropped oversized (> 512 KB raw) | 4 |
+| distinct URLs (latest `ts` wins) | 8,826 |
+| in the faithful frame (`ts >= 2026-08-07T21:13:00Z`) | 5,204 |
+| minus the 162 URLs the two earlier drawings hold | **5,042** (1,722 accept / 3,320 abstain) |
+
+Replaying both configs over those 5,042 pages:
+
+| config | extract calls | of the 1,722 accepts | of the 3,320 abstains |
+|---|---:|---:|---:|
+| baseline (`RequirePositiveEvidence: false`) | 4,963 | 1,680 | 3,283 |
+| candidate (`RequirePositiveEvidence: true`) | 1,904 | 1,492 | 412 |
+
+The disagreement:
+
+| cell | population | drawn |
+|---|---:|---|
+| boundary ∩ live verdict **accept** | **188** | **all 188 — the census** |
+| boundary ∩ live verdict **abstain** | 2,871 | none — recorded, not drawn |
+| **total boundary** | **3,059** | |
+| reverse direction (candidate extracts what the baseline skips) | **0** | asserted by the verb, never assumed |
+
+That last row matters: the rung is supposed to be purely **additive**, and
+`goldset-sample-boundary` refuses to write anything if it is not, because a rule that had
+stopped being additive would make this one-sided definition silently wrong.
+
+### Why the abstain half is not drawn — a stated limitation
+
+2,871 pages sit in the abstain half and none of them are here. The human confirmation
+budget is the binding constraint, and per row the accept cell is where a false drop
+actually hides:
+
+- The random stratum measured **31 of 40 accept rows as `detail` against 0 of 80 abstain
+  rows.**
+- A page in the abstain cell produces no Job Listing today either way, so dropping it is
+  not a regression in output. A page in the accept cell is one the crawler pays for *and*
+  saves from.
+- The abstain half is not unmeasured: **Shadow Extraction (#259) samples exactly the
+  rejected population live**, and the 0/80 result bounds its `detail` rate.
+
+If Shadow Extraction ever shows real postings among the rejects, drawing the abstain half
+is the follow-up.
+
+### Stated contamination
+
+Every row in this stratum shares one live verdict (accept) and one gate outcome (extracted
+today, skipped by the candidate rule). A labeller who knows the design knows both. That is
+precisely why ADR-0043 requires a **human** on this stratum, and why
+`goldset-confirm-sheet` withholds the verdict, the structured data and the gate's marks
+again — a test asserts it does.
+
+### Label distribution
+
+| | `detail` | `hub-index` | `residue` | `ambiguous` |
+|---|---:|---:|---:|---:|
+| all 188 rows (live verdict accept) | 47 | 57 | 74 | 10 |
+| human-confirmed | 0 | 0 | 0 | 0 |
+
+**One host, `nl.gigroup.com`, contributes 15 of the 188 rows (8%)**, all the same
+location-facet template and all labelled `hub-index`. A single site's template can move
+this stratum's label mix; read the mix with that in mind.
+
+The ten `ambiguous` rows are recorded rather than forced into a class, and are excluded
+from every confusion count, so an undecidable page becomes neither a false drop nor a page
+the gate wrongly extracted. Three recurring shapes account for all ten:
+
+| shape | rows | the tension |
+|---|---:|---|
+| open application against a role family (three Cirque du Soleil casting disciplines, a trainer application) | 4 | requirements and an apply action, but no single opening — and the set already answers this shape both ways (see "Open question" below) |
+| an aggregator or list page whose title names one role but whose parsed body carries a different posting's teaser | 3 | the URL and title say one Job Listing; the captured content shows none of it |
+| a non-careers page (an institute news page, a facility page) carrying one full posting inline | 2 | the page is not a Job Listing, but it is the only place that posting exists |
+| a posting-shaped volunteering opportunity | 1 | tasks, requirements and an apply action, but it is not employment |
+
+### What it says
+
+Under the candidate rule, every one of the 188 rows is skipped by construction, so the
+false-drop count is exactly the `detail` rows:
+
+```
+boundary stratum (n=188, unweighted)
+  count detail 47 / hub-index 57 / residue 74 / ambiguous 10
+  extracted 0, skipped 188
+  false-drops       47   (real Job Listings the Positive Evidence rule drops here)
+  ambiguous-skipped 10   (dropped, unclassifiable: not a false-drop, not forgiven)
+  confirmed         0 of 188
+```
+
+**47 of the 3,059 boundary pages the rule drops are real Job Listings** — 25% of the
+accept half, before any confirmation. That is the finding this stratum exists to produce.
+It is not a bug in the stratum and no label was softened to keep the number down; the
+honest count is what #264 has to argue with.
+
+> **The false-drop count above rests on LLM-proposed labels.** Until
+> `pendingBoundaryConfirmations` is 0 it is one model's opinion of another model's
+> opinion, and no guard may act on it. **#264 must not flip the rung on while that
+> constant is non-zero.**
+
+### How it was labelled — batched, exactly as #262 was
+
+188 worksheet rows is ~55k tokens, far more than a labelling agent can hold alongside the
+rubric and its own output. Never read the worksheet whole, and never read the substrate or
+the capture.
+
+```bash
+go run ./cmd/llmbench goldset-worksheet -stratum boundary -out /tmp/263/ws.jsonl  # 188 lines
+cd /tmp/263 && split -l 16 ws.jsonl b-                                            # b-aa … b-al
+```
+
+Then, **per batch**: read `b-XX`, decide its 16 labels against the rubric below, write
+`p-XX.tsv` (`id<TAB>label<TAB>note`), and move on without re-opening it or carrying it
+forward. Finally `cat p-*.tsv > proposals.tsv` (exactly 188 lines, 188 distinct ids) and
+`goldset-apply -proposals … -proposed-by "llm:<model id> (…)"`. Twelve batches at ~9k
+tokens each; the results accumulate **on disk**, not in context.
+
+### Second-pass consistency check — and what it is not
+
+Twenty rows were re-rendered under a different presentation seed, in a shorter text
+window, and relabelled from scratch:
+
+```bash
+go run ./cmd/llmbench goldset-worksheet -stratum boundary -n 20 -seed second-pass-263 -out /tmp/263/pass2.jsonl
+```
+
+**Agreement: 19/20.** Those labels were *not* written into the substrate.
+
+The single disagreement is itself the finding: `jura.uni-halle.de/einrichtungen/computerpool`
+read as `ambiguous` on the first pass (a facility page carrying one complete student-assistant
+posting further down) and as `residue` on the second, where the shorter window never reached
+the posting. **The label depends on how much of the page the reader sees** — which is one
+more reason the confirmation sheet shows a wider window than the labelling worksheet.
+
+Name the check for what it is: **a same-model re-read, so its agreement rate is an upper
+bound on label reliability, not an independent audit.** The human confirmation is the only
+thing that measures correctness.
+
 ## The labeling protocol
 
 `llmbench goldset-worksheet` renders the labeler's view: the page's own title, two
@@ -349,19 +536,27 @@ structural drawing and 3 in the random one.
 — no network, no model. **Exits 1** on the false-drops below.
 
 ```
-total             269
-extract-calls     265
-extract-call-rate 0.9851  (soft, no threshold)
-overall           precision 0.3811  recall 0.9806  f1 0.5489  accuracy 0.3829
-detail     recall 0.9806  (n=103, extracted 101, skipped 2)
-hub-index  accuracy 0.1053  (n=19,  skipped 2, leaked 17)
-residue    accuracy 0.0000  (n=147, skipped 0, leaked 147)
-residue-count 147, residue-extracted 147
+total             457
+extract-calls     453
+extract-call-rate 0.9912  (soft, no threshold)
+overall           precision 0.3341  recall 0.9867  f1 0.4992  accuracy 0.3356
+detail     recall 0.9867  (n=150, extracted 148, skipped 2)
+hub-index  accuracy 0.0263  (n=76,  skipped 2, leaked 74)
+residue    accuracy 0.0000  (n=221, skipped 0, leaked 221)
+residue-count 221, residue-extracted 221
+ambiguous         10 (excluded from scoring entirely, 10 extracted)
 
 stream-weighted estimates (random stratum, n=120, effective n=92.3)
 composition detail 0.0584 / hub-index 0.0710 / residue 0.8707
 extract-call-rate 0.9944   precision 0.0568   recall 0.9677
+
+boundary stratum (n=188, unweighted)
+extracted 188, skipped 0, false-drops 0, confirmed 0 of 188
 ```
+
+The boundary block reads as all zeroes here **by construction**: every row in that
+stratum is a page today's blanket accept extracts, which is half of what put it there.
+Its information appears only under the candidate config below.
 
 **Read the drop side of this scorecard with suspicion.** The capture tap sits
 *downstream* of the Extract Gate (`job_listing_processor` calls `ShouldExtract` before
@@ -379,23 +574,37 @@ go run ./cmd/llmbench score-capture -in cmd/llmbench/extract-goldset/goldset.jso
 ```
 
 ```
-extract-call-rate 0.5576  (raw, over both drawings — the file's mix, not the stream's)
-detail     recall 0.9709  (n=103, extracted 100, skipped 3)
-residue    accuracy 0.7415 (n=147, skipped 109, leaked 38)
+extract-call-rate 0.3282  (raw, over all three drawings — the file's mix, not the stream's)
+detail     recall 0.6667  (n=150, extracted 100, skipped 50)
+residue    accuracy 0.8281 (n=221, skipped 183, leaked 38)
+ambiguous         10 (excluded from scoring entirely, 0 extracted)
 
 stream-weighted estimates (random stratum, n=120, effective n=92.3)
 extract-call-rate 0.1274   precision 0.4431   recall 0.9677
+
+boundary stratum (n=188, unweighted)
+extracted 0, skipped 188
+false-drops 47, ambiguous-skipped 10, confirmed 0 of 188
 ```
 
-The stream-weighted line is the number to quote: **the rung would cut today's extract
-calls to 12.7% of what they are — a 7.8× reduction — raise the precision of a paid call
-from 5.7% to 44.3%, and leave recall over today's real postings unmoved at 96.8%.** The
-raw 0.5576 above it is the *file's* composition, which oversamples the mechanism's own
-stratum; quoting it would understate the saving by more than 4×. That is precisely the
-confusion this stratum exists to end.
+The stream-weighted line is the number to quote for **cost**: the rung would cut today's
+extract calls to 12.7% of what they are — a 7.8× reduction — raise the precision of a
+paid call from 5.7% to 44.3%, and leave recall over today's real postings unmoved at
+96.8%. The raw 0.3282 above it is the *file's* composition, which now also carries a
+census of the boundary; quoting it would misstate the saving badly. That is precisely the
+confusion the random stratum exists to end.
 
-Both figures are descriptive. They measure the calls the crawler already makes and say
-nothing about what the rung would drop *before* the tap — #263 and #259 measure that.
+The boundary block is the number to quote for **loss**, and it is the one that was
+invisible before this drawing existed: **47 real Job Listings dropped**, plus 10 pages
+nobody could classify. The `detail recall 0.6667` on the raw line is the same 50 drops
+seen through the file's own composition — 47 of them are the boundary census and 3 come
+from the earlier drawings — so it is not a stream estimate either.
+
+The cost figures are descriptive estimates of the calls the crawler already makes. The
+boundary figure is a census of a disagreement and describes no stream at all. Neither may
+be pooled with the other, and neither is a guard yet: **the 47 rests on LLM-proposed
+labels, and #259's Shadow Extraction is the live cross-check on pages the gate rejects
+before the tap.**
 
 ## The Free Extraction fidelity check (#256)
 
@@ -488,6 +697,24 @@ implied, and it deserves a second look before that decorator ships on by default
 path can never reach them; whatever admits and extracts those pages stays the cost
 driver.
 
+**4. The Positive Evidence rung drops 47 real Job Listings on the boundary (#263).**
+Over the 188 pages where today's blanket accept and the tiered rule disagree and the live
+extractor accepted, **25% are pages a reading calls a real posting**, and the rule skips
+every one of them. Four shapes account for most of the 47, and all four fail for the same
+reason — no job word the rung recognises in the URL, no lone structured posting, and too
+little section vocabulary to clear the weak tier:
+
+| shape | example | why the rung misses it |
+|---|---|---|
+| German apprenticeship pages | `team-volkmann.de/ausbildungsberuf/<slug>` | `ausbildung*` is not in `extractPostingWords` |
+| university research positions on institute pages | `biochemie.med.fau.de/<role-slug>` | the role is the whole path, with no section segment before it |
+| student-job ads on university boards | `jobicco.tu-braunschweig.de/de/1763` | numeric slug under a locale segment |
+| `/open-roles/<id>` career sites | `wynncareersmacau.com/open-roles/81`, `consensys.io/open-roles/8068918` | `open-roles` tokenises to `open` + `roles`, neither of which is a posting word |
+
+**These labels are LLM-proposed and unconfirmed**, so
+the 47 is a measurement to argue with, not a verdict; the confirmation pass is what turns
+it into evidence. See "The Boundary Stratum" above.
+
 ## Regenerating and maintaining the set
 
 ```bash
@@ -501,10 +728,21 @@ go run ./cmd/llmbench goldset-sample-random \
     -capture <repo>/capture/extract-capture.jsonl \
     -since 2026-08-07T21:13:00Z -accept-share 0.0753
 
+# 1c. draw the BOUNDARY stratum and APPEND it (also append-only). It takes NO
+#     -gate-config and NO -seed: the two rules whose disagreement defines the
+#     stratum live in goldsetboundary.go, and the drawing is a census, not a sample.
+go run ./cmd/llmbench goldset-sample-boundary \
+    -capture <repo>/capture/extract-capture.jsonl \
+    -since 2026-08-07T21:13:00Z
+
 # 2. the labeling view (a working artifact, never committed)
-#    -stratum / -n cut a deterministic subset: the whole random stratum, or 20 rows of it
+#    -stratum / -n cut a deterministic subset: one stratum whole, or 20 rows of it
 go run ./cmd/llmbench goldset-worksheet -out /tmp/worksheet.jsonl
 go run ./cmd/llmbench goldset-worksheet -stratum random -n 20 -out /tmp/spotcheck.jsonl
+
+# 2b. the CONFIRMATION view for the boundary stratum: 10 Markdown chunks a human
+#     works through one at a time (also a working artifact, never committed)
+go run ./cmd/llmbench goldset-confirm-sheet -out-dir /tmp/263/confirm
 
 # 3. fold labels in from a proposer's id<TAB>label<TAB>note file
 go run ./cmd/llmbench goldset-apply -proposals /tmp/proposals.tsv \
@@ -541,6 +779,46 @@ go run ./cmd/llmbench goldset-apply -confirmed-by "<your name>" -confirm-stratum
 
 # then set pendingHumanConfirmations to 0 in cmd/llmbench/goldset_test.go and commit.
 ```
+
+### The boundary stratum must be FULLY confirmed (#263)
+
+This is the stratum ADR-0043 actually requires a human on. Its 188 rows are the rows a
+**hard-zero false-drop guard is decided on**, and they are exactly where an LLM labeller
+is least reliable — that is what "boundary" means. **0 of 188 are confirmed**, so
+`pendingBoundaryConfirmations` in `../goldset_test.go` is 188 and the build asserts it in
+both directions.
+
+The review is chunked so a partial pass is legitimate, resumable and visible in the diff:
+
+```bash
+# 10 Markdown chunks of 20 rows each, ordered by row id (a working artifact, never committed)
+go run ./cmd/llmbench goldset-confirm-sheet -out-dir /tmp/263/confirm
+
+# read confirm-01.md. Each row shows the URL, the page title, two windows of the page's
+# own text, its outbound-link counts, and the proposed label with its one-clause reason.
+# The live verdict, the JSON-LD and the gate's marks are WITHHELD on purpose: the number
+# this stratum produces is what the gate concluded about these very pages.
+
+# a label you want CHANGED: edit its `label` column in labels.tsv first (which retracts
+# any confirmation on that row), then re-run goldset-apply. Mark a row you genuinely
+# cannot settle `ambiguous` and put the tension in its `note` column.
+go run ./cmd/llmbench goldset-apply
+
+# then confirm EXACTLY the rows you read — each chunk file ends with this command,
+# pre-filled with its own ids:
+go run ./cmd/llmbench goldset-apply -confirmed-by "<your name>" -confirm-ids /tmp/263/confirmed-01.txt
+
+# lower pendingBoundaryConfirmations in cmd/llmbench/goldset_test.go by what you confirmed,
+# in the same commit. Update ambiguousRows and boundaryDetailRows if your reading moved them.
+```
+
+`-confirm-ids` names exactly the rows a human read, so `labels.tsv` shows precisely which
+labels gained a confirmer and the pass can span sessions. `-confirm-stratum boundary` is
+still there for the final sweep once every chunk has been read.
+
+**The number that matters when this reaches 0 is `boundaryDetailRows` — currently 47.**
+That is how many real Job Listings the Positive Evidence rule drops, and it is what #264
+must argue with before flipping the rung on.
 
 ### The random stratum is SPOT-CHECKED, not confirmed (#262)
 

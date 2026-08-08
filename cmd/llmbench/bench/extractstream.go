@@ -43,16 +43,23 @@ type StreamScorecard struct {
 	ExtractCallRate float64 `json:"extract_call_rate"`
 	// Precision is the weighted share of the rows the config extracts that really are
 	// single postings; Recall the weighted share of the stream's real postings it
-	// keeps.
+	// keeps. Both are computed over the SCORED rows alone: a page a review could not
+	// classify is neither a Job Listing nor known not to be one, so it belongs on
+	// neither side of either ratio.
 	Precision float64 `json:"precision"`
 	Recall    float64 `json:"recall"`
 }
 
 // ScoreExtractStream folds weighted extract verdict rows into a StreamScorecard.
-// PURE -- no parser, network, or LLM. Both maps are initialized for every label, so
-// the JSON round-trips and an EMPTY cell is visible rather than absent. A zero total
-// weight yields zeroes rather than a division: an empty or unweighted selection is a
-// caller error the scorer reports by producing nothing, never by panicking.
+// PURE -- no parser, network, or LLM. Both maps are initialized for every label --
+// ambiguous included -- so the JSON round-trips and an EMPTY cell is visible rather
+// than absent. A zero total weight yields zeroes rather than a division: an empty or
+// unweighted selection is a caller error the scorer reports by producing nothing,
+// never by panicking.
+//
+// An ambiguous row stays in Rows, Counts, Composition and ExtractCallRate, because
+// an unclassifiable page is still part of what the crawler pays for, and drops out
+// of Precision and Recall on BOTH sides of the ratio.
 func ScoreExtractStream(rows []ExtractVerdictRow) StreamScorecard {
 	sc := StreamScorecard{
 		Counts:      map[ExtractLabel]int{},
@@ -62,9 +69,14 @@ func ScoreExtractStream(rows []ExtractVerdictRow) StreamScorecard {
 		sc.Counts[l] = 0
 		sc.Composition[l] = 0
 	}
+	sc.Counts[ExtractAmbiguous] = 0
+	sc.Composition[ExtractAmbiguous] = 0
 
 	weightByLabel := map[ExtractLabel]float64{}
-	total, squares, extracted, detail, detailExtracted := 0.0, 0.0, 0.0, 0.0, 0.0
+	total, squares := 0.0, 0.0
+	// extracted counts every extracted row (the bill), extractedScored only the
+	// rows precision may divide by.
+	extracted, extractedScored, detail, detailExtracted := 0.0, 0.0, 0.0, 0.0
 	for _, row := range rows {
 		sc.Rows++
 		sc.Counts[row.Label]++
@@ -73,6 +85,12 @@ func ScoreExtractStream(rows []ExtractVerdictRow) StreamScorecard {
 		squares += row.Weight * row.Weight
 		if row.Extract {
 			extracted += row.Weight
+		}
+		if !row.Label.Scored() {
+			continue
+		}
+		if row.Extract {
+			extractedScored += row.Weight
 		}
 		if row.Label.Positive() {
 			detail += row.Weight
@@ -90,7 +108,7 @@ func ScoreExtractStream(rows []ExtractVerdictRow) StreamScorecard {
 		sc.Composition[label] = weightedRatio(w, total)
 	}
 	sc.ExtractCallRate = weightedRatio(extracted, total)
-	sc.Precision = weightedRatio(detailExtracted, extracted)
+	sc.Precision = weightedRatio(detailExtracted, extractedScored)
 	sc.Recall = weightedRatio(detailExtracted, detail)
 	return sc
 }

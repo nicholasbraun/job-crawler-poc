@@ -142,6 +142,9 @@ func printExtractReport(w io.Writer, r bench.ExtractReport) {
 
 	fmt.Fprintf(w, "  residue-count     %d\n", e.ResidueCount)
 	fmt.Fprintf(w, "  residue-extracted %d\n", e.ResidueExtracted)
+	if e.Ambiguous > 0 {
+		fmt.Fprintf(w, "  ambiguous         %d (excluded from scoring entirely, %d extracted)\n", e.Ambiguous, e.AmbiguousExtracted)
+	}
 
 	// Leaks print plainly to w (never red): a non-posting the gate extracted is a
 	// descriptive finding the reject rungs (#115) will target, not a regression.
@@ -150,6 +153,7 @@ func printExtractReport(w io.Writer, r bench.ExtractReport) {
 	}
 
 	printStreamScorecard(w, r.Stream)
+	printBoundaryScorecard(w, r.Boundary)
 
 	for _, url := range e.FalseDrops {
 		fmt.Fprintln(os.Stderr, red("FALSE-DROP  "+url+" (real single-posting detail rejected by the extract gate)"))
@@ -180,4 +184,33 @@ func printStreamScorecard(w io.Writer, s *bench.StreamScorecard) {
 	fmt.Fprintf(w, "  extract-call-rate %.4f  (share of today's calls this config still makes)\n", s.ExtractCallRate)
 	fmt.Fprintf(w, "  precision         %.4f  (of what it extracts, the share that is a real posting)\n", s.Precision)
 	fmt.Fprintf(w, "  recall            %.4f  (of today's real postings, the share it keeps)\n", s.Recall)
+}
+
+// printBoundaryScorecard writes the Boundary Stratum's own view (ADR-0043, #263),
+// or nothing when the scored rows carried no boundary stratum. Like the stream block
+// it leads with the population, because the mistake available here is the opposite
+// one: these rows are a CENSUS of a disagreement, deliberately unrepresentative, so
+// no share computed over them describes the stream. The false-drops are listed in
+// full -- that count is what a hard-zero guard turns on -- alongside how many of the
+// labels behind it a human has actually signed off.
+func printBoundaryScorecard(w io.Writer, b *bench.BoundaryScorecard) {
+	if b == nil {
+		return
+	}
+	fmt.Fprintf(w, "boundary stratum (n=%d, unweighted)\n", b.Rows)
+	fmt.Fprintln(w, "  These are the pages where today's blanket accept and the tiered Positive Evidence")
+	fmt.Fprintln(w, "  rule DISAGREE -- a census of that disagreement's accept half, not a sample. Nothing")
+	fmt.Fprintln(w, "  here estimates the stream and nothing here is weighted.")
+	for _, label := range append(append([]bench.ExtractLabel{}, bench.AllExtractLabels...), bench.ExtractAmbiguous) {
+		fmt.Fprintf(w, "  count %-10s   %d\n", label, b.Counts[label])
+	}
+	fmt.Fprintf(w, "  extracted         %d\n", b.Extracted)
+	fmt.Fprintf(w, "  skipped           %d\n", b.Skipped)
+	fmt.Fprintf(w, "  false-drops       %d (real Job Listings this config drops here)\n", len(b.FalseDrops))
+	fmt.Fprintf(w, "  ambiguous-skipped %d (dropped, unclassifiable: not a false-drop, not forgiven)\n", b.AmbiguousSkipped)
+	fmt.Fprintf(w, "  confirmed         %d of %d (%d await a human; an unconfirmed drop count is not evidence)\n",
+		b.Confirmed, b.Rows, b.Unconfirmed)
+	for _, url := range b.FalseDrops {
+		fmt.Fprintf(w, "  boundary-drop     %s\n", url)
+	}
 }

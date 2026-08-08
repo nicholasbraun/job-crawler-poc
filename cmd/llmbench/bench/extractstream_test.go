@@ -175,3 +175,37 @@ func TestStreamScorecardRoundTrips(t *testing.T) {
 		t.Errorf("round-tripped %+v, want %+v", got, want)
 	}
 }
+
+// TestScoreExtractStreamKeepsAmbiguousOutOfPrecisionAndRecall pins where an
+// unclassifiable page belongs in a weighted estimate: in the composition and in the
+// call rate, because the crawler pays for it either way, and on NEITHER side of
+// precision or recall, because it is neither a Job Listing nor known not to be one.
+func TestScoreExtractStreamKeepsAmbiguousOutOfPrecisionAndRecall(t *testing.T) {
+	sc := bench.ScoreExtractStream([]bench.ExtractVerdictRow{
+		{URL: "https://a.test/posting", Label: bench.ExtractDetail, Extract: true, Weight: 1},
+		{URL: "https://b.test/about", Label: bench.ExtractResidue, Extract: false, Weight: 2},
+		{URL: "https://c.test/unclear", Label: bench.ExtractAmbiguous, Extract: true, Weight: 1},
+	})
+
+	if sc.Rows != 3 {
+		t.Errorf("Rows = %d, want 3", sc.Rows)
+	}
+	if sc.Counts[bench.ExtractAmbiguous] != 1 {
+		t.Errorf("the ambiguous row was not counted: %v", sc.Counts)
+	}
+	if got := sc.Composition[bench.ExtractAmbiguous]; got != 0.25 {
+		t.Errorf("ambiguous composition = %g, want 0.25 (weight 1 of 4)", got)
+	}
+	// Two of the four weight units are extracted, the ambiguous one included.
+	if sc.ExtractCallRate != 0.5 {
+		t.Errorf("ExtractCallRate = %g, want 0.5 (an unclassifiable page still costs a call)", sc.ExtractCallRate)
+	}
+	// Precision is over the SCORED extractions alone: one detail extracted out of one
+	// scored extraction, not out of two.
+	if sc.Precision != 1 {
+		t.Errorf("Precision = %g, want 1; the ambiguous extraction must not count against it", sc.Precision)
+	}
+	if sc.Recall != 1 {
+		t.Errorf("Recall = %g, want 1", sc.Recall)
+	}
+}

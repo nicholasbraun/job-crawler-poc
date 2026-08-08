@@ -6,12 +6,14 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/nicholasbraun/job-crawler-poc/cmd/llmbench/bench"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
+	"github.com/nicholasbraun/job-crawler-poc/internal/pagegate"
 )
 
 // The Extract Gold Set (cmd/llmbench/extract-goldset/goldset.jsonl) is a
@@ -20,7 +22,7 @@ import (
 // HTML, because a page re-fetched months later is a different page and the drift
 // corrupts the label.
 //
-// It holds TWO DRAWINGS. They share a row format and a file; they share nothing
+// It holds THREE DRAWINGS. They share a row format and a file; they share nothing
 // else, and their weights are never pooled (goldStratum.Drawing).
 //
 // Drawing 1 -- STRUCTURAL (#254), 149 rows. From the extract-decision tap's local
@@ -54,10 +56,29 @@ import (
 // paid for. Every weighted number estimates today's extract bill. It says nothing
 // about pages the gate already rejects: they never reach the tap.
 //
+// Drawing 3 -- BOUNDARY (#263), 188 rows. From the SAME capture and the SAME
+// faithful frame as drawing 2, minus the 162 URLs the first two drawings had
+// committed: 5042 candidates. Both gate configs -- today's blanket accept
+// (boundaryBaselineConfig) and the tiered Positive Evidence rule
+// (boundaryCandidateConfig) -- were replayed over every candidate's captured
+// Content, and the 3059 pages they DISAGREE on were partitioned by the live
+// extractor's verdict: 188 accept, 2871 abstain, 0 reversed. The accept half is
+// taken WHOLE, so this drawing is a census: inclusion probability 1 and every weight
+// exactly 1. The abstain half is recorded and not drawn (extract-goldset/README.md
+// argues why). Drawn by `llmbench goldset-sample-boundary -since
+// 2026-08-07T21:13:00Z`, which takes no seed and no gate-config precisely so the
+// boundary cannot be silently redefined by a flag.
+//
+// ESTIMAND. None. A census of a disagreement set describes no population, which is
+// why its rows are excluded from every weighted stream number and why the boundary
+// scorecard is unweighted.
+//
 // Each row records its labelling in label_provenance. The structural drawing's
 // lone-posting stratum is fully human-confirmed (pendingHumanConfirmations); the
 // random stratum is SPOT-CHECKED instead (randomSpotChecks), which is what ADR-0043
-// asks of it.
+// asks of it; the boundary stratum must be FULLY confirmed
+// (pendingBoundaryConfirmations), because it is the stratum a hard-zero false-drop
+// guard is decided on.
 
 // pendingHumanConfirmations is how many lone-posting rows still carry an
 // LLM-proposed label no human has confirmed. #254 requires 0.
@@ -81,12 +102,14 @@ const pendingHumanConfirmations = 1
 const pendingExpectedConfirmations = 1
 
 const (
-	// structuralStratumRows and randomStratumRows are the two drawings' exact row
-	// counts. They are pinned rather than bounded because a drawing is a fixed act of
-	// sampling: a row appearing or vanishing changes what every weighted number
-	// estimates, and must be seen in a diff.
+	// structuralStratumRows, randomStratumRows and boundaryStratumRows are the three
+	// drawings' exact row counts. They are pinned rather than bounded because a
+	// drawing is a fixed act of sampling: a row appearing or vanishing changes what
+	// every weighted number estimates, and must be seen in a diff. The boundary count
+	// is not even a sample size -- it is the size of the disagreement itself.
 	structuralStratumRows = 149
 	randomStratumRows     = 120
+	boundaryStratumRows   = 188
 	// randomStreamAcceptRate is the accept share the random drawing's weights were
 	// built on -- #261's census measurement of the live extract stream, not the
 	// capture file's own mix. TestCommittedRandomStratumIsWeightedToTheStream
@@ -102,6 +125,32 @@ const (
 // owed. It is 0 -- the labels ship LLM-proposed, and extract-goldset/README.md tells
 // the reviewer exactly which 20 rows to read and how to raise it.
 const randomSpotChecks = 0
+
+const (
+	// pendingBoundaryConfirmations is how many Boundary Stratum rows still carry an
+	// LLM-proposed label no human has confirmed. ADR-0043 requires 0 here -- these are
+	// the rows a hard-zero false-drop guard is decided on, and they are exactly where
+	// an LLM labeller is least reliable, which is what "boundary" means.
+	//
+	// It ships at the full stratum count: the labels were proposed in twelve 16-row
+	// batches and nobody has read them yet. Until it reaches 0, the false-drop count
+	// this stratum produces is one model's opinion of another model's opinion and no
+	// guard may act on it. RATCHET: lower it as confirmations land, never raise it.
+	// extract-goldset/README.md says exactly how.
+	pendingBoundaryConfirmations = 188
+	// ambiguousRows is how many rows carry the ambiguous label -- pages a reading
+	// could not settle, recorded rather than forced into a class. Pinned in BOTH
+	// directions: an ambiguity that appears, or one that quietly resolves, changes
+	// what the confusion counts are computed over and must be seen in a diff.
+	ambiguousRows = 10
+	// boundaryDetailRows is how many Boundary Stratum rows are labelled detail, and
+	// therefore how many Job Listings the tiered Positive Evidence rule drops there:
+	// every row in this stratum is skipped by that rule by construction. It is a
+	// TRIPWIRE on drift, not the guard -- these labels are still LLM-proposed. The
+	// hard zero is #264's, and it may only be argued once
+	// pendingBoundaryConfirmations is 0.
+	boundaryDetailRows = 47
+)
 
 // loadCommittedGoldSet reads the committed Extract Gold Set. The working directory
 // under `go test` is the package directory, so the relative path resolves without
@@ -755,7 +804,7 @@ func TestApplyMergesLabelsAndStampsProvenance(t *testing.T) {
 	t.Run("a proposal lands with its proposer and note", func(t *testing.T) {
 		rows := base()
 		proposals := []sheetRow{{ID: rowID("https://a.test/jobs/1"), Label: bench.ExtractDetail, Note: "one role, apply button"}}
-		got, err := applyLabels(rows, sheetFor(rows), proposals, "llm:test-agent", "", "", stamp)
+		got, err := applyLabels(rows, sheetFor(rows), proposals, "llm:test-agent", "", "", nil, stamp)
 		if err != nil {
 			t.Fatalf("applyLabels: %v", err)
 		}
@@ -777,7 +826,7 @@ func TestApplyMergesLabelsAndStampsProvenance(t *testing.T) {
 		rows := base()
 		rows[0].Label = bench.ExtractDetail
 		rows[0].LabelProvenance = goldProvenance{ProposedBy: "llm:first", ProposedAt: "2026-01-01T00:00:00Z"}
-		got, err := applyLabels(rows, sheetFor(rows), nil, "llm:second", "", "", stamp)
+		got, err := applyLabels(rows, sheetFor(rows), nil, "llm:second", "", "", nil, stamp)
 		if err != nil {
 			t.Fatalf("applyLabels: %v", err)
 		}
@@ -789,7 +838,7 @@ func TestApplyMergesLabelsAndStampsProvenance(t *testing.T) {
 	t.Run("confirmation is scoped to one stratum", func(t *testing.T) {
 		rows := base()
 		rows[0].Label, rows[1].Label = bench.ExtractDetail, bench.ExtractResidue
-		got, err := applyLabels(rows, sheetFor(rows), nil, "", "A Human", stratumLonePosting, stamp)
+		got, err := applyLabels(rows, sheetFor(rows), nil, "", "A Human", stratumLonePosting, nil, stamp)
 		if err != nil {
 			t.Fatalf("applyLabels: %v", err)
 		}
@@ -803,7 +852,7 @@ func TestApplyMergesLabelsAndStampsProvenance(t *testing.T) {
 
 	t.Run("an unlabelled row is never confirmed", func(t *testing.T) {
 		rows := base()
-		got, err := applyLabels(rows, sheetFor(rows), nil, "", "A Human", "", stamp)
+		got, err := applyLabels(rows, sheetFor(rows), nil, "", "A Human", "", nil, stamp)
 		if err != nil {
 			t.Fatalf("applyLabels: %v", err)
 		}
@@ -836,7 +885,7 @@ func TestApplyMergesLabelsAndStampsProvenance(t *testing.T) {
 			"duplicate row":     duplicate,
 		} {
 			before := base()
-			if _, err := applyLabels(before, sheet, nil, "llm:test", "", "", stamp); err == nil {
+			if _, err := applyLabels(before, sheet, nil, "llm:test", "", "", nil, stamp); err == nil {
 				t.Errorf("applyLabels accepted a sheet where %s", name)
 			}
 			if before[0].Label != "" || before[0].LabelProvenance.ProposedBy != "" {
@@ -844,7 +893,7 @@ func TestApplyMergesLabelsAndStampsProvenance(t *testing.T) {
 			}
 		}
 
-		if _, err := applyLabels(rows, good, []sheetRow{{ID: "deadbeefdead", Label: bench.ExtractDetail}}, "", "", "", stamp); err == nil {
+		if _, err := applyLabels(rows, good, []sheetRow{{ID: "deadbeefdead", Label: bench.ExtractDetail}}, "", "", "", nil, stamp); err == nil {
 			t.Error("applyLabels accepted a proposal for an unknown row id")
 		}
 	})
@@ -932,14 +981,17 @@ func TestCommittedGoldSetIsWellFormed(t *testing.T) {
 	if got := len(byDrawing[drawingRandom]); got != randomStratumRows {
 		t.Errorf("the random drawing has %d rows, want %d", got, randomStratumRows)
 	}
-	if want := structuralStratumRows + randomStratumRows; len(rows) != want {
-		t.Errorf("gold set has %d rows, want %d (the two drawings and nothing else)", len(rows), want)
+	if got := len(byDrawing[drawingBoundary]); got != boundaryStratumRows {
+		t.Errorf("the boundary drawing has %d rows, want %d", got, boundaryStratumRows)
+	}
+	if want := structuralStratumRows + randomStratumRows + boundaryStratumRows; len(rows) != want {
+		t.Errorf("gold set has %d rows, want %d (the three drawings and nothing else)", len(rows), want)
 	}
 	// Per drawing AND file-wide. A weight normalizes within its drawing, so the
 	// per-drawing balance is the real invariant; the file-wide one holds only because
 	// each drawing's weights sum to its own row count, and asserting both catches a
 	// drawing that borrowed mass from the other.
-	for _, d := range []goldDrawing{drawingStructural, drawingRandom} {
+	for _, d := range []goldDrawing{drawingStructural, drawingRandom, drawingBoundary} {
 		if !weightsBalanced(byDrawing[d], 1e-6) {
 			t.Errorf("the %s drawing's weights sum to %.6f over %d rows, want equal", d, weightSum(byDrawing[d]), len(byDrawing[d]))
 		}
@@ -960,7 +1012,17 @@ func TestCommittedGoldSetIsWellFormed(t *testing.T) {
 			t.Errorf("url %q does not parse: %v", row.URL, err)
 		}
 		if !row.Label.Valid() {
-			t.Errorf("%s: label %q is not one of detail / hub-index / residue", row.URL, row.Label)
+			t.Errorf("%s: label %q is not one of detail / hub-index / residue / ambiguous", row.URL, row.Label)
+		}
+		// The Boundary Stratum is a census, so its weight is not a sampling artifact
+		// to be recomputed: it is 1 by definition, and any other value means the row
+		// arrived from a drawing that thought it was sampling.
+		if row.Stratum == stratumBoundary && row.Weight != boundaryCensusWeight {
+			t.Errorf("%s: boundary row carries weight %g, want the census weight %g", row.URL, row.Weight, boundaryCensusWeight)
+		}
+		// This drawing takes the accept half of the disagreement only.
+		if row.Stratum == stratumBoundary && !row.Verdict {
+			t.Errorf("%s: boundary row whose live verdict was abstain", row.URL)
 		}
 		if !row.Stratum.Valid() {
 			t.Errorf("%s: stratum %q is unknown", row.URL, row.Stratum)
@@ -1158,6 +1220,12 @@ func TestCommittedGoldSetSpotCheck(t *testing.T) {
 // barely at all. The counts are logged rather than asserted so the numbers are
 // visible under `go test -v` without pretending to be a guard they are not
 // (ADR-0044's random stratum and Shadow Extraction are what close that gap).
+//
+// The Boundary Stratum contributes nothing to the drop side HERE, by construction:
+// every one of its rows is a page today's blanket accept extracts, so under
+// DefaultLLMGateConfig they all extract and none can be a false-drop. Its
+// information appears only when the candidate config is scored --
+// TestCommittedBoundaryFalseDropsUnderTheCandidateRule is where that number lives.
 func TestCommittedGoldSetScoresThroughScoreCapture(t *testing.T) {
 	path := filepath.Join("extract-goldset", goldSetFile)
 	rows, skipped, err := replayCaptured(path, crawler.DefaultLLMGateConfig())
@@ -1515,5 +1583,452 @@ func TestCommittedLabelsSheetMatchesTheGoldSet(t *testing.T) {
 	}
 	if got := renderSheet(rows); string(got) != string(committed) {
 		t.Error("labels.tsv is not the sheet rendered from goldset.jsonl; re-run `llmbench goldset-apply`")
+	}
+}
+
+// boundaryCapture builds a synthetic capture whose four shapes span the whole
+// decision space the boundary draw partitions: a posting-shaped URL both configs
+// extract, a jobs-index terminal both configs skip, and two pages that clear every
+// reject rung while carrying no Positive Evidence -- which today's blanket accept
+// extracts and the tiered rule skips -- one per live verdict, so the accept and
+// abstain halves of the disagreement are both exercised.
+func boundaryCapture(t *testing.T) string {
+	t.Helper()
+	return writeCapture(t,
+		// Agree, both extract: a job word in a non-terminal path segment is strong
+		// Positive Evidence.
+		capturedPage(t, "https://acme.test/jobs/senior-go-engineer", true, "2026-08-08T10:00:00Z", nil, "your tasks and your profile, apply now"),
+		// Agree, both skip: a jobs-index terminal is rejected before rung 8.
+		capturedPage(t, "https://acme.test/careers", true, "2026-08-08T10:00:01Z", nil, "our open roles"),
+		// Disagree, live verdict accept: nothing rejects it, nothing admits it.
+		capturedPage(t, "https://acme.test/company/we-grew", true, "2026-08-08T10:00:02Z", nil, "a note about our year"),
+		// Disagree, live verdict abstain: the same shape on the other side of the tap.
+		capturedPage(t, "https://acme.test/company/we-moved", false, "2026-08-08T10:00:03Z", nil, "a note about our office"),
+	)
+}
+
+// boundarySubstrate writes a one-row substrate the boundary draw can extend, and
+// returns its directory. The row is fully labelled and human-confirmed, so a draw
+// that rewrote rather than appended would be visible.
+func boundarySubstrate(t *testing.T, url string) string {
+	t.Helper()
+	dir := t.TempDir()
+	existing := []goldRow{{
+		URL: url, Verdict: true, TS: "2026-08-08T09:00:00Z",
+		Stratum: stratumNoPosting, Weight: 1, Label: bench.ExtractDetail,
+		LabelProvenance: goldProvenance{ProposedBy: "llm:test", ProposedAt: "2026-08-08T09:00:00Z", ConfirmedBy: "A Human", ConfirmedAt: "2026-08-08T09:00:00Z"},
+		Content:         crawler.Content{Title: "already labelled"},
+	}}
+	if err := writeGoldSet(filepath.Join(dir, goldSetFile), existing); err != nil {
+		t.Fatalf("writeGoldSet: %v", err)
+	}
+	return dir
+}
+
+// TestBoundaryIsTheDisagreementSet pins what the drawing IS: exactly the pages the
+// two gate configs decide differently, split by the live verdict, with the pages
+// they agree on -- in either direction -- left out. The rung is purely additive, so
+// the reversed set must be empty; the verb refuses to write when it is not.
+func TestBoundaryIsTheDisagreementSet(t *testing.T) {
+	capture := boundaryCapture(t)
+	scan, err := scanCapture(capture)
+	if err != nil {
+		t.Fatalf("scanCapture: %v", err)
+	}
+
+	accept, abstain, reversed, err := boundaryDisagreements(capture, scan)
+	if err != nil {
+		t.Fatalf("boundaryDisagreements: %v", err)
+	}
+	if len(reversed) != 0 {
+		t.Errorf("the Positive Evidence rung added %d pages (%v); it is supposed to be purely additive", len(reversed), reversed)
+	}
+	if len(accept) != 1 || accept[0].URL != "https://acme.test/company/we-grew" {
+		t.Errorf("accept half = %v, want exactly the accepted page the two configs disagree on", urlsOf(accept))
+	}
+	if len(abstain) != 1 || abstain[0].URL != "https://acme.test/company/we-moved" {
+		t.Errorf("abstain half = %v, want exactly the abstained page the two configs disagree on", urlsOf(abstain))
+	}
+}
+
+// urlsOf projects candidates to their URLs for a readable failure message.
+func urlsOf(cands []candidate) []string {
+	out := []string{}
+	for _, c := range cands {
+		out = append(out, c.URL)
+	}
+	return out
+}
+
+// TestBoundarySampleAppendsAndCensusWeights proves the verb is append-only with
+// respect to labels -- the file it extends cost a review pass -- and that a census
+// weights every row at exactly 1, which is what makes the per-drawing weight balance
+// hold with no accept-share correction to get wrong.
+func TestBoundarySampleAppendsAndCensusWeights(t *testing.T) {
+	dir := boundarySubstrate(t, "https://acme.test/jobs/already")
+	capture := boundaryCapture(t)
+
+	if code := runGoldSetSampleBoundary([]string{"-capture", capture, "-dir", dir, "-since", "2026-08-07T21:13:00Z"}); code != 0 {
+		t.Fatalf("goldset-sample-boundary exit code %d, want 0", code)
+	}
+
+	merged, err := readGoldSet(filepath.Join(dir, goldSetFile))
+	if err != nil {
+		t.Fatalf("readGoldSet: %v", err)
+	}
+	if len(merged) != 2 {
+		t.Fatalf("substrate has %d rows, want 2 (1 existing + 1 drawn)", len(merged))
+	}
+	drawn := []goldRow{}
+	for _, row := range merged {
+		if row.URL == "https://acme.test/jobs/already" {
+			if row.Label != bench.ExtractDetail || row.LabelProvenance.ConfirmedBy != "A Human" || row.Stratum != stratumNoPosting {
+				t.Errorf("the existing row was rewritten by the draw: %+v", row)
+			}
+			continue
+		}
+		drawn = append(drawn, row)
+		if row.Stratum != stratumBoundary {
+			t.Errorf("%s: drawn in stratum %q, want %q", row.URL, row.Stratum, stratumBoundary)
+		}
+		if row.Weight != boundaryCensusWeight {
+			t.Errorf("%s: weight %g, want the census weight %g", row.URL, row.Weight, boundaryCensusWeight)
+		}
+		if !row.Verdict {
+			t.Errorf("%s: drawn from the abstain half, which this drawing does not take", row.URL)
+		}
+		if row.Label != "" {
+			t.Errorf("%s: a fresh draw arrived labelled %q", row.URL, row.Label)
+		}
+	}
+	if !weightsBalanced(drawn, 1e-9) {
+		t.Errorf("the drawn rows' weights sum to %.9f over %d rows, want equal", weightSum(drawn), len(drawn))
+	}
+}
+
+// TestBoundarySampleRefusesADuplicateURL proves the draw is all-or-nothing: a page
+// the substrate already carries would give one URL two drawings' incompatible
+// weights, and the verb must leave the committed file untouched rather than write a
+// corrupted one. The exclusion normally prevents this, so the guard is exercised by
+// handing validation a draw the exclusion never saw.
+func TestBoundarySampleRefusesADuplicateURL(t *testing.T) {
+	dir := boundarySubstrate(t, "https://acme.test/company/we-grew")
+	before, err := os.ReadFile(filepath.Join(dir, goldSetFile))
+	if err != nil {
+		t.Fatalf("read substrate: %v", err)
+	}
+
+	// The only disagreeing accept page is the one the substrate already holds, so the
+	// exclusion empties the draw and the verb refuses it rather than writing nothing
+	// silently.
+	if code := runGoldSetSampleBoundary([]string{"-capture", boundaryCapture(t), "-dir", dir, "-since", "2026-08-07T21:13:00Z"}); code != 2 {
+		t.Errorf("exit code %d, want 2 (there is no boundary left to draw)", code)
+	}
+	after, err := os.ReadFile(filepath.Join(dir, goldSetFile))
+	if err != nil {
+		t.Fatalf("read substrate: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Error("the verb rewrote the substrate despite refusing the draw")
+	}
+
+	drawn := []goldRow{{URL: "https://acme.test/company/we-grew", Verdict: true, Stratum: stratumBoundary, Weight: boundaryCensusWeight}}
+	committed := map[string]struct{}{"https://acme.test/company/we-grew": {}}
+	if err := validateDrawnBoundaryRows(drawn, committed); err == nil {
+		t.Error("validateDrawnBoundaryRows accepted a row the substrate already carries")
+	}
+}
+
+// TestCommittedBoundaryStratumIsTheDisagreementSet is this drawing's provenance,
+// made executable. The stratum is DEFINED by two gate configs disagreeing, so every
+// committed row must still be a page today's blanket accept extracts and the tiered
+// Positive Evidence rule skips. The moment that rule changes, this test says so --
+// which is the acceptance criterion "a later signal change makes clear the boundary
+// must be re-sampled", asserted rather than written in a comment.
+func TestCommittedBoundaryStratumIsTheDisagreementSet(t *testing.T) {
+	baseline, candidate := boundaryBaselineConfig(), boundaryCandidateConfig()
+	rows := 0
+	for _, row := range loadCommittedGoldSet(t) {
+		if row.Stratum != stratumBoundary {
+			continue
+		}
+		rows++
+		u, err := crawler.NewURL(row.URL)
+		if err != nil {
+			t.Fatalf("%s: %v", row.URL, err)
+		}
+		if !pagegate.ShouldExtract(u, &row.Content, baseline) {
+			t.Errorf("%s: today's blanket accept SKIPS it, so it is not on the boundary. The Boundary Stratum was computed under the reject rungs as they stood at #263; a rung has changed, so the stratum no longer marks the boundary and must be re-drawn from the capture.", row.URL)
+		}
+		if pagegate.ShouldExtract(u, &row.Content, candidate) {
+			t.Errorf("%s: the Positive Evidence rule EXTRACTS it, so it is not on the boundary. The Boundary Stratum was computed under that rule as it stood at #258; the rule has changed, so the stratum no longer marks the boundary and must be re-drawn from the capture.", row.URL)
+		}
+	}
+	if rows != boundaryStratumRows {
+		t.Errorf("the boundary stratum has %d rows, want %d", rows, boundaryStratumRows)
+	}
+}
+
+// TestCommittedBoundaryStratumConfirmation is the ratchet ADR-0043 requires on this
+// stratum: EVERY row must carry a human confirmation, because these are the rows a
+// hard-zero false-drop guard is decided on. It asserts in BOTH directions, so
+// neither a confirmation that quietly vanished nor one that landed without the
+// constant moving can pass unseen, and it refuses a machine confirmer outright so
+// the gap can never be closed by the tooling that opened it.
+func TestCommittedBoundaryStratumConfirmation(t *testing.T) {
+	pending := []string{}
+	for _, row := range loadCommittedGoldSet(t) {
+		if row.Stratum != stratumBoundary {
+			continue
+		}
+		if machineName(row.LabelProvenance.ConfirmedBy) {
+			t.Errorf("%s: confirmed_by %q is a machine; a confirmation must come from a human", row.URL, row.LabelProvenance.ConfirmedBy)
+		}
+		if row.LabelProvenance.ProposedBy == "" || row.LabelProvenance.ProposedAt == "" {
+			t.Errorf("%s: boundary row has no proposer (%+v)", row.URL, row.LabelProvenance)
+		}
+		if row.LabelProvenance.ConfirmedBy == "" {
+			pending = append(pending, row.URL)
+		}
+	}
+	if len(pending) != pendingBoundaryConfirmations {
+		t.Errorf("%d boundary rows await human confirmation but pendingBoundaryConfirmations is %d; set it to %d",
+			len(pending), pendingBoundaryConfirmations, len(pending))
+	}
+	if len(pending) > 0 {
+		t.Logf("awaiting human confirmation on %d boundary rows (see extract-goldset/README.md)", len(pending))
+	}
+}
+
+// TestCommittedGoldSetAmbiguityIsRecorded pins the pages a reading could not settle.
+// They are recorded rather than forced into a class, and excluded from scoring
+// outright, so an undecidable page becomes neither a false-drop nor a leak. The
+// count is asserted in both directions because it changes what every confusion
+// number is computed over, and each one must carry the reason it could not be
+// settled -- an unexplained shrug is not a finding a human can act on.
+func TestCommittedGoldSetAmbiguityIsRecorded(t *testing.T) {
+	ambiguous := []string{}
+	for _, row := range loadCommittedGoldSet(t) {
+		if row.Label != bench.ExtractAmbiguous {
+			continue
+		}
+		ambiguous = append(ambiguous, row.URL)
+		if row.LabelProvenance.Note == "" {
+			t.Errorf("%s: labelled ambiguous with no stated tension", row.URL)
+		}
+		if row.Label.Scored() {
+			t.Errorf("%s: the ambiguous label reports itself as scored", row.URL)
+		}
+	}
+	if len(ambiguous) != ambiguousRows {
+		t.Errorf("%d rows are labelled ambiguous but ambiguousRows is %d; set it to %d", len(ambiguous), ambiguousRows, len(ambiguous))
+	}
+	for _, url := range ambiguous {
+		t.Logf("ambiguous: %s", url)
+	}
+}
+
+// TestBoundaryStratumNeverEntersTheStreamEstimate is the acceptance criterion "the
+// scorer never mixes them into the weighted stream estimates", asserted as a
+// property rather than trusted as a convention: a census of a disagreement set
+// describes no population, so weighting it into the stream numbers would corrupt
+// every one of them. Scoring the committed file with the boundary rows removed must
+// leave the stream scorecard byte-identical.
+func TestBoundaryStratumNeverEntersTheStreamEstimate(t *testing.T) {
+	rows, _, err := replayCaptured(filepath.Join("extract-goldset", goldSetFile), crawler.DefaultLLMGateConfig())
+	if err != nil {
+		t.Fatalf("replayCaptured: %v", err)
+	}
+	withoutBoundary := []captureRow{}
+	for _, row := range rows {
+		if row.Stratum != stratumBoundary {
+			withoutBoundary = append(withoutBoundary, row)
+		}
+	}
+	if len(rows)-len(withoutBoundary) != boundaryStratumRows {
+		t.Fatalf("removed %d boundary rows, want %d", len(rows)-len(withoutBoundary), boundaryStratumRows)
+	}
+
+	all := bench.ScoreExtractStream(verdictRowsIn(rows, stratumRandom))
+	trimmed := bench.ScoreExtractStream(verdictRowsIn(withoutBoundary, stratumRandom))
+	if !reflect.DeepEqual(all, trimmed) {
+		t.Errorf("the boundary rows moved the stream estimate:\n with %+v\n without %+v", all, trimmed)
+	}
+}
+
+// TestCommittedBoundaryFalseDropsUnderTheCandidateRule reports the number this
+// stratum exists to produce: how many real Job Listings the tiered Positive Evidence
+// rule drops on the boundary. Every boundary row is skipped by that rule by
+// construction, so the count is exactly the detail-labelled rows.
+//
+// It is pinned in both directions as a TRIPWIRE on drift, NOT as the guard. These
+// labels are LLM-proposed; until pendingBoundaryConfirmations is 0 the count is one
+// model's opinion of another's, and the hard zero #264 must argue with is not this
+// assertion.
+func TestCommittedBoundaryFalseDropsUnderTheCandidateRule(t *testing.T) {
+	rows, _, err := replayCaptured(filepath.Join("extract-goldset", goldSetFile), boundaryCandidateConfig())
+	if err != nil {
+		t.Fatalf("replayCaptured: %v", err)
+	}
+	sc := bench.ScoreExtractBoundary(boundaryRowsOf(rows))
+
+	if sc.Rows != boundaryStratumRows {
+		t.Fatalf("scored %d boundary rows, want %d", sc.Rows, boundaryStratumRows)
+	}
+	if sc.Extracted != 0 {
+		t.Errorf("the candidate rule extracts %d boundary rows; every one of them is on the boundary because it does not", sc.Extracted)
+	}
+	if len(sc.FalseDrops) != boundaryDetailRows {
+		t.Errorf("the candidate rule drops %d real Job Listings here but boundaryDetailRows is %d; set it to %d",
+			len(sc.FalseDrops), boundaryDetailRows, len(sc.FalseDrops))
+	}
+	if sc.AmbiguousSkipped != ambiguousRows {
+		t.Errorf("%d skipped boundary rows are ambiguous, want %d; an undecidable page is neither a false-drop nor forgiven", sc.AmbiguousSkipped, ambiguousRows)
+	}
+	if sc.Unconfirmed != pendingBoundaryConfirmations {
+		t.Errorf("the scorecard reports %d unconfirmed rows, the ratchet says %d", sc.Unconfirmed, pendingBoundaryConfirmations)
+	}
+	t.Logf("boundary under the Positive Evidence rule: %d rows, %d false-drops, %d ambiguous-skipped, %d confirmed",
+		sc.Rows, len(sc.FalseDrops), sc.AmbiguousSkipped, sc.Confirmed)
+}
+
+// TestConfirmSheetWithholdsTheStructuredData is the confirmation sheet's own
+// discipline. The confirmer answers one question -- is this page one Job Listing? --
+// and the number this stratum exists to produce is what the gate concluded about
+// these very pages, so showing them the gate's conclusion would anchor the answer the
+// rule is being judged against. The page's own words and the proposed label are
+// shown; the structured data and the live verdict are not.
+func TestConfirmSheetWithholdsTheStructuredData(t *testing.T) {
+	rows := []goldRow{{
+		URL: "https://acme.test/company/we-grew", Verdict: true, Stratum: stratumBoundary, Weight: 1,
+		Label:           bench.ExtractResidue,
+		LabelProvenance: goldProvenance{ProposedBy: "llm:test", Note: "a note about the year"},
+		Content: crawler.Content{
+			Title:       "We grew",
+			MainContent: "SENTINEL-BODY a note about our year",
+			JSONLD:      []string{`{"@type":"JobPosting","title":"SENTINEL-STRUCTURED"}`},
+			URLs:        []string{"https://acme.test/jobs/one"},
+		},
+	}}
+
+	chunks := renderConfirmSheet(rows, 20)
+	if len(chunks) != 1 {
+		t.Fatalf("rendered %d chunks over 1 row, want 1", len(chunks))
+	}
+	body := string(chunks[0].Body)
+	for _, want := range []string{rowID(rows[0].URL), rows[0].URL, "SENTINEL-BODY", "residue", "a note about the year", "We grew"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the sheet withholds %q, which the confirmer needs", want)
+		}
+	}
+	for _, leak := range []string{"SENTINEL-STRUCTURED", "JobPosting", "verdict", "@type"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("the sheet shows %q, which would anchor the confirmation on the very signal being judged", leak)
+		}
+	}
+	if len(chunks[0].IDs) != 1 || chunks[0].IDs[0] != rowID(rows[0].URL) {
+		t.Errorf("chunk ids = %v, want the one row it covers", chunks[0].IDs)
+	}
+}
+
+// TestConfirmSheetChunksInOrder pins the working shape of the human pass: fixed-size
+// chunks in row-id order, so a partial pass is legitimate, resumable and quotable,
+// and the order can never group the rows by the answer being checked.
+func TestConfirmSheetChunksInOrder(t *testing.T) {
+	rows := []goldRow{}
+	for i := range 5 {
+		rows = append(rows, goldRow{
+			URL: fmt.Sprintf("https://acme.test/company/%d", i), Verdict: true, Stratum: stratumBoundary, Weight: 1,
+			Label: bench.ExtractResidue, Content: crawler.Content{Title: "t", MainContent: "body"},
+		})
+	}
+
+	chunks := renderConfirmSheet(rows, 2)
+	if len(chunks) != 3 {
+		t.Fatalf("rendered %d chunks over 5 rows at 2 per file, want 3", len(chunks))
+	}
+	seen := []string{}
+	for i, chunk := range chunks {
+		if want := fmt.Sprintf("confirm-%02d.md", i+1); chunk.Name != want {
+			t.Errorf("chunk %d is named %q, want %q", i, chunk.Name, want)
+		}
+		seen = append(seen, chunk.IDs...)
+	}
+	if len(seen) != len(rows) {
+		t.Fatalf("the chunks cover %d rows, want %d", len(seen), len(rows))
+	}
+	for i := 1; i < len(seen); i++ {
+		if seen[i-1] >= seen[i] {
+			t.Errorf("chunk ids are not in ascending row-id order: %v", seen)
+			break
+		}
+	}
+}
+
+// TestApplyConfirmsExactlyTheListedIDs proves a chunk-by-chunk human pass is exact
+// and reviewable: only the rows a human actually read gain a confirmer, so the diff
+// shows precisely what was signed off. Every rejection path is asserted too, because
+// a confirmation applied to the wrong row is worse than one not applied at all.
+func TestApplyConfirmsExactlyTheListedIDs(t *testing.T) {
+	rows := []goldRow{
+		{URL: "https://acme.test/a", Stratum: stratumBoundary, Weight: 1, Label: bench.ExtractDetail,
+			LabelProvenance: goldProvenance{ProposedBy: "llm:test", ProposedAt: "2026-08-08T09:00:00Z"}},
+		{URL: "https://acme.test/b", Stratum: stratumBoundary, Weight: 1, Label: bench.ExtractResidue,
+			LabelProvenance: goldProvenance{ProposedBy: "llm:test", ProposedAt: "2026-08-08T09:00:00Z"}},
+		{URL: "https://acme.test/c", Stratum: stratumBoundary, Weight: 1},
+	}
+	stamp := "2026-08-08T12:00:00Z"
+
+	merged, err := applyLabels(rows, nil, nil, "", "A Human", "", map[string]struct{}{rowID("https://acme.test/a"): {}}, stamp)
+	if err != nil {
+		t.Fatalf("applyLabels: %v", err)
+	}
+	if got := merged[0].LabelProvenance.ConfirmedBy; got != "A Human" {
+		t.Errorf("the listed row was confirmed by %q, want %q", got, "A Human")
+	}
+	if got := merged[0].LabelProvenance.ConfirmedAt; got != stamp {
+		t.Errorf("the listed row was confirmed at %q, want %q", got, stamp)
+	}
+	if got := merged[1].LabelProvenance.ConfirmedBy; got != "" {
+		t.Errorf("an unlisted row was confirmed by %q; -confirm-ids names exactly the rows a human read", got)
+	}
+
+	if _, err := applyLabels(rows, nil, nil, "", "A Human", "", map[string]struct{}{"deadbeefdead": {}}, stamp); err == nil {
+		t.Error("applyLabels accepted a confirmation for a row id that does not exist")
+	}
+	if _, err := applyLabels(rows, nil, nil, "", "A Human", "", map[string]struct{}{rowID("https://acme.test/c"): {}}, stamp); err == nil {
+		t.Error("applyLabels accepted a confirmation for a row carrying no label")
+	}
+
+	if _, err := parseConfirmIDs([]byte("# nothing but a comment\n\n")); err == nil {
+		t.Error("parseConfirmIDs accepted a file naming no row")
+	}
+	ids, err := parseConfirmIDs([]byte("# read on 2026-08-08\nabc123abc123\n\nfff000fff000\n"))
+	if err != nil {
+		t.Fatalf("parseConfirmIDs: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Errorf("parsed %d ids, want 2", len(ids))
+	}
+}
+
+// TestApplyRefusesAnUnreviewableConfirmation covers the flag-level guards on
+// -confirm-ids: two selectors at once leaves it unclear which rows were signed off,
+// and an id list with no confirmer names rows without naming who read them. Both are
+// refused before anything is read or written.
+func TestApplyRefusesAnUnreviewableConfirmation(t *testing.T) {
+	dir := t.TempDir()
+	idFile := filepath.Join(dir, "ids.txt")
+	if err := os.WriteFile(idFile, []byte("abc123abc123\n"), 0o644); err != nil {
+		t.Fatalf("write id file: %v", err)
+	}
+
+	for name, args := range map[string][]string{
+		"two selectors": {"-dir", dir, "-confirmed-by", "A Human", "-confirm-ids", idFile, "-confirm-stratum", string(stratumBoundary)},
+		"no confirmer":  {"-dir", dir, "-confirm-ids", idFile},
+	} {
+		if code := runGoldSetApply(args); code != 2 {
+			t.Errorf("%s: exit code %d, want 2", name, code)
+		}
 	}
 }
