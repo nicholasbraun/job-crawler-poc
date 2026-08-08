@@ -338,3 +338,38 @@ the `lone-posting` labels above is confirming half a claim.
 `goldset-apply` rejects an `llm:` name for `-confirmed-by` and an `llm:`/`script:` name for
 `-expected-confirmed-by`, and a test fails if any row claims a machine confirmer — the gap
 cannot be closed by the tooling that opened it.
+
+## Open question: four rows held back from confirmation
+
+The confirmation pass confirmed 66 of the 70 `lone-posting` labels and 50 of the 54 expected
+extractions. Four rows are deliberately **not** confirmed, because confirming them would
+attest to something the pass found reason to doubt. They are why
+`pendingHumanConfirmations` and `pendingExpectedConfirmations` are 4 rather than 0.
+
+Three carry a closure banner above an otherwise complete ad, and are labelled `detail`:
+
+| row | body opens with |
+| --- | --- |
+| `jobs.drivetlv.com/companies/uveye/jobs/85776469-…` | "This job is no longer accepting applications" |
+| `talent.seedcamp.com/companies/source-dev/jobs/87201415-…` | "This job is no longer accepting applications" |
+| `www.builtincolorado.com/job/product-training-specialist-us/9511859` | "Sorry, this job was removed at 04:14 p.m. …" |
+
+These are the same failure as the sixteen withdrawn ads ADR-0042's narrowing removed, except
+that **the length-ratio test cannot reach them by design**: the page really does render its
+ad, so the declared/rendered ratio stays under the bound. Only the banner marks them, and a
+banner is template text in whatever language the ATS ships. Labelled `detail` they are
+counted among the detail fires the mechanism is measured by, which flatters it; relabelled
+`residue` they become fires on non-postings and the guard goes red until either they are
+accepted like the other three or a second signal is added.
+
+The fourth is a labelling inconsistency rather than a mechanism failure:
+
+| row | labelled | but compare |
+| --- | --- | --- |
+| `career.paradoxplaza.com/jobs/7673868-open-application-for-game-programmers` | `detail` | `careers.coverflex.com/jobs/7117813-spontaneous-application-…`, labelled `residue` |
+
+Both are open applications against a role family with no specific opening. Whichever answer
+is right, the set should give the same one twice.
+
+Resolving these is a decision about what the Corpus should contain, not a stamp. Until it is
+made, the four stay unconfirmed and visible.

@@ -33,22 +33,31 @@ import (
 // the machine-visible count of what is still unconfirmed.
 
 // pendingHumanConfirmations is how many lone-posting rows still carry an
-// LLM-proposed label no human has confirmed. #254 requires 0: the labels were
-// proposed by an agent and a human confirms them at the review gate, so this
-// starts at the full stratum count and MUST be driven to 0 by that commit. It is a
-// RATCHET -- lower it as confirmations land, never raise it.
-const pendingHumanConfirmations = 70
+// LLM-proposed label no human has confirmed. #254 requires 0.
+//
+// It is 4, and those four are held back deliberately rather than left over. The
+// confirmation pass found three pages whose body carries a closure banner ("This
+// job is no longer accepting applications", "this job was removed") above an
+// otherwise complete ad, all labelled detail; and one open-application page
+// labelled detail where the same shape is labelled residue elsewhere in the set.
+// Confirming them would attest that saving a closed job is correct, and would count
+// them among the 51 detail fires the mechanism is measured by.
+//
+// They are the residue of the withdrawn-ad problem that ADR-0042's length-ratio test
+// cannot reach BY DESIGN: these pages do render their ad, so the ratio stays under
+// the bound. Resolving them needs a decision, not a stamp -- see the open question
+// in the Extract Gold Set README. RATCHET: lower it as confirmations land, never
+// raise it.
+const pendingHumanConfirmations = 4
 
 // pendingExpectedConfirmations is how many rows carry an agent-proposed expected
 // extraction that no human has confirmed. #256 requires 0: the values were read off
 // each page's own JSON-LD by scripts/propose-expected.sh and a human confirms them
-// at the review gate. It started at the count of rows the mechanism fires on -- 54
-// since the predicate was narrowed to refuse withdrawn ads, down from the full
-// 70-row lone-posting stratum -- and is 51 because a human has so far confirmed
-// exactly the three residue rows carrying an accepted fire (acceptedFreeOnResidue),
-// the rows the guard's verdict actually turns on. Like pendingHumanConfirmations it
-// is a RATCHET -- lower it as confirmations land, never raise it.
-const pendingExpectedConfirmations = 51
+// at the review gate. It is 4, and they are the same four rows
+// pendingHumanConfirmations holds back: an expected extraction cannot be confirmed
+// while the label it is scored under is in question. Like pendingHumanConfirmations
+// it is a RATCHET -- lower it as confirmations land, never raise it.
+const pendingExpectedConfirmations = 4
 
 // loadCommittedGoldSet reads the committed Extract Gold Set. The working directory
 // under `go test` is the package directory, so the relative path resolves without

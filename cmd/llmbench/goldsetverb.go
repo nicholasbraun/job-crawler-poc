@@ -405,8 +405,13 @@ func applyLabels(rows []goldRow, sheet, proposed []sheetRow, proposedBy, confirm
 		if s.ProposedBy != "" {
 			merged[i].LabelProvenance.ProposedBy = s.ProposedBy
 		}
-		if s.ConfirmedBy != "" {
+		// Stamp the time alongside the name, as the -confirmed-by flag path does: a
+		// confirmer with no timestamp is an incomplete provenance record, and the
+		// well-formedness guard rejects one. A sheet is the only way to confirm a
+		// SUBSET of rows, so this path has to produce the same shape.
+		if s.ConfirmedBy != "" && merged[i].LabelProvenance.ConfirmedBy == "" {
 			merged[i].LabelProvenance.ConfirmedBy = s.ConfirmedBy
+			merged[i].LabelProvenance.ConfirmedAt = stamp
 		}
 	}
 
