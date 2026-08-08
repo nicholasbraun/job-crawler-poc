@@ -17,14 +17,18 @@ import (
 type CatalogDoctorStore struct {
 	companies *CompanyRepository
 	pages     *CareerPageRepository
+	corpus    *CorpusRepository
 }
 
 var _ catalogdoctor.Store = &CatalogDoctorStore{}
 
-// NewCatalogDoctorStore wires the Company and Career Page repositories into a
-// Store the Catalog Doctor can execute a plan against.
-func NewCatalogDoctorStore(companies *CompanyRepository, pages *CareerPageRepository) *CatalogDoctorStore {
-	return &CatalogDoctorStore{companies: companies, pages: pages}
+// NewCatalogDoctorStore wires the Company, Career Page, and Corpus repositories
+// into a Store the Catalog Doctor can execute a plan against. The Corpus is here
+// because the career_page_id FK is strict (migration 0027): a page's Job Listings
+// must be settled -- moved onto a merge survivor, or deleted with a rejected page
+// -- before the page row can go.
+func NewCatalogDoctorStore(companies *CompanyRepository, pages *CareerPageRepository, corpus *CorpusRepository) *CatalogDoctorStore {
+	return &CatalogDoctorStore{companies: companies, pages: pages, corpus: corpus}
 }
 
 // UpsertCompany materialises a re-attribution target, writing the row id back
@@ -51,4 +55,16 @@ func (s *CatalogDoctorStore) DeleteCareerPage(ctx context.Context, id uuid.UUID)
 // split); a missing id is a no-op.
 func (s *CatalogDoctorStore) ReattributeCareerPage(ctx context.Context, id, companyID uuid.UUID) error {
 	return s.pages.Reattribute(ctx, id, companyID)
+}
+
+// DeleteListingsForCareerPage removes the Corpus rows beneath a page the Doctor
+// rejects, clearing the strict career_page_id FK so the page row can be deleted.
+func (s *CatalogDoctorStore) DeleteListingsForCareerPage(ctx context.Context, id uuid.UUID) (int, error) {
+	return s.corpus.DeleteByCareerPage(ctx, id)
+}
+
+// RepointListings moves a merged-away page's Corpus rows onto the surviving page,
+// so a duplicate-collapse keeps its listings instead of losing them.
+func (s *CatalogDoctorStore) RepointListings(ctx context.Context, fromID, toID uuid.UUID) (int, error) {
+	return s.corpus.RepointCareerPage(ctx, fromID, toID)
 }

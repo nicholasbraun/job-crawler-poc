@@ -486,8 +486,15 @@ func TestCareerPageRepositoryDelete(t *testing.T) {
 }
 
 // TestCareerPageRepositoryDeleteWithListings asserts the job_listing.career_page_id
-// FK is ON DELETE SET NULL (migration 0017): deleting a Career Page that owns Corpus
-// listings orphans them (career_page_id -> NULL) instead of raising an FK violation.
+// FK is STRICT (migration 0027): deleting a Career Page that still owns Corpus
+// listings is REJECTED, rather than orphaning them to career_page_id NULL.
+//
+// This is the integrity guard, not an inconvenience. ListOpen selects BY
+// career_page_id, so an orphaned crawl-lane listing can never be reached by the
+// refetch lane again — it would sit Open in the Corpus forever, never re-verified
+// and never closed. Failing loudly instead forces every delete path to decide what
+// its listings deserve; the Catalog Doctor settles them first (Apply), which is how
+// a bad plan gets caught before it destroys Corpus rows rather than after.
 func TestCareerPageRepositoryDeleteWithListings(t *testing.T) {
 	pool := newTestPool(t)
 	companyRepo := postgres.NewCompanyRepository(pool)
@@ -520,18 +527,92 @@ func TestCareerPageRepositoryDeleteWithListings(t *testing.T) {
 		t.Fatalf("seeding listing: %v", err)
 	}
 
-	if err := repo.Delete(t.Context(), id); err != nil {
-		t.Fatalf("deleting a page that owns a listing should not FK-violate: %v", err)
+	if err := repo.Delete(t.Context(), id); err == nil {
+		t.Fatal("deleting a page that still owns a listing must FK-violate, got nil error")
 	}
 
+	// The listing is untouched: the delete failed, so nothing was orphaned.
 	var careerPageID *uuid.UUID
 	if err := pool.QueryRow(t.Context(),
 		`SELECT career_page_id FROM job_listing WHERE canonical_url = $1`, url,
 	).Scan(&careerPageID); err != nil {
-		t.Fatalf("listing should survive the page delete: %v", err)
+		t.Fatalf("listing should be untouched by the rejected delete: %v", err)
 	}
-	if careerPageID != nil {
-		t.Errorf("career_page_id should be NULL after the page delete, got %v", *careerPageID)
+	if careerPageID == nil || *careerPageID != id {
+		t.Errorf("career_page_id = %v, want it still pointing at the page %v", careerPageID, id)
+	}
+	if countCareerPages(t, pool) != 1 {
+		t.Errorf("want the page to survive the rejected delete, got %d pages", countCareerPages(t, pool))
+	}
+
+	// Settling the listings first is what makes the delete legal — the order the
+	// Catalog Doctor's Apply follows.
+	corpusRepo := postgres.NewCorpusRepository(pool)
+	n, err := corpusRepo.DeleteByCareerPage(t.Context(), id)
+	if err != nil {
+		t.Fatalf("deleting the page's listings: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("deleted %d listings, want 1", n)
+	}
+	if err := repo.Delete(t.Context(), id); err != nil {
+		t.Fatalf("deleting a page whose listings are settled should succeed: %v", err)
+	}
+}
+
+// TestCorpusRepointCareerPage covers the Catalog Doctor's Merge path: a duplicate
+// row's listings move onto the surviving page rather than being deleted with it, so
+// collapsing two Catalog rows never costs Corpus rows.
+func TestCorpusRepointCareerPage(t *testing.T) {
+	pool := newTestPool(t)
+	companyRepo := postgres.NewCompanyRepository(pool)
+	repo := postgres.NewCareerPageRepository(pool)
+	corpus := postgres.NewCorpusRepository(pool)
+
+	acme := &crawler.Company{CompanyKey: "softgarden:acme", ATSProvider: "softgarden", DisplayDomain: "acme.career.softgarden.de", Name: "Acme"}
+	if err := companyRepo.Upsert(t.Context(), acme); err != nil {
+		t.Fatalf("seeding company: %v", err)
+	}
+	const survivorURL = "https://acme.career.softgarden.de"
+	const loserURL = "https://acme.career.softgarden.de/en"
+	for _, u := range []string{survivorURL, loserURL} {
+		if err := repo.Upsert(t.Context(), &crawler.CareerPage{
+			CompanyID: acme.ID, URL: u, PolitenessDomain: "acme.career.softgarden.de",
+		}); err != nil {
+			t.Fatalf("seeding career page %s: %v", u, err)
+		}
+	}
+	survivorID := careerPageIDByURL(t, repo, survivorURL)
+	loserID := careerPageIDByURL(t, repo, loserURL)
+
+	const listingURL = "https://acme.career.softgarden.de/vacancies/42"
+	if err := corpus.Save(t.Context(), &crawler.JobListing{
+		CanonicalURL: listingURL, URL: listingURL, Source: crawler.SourceLaneCrawl,
+		DescriptionSource: crawler.DescriptionSourceLLMSummary, CareerPageID: loserID,
+		Title: "Backend Engineer",
+	}); err != nil {
+		t.Fatalf("seeding listing: %v", err)
+	}
+
+	n, err := corpus.RepointCareerPage(t.Context(), loserID, survivorID)
+	if err != nil {
+		t.Fatalf("RepointCareerPage: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("re-pointed %d listings, want 1", n)
+	}
+
+	// The loser now owns nothing, so its row can go; the listing lives on under the
+	// survivor and stays reachable by ListOpen.
+	if err := repo.Delete(t.Context(), loserID); err != nil {
+		t.Fatalf("deleting the merged-away page should succeed once re-pointed: %v", err)
+	}
+	open, err := corpus.ListOpen(t.Context(), survivorID)
+	if err != nil {
+		t.Fatalf("ListOpen: %v", err)
+	}
+	if len(open) != 1 || open[0].CanonicalURL != listingURL {
+		t.Errorf("survivor should own the moved listing, got %+v", open)
 	}
 }
 

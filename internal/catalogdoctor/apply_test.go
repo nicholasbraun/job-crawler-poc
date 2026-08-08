@@ -14,19 +14,23 @@ import (
 // plus per-op detail, and assigns a fresh id on every UpsertCompany (writing it
 // back into the Company) so a re-attribution can read the generated id.
 type fakeStore struct {
-	ops          []string
-	upserted     map[string]uuid.UUID    // company key -> assigned id
-	reattr       map[uuid.UUID]uuid.UUID // page id -> new company id
-	deletedPages map[uuid.UUID]bool
-	deletedCos   map[uuid.UUID]bool
+	ops             []string
+	upserted        map[string]uuid.UUID    // company key -> assigned id
+	reattr          map[uuid.UUID]uuid.UUID // page id -> new company id
+	deletedPages    map[uuid.UUID]bool
+	deletedCos      map[uuid.UUID]bool
+	deletedListings map[uuid.UUID]bool      // page id whose listings were deleted
+	repointed       map[uuid.UUID]uuid.UUID // loser page id -> survivor page id
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		upserted:     map[string]uuid.UUID{},
-		reattr:       map[uuid.UUID]uuid.UUID{},
-		deletedPages: map[uuid.UUID]bool{},
-		deletedCos:   map[uuid.UUID]bool{},
+		upserted:        map[string]uuid.UUID{},
+		reattr:          map[uuid.UUID]uuid.UUID{},
+		deletedPages:    map[uuid.UUID]bool{},
+		deletedCos:      map[uuid.UUID]bool{},
+		deletedListings: map[uuid.UUID]bool{},
+		repointed:       map[uuid.UUID]uuid.UUID{},
 	}
 }
 
@@ -56,6 +60,18 @@ func (s *fakeStore) ReattributeCareerPage(_ context.Context, id, companyID uuid.
 	s.reattr[id] = companyID
 	s.ops = append(s.ops, "reattr:"+id.String())
 	return nil
+}
+
+func (s *fakeStore) DeleteListingsForCareerPage(_ context.Context, id uuid.UUID) (int, error) {
+	s.deletedListings[id] = true
+	s.ops = append(s.ops, "dellistings:"+id.String())
+	return 0, nil
+}
+
+func (s *fakeStore) RepointListings(_ context.Context, fromID, toID uuid.UUID) (int, error) {
+	s.repointed[fromID] = toID
+	s.ops = append(s.ops, "repoint:"+fromID.String())
+	return 0, nil
 }
 
 func countOps(ops []string, prefix string) int {
@@ -206,6 +222,67 @@ func TestApply(t *testing.T) {
 
 		if len(store.ops) != 0 {
 			t.Errorf("all-keep result should issue no ops, got %v", store.ops)
+		}
+	})
+
+	// A merge loser is the SAME page as its survivor, so its Job Listings are valid
+	// and must land on the survivor. Deleting them (or orphaning them, which the
+	// strict FK forbids) would lose real Corpus rows to a bookkeeping correction.
+	t.Run("a merge hands its listings to the survivor before the page goes", func(t *testing.T) {
+		store := newFakeStore()
+
+		survivor := newPage(uuid.New(), "https://acme.career.softgarden.de")
+		loser := newPage(uuid.New(), "https://acme.career.softgarden.de/en")
+
+		result := catalogdoctor.Result{
+			Pages: []catalogdoctor.PageDisposition{
+				{Page: survivor, Action: catalogdoctor.Keep},
+				{Page: loser, Action: catalogdoctor.Merge, MergeInto: survivor.ID},
+			},
+		}
+
+		if err := catalogdoctor.Apply(t.Context(), store, result); err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+
+		if got := store.repointed[loser.ID]; got != survivor.ID {
+			t.Errorf("listings re-pointed to %v, want the survivor %v", got, survivor.ID)
+		}
+		if store.deletedListings[loser.ID] {
+			t.Error("a merge must never delete listings — they belong to the survivor")
+		}
+		if repoint, del := firstIndex(store.ops, "repoint:"), firstIndex(store.ops, "delpage:"); repoint >= del {
+			t.Errorf("repoint at %d must precede the page delete at %d (ops=%v)", repoint, del, store.ops)
+		}
+	})
+
+	// A rejected page was never a valid Career Page, so the crawl-lane listings
+	// beneath it are mis-attributed by construction and go with it. They must be
+	// settled first: the career_page_id FK is strict, so a page delete that leaves
+	// listings behind fails outright.
+	t.Run("a delete takes its listings with it, before the page goes", func(t *testing.T) {
+		store := newFakeStore()
+
+		rejected := newPage(uuid.New(), "https://goodjobs.eu/jobs")
+
+		result := catalogdoctor.Result{
+			Pages: []catalogdoctor.PageDisposition{
+				{Page: rejected, Action: catalogdoctor.Delete, Reason: "aggregator host"},
+			},
+		}
+
+		if err := catalogdoctor.Apply(t.Context(), store, result); err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+
+		if !store.deletedListings[rejected.ID] {
+			t.Error("a rejected page's listings must be deleted with it")
+		}
+		if _, repointed := store.repointed[rejected.ID]; repointed {
+			t.Error("a delete must not re-point listings — there is no survivor")
+		}
+		if dl, dp := firstIndex(store.ops, "dellistings:"), firstIndex(store.ops, "delpage:"); dl >= dp {
+			t.Errorf("listing delete at %d must precede the page delete at %d (ops=%v)", dl, dp, store.ops)
 		}
 	})
 }

@@ -32,9 +32,26 @@ func Apply(ctx context.Context, store Store, result Result) error {
 		}
 	}
 
+	// Each page's Job Listings are settled before the page row goes, because the
+	// career_page_id FK is strict (migration 0027) -- and the right fate depends on
+	// WHY the page is going, which is knowable only here:
+	//
+	//   Merge  -- the loser is the same page as the survivor, so its listings are
+	//             valid and move onto it. (Orphaning or deleting them would lose
+	//             real Corpus rows to a bookkeeping correction.)
+	//   Delete -- the page was never a valid Career Page, so the crawl-lane
+	//             listings beneath it are mis-attributed by construction and go
+	//             with it.
 	for _, d := range result.Pages {
 		if d.Action != Delete && d.Action != Merge {
 			continue
+		}
+		if d.Action == Merge {
+			if _, err := store.RepointListings(ctx, d.Page.ID, d.MergeInto); err != nil {
+				return fmt.Errorf("catalogdoctor: re-point listings of merged page %s: %w", d.Page.URL, err)
+			}
+		} else if _, err := store.DeleteListingsForCareerPage(ctx, d.Page.ID); err != nil {
+			return fmt.Errorf("catalogdoctor: delete listings of rejected page %s: %w", d.Page.URL, err)
 		}
 		if err := store.DeleteCareerPage(ctx, d.Page.ID); err != nil {
 			return fmt.Errorf("catalogdoctor: delete career page %s: %w", d.Page.URL, err)

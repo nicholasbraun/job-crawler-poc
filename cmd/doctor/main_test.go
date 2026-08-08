@@ -12,7 +12,9 @@ import (
 
 // TestPrintReport pins the dry-run report format: the per-action summary, one
 // line per non-Keep disposition (Keep rows are omitted), the re-attribution
-// target arrow, and the orphaned Companies.
+// target arrow, the Job Listings riding on each touched page, and the orphaned
+// Companies. The listing annotation distinguishes the destructive case from the
+// lossless one, so a plan that would delete Corpus rows is legible before --apply.
 func TestPrintReport(t *testing.T) {
 	keep := &crawler.CareerPage{ID: uuid.New(), URL: "https://acme.com/careers"}
 	del := &crawler.CareerPage{ID: uuid.New(), URL: "https://indeed.com/jobs/123"}
@@ -35,7 +37,7 @@ func TestPrintReport(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	printReport(&buf, len(result.Pages), result)
+	printReport(&buf, len(result.Pages), result, map[uuid.UUID]int{del.ID: 7, merged.ID: 3})
 	out := buf.String()
 
 	wantContains := []string{
@@ -48,6 +50,8 @@ func TestPrintReport(t *testing.T) {
 		"https://indeed.com/jobs/123  (aggregator host)",
 		"-> join:fugro",
 		"duplicate of https://acme.com/careers",
+		"[DELETES 7 listings]", // a rejected page takes its listings with it
+		"[moves 3 listings]",   // a merge loser hands its listings to the survivor
 		"orphan company   join.com",
 	}
 	for _, want := range wantContains {

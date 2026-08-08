@@ -17,7 +17,8 @@ func TestCatalogDoctorApplyEndToEnd(t *testing.T) {
 	ctx := t.Context()
 	companyRepo := postgres.NewCompanyRepository(pool)
 	pageRepo := postgres.NewCareerPageRepository(pool)
-	store := postgres.NewCatalogDoctorStore(companyRepo, pageRepo)
+	corpusRepo := postgres.NewCorpusRepository(pool)
+	store := postgres.NewCatalogDoctorStore(companyRepo, pageRepo, corpusRepo)
 
 	seedPage := func(companyKey, ats, domain, url string) {
 		t.Helper()

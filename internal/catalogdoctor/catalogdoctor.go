@@ -82,8 +82,18 @@ type Store interface {
 	// DeleteCompany removes a Company. Deleting one that still owns Career Pages
 	// is rejected by the FK; the Doctor always removes/moves its pages first.
 	DeleteCompany(ctx context.Context, id uuid.UUID) error
-	// DeleteCareerPage removes a Career Page; a missing id is a no-op.
+	// DeleteCareerPage removes a Career Page; a missing id is a no-op. The
+	// career_page_id FK on job_listing is deliberately strict (migration 0027), so
+	// the Doctor must settle a page's listings before calling this.
 	DeleteCareerPage(ctx context.Context, id uuid.UUID) error
+	// DeleteListingsForCareerPage removes the Job Listings under a rejected page --
+	// which was never a valid Career Page, so they are mis-attributed by
+	// construction -- and returns the count.
+	DeleteListingsForCareerPage(ctx context.Context, id uuid.UUID) (int, error)
+	// RepointListings moves the Job Listings under a merged-away page onto the
+	// surviving row and returns the count. A merge loser is the SAME page as its
+	// survivor, so its listings are valid and follow it rather than being deleted.
+	RepointListings(ctx context.Context, fromID, toID uuid.UUID) (int, error)
 	// ReattributeCareerPage re-points a Career Page's owning Company; a missing
 	// id is a no-op.
 	ReattributeCareerPage(ctx context.Context, id, companyID uuid.UUID) error

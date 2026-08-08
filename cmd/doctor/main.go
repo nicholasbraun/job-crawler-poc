@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/nicholasbraun/job-crawler-poc/internal/catalogdoctor"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/postgres"
@@ -47,6 +48,7 @@ func main() {
 
 	companies := postgres.NewCompanyRepository(pool)
 	pages := postgres.NewCareerPageRepository(pool)
+	corpus := postgres.NewCorpusRepository(pool)
 
 	pageList, err := pages.List(ctx)
 	if err != nil {
@@ -60,14 +62,29 @@ func main() {
 	}
 
 	result := catalogdoctor.Plan(pageList, companyList)
-	printReport(os.Stdout, len(pageList), result)
+
+	// Count the Job Listings riding on each page the plan touches. Plan is pure, so
+	// this read lives here in the driver -- and it is worth the query: a plan that
+	// deletes a page owning listings is exactly the one to inspect before --apply.
+	affected := []uuid.UUID{}
+	for _, d := range result.Pages {
+		if d.Action != catalogdoctor.Keep {
+			affected = append(affected, d.Page.ID)
+		}
+	}
+	listingCounts, err := corpus.CountByCareerPages(ctx, affected)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "doctor: %v\n", err)
+		os.Exit(1)
+	}
+	printReport(os.Stdout, len(pageList), result, listingCounts)
 
 	if !*apply {
 		fmt.Fprintln(os.Stdout, "dry-run: re-run with --apply to execute")
 		return
 	}
 
-	store := postgres.NewCatalogDoctorStore(companies, pages)
+	store := postgres.NewCatalogDoctorStore(companies, pages, corpus)
 	if err := catalogdoctor.Apply(ctx, store, result); err != nil {
 		fmt.Fprintf(os.Stderr, "doctor: %v\n", err)
 		os.Exit(1)
@@ -76,8 +93,11 @@ func main() {
 }
 
 // printReport writes the plan to w: a per-action summary, then one line per
-// non-Keep page disposition, then the orphaned Companies.
-func printReport(w io.Writer, total int, result catalogdoctor.Result) {
+// non-Keep page disposition, then the orphaned Companies. A disposition that
+// carries Job Listings is annotated with how many and what becomes of them, so the
+// Corpus cost of a plan is legible before --apply rather than discovered after.
+// listingCounts is keyed by Career Page id; a page absent from it owns none.
+func printReport(w io.Writer, total int, result catalogdoctor.Result, listingCounts map[uuid.UUID]int) {
 	counts := map[catalogdoctor.Action]int{}
 	for _, d := range result.Pages {
 		counts[d.Action]++
@@ -98,6 +118,16 @@ func printReport(w io.Writer, total int, result catalogdoctor.Result) {
 		line := fmt.Sprintf("  %-12s %s  (%s)", d.Action, d.Page.URL, d.Reason)
 		if d.Action == catalogdoctor.Reattribute && d.Target != nil {
 			line += "  -> " + d.Target.CompanyKey
+		}
+		if n := listingCounts[d.Page.ID]; n > 0 {
+			switch d.Action {
+			case catalogdoctor.Delete:
+				line += fmt.Sprintf("  [DELETES %d listings]", n)
+			case catalogdoctor.Merge:
+				line += fmt.Sprintf("  [moves %d listings]", n)
+			default:
+				line += fmt.Sprintf("  [%d listings]", n)
+			}
 		}
 		fmt.Fprintln(w, line)
 	}

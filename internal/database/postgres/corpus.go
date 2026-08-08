@@ -129,6 +129,74 @@ func (r *CorpusRepository) ListOpen(ctx context.Context, careerPageID uuid.UUID)
 	return listings, nil
 }
 
+// DeleteByCareerPage removes every Job Listing under careerPageID and returns the
+// count. It serves the Catalog Doctor's Delete disposition (ADR-0011): a page the
+// Doctor rejects was never a valid Career Page, so the crawl-lane listings beneath
+// it are mis-attributed by construction and go with it. This is why the
+// career_page_id FK is deliberately NOT ON DELETE SET NULL (migration 0027) --
+// orphaning would leave them unreachable by ListOpen and therefore Open forever.
+// Deleting under a page with no listings is a no-op returning 0.
+func (r *CorpusRepository) DeleteByCareerPage(ctx context.Context, careerPageID uuid.UUID) (int, error) {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM job_listing WHERE career_page_id = $1`, careerPageID)
+	if err != nil {
+		return 0, fmt.Errorf("postgres: error deleting listings for career page: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// RepointCareerPage moves every Job Listing under fromID to toID and returns the
+// count. It serves the Catalog Doctor's Merge disposition: the loser row is the
+// same page as the survivor, so its listings are VALID and must follow it rather
+// than be deleted with it. Only career_page_id changes -- not closed_at, last_seen
+// or the lifecycle counters -- because a merge is a correction, not a sighting.
+//
+// A listing whose canonical_url already exists under toID would violate the
+// canonical_url UNIQUE constraint; the violation is returned wrapped rather than
+// swallowed, since collapsing two Corpus rows is a lifecycle decision this
+// primitive must not make silently.
+func (r *CorpusRepository) RepointCareerPage(ctx context.Context, fromID, toID uuid.UUID) (int, error) {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE job_listing SET career_page_id = $2 WHERE career_page_id = $1`, fromID, toID)
+	if err != nil {
+		return 0, fmt.Errorf("postgres: error re-pointing listings to merge survivor: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// CountByCareerPages returns the number of Job Listings under each of ids, keyed by
+// Career Page id. Pages with no listings are absent from the map rather than zero.
+// It backs the Catalog Doctor's dry-run report, so the blast radius of a plan is
+// visible BEFORE --apply: a plan that deletes a page owning listings is exactly the
+// case worth inspecting by hand. Returns an empty map for no ids.
+func (r *CorpusRepository) CountByCareerPages(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]int, error) {
+	counts := map[uuid.UUID]int{}
+	if len(ids) == 0 {
+		return counts, nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT career_page_id, count(*)
+		FROM job_listing
+		WHERE career_page_id = ANY($1)
+		GROUP BY career_page_id`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: error counting listings by career page: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id uuid.UUID
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, fmt.Errorf("postgres: error scanning listing count: %w", err)
+		}
+		counts[id] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: error counting listings by career page: %w", err)
+	}
+	return counts, nil
+}
+
 // UpdateDescription rewrites one listing's stored Posting Body and its Description
 // Source marker, and touches nothing else (ADR-0041): not closed_at, last_seen or
 // inconclusive_streak, so a heal can never resurrect a Closed posting nor forge a
