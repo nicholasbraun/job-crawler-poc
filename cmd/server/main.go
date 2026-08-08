@@ -750,7 +750,7 @@ func newFactory(
 			// stream also means measurement can never eat the extract stage's backlog
 			// capacity. A zero rate builds nothing and leaves the walk's hook nil.
 			closeShadow := func() {}
-			var onShadowExtract func(ctx context.Context, jl *crawler.RawJobListing) error
+			var onShadowExtract func(ctx context.Context, sample *crawler.ShadowSample) error
 			if shadowExtractRate > 0 {
 				// Its own cancellable context so Engine.Close can STOP this lane rather than
 				// DRAIN it: llmstream drains on a clean finish, and draining a backlog of
@@ -760,7 +760,7 @@ func newFactory(
 				// (llmstream.DeleteRun).
 				shadowCtx, cancelShadow := context.WithCancel(ctx)
 				shadowStage := llmstream.NewStage(redisClient, runID, llmobs.KindShadow,
-					func() processor.Processor[crawler.RawJobListing] {
+					func() processor.Processor[crawler.ShadowSample] {
 						return shadowextractionprocessor.NewProcessor(&shadowextractionprocessor.Config{
 							// The SAME extractor the real lane uses, so a shadow verdict is the
 							// verdict this page would have received had the gate kept it.
@@ -768,10 +768,10 @@ func newFactory(
 							Recorder:  llmRecorder,
 						})
 					},
-					llmstream.WithWorkers[crawler.RawJobListing](shadowMaxWorkers),
-					llmstream.WithRecorder[crawler.RawJobListing](llmRecorder),
-					llmstream.WithMaxBacklog[crawler.RawJobListing](shadowMaxBacklog),
-					llmstream.WithMinIdle[crawler.RawJobListing](llmConfig.Timeout+time.Minute),
+					llmstream.WithWorkers[crawler.ShadowSample](shadowMaxWorkers),
+					llmstream.WithRecorder[crawler.ShadowSample](llmRecorder),
+					llmstream.WithMaxBacklog[crawler.ShadowSample](shadowMaxBacklog),
+					llmstream.WithMinIdle[crawler.ShadowSample](llmConfig.Timeout+time.Minute),
 				)
 				if err := shadowStage.Start(shadowCtx); err != nil {
 					// A measurement lane must never fail a Collection Cycle, and failing here
@@ -781,12 +781,13 @@ func newFactory(
 					cancelShadow()
 				} else {
 					closeShadow = func() { cancelShadow(); shadowStage.Close() }
-					onShadowExtract = func(ctx context.Context, jl *crawler.RawJobListing) error {
+					onShadowExtract = func(ctx context.Context, sample *crawler.ShadowSample) error {
 						// Bounded: a full shadow backlog must drop the sample, never park a walk
-						// worker on capacity. Enqueue honours the context (awaitCapacity).
+						// worker on capacity. Enqueue honours the context (awaitCapacity). A
+						// returned error is the walk's cue to count the sample as shed.
 						ctx, cancel := context.WithTimeout(ctx, shadowEnqueueTimeout)
 						defer cancel()
-						return shadowStage.Enqueue(ctx, jl)
+						return shadowStage.Enqueue(ctx, sample)
 					}
 				}
 			}

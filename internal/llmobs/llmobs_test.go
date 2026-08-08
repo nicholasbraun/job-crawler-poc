@@ -87,7 +87,8 @@ func TestNopRecorderRecordsNothing(t *testing.T) {
 	rec := llmobs.Nop()
 	rec.Call(t.Context(), llmobs.KindClassify, llmobs.OutcomeError, 0)
 	rec.Gated(t.Context(), llmobs.KindExtract, llmobs.ReasonIrrelevant)
-	rec.Shadow(t.Context(), llmobs.ShadowAccept)
+	rec.Shadow(t.Context(), llmobs.ShadowAccept, "positive_evidence")
+	rec.ShadowDropped(t.Context(), "positive_evidence")
 	rec.Content(t.Context(), llmobs.KindClassify, "x")
 
 	for _, kv := range toMap(stats.Summary()) {

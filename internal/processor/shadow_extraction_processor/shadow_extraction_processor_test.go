@@ -9,6 +9,7 @@ import (
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/llmobs"
+	"github.com/nicholasbraun/job-crawler-poc/internal/pagegate"
 	shadowextractionprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/shadow_extraction_processor"
 )
 
@@ -32,6 +33,7 @@ func (e *stubExtractor) Extract(_ context.Context, raw crawler.RawJobListing) (c
 type spyRecorder struct {
 	t        *testing.T
 	verdicts []llmobs.ShadowVerdict
+	rungs    []string
 }
 
 func (s *spyRecorder) Call(context.Context, llmobs.Kind, llmobs.Outcome, time.Duration) {
@@ -42,8 +44,13 @@ func (s *spyRecorder) Gated(context.Context, llmobs.Kind, llmobs.Reason) {
 	s.t.Error("a Shadow Extraction must never be recorded as a gate resolution")
 }
 
-func (s *spyRecorder) Shadow(_ context.Context, v llmobs.ShadowVerdict) {
+func (s *spyRecorder) Shadow(_ context.Context, v llmobs.ShadowVerdict, rung string) {
 	s.verdicts = append(s.verdicts, v)
+	s.rungs = append(s.rungs, rung)
+}
+
+func (s *spyRecorder) ShadowDropped(context.Context, string) {
+	s.t.Error("the shadow processor never sheds a sample; only the walk that enqueues one does")
 }
 
 func (s *spyRecorder) Content(context.Context, llmobs.Kind, string)          {}
@@ -51,15 +58,18 @@ func (s *spyRecorder) Retry(context.Context, llmobs.Kind)                    {}
 func (s *spyRecorder) DeadLetter(context.Context, llmobs.Kind)               {}
 func (s *spyRecorder) QueueDepth(context.Context, llmobs.Kind, int64, int64) {}
 
-func rawListing(t *testing.T, rawURL string) *crawler.RawJobListing {
+func shadowSample(t *testing.T, rawURL string, rung pagegate.ExtractRung) *crawler.ShadowSample {
 	t.Helper()
 	u, err := crawler.NewURL(rawURL)
 	if err != nil {
 		t.Fatalf("NewURL(%q): %v", rawURL, err)
 	}
-	return &crawler.RawJobListing{
-		URL:     u,
-		Content: crawler.Content{Title: "Senior Engineer", MainContent: "we are hiring"},
+	return &crawler.ShadowSample{
+		RawJobListing: crawler.RawJobListing{
+			URL:     u,
+			Content: crawler.Content{Title: "Senior Engineer", MainContent: "we are hiring"},
+		},
+		Rung: string(rung),
 	}
 }
 
@@ -91,7 +101,8 @@ func TestProcessRecordsTheExtractorVerdict(t *testing.T) {
 				Recorder: rec,
 			})
 
-			if err := p.Process(t.Context(), rawListing(t, "https://acme.com/careers")); err != nil {
+			sample := shadowSample(t, "https://acme.com/careers", pagegate.RungPositiveEvidence)
+			if err := p.Process(t.Context(), sample); err != nil {
 				t.Fatalf("Process returned %v, want nil (a shadow sample is acked, never retried)", err)
 			}
 
@@ -100,6 +111,9 @@ func TestProcessRecordsTheExtractorVerdict(t *testing.T) {
 			}
 			if rec.verdicts[0] != tt.want {
 				t.Errorf("verdict = %q, want %q", rec.verdicts[0], tt.want)
+			}
+			if rec.rungs[0] != string(pagegate.RungPositiveEvidence) {
+				t.Errorf("rung = %q, want %q", rec.rungs[0], pagegate.RungPositiveEvidence)
 			}
 		})
 	}
@@ -115,7 +129,7 @@ func TestProcessFeedsTheExtractorThePageAsCrawled(t *testing.T) {
 		Recorder:  &spyRecorder{t: t},
 	})
 
-	workload := rawListing(t, "https://acme.com/careers")
+	workload := shadowSample(t, "https://acme.com/careers", pagegate.RungIndexTerminal)
 	if err := p.Process(t.Context(), workload); err != nil {
 		t.Fatalf("Process returned error: %v", err)
 	}
@@ -136,7 +150,29 @@ func TestProcessWithoutARecorderDoesNotPanic(t *testing.T) {
 		Extractor: &stubExtractor{extraction: crawler.Extraction{IsJobPosting: true}},
 	})
 
-	if err := p.Process(t.Context(), rawListing(t, "https://acme.com/careers")); err != nil {
+	if err := p.Process(t.Context(), shadowSample(t, "https://acme.com/careers", pagegate.RungPositiveEvidence)); err != nil {
 		t.Fatalf("Process returned error: %v", err)
+	}
+}
+
+// TestProcessLabelsARunglessSampleUnknown covers the upgrade path: an entry enqueued
+// by a binary from before the rung attribution existed, redelivered afterwards,
+// carries no rung. It must be labelled explicitly rather than filed under the empty
+// string, which would land it in whichever series a dashboard happens to render for
+// a blank label and quietly inflate a real rung's false-drop rate.
+func TestProcessLabelsARunglessSampleUnknown(t *testing.T) {
+	rec := &spyRecorder{t: t}
+	p := shadowextractionprocessor.NewProcessor(&shadowextractionprocessor.Config{
+		Extractor: &stubExtractor{extraction: crawler.Extraction{IsJobPosting: true}},
+		Recorder:  rec,
+	})
+
+	sample := shadowSample(t, "https://acme.com/careers", pagegate.RungNone)
+	if err := p.Process(t.Context(), sample); err != nil {
+		t.Fatalf("Process returned error: %v", err)
+	}
+
+	if len(rec.rungs) != 1 || rec.rungs[0] != string(pagegate.RungUnknown) {
+		t.Errorf("recorded rungs = %v, want one %q", rec.rungs, pagegate.RungUnknown)
 	}
 }

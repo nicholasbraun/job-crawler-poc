@@ -16,6 +16,7 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
 	"github.com/nicholasbraun/job-crawler-poc/internal/frontier"
 	"github.com/nicholasbraun/job-crawler-poc/internal/llmobs"
+	"github.com/nicholasbraun/job-crawler-poc/internal/pagegate"
 	urlprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/url_processor"
 )
 
@@ -57,16 +58,21 @@ func (f *stubFrontier) Next(ctx context.Context) (crawler.URL, error) {
 }
 func (f *stubFrontier) MarkDone(ctx context.Context, url string) error { return nil }
 
-// spyRecorder captures the gate reasons the worker records.
+// spyRecorder captures the gate reasons the worker records, and the rungs of the
+// Shadow Extraction samples it sheds.
 type spyRecorder struct {
-	gates []llmobs.Reason
+	gates     []llmobs.Reason
+	shedRungs []string
 }
 
 func (s *spyRecorder) Call(context.Context, llmobs.Kind, llmobs.Outcome, time.Duration) {}
 func (s *spyRecorder) Gated(_ context.Context, _ llmobs.Kind, r llmobs.Reason) {
 	s.gates = append(s.gates, r)
 }
-func (s *spyRecorder) Shadow(context.Context, llmobs.ShadowVerdict)          {}
+func (s *spyRecorder) Shadow(context.Context, llmobs.ShadowVerdict, string) {}
+func (s *spyRecorder) ShadowDropped(_ context.Context, rung string) {
+	s.shedRungs = append(s.shedRungs, rung)
+}
 func (s *spyRecorder) Content(context.Context, llmobs.Kind, string)          {}
 func (s *spyRecorder) Retry(context.Context, llmobs.Kind)                    {}
 func (s *spyRecorder) DeadLetter(context.Context, llmobs.Kind)               {}
@@ -255,15 +261,15 @@ func TestProcessRecordsRelevanceGate(t *testing.T) {
 	}
 }
 
-// shadowSpy captures every page handed to the Shadow Extraction hook (ADR-0044)
+// shadowSpy captures every sample handed to the Shadow Extraction hook (ADR-0044)
 // and can be told to return an error, to drive the best-effort error path.
 type shadowSpy struct {
-	sampled []crawler.RawJobListing
+	sampled []crawler.ShadowSample
 	retErr  error
 }
 
-func (s *shadowSpy) onShadow(_ context.Context, jl *crawler.RawJobListing) error {
-	s.sampled = append(s.sampled, *jl)
+func (s *shadowSpy) onShadow(_ context.Context, sample *crawler.ShadowSample) error {
+	s.sampled = append(s.sampled, *sample)
 	return s.retErr
 }
 
@@ -335,6 +341,12 @@ func TestProcessShadowSamplesGateRejectedPages(t *testing.T) {
 				}
 				if got := spy.sampled[0].Content; !reflect.DeepEqual(got, *content) {
 					t.Errorf("sampled Content = %+v, want %+v", got, *content)
+				}
+				// The sample carries the rung that shed the page, so the measured
+				// false-drop rate can be split by cause. /careers is a terminal jobs-index
+				// segment, which is rung 2c.
+				if got := spy.sampled[0].Rung; got != string(pagegate.RungIndexTerminal) {
+					t.Errorf("sampled rung = %q, want %q", got, pagegate.RungIndexTerminal)
 				}
 			}
 
@@ -425,8 +437,9 @@ func TestProcessShadowHookErrorDoesNotFailTheWalk(t *testing.T) {
 	fr := &stubFrontier{}
 	spy := &shadowSpy{retErr: errors.New("shadow backlog full")}
 
+	rec := &spyRecorder{}
 	content := &crawler.Content{Title: "Careers", MainContent: "body", URLs: []string{"/jobs/1"}}
-	cfg := shadowConfig(fr, content, &spyRecorder{})
+	cfg := shadowConfig(fr, content, rec)
 	cfg.OnJobListing = func(context.Context, *crawler.RawJobListing) error { return nil }
 	cfg.OnShadowExtract = spy.onShadow
 	cfg.ShadowRate = 1.0
@@ -449,6 +462,14 @@ func TestProcessShadowHookErrorDoesNotFailTheWalk(t *testing.T) {
 	}
 	if len(fr.added) != 1 {
 		t.Errorf("enqueued URLs = %v, want the page's one discovered link", fr.added)
+	}
+	// A shed sample is COUNTED, keyed by the rung it was shed from. Without this the
+	// live false-drop rate would silently rest on a non-uniform subsample: the bounded
+	// stream sheds whatever arrives while it is full, which is not how the sampler
+	// chooses.
+	want := []string{string(pagegate.RungIndexTerminal)}
+	if !reflect.DeepEqual(rec.shedRungs, want) {
+		t.Errorf("recorded shed rungs = %v, want %v", rec.shedRungs, want)
 	}
 }
 

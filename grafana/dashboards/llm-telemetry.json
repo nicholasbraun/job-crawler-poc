@@ -498,7 +498,7 @@
       "type": "stat",
       "id": 12,
       "title": "False-drop rate (live)",
-      "description": "Share of the pages the Extract Gate REJECTED that the extractor nevertheless reads as a single job posting (ADR-0044). Measured by extracting a sampled fraction of gate skips (SHADOW_EXTRACT_RATE, default 1%) purely to score the gate — nothing sampled here is ever saved to the Corpus. Denominator is completed verdicts only; an errored sample produced no verdict. A false-drop is permanent, so a rise here is the signal to loosen the gate.",
+      "description": "Share of the pages the Extract Gate REJECTED that the extractor nevertheless reads as a single job posting (ADR-0044). Measured by extracting a sampled fraction of gate skips (SHADOW_EXTRACT_RATE, default 1%) purely to score the gate — nothing sampled here is ever saved to the Corpus. Denominator is completed verdicts only; an errored sample produced no verdict. A false-drop is permanent, so a rise here is the signal to loosen the gate. This number POOLS every gate rung: read \"False-drop rate by gate rung\" below before acting on it, because only the positive_evidence share is what EXTRACT_REQUIRE_POSITIVE_EVIDENCE=false would recover. Check \"Shadow samples shed\" too — a non-zero shed count means this rate was computed over an incomplete sample.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 37 },
       "fieldConfig": {
@@ -589,6 +589,72 @@
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "sum by (verdict) (rate(crawler_llm_shadow_total[$__rate_interval]))",
           "legendFormat": "{{verdict}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "bargauge",
+      "id": 15,
+      "title": "False-drop rate by gate rung (range)",
+      "description": "The same false-drop rate as the stat above, split by the Extract Gate rung that rejected the page. This split is what makes the number actionable: only the positive_evidence share is what EXTRACT_REQUIRE_POSITIVE_EVIDENCE=false would recover — a rate driven by job_link_saturation, openings_index or any other reject rung would survive that revert untouched, so reading the pooled number alone can send a rollback after a cause it does not fix. An \"unknown\" bar is a sample enqueued before the attribution existed and redelivered after an upgrade; it should fall to zero within a Cycle.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 41 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "showUnfilled": true,
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "100 * sum by (rung) (increase(crawler_llm_shadow_total{verdict=\"accept\"}[$__range])) / clamp_min(sum by (rung) (increase(crawler_llm_shadow_total{verdict=~\"accept|abstain\"}[$__range])), 1)",
+          "legendFormat": "{{rung}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 16,
+      "title": "Shadow samples shed before measurement, by rung",
+      "description": "Sampled gate-rejected pages the Shadow Extraction lane never measured: its durable stream was at its backlog cap when the walk tried to enqueue them. This is the trustworthiness of the false-drop rate's DENOMINATOR — sampling is uniform over rejected pages, but shedding is not (a full stream sheds whatever arrives while it is full), so any non-zero line here means the rate above is an estimate over a subsample nobody can characterize. Fix by lowering SHADOW_EXTRACT_RATE, or by raising the lane's sizing constants (shadowMaxBacklog / shadowMaxWorkers in cmd/server/main.go) — not by ignoring it.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 45 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 25,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "normal", "group": "A" }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (rung) (rate(crawler_llm_shadow_dropped_total[$__rate_interval]))",
+          "legendFormat": "{{rung}}",
           "refId": "A"
         }
       ]

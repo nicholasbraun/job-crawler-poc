@@ -150,6 +150,28 @@ type RawJobListing struct {
 	Content Content
 }
 
+// ShadowSample is one gate-rejected page on its way to the Shadow Extraction lane
+// (ADR-0044): the page itself, plus the Extract Gate rung that rejected it. The rung
+// travels WITH the sample rather than being re-derived downstream, so the verdict is
+// filed under the decision that actually shed the page.
+//
+// The reason it has to be carried at all is what the measurement is for: a false
+// drop the Positive Evidence kill switch would undo and one it would not are
+// different failures, and after the flip the first false-drop reading must be able
+// to say which it is looking at.
+//
+// RawJobListing is EMBEDDED, not a named field, so the JSON on the lane's durable
+// stream keeps its existing top-level URL/Content shape: an entry enqueued by an
+// older binary and redelivered after an upgrade still decodes into a whole page,
+// with Rung empty (reported as pagegate.RungUnknown) rather than silently attributed.
+//
+// Rung is the string form of a pagegate.ExtractRung. It is not that type because the
+// domain root cannot import the gate that reads it.
+type ShadowSample struct {
+	RawJobListing
+	Rung string
+}
+
 // Extraction is the transient result of one extractor call: the structured
 // JobListing plus the extractor's verdict on whether the page it was handed is a
 // single job posting. IsJobPosting is NEVER persisted (ADR-0019) -- it drives the

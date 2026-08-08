@@ -153,6 +153,13 @@ are dropped identically under the blanket accept.
   for roughly eight cents a day. The extractor's verdict on a rejected page is the live
   false-drop measurement, which is otherwise unobservable. A Shadow Extraction must be
   structurally incapable of reaching the Corpus, not merely tested against it.
+- **Each shadow verdict is filed under the gate rung that rejected the page**, and each
+  sample the bounded lane sheds is counted under the same rung. Both are what make the live
+  rate actionable rather than merely alarming: a pooled false-drop rate cannot tell a drop
+  `EXTRACT_REQUIRE_POSITIVE_EVIDENCE=false` would recover from one it would not, so the first
+  reading after the flip could read high for a cause the named revert does not fix; and a
+  shed sample nobody counted would leave that rate resting on a silently non-uniform
+  subsample. The rung travels WITH the sample rather than being re-derived downstream.
 - The refetch lane's changed-content re-extract path is gated too. It fed the extractor
   ungated, which was already a hole and becomes the only way junk re-enters the Corpus once
   this rung tightens.

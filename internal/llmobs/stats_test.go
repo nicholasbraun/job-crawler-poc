@@ -109,12 +109,14 @@ func TestStatsShadowSummary(t *testing.T) {
 	ctx := t.Context()
 	// Three accepts, seven abstains, one error -> a 30% live false-drop rate.
 	for i := 0; i < 3; i++ {
-		rec.Shadow(ctx, llmobs.ShadowAccept)
+		rec.Shadow(ctx, llmobs.ShadowAccept, "positive_evidence")
 	}
 	for i := 0; i < 7; i++ {
-		rec.Shadow(ctx, llmobs.ShadowAbstain)
+		rec.Shadow(ctx, llmobs.ShadowAbstain, "positive_evidence")
 	}
-	rec.Shadow(ctx, llmobs.ShadowError)
+	rec.Shadow(ctx, llmobs.ShadowError, "reject_path")
+	rec.ShadowDropped(ctx, "positive_evidence")
+	rec.ShadowDropped(ctx, "reject_path")
 	rec.Retry(ctx, llmobs.KindShadow)
 
 	m := toMap(stats.Summary())
@@ -123,6 +125,7 @@ func TestStatsShadowSummary(t *testing.T) {
 		"shadow_accepts":  3,
 		"shadow_abstains": 7,
 		"shadow_errors":   1,
+		"shadow_dropped":  2,
 		"shadow_retries":  1,
 		// A Shadow Extraction is real spend, but it must never enter the call counters
 		// the Extract Gate's call rate is read from.
@@ -137,6 +140,6 @@ func TestStatsShadowSummary(t *testing.T) {
 	}
 
 	if got, ok := m["shadow_false_drop_rate"].(float64); !ok || got != 0.3 {
-		t.Errorf("shadow_false_drop_rate = %v, want 0.3 (accepts over completed verdicts)", m["shadow_false_drop_rate"])
+		t.Errorf("shadow_false_drop_rate = %v, want 0.3 (accepts over completed verdicts, shed samples excluded)", m["shadow_false_drop_rate"])
 	}
 }

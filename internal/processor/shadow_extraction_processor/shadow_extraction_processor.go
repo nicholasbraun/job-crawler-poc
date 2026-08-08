@@ -22,6 +22,7 @@ import (
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/llmobs"
+	"github.com/nicholasbraun/job-crawler-poc/internal/pagegate"
 	"github.com/nicholasbraun/job-crawler-poc/internal/processor"
 )
 
@@ -44,14 +45,14 @@ type Config struct {
 }
 
 // ShadowExtractionProcessor scores the Extract Gate by extracting the pages it
-// rejected. It implements processor.Processor[crawler.RawJobListing] and persists
+// rejected. It implements processor.Processor[crawler.ShadowSample] and persists
 // nothing.
 type ShadowExtractionProcessor struct {
 	extractor Extractor
 	recorder  llmobs.Recorder
 }
 
-var _ processor.Processor[crawler.RawJobListing] = (*ShadowExtractionProcessor)(nil)
+var _ processor.Processor[crawler.ShadowSample] = (*ShadowExtractionProcessor)(nil)
 
 func NewProcessor(cfg *Config) *ShadowExtractionProcessor {
 	recorder := cfg.Recorder
@@ -77,19 +78,36 @@ func NewProcessor(cfg *Config) *ShadowExtractionProcessor {
 // keep the call counters honest, but nothing here enters those counters at all. A
 // verdict reached from the page's own structured data is still a verdict, and a free
 // one.
-func (p *ShadowExtractionProcessor) Process(ctx context.Context, workload *crawler.RawJobListing) error {
-	extraction, err := p.extractor.Extract(ctx, *workload)
+//
+// The verdict is filed under the gate RUNG the sample carries, so the false-drop
+// rate can be read per cause: a drop the Positive Evidence kill switch would undo is
+// a different failure from one it would not, and after the flip the first reading has
+// to be able to say which it is looking at.
+func (p *ShadowExtractionProcessor) Process(ctx context.Context, workload *crawler.ShadowSample) error {
+	extraction, err := p.extractor.Extract(ctx, workload.RawJobListing)
 	if err != nil {
 		// Warn, not Error: a failed measurement is not a failed crawl, and this lane
 		// must never make a healthy Collection Cycle look broken.
 		slog.Warn("shadow_extraction_processor: shadow extraction failed, sample lost",
 			"err", err, "url", workload.URL.RawURL)
 	}
+	rung := rungOf(workload)
 	verdict := llmobs.ShadowVerdictOf(err, extraction.IsJobPosting)
-	p.recorder.Shadow(ctx, verdict)
+	p.recorder.Shadow(ctx, verdict, rung)
 	if verdict == llmobs.ShadowAccept {
 		slog.Info("shadow extraction: the extract gate rejected a page the extractor reads as a single job posting (false-drop sample)",
-			"url", workload.URL.RawURL)
+			"url", workload.URL.RawURL, "rung", rung)
 	}
 	return nil
+}
+
+// rungOf reads the sample's rung, substituting RungUnknown for an empty one. A
+// sample carries no rung only when it was enqueued by a binary from before the
+// attribution existed and redelivered after the upgrade; labelling it explicitly
+// keeps it out of every real rung's series instead of silently inflating one.
+func rungOf(sample *crawler.ShadowSample) string {
+	if sample.Rung == "" {
+		return string(pagegate.RungUnknown)
+	}
+	return sample.Rung
 }
