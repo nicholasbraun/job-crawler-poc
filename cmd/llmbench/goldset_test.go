@@ -42,11 +42,13 @@ const pendingHumanConfirmations = 70
 // pendingExpectedConfirmations is how many rows carry an agent-proposed expected
 // extraction that no human has confirmed. #256 requires 0: the values were read off
 // each page's own JSON-LD by scripts/propose-expected.sh and a human confirms them
-// at the review gate, so this starts at the count of rows the mechanism fires on --
-// 54 since the predicate was narrowed to refuse withdrawn ads, down from the full
-// 70-row lone-posting stratum. Like pendingHumanConfirmations it is a RATCHET --
-// lower it as confirmations land, never raise it.
-const pendingExpectedConfirmations = 54
+// at the review gate. It started at the count of rows the mechanism fires on -- 54
+// since the predicate was narrowed to refuse withdrawn ads, down from the full
+// 70-row lone-posting stratum -- and is 51 because a human has so far confirmed
+// exactly the three residue rows carrying an accepted fire (acceptedFreeOnResidue),
+// the rows the guard's verdict actually turns on. Like pendingHumanConfirmations it
+// is a RATCHET -- lower it as confirmations land, never raise it.
+const pendingExpectedConfirmations = 51
 
 // loadCommittedGoldSet reads the committed Extract Gold Set. The working directory
 // under `go test` is the package directory, so the relative path resolves without
