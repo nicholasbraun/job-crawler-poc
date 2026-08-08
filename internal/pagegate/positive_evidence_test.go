@@ -66,6 +66,66 @@ func TestShouldExtract_PositiveEvidence(t *testing.T) {
 			want:    true,
 		},
 		{
+			// consensys.io/open-roles/<id>, wynncareersmacau.com/open-roles/<id>: "role"
+			// is the same kind of job word as "position" and "opening".
+			name:    "a path job word \"role\" admits (open-roles)",
+			url:     "https://acme.com/open-roles/7903661",
+			content: &crawler.Content{},
+			want:    true,
+		},
+		{
+			// team-volkmann.de/ausbildungsberuf/<slug>: an Ausbildung listing is a Job
+			// Listing, published at its own section rather than under /stellenangebote.
+			name:    "a German apprenticeship path word admits",
+			url:     "https://acme.de/ausbildungsberuf/industriekaufleute",
+			content: &crawler.Content{},
+			want:    true,
+		},
+		{
+			// bay-gmbh.com: the job word is in the FINAL segment, which is the role slug
+			// itself. A SINGULAR posting noun in a long slug names one posting.
+			name:    "a role slug carrying a singular posting noun admits",
+			url:     "https://acme.de/stellenangebot_hochschulabsolvent-als-pruefungsassistent_id_3",
+			content: &crawler.Content{},
+			want:    true,
+		},
+		{
+			// diakonie-dbk.de: the same shape with the apprenticeship noun, and with
+			// section segments above it that name no job word of their own.
+			name:    "a role slug carrying an apprenticeship noun admits",
+			url:     "https://acme.de/unsere-angebote/einrichtung/ausbildung-in-gifhorn-zum-anlagenmechaniker-sanitaer-heizung",
+			content: &crawler.Content{},
+			want:    true,
+		},
+		{
+			// seedcamp.com/views/visiting-analyst. Its body carries NO posting section at
+			// all, which is why this mark must be strong: paired with even one vocabulary
+			// group it would lose the page it was found on.
+			name:    "a Title announcing one vacancy admits, English",
+			url:     noEvidenceURL,
+			content: &crawler.Content{Title: "We are hiring a Visiting Analyst - Seedcamp"},
+			want:    true,
+		},
+		{
+			// jobicco.tu-braunschweig.de/de/1762. "<Rolle> gesucht" and "we are hiring a
+			// <role>" are one idiom in two languages.
+			name:    "a Title announcing one vacancy admits, German",
+			url:     noEvidenceURL,
+			content: &crawler.Content{Title: "Nachhilfelehrer (m/w/d) in Braunschweig gesucht!"},
+			want:    true,
+		},
+		{
+			// vzbv.de/referentin-...: four of the five sections a posting has, and no
+			// apply phrase anywhere. At four groups the vocabulary stops corroborating
+			// and starts standing on its own.
+			name: "four vocabulary groups admit with no apply phrase",
+			url:  noEvidenceURL,
+			content: &crawler.Content{
+				MainContent: "Ihre Aufgaben ... Ihr Profil ... Wir bieten ... Vollzeit ...",
+			},
+			want: true,
+		},
+		{
 			name: "lone structured posting admits on a signal-less URL",
 			url:  noEvidenceURL,
 			content: &crawler.Content{
@@ -120,6 +180,50 @@ func TestShouldExtract_PositiveEvidence(t *testing.T) {
 			want:    true,
 		},
 		{
+			// qvls.de/de/postdoctoral-researcher-m-f-d: a title naming one role above a
+			// page with no role body at all. The blind re-read took it OUT of `detail`,
+			// and it is why the designation may never be a strong mark.
+			name:    "a role designation in the Title does not admit alone (qvls)",
+			url:     noEvidenceURL,
+			content: &crawler.Content{Title: "Postdoctoral Researcher (m/f/d) - QVLS"},
+			want:    false,
+		},
+		{
+			// jobportal.hs-hannover.de/Praktikum/<role>: a posting header followed by a
+			// rail of unrelated postings. It carries an apply action and exactly ONE
+			// posting section, so requiring TWO is what keeps it out -- and why the
+			// designation is paired with the vocabulary rather than with the apply mark.
+			name: "a role designation plus an apply affordance still needs two vocabulary groups (jobportal.hs-hannover)",
+			url:  noEvidenceURL,
+			content: &crawler.Content{
+				Title:       "Praktikum HR Personalmanagement (m/w/d) - Hannover",
+				MainContent: "Jetzt bewerben ... Anforderungen ...",
+			},
+			want: false,
+		},
+		{
+			// bawi-berlin.de: two posting sections and a title naming one role, with no
+			// apply phrase on the parsed page. This is the pair the widening added.
+			name: "the role designation completes the weak pair (bawi-berlin)",
+			url:  noEvidenceURL,
+			content: &crawler.Content{
+				Title:       "Schulleitung (m/w/d) für die Pflegeschule",
+				MainContent: "Ihre Aufgaben ... Ihr Profil ...",
+			},
+			want: true,
+		},
+		{
+			// The strong vocabulary threshold is FOUR, not three: at three it re-admits
+			// massinc.org/about-us/career-opportunities and ifes.uni-hannover.de/eev/hiwi,
+			// a standing call and a rail of postings the blind re-read had just rejected.
+			name: "three vocabulary groups alone do not admit (massinc, ifes)",
+			url:  noEvidenceURL,
+			content: &crawler.Content{
+				MainContent: "Ihre Aufgaben ... Ihr Profil ... Wir bieten ...",
+			},
+			want: false,
+		},
+		{
 			// Disjointness guard. "Ihre Bewerbung" reads like an offer to apply but is a
 			// VOCABULARY phrase, not an apply phrase. If the two phrase sets ever
 			// overlapped, this page would satisfy both marks off one phrase and the
@@ -162,6 +266,48 @@ func TestShouldExtract_PositiveEvidence(t *testing.T) {
 			name:    "a terminal compound job segment is the index, not a posting",
 			url:     "https://acme.de/jobs-karriere",
 			content: &crawler.Content{},
+			want:    false,
+		},
+		{
+			// The role-slug predicate reads SINGULAR posting nouns only. A plural section
+			// word in a terminal slug is a hub slug of exactly the same shape -- the
+			// /karriere-bei-bitsea failure mode -- and admitting it was measured at +9
+			// leaks for +2 postings.
+			name:    "a plural section word in the final slug is not a role slug (careers-at-acme)",
+			url:     "https://acme.com/career-open-positions-at-acme",
+			content: &crawler.Content{},
+			want:    false,
+		},
+		{
+			// The same, long enough to clear the token floor, so what rejects it is the
+			// singular restriction and nothing else (schulaemter.brandenburg.de).
+			name:    "a plural section word in a deep final slug is not a role slug (offene-stellen)",
+			url:     "https://acme.de/service/offene-stellen-schulamt-neuruppin.html",
+			content: &crawler.Content{},
+			want:    false,
+		},
+		{
+			// A role slug is long. A section name is not, and "Ausbildung bei uns" is a
+			// section.
+			name:    "a short apprenticeship section slug is not a role slug",
+			url:     "https://acme.de/ausbildung-bei-uns",
+			content: &crawler.Content{},
+			want:    false,
+		},
+		{
+			// The trailing space in "hiring an " is the whole guard: a newsroom announcing
+			// that it is hiring analysts has not posted a vacancy.
+			name:    "a vacancy phrase needs a word boundary (hiring analysts)",
+			url:     noEvidenceURL,
+			content: &crawler.Content{Title: "We are hiring analysts"},
+			want:    false,
+		},
+		{
+			// "gesucht" is matched as a token, never a substring: "Stellengesuche" are
+			// positions sought BY JOB SEEKERS, and "meistgesuchte" is a superlative.
+			name:    "\"gesucht\" is a whole word, never a substring",
+			url:     noEvidenceURL,
+			content: &crawler.Content{Title: "Die meistgesuchten Berufe"},
 			want:    false,
 		},
 		{
@@ -310,6 +456,9 @@ func TestPositiveEvidenceDoesNotWidenTheSharedPostingPath(t *testing.T) {
 		"https://acme.de/jobs-karriere/senior-entwickler",
 		"https://acme.de/stellenangebote_unternehmen/bosch/senior-entwickler",
 		"https://karriere.acme.de/senior-entwickler",
+		"https://acme.com/open-roles/7903661",
+		"https://acme.de/ausbildungsberuf/industriekaufleute",
+		"https://acme.de/stellenangebot_hochschulabsolvent-als-pruefungsassistent_id_3",
 	} {
 		t.Run(raw, func(t *testing.T) {
 			u := newURL(t, raw)

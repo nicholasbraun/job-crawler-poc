@@ -36,15 +36,23 @@ func boundaryBaselineConfig() crawler.LLMGateConfig {
 	return cfg
 }
 
-// boundaryCandidateConfig is the tiered Positive Evidence rule (ADR-0044, #258,
-// internal/pagegate/positive_evidence.go) that DEFINES this stratum. TRUE is set
-// explicitly for the same reason the baseline sets FALSE.
+// boundaryCandidateConfig is the tiered Positive Evidence rule as the gate ships it
+// TODAY (ADR-0044, internal/pagegate/positive_evidence.go). TRUE is set explicitly
+// for the same reason the baseline sets FALSE.
+//
+// It is no longer the rule that DREW this stratum. The draw was taken against #258's
+// rule, and #257 widened that rule to the false-drops the stratum measured, so the
+// committed rows are a HISTORICAL disagreement set: 29 of them extract under the rule
+// this function now returns. The stratum was kept rather than re-drawn -- re-drawing
+// discards the recovered postings, which are the evidence, and owes 188 fresh human
+// confirmations -- and TestCommittedBoundaryRecoveryLedger is the ledger of what
+// changed. A fresh DRAW (goldset-sample-boundary) still uses this function and still
+// gets today's boundary, which is why it reads the shipping rule rather than a pinned
+// copy of #258's.
 //
 // The rule lives HERE, in code, rather than in a -gate-config flag: a flag would let
-// a later run silently redefine the boundary, and the committed rows would then
-// claim a boundary nobody could re-derive. Changing
-// internal/pagegate/positive_evidence.go invalidates the committed stratum, and
-// TestCommittedBoundaryStratumIsTheDisagreementSet is what says so out loud.
+// a later run silently redefine the boundary, and the drawn rows would then claim a
+// boundary nobody could re-derive.
 func boundaryCandidateConfig() crawler.LLMGateConfig {
 	cfg := crawler.DefaultLLMGateConfig()
 	cfg.RequirePositiveEvidence = true

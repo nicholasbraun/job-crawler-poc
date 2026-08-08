@@ -143,11 +143,13 @@ const (
 	// directions: an ambiguity that appears, or one that quietly resolves, changes
 	// what the confusion counts are computed over and must be seen in a diff.
 	ambiguousRows = 10
-	// boundaryDetailRows is how many Boundary Stratum rows are labelled detail, and
-	// therefore how many Job Listings the tiered Positive Evidence rule drops there:
-	// every row in this stratum is skipped by that rule by construction. It is a
-	// TRIPWIRE on drift, not the guard -- these labels are still LLM-proposed. The
-	// hard zero is #264's, and it may only be argued once
+	// boundaryDetailRows is how many Boundary Stratum rows are labelled detail. Until
+	// #257 that was also how many Job Listings the Positive Evidence rule dropped
+	// here, because the stratum was DRAWN as the pages that rule skipped; #257 widened
+	// the rule, so the two numbers have parted company and the drop count is
+	// boundaryFalseDropsRemaining. This constant is now purely a census of the labels,
+	// and it is a TRIPWIRE on drift, not the guard -- these labels are still
+	// LLM-proposed. The hard zero is #264's, and it may only be argued once
 	// pendingBoundaryConfirmations is 0.
 	//
 	// It fell from 47 to 37 when the 57 consequential rows (every detail and every
@@ -160,6 +162,38 @@ const (
 	// apprenticeships across two professions). Neither shape is one posting, so
 	// charging the rule with dropping them overstated the guard's target.
 	boundaryDetailRows = 37
+)
+
+const (
+	// boundaryRowsRecovered is how many Boundary Stratum rows the Extract Gate's
+	// CURRENT Positive Evidence rung extracts. It was 0 at #263: the stratum was drawn
+	// as exactly the pages the #258 rule skipped. #257 widened that rule, so the
+	// stratum is now a HISTORICAL disagreement set, and these constants are the ledger
+	// of what the widening recovered from it.
+	//
+	// The SPLIT matters more than the total. A rule that recovers non-postings faster
+	// than postings is a regression however good the total looks, and pinning the four
+	// numbers separately is what makes that visible in a diff.
+	boundaryRowsRecovered = 29
+	// boundaryDetailRecovered is the Job Listings the widening got back: the whole
+	// point of the slice.
+	boundaryDetailRecovered = 26
+	// boundaryNonPostingsRecovered is the cost side of the same ledger -- hub-index
+	// and residue rows the widening now extracts (2 hub-index, 0 residue).
+	boundaryNonPostingsRecovered = 2
+	// boundaryAmbiguousRecovered is the undecidable rows it extracts. They are neither
+	// a win nor a loss, and they are counted apart so they can never be quietly
+	// credited to either side.
+	boundaryAmbiguousRecovered = 1
+	// boundaryFalseDropsRemaining is what the current rung still drops here: the
+	// number this stratum exists to produce, and the guard #264 must argue with. It is
+	// NOT zero, and the shapes behind it are written up in ADR-0044 rather than closed
+	// by a threshold nothing measured.
+	boundaryFalseDropsRemaining = 11
+	// boundaryAmbiguousSkipped is how many ambiguous rows are DROPPED here. It is
+	// ambiguousRows minus boundaryAmbiguousRecovered: the two numbers coincided while
+	// the rule skipped every boundary row, and #257 parted them.
+	boundaryAmbiguousSkipped = 9
 )
 
 // loadCommittedGoldSet reads the committed Extract Gold Set. The working directory
@@ -1749,14 +1783,17 @@ func TestBoundarySampleRefusesADuplicateURL(t *testing.T) {
 	}
 }
 
-// TestCommittedBoundaryStratumIsTheDisagreementSet is this drawing's provenance,
-// made executable. The stratum is DEFINED by two gate configs disagreeing, so every
-// committed row must still be a page today's blanket accept extracts and the tiered
-// Positive Evidence rule skips. The moment that rule changes, this test says so --
-// which is the acceptance criterion "a later signal change makes clear the boundary
-// must be re-sampled", asserted rather than written in a comment.
+// TestCommittedBoundaryStratumIsTheDisagreementSet is the half of this drawing's
+// provenance that is still a live guard: every committed row must be a page today's
+// BLANKET ACCEPT extracts. That is a statement about the REJECT RUNGS, which the
+// stratum was computed under at #263 and which #257 did not touch. It goes red if
+// one of them moves, and a moved reject rung really does invalidate the draw.
+//
+// The other half -- that the candidate rule skips every row -- was true by
+// construction at #263 and is no longer: #257 widened the rule and recovered 29 of
+// these pages. TestCommittedBoundaryRecoveryLedger is what replaced it.
 func TestCommittedBoundaryStratumIsTheDisagreementSet(t *testing.T) {
-	baseline, candidate := boundaryBaselineConfig(), boundaryCandidateConfig()
+	baseline := boundaryBaselineConfig()
 	rows := 0
 	for _, row := range loadCommittedGoldSet(t) {
 		if row.Stratum != stratumBoundary {
@@ -1770,13 +1807,59 @@ func TestCommittedBoundaryStratumIsTheDisagreementSet(t *testing.T) {
 		if !pagegate.ShouldExtract(u, &row.Content, baseline) {
 			t.Errorf("%s: today's blanket accept SKIPS it, so it is not on the boundary. The Boundary Stratum was computed under the reject rungs as they stood at #263; a rung has changed, so the stratum no longer marks the boundary and must be re-drawn from the capture.", row.URL)
 		}
-		if pagegate.ShouldExtract(u, &row.Content, candidate) {
-			t.Errorf("%s: the Positive Evidence rule EXTRACTS it, so it is not on the boundary. The Boundary Stratum was computed under that rule as it stood at #258; the rule has changed, so the stratum no longer marks the boundary and must be re-drawn from the capture.", row.URL)
-		}
 	}
 	if rows != boundaryStratumRows {
 		t.Errorf("the boundary stratum has %d rows, want %d", rows, boundaryStratumRows)
 	}
+}
+
+// TestCommittedBoundaryRecoveryLedger pins what the CURRENT Positive Evidence rung
+// recovers from the Boundary Stratum, split by label.
+//
+// It exists because the stratum stopped being a live disagreement set at #257. It
+// was drawn as the pages the #258 rule skipped, so "the candidate rule skips every
+// row" was true by construction; widening the rule made 29 of them extract. The
+// stratum was deliberately NOT re-drawn -- re-drawing would delete the 26 recovered
+// postings from the record, which is precisely the evidence the widening produced,
+// and would owe 188 fresh human confirmations nobody has budgeted. What it measures
+// now is that recovery, and this ledger is the measurement.
+//
+// Pinned in BOTH directions and split by label on purpose: a later widening that
+// recovers non-postings faster than postings must go red here rather than show up as
+// a bigger total.
+func TestCommittedBoundaryRecoveryLedger(t *testing.T) {
+	rows, _, err := replayCaptured(filepath.Join("extract-goldset", goldSetFile), boundaryCandidateConfig())
+	if err != nil {
+		t.Fatalf("replayCaptured: %v", err)
+	}
+
+	recovered := map[bench.ExtractLabel]int{}
+	total := 0
+	for _, row := range rows {
+		if row.Stratum != stratumBoundary || !row.Extract {
+			continue
+		}
+		total++
+		recovered[row.Label]++
+	}
+
+	nonPostings := recovered[bench.ExtractHubIndex] + recovered[bench.ExtractResidue]
+	for _, c := range []struct {
+		what string
+		got  int
+		want int
+	}{
+		{"boundary rows recovered", total, boundaryRowsRecovered},
+		{"detail rows recovered", recovered[bench.ExtractDetail], boundaryDetailRecovered},
+		{"non-posting rows recovered", nonPostings, boundaryNonPostingsRecovered},
+		{"ambiguous rows recovered", recovered[bench.ExtractAmbiguous], boundaryAmbiguousRecovered},
+	} {
+		if c.got != c.want {
+			t.Errorf("the Positive Evidence rung recovers %d %s, the ledger says %d; if the change is intended, move the constant and say what bought it", c.got, c.what, c.want)
+		}
+	}
+	t.Logf("recovered from the boundary: %d rows (%d detail, %d non-posting, %d ambiguous)",
+		total, recovered[bench.ExtractDetail], nonPostings, recovered[bench.ExtractAmbiguous])
 }
 
 // TestCommittedBoundaryStratumConfirmation is the ratchet ADR-0043 requires on this
@@ -1868,8 +1951,9 @@ func TestBoundaryStratumNeverEntersTheStreamEstimate(t *testing.T) {
 
 // TestCommittedBoundaryFalseDropsUnderTheCandidateRule reports the number this
 // stratum exists to produce: how many real Job Listings the tiered Positive Evidence
-// rule drops on the boundary. Every boundary row is skipped by that rule by
-// construction, so the count is exactly the detail-labelled rows.
+// rule drops on the boundary. Until #257 that was exactly the detail-labelled rows,
+// because the rule skipped every row here by construction; now it is the
+// detail-labelled rows the widening did NOT recover.
 //
 // It is pinned in both directions as a TRIPWIRE on drift, NOT as the guard. These
 // labels are LLM-proposed; until pendingBoundaryConfirmations is 0 the count is one
@@ -1885,15 +1969,19 @@ func TestCommittedBoundaryFalseDropsUnderTheCandidateRule(t *testing.T) {
 	if sc.Rows != boundaryStratumRows {
 		t.Fatalf("scored %d boundary rows, want %d", sc.Rows, boundaryStratumRows)
 	}
-	if sc.Extracted != 0 {
-		t.Errorf("the candidate rule extracts %d boundary rows; every one of them is on the boundary because it does not", sc.Extracted)
+	if sc.Extracted != boundaryRowsRecovered {
+		t.Errorf("the candidate rule extracts %d boundary rows, the recovery ledger says %d", sc.Extracted, boundaryRowsRecovered)
 	}
-	if len(sc.FalseDrops) != boundaryDetailRows {
-		t.Errorf("the candidate rule drops %d real Job Listings here but boundaryDetailRows is %d; set it to %d",
-			len(sc.FalseDrops), boundaryDetailRows, len(sc.FalseDrops))
+	if sc.Counts[bench.ExtractDetail] != boundaryDetailRows {
+		t.Errorf("%d boundary rows are labelled detail but boundaryDetailRows is %d; set it to %d",
+			sc.Counts[bench.ExtractDetail], boundaryDetailRows, sc.Counts[bench.ExtractDetail])
 	}
-	if sc.AmbiguousSkipped != ambiguousRows {
-		t.Errorf("%d skipped boundary rows are ambiguous, want %d; an undecidable page is neither a false-drop nor forgiven", sc.AmbiguousSkipped, ambiguousRows)
+	if len(sc.FalseDrops) != boundaryFalseDropsRemaining {
+		t.Errorf("the candidate rule drops %d real Job Listings here but boundaryFalseDropsRemaining is %d; set it to %d",
+			len(sc.FalseDrops), boundaryFalseDropsRemaining, len(sc.FalseDrops))
+	}
+	if sc.AmbiguousSkipped != boundaryAmbiguousSkipped {
+		t.Errorf("%d skipped boundary rows are ambiguous, want %d; an undecidable page is neither a false-drop nor forgiven", sc.AmbiguousSkipped, boundaryAmbiguousSkipped)
 	}
 	if sc.Unconfirmed != pendingBoundaryConfirmations {
 		t.Errorf("the scorecard reports %d unconfirmed rows, the ratchet says %d", sc.Unconfirmed, pendingBoundaryConfirmations)

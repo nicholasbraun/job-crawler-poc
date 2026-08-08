@@ -342,14 +342,22 @@ disagreement *defines* the stratum are functions in `cmd/llmbench/goldsetboundar
 | function | what it is |
 |---|---|
 | `boundaryBaselineConfig()` | today's blanket accept — `RequirePositiveEvidence` set **false explicitly**, so it keeps meaning "the previous behaviour" after #264 flips the default on |
-| `boundaryCandidateConfig()` | the tiered Positive Evidence rule of ADR-0044 / #258, implemented in `internal/pagegate/positive_evidence.go` |
+| `boundaryCandidateConfig()` | the tiered Positive Evidence rule of ADR-0044, implemented in `internal/pagegate/positive_evidence.go`, as the gate ships it **today** |
 
-**Changing `internal/pagegate/positive_evidence.go` — or any reject rung above it —
-invalidates this stratum**, because the pages it holds are no longer the pages the two
-rules disagree on. That is not a comment anybody has to remember:
-`TestCommittedBoundaryStratumIsTheDisagreementSet` re-derives the boundary over all 188
-committed rows on every build and says exactly that when it goes red. Re-draw from the
-capture; do not patch the file.
+**A moved *reject* rung invalidates this stratum**, because the pages it holds would no longer
+be pages today's blanket accept extracts. `TestCommittedBoundaryStratumIsTheDisagreementSet`
+re-derives that half over all 188 committed rows on every build and says so when it goes red.
+Re-draw from the capture; do not patch the file.
+
+**A widened Positive Evidence rung does not.** The stratum was drawn against #258's rule, and
+#257 widened that rule to the false-drops this very stratum measured — 29 of these rows now
+extract. It was deliberately **kept, not re-drawn**: re-drawing discards the 26 recovered
+postings, which are the evidence the widening produced, and owes 188 fresh human confirmations
+nobody has budgeted (ADR-0043, Consequences). What the stratum measures now is that recovery,
+and `TestCommittedBoundaryRecoveryLedger` pins it **per label** — total, detail, non-posting,
+ambiguous — so a later widening that recovers non-postings faster than postings goes red
+rather than showing up as a bigger total. Re-draw only when a genuinely new boundary is
+needed.
 
 ### The arithmetic
 
@@ -430,22 +438,28 @@ the gate wrongly extracted. Three recurring shapes account for all ten:
 
 ### What it says
 
-Under the candidate rule, every one of the 188 rows is skipped by construction, so the
-false-drop count is exactly the `detail` rows:
+At the draw, every one of the 188 rows was skipped by the candidate rule by construction,
+so the false-drop count was exactly the `detail` rows: **47 of the 3,059 boundary pages
+the rule dropped were real Job Listings** — 25% of the accept half. That is the finding
+this stratum exists to produce, and no label was softened to keep the number down.
+
+It has moved twice since, both times because the finding was acted on. A blind re-read of
+the 57 consequential rows settled 10 of them out of `detail` (47 → 37), and #257 then
+widened the rung to the shapes the remaining drops named, recovering 29 rows:
 
 ```
 boundary stratum (n=188, unweighted)
-  count detail 47 / hub-index 57 / residue 74 / ambiguous 10
-  extracted 0, skipped 188
-  false-drops       47   (real Job Listings the Positive Evidence rule drops here)
-  ambiguous-skipped 10   (dropped, unclassifiable: not a false-drop, not forgiven)
+  count detail 37 / hub-index 62 / residue 79 / ambiguous 10
+  extracted 29, skipped 159
+  false-drops       11   (real Job Listings the Positive Evidence rule drops here)
+  ambiguous-skipped  9   (dropped, unclassifiable: not a false-drop, not forgiven)
   confirmed         0 of 188
 ```
 
-**47 of the 3,059 boundary pages the rule drops are real Job Listings** — 25% of the
-accept half, before any confirmation. That is the finding this stratum exists to produce.
-It is not a bug in the stratum and no label was softened to keep the number down; the
-honest count is what #264 has to argue with.
+The label census (`count detail 37`) and the drop count (11) are now different numbers,
+and `TestCommittedBoundaryRecoveryLedger` pins the 29 per label so the split stays
+visible. **11 is what #264 has to argue with**; ADR-0044 records the eleven shapes and why
+each is argued rather than closed by a threshold nothing measured.
 
 > **The false-drop count above rests on LLM-proposed labels.** Until
 > `pendingBoundaryConfirmations` is 0 it is one model's opinion of another model's
@@ -574,37 +588,41 @@ go run ./cmd/llmbench score-capture -in cmd/llmbench/extract-goldset/goldset.jso
 ```
 
 ```
-extract-call-rate 0.3282  (raw, over all three drawings — the file's mix, not the stream's)
-detail     recall 0.6667  (n=150, extracted 100, skipped 50)
-residue    accuracy 0.8281 (n=221, skipped 183, leaked 38)
-ambiguous         10 (excluded from scoring entirely, 0 extracted)
+extract-call-rate 0.3961  (raw, over all three drawings — the file's mix, not the stream's)
+detail     recall 0.9071  (n=140, extracted 127, skipped 13)
+hub-index  accuracy 0.8272 (n=81, skipped 67, leaked 14)
+residue    accuracy 0.8274 (n=226, skipped 187, leaked 39)
+ambiguous         10 (excluded from scoring entirely, 1 extracted)
 
 stream-weighted estimates (random stratum, n=120, effective n=92.3)
-extract-call-rate 0.1274   precision 0.4431   recall 0.9677
+extract-call-rate 0.1390   precision 0.4063   recall 0.9677
 
 boundary stratum (n=188, unweighted)
-extracted 0, skipped 188
-false-drops 47, ambiguous-skipped 10, confirmed 0 of 188
+extracted 29, skipped 159
+false-drops 11, ambiguous-skipped 9, confirmed 0 of 188
 ```
 
 The stream-weighted line is the number to quote for **cost**: the rung would cut today's
-extract calls to 12.7% of what they are — a 7.8× reduction — raise the precision of a
-paid call from 5.7% to 44.3%, and leave recall over today's real postings unmoved at
-96.8%. The raw 0.3282 above it is the *file's* composition, which now also carries a
+extract calls to 13.9% of what they are — a 7.2× reduction — raise the precision of a
+paid call from 5.7% to 40.6%, and leave recall over today's real postings unmoved at
+96.8%. The raw 0.3961 above it is the *file's* composition, which now also carries a
 census of the boundary; quoting it would misstate the saving badly. That is precisely the
 confusion the random stratum exists to end.
 
-The boundary block is the number to quote for **loss**, and it is the one that was
-invisible before this drawing existed: **47 real Job Listings dropped**, plus 10 pages
-nobody could classify. The `detail recall 0.6667` on the raw line is the same 50 drops
-seen through the file's own composition — 47 of them are the boundary census and 3 come
-from the earlier drawings — so it is not a stream estimate either.
+The boundary block is the number to quote for **loss**: **11 real Job Listings still
+dropped**, plus 9 pages nobody could classify. It reads as a **recovery ledger** now
+rather than as a live disagreement — the `extracted 29` are rows this stratum measured
+#258's rule dropping and #257's widening got back (26 `detail`, 2 `hub-index`, 1
+`ambiguous`). The `detail recall 0.9071` on the raw line is 13 drops seen through the
+file's own composition — 11 are the boundary and 2 come from the earlier drawings — so it
+is not a stream estimate either.
 
 The cost figures are descriptive estimates of the calls the crawler already makes. The
 boundary figure is a census of a disagreement and describes no stream at all. Neither may
-be pooled with the other, and neither is a guard yet: **the 47 rests on LLM-proposed
+be pooled with the other, and neither is a guard yet: **the 11 rests on LLM-proposed
 labels, and #259's Shadow Extraction is the live cross-check on pages the gate rejects
-before the tap.**
+before the tap.** The eleven shapes behind it, and why each is argued rather than closed
+by a threshold, are written up in ADR-0044.
 
 ## The Free Extraction fidelity check (#256)
 
@@ -809,16 +827,19 @@ go run ./cmd/llmbench goldset-apply
 go run ./cmd/llmbench goldset-apply -confirmed-by "<your name>" -confirm-ids /tmp/263/confirmed-01.txt
 
 # lower pendingBoundaryConfirmations in cmd/llmbench/goldset_test.go by what you confirmed,
-# in the same commit. Update ambiguousRows and boundaryDetailRows if your reading moved them.
+# in the same commit. Update ambiguousRows, boundaryDetailRows and the recovery-ledger
+# constants if your reading moved them.
 ```
 
 `-confirm-ids` names exactly the rows a human read, so `labels.tsv` shows precisely which
 labels gained a confirmer and the pass can span sessions. `-confirm-stratum boundary` is
 still there for the final sweep once every chunk has been read.
 
-**The number that matters when this reaches 0 is `boundaryDetailRows` — currently 47.**
-That is how many real Job Listings the Positive Evidence rule drops, and it is what #264
-must argue with before flipping the rung on.
+**The number that matters when this reaches 0 is `boundaryFalseDropsRemaining` — currently
+11.** That is how many real Job Listings the Positive Evidence rule still drops here, and
+it is what #264 must argue with before flipping the rung on. (`boundaryDetailRows`, 37, is
+the label census these drops are counted against, not the drop count itself — the two
+parted company when #257 widened the rung.)
 
 ### The random stratum is SPOT-CHECKED, not confirmed (#262)
 

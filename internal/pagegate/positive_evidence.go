@@ -28,19 +28,29 @@ package pagegate
 
 import (
 	"net/url"
+	"regexp"
 	"strings"
+	"unicode"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 )
 
 // hasPositiveEvidence reports whether a page that has cleared every reject rung
 // carries Positive Evidence of being a single posting (ADR-0044). Strong evidence
-// admits alone: a posting-shaped URL, or a lone structured-data posting. The weak
-// text marks admit only in agreement with each other.
+// admits alone: a posting-shaped URL, a lone structured-data posting, a Title
+// announcing one vacancy, or four of the five posting sections. The weak marks --
+// two posting sections, an apply affordance, a role designation in the Title --
+// admit only in agreement.
+//
+// The TIER SHAPE is the measurement (see the file comment) and does not change; what
+// #257 changed is which marks exist, each one taken from a page the Boundary Stratum
+// recorded this rung dropping.
 //
 // content must be non-nil, the same contract the content reject rungs already
 // hold (atsEmbed dereferences it too); every ShouldExtract call site parses the
-// page first.
+// page first. It reads content.Title as well as the body: both live call sites (the
+// walk's URL processor and the refetch lane) hand it a freshly parsed Content, so
+// the title is populated on both.
 func hasPositiveEvidence(u crawler.URL, content *crawler.Content) bool {
 	if postingURL(u) {
 		return true
@@ -62,10 +72,24 @@ func hasPositiveEvidence(u crawler.URL, content *crawler.Content) bool {
 	if _, ok := crawler.LonePosting(content); ok {
 		return true
 	}
+	// The Title says a specific role is WANTED. Strong, not paired: the pages this
+	// recovers include one whose body carries no posting section at all
+	// (seedcamp.com/views/visiting-analyst), so pairing it with even one vocabulary
+	// group loses it.
+	if titleAnnouncesVacancy(content) {
+		return true
+	}
+	// Enough of a posting's sections that the page is not mentioning a posting, it is
+	// being one.
+	if vocabularyGroupCount(content) >= postingVocabularyGroupsStrong {
+		return true
+	}
 	// Weak marks, in agreement only (ADR-0044). Neither admits alone: an apply
 	// affordance alone fires on 33% of non-postings, and it is the entire remaining
-	// bill in the OR form the tiered rule dominates.
-	return applyAffordance(content) && postingVocabulary(content)
+	// bill in the OR form the tiered rule dominates. Dense posting vocabulary is the
+	// anchor; either corroborator completes the pair.
+	return postingVocabulary(content) &&
+		(applyAffordance(content) || titleDesignatesOneRole(content))
 }
 
 // extractPostingWords are the job words this rung reads inside a URL's path
@@ -83,6 +107,10 @@ var extractPostingWords = []string{
 	"job", "jobs", "career", "careers", "vacancy", "vacancies",
 	"position", "positions", "opening", "openings",
 	"opportunity", "opportunities", "hiring", "recruiting", "recruitment", "apply",
+	// "role" is the same kind of job word as "position" and "opening" -- /open-roles/
+	// <id> is a board section like /openings/<id>. Like every word here it only ever
+	// fires on a NON-TERMINAL segment, so a bare /open-roles index still does not admit.
+	"role", "roles",
 	// German. Load-bearing, not decorative: German career sites publish postings at
 	// compound paths (/jobs-karriere/<slug>, /stellenangebote_unternehmen/<firm>/<slug>)
 	// and job-word hosts (karriere.<company>.de/<slug>) the shared predicate misses.
@@ -90,13 +118,23 @@ var extractPostingWords = []string{
 	"stellenanzeige", "stellenanzeigen", "stellenausschreibung",
 	"stellenausschreibungen", "stellenmarkt", "jobangebot", "jobangebote",
 	"bewerbung", "bewerben",
+	// German apprenticeships. An Ausbildung listing IS a Job Listing, and German
+	// employers publish it at its own section (/ausbildungsberuf/<slug>,
+	// /ausbildungen/<slug>) rather than under /stellenangebote.
+	//
+	// Measured and REJECTED alongside these: "praktikum" / "praktika" -- 0 additional
+	// postings and 2 extra leaks on the gold set. No evidence, so they stay out.
+	"ausbildung", "ausbildungen", "ausbildungsberuf", "ausbildungsberufe",
+	"ausbildungsplatz", "ausbildungsplaetze",
 }
 
 // postingURL reports whether u's shape marks it a single posting for the Positive
 // Evidence rung: a job word as a token of a path segment that is followed by a
 // further segment (so a compound segment such as "jobs-karriere" or
-// "stellenangebote_unternehmen" counts, and a bare index segment does not), or a
-// job word in the host with any path at all.
+// "stellenangebote_unternehmen" counts, and a bare index segment does not), a job
+// word in the host with any path at all, or -- failing both -- a FINAL segment that
+// reads as a role slug, which isRoleSlug judges under much stricter rules because a
+// terminal segment is where hub slugs live.
 //
 // It reads u.RawURL rather than u.Hostname so it stays a pure function of the URL
 // STRING, the way IsPostingPath is: the crawl-lane refetch builds a crawler.URL
@@ -119,6 +157,49 @@ func postingURL(u crawler.URL) bool {
 	for _, seg := range segs[:len(segs)-1] {
 		if segmentHasPostingWord(seg) {
 			return true
+		}
+	}
+	// Nothing above the last segment named a section, so the last segment is all
+	// there is: read it as a role slug, under the much stricter rules below.
+	return isRoleSlug(segs[len(segs)-1])
+}
+
+// roleSlugPostingNouns name ONE posting, which is what licenses reading a job word
+// inside the FINAL segment -- the role slug itself ("/stellenangebot_<role>",
+// "/ausbildung-in-gifhorn-zum-anlagenmechaniker"). A PLURAL section word may not:
+// "careers-at-sedus", "career-open-positions" and "offene-stellen-schulamt-neuruppin"
+// are hub slugs of exactly the same shape, and admitting them is the
+// /karriere-bei-bitsea failure mode ADR-0016 already names. Running this rule over
+// the full extractPostingWords list was measured: +2 postings for +9 leaks. The
+// singular restriction is the whole predicate; relaxing it deletes the predicate.
+var roleSlugPostingNouns = []string{
+	"stellenangebot", "stellenanzeige", "stellenausschreibung", "jobangebot",
+	"vacancy", "ausbildung",
+}
+
+// roleSlugMinTokens is how many delimiter-separated tokens the final segment must
+// carry before a posting noun inside it reads as a role slug rather than a section
+// name. A role slug is long; "ausbildung-bei-uns" and "stellenangebot-nicht-dabei"
+// are not. The gold set cannot settle this floor -- 3, 4 and 5 score identically on
+// it, because the two rows it recovers carry 6 and 9 tokens -- so it is a judgement,
+// taken on the shape of the German section slugs it has to exclude.
+const roleSlugMinTokens = 4
+
+// isRoleSlug reports whether a URL's FINAL path segment is a role slug: long enough
+// to be naming a role, and carrying a posting noun that names exactly one posting.
+// It is the only place this rung reads a job word in a terminal segment, and it is
+// deliberately much narrower than segmentHasPostingWord -- a terminal segment is
+// where hub slugs live.
+func isRoleSlug(segment string) bool {
+	tokens := splitURLTokens(stripWebExt(segment))
+	if len(tokens) < roleSlugMinTokens {
+		return false
+	}
+	for _, token := range tokens {
+		for _, noun := range roleSlugPostingNouns {
+			if token == noun {
+				return true
+			}
 		}
 	}
 	return false
@@ -203,6 +284,69 @@ func applyAffordance(content *crawler.Content) bool {
 	return containsAny(foldedBody(content), applyPhrases)
 }
 
+// vacancyTitlePhrases are the whole phrases a Title uses to announce that ONE role
+// is wanted. The trailing space is load-bearing: without it "hiring an" matches
+// "hiring analysts", and a newsroom announcing that it is hiring analysts is not a
+// posting.
+//
+// Measured and REJECTED: "wir suchen" and "we are looking for a" -- 0 additional
+// postings on the gold set, and "Wir suchen Verstärkung" is a careers-landing title.
+var vacancyTitlePhrases = []string{"hiring a ", "hiring an "}
+
+// vacancyTitleWord is the German half of the same idiom: "<Rolle> gesucht". It is
+// matched as a WHOLE WORD, never a substring, and that is not fussiness --
+// "Stellengesuche" are positions sought BY JOB SEEKERS (a distinction this package
+// already keeps in its index terminals) and "meistgesuchte" is a superlative. Both
+// would match a substring test.
+const vacancyTitleWord = "gesucht"
+
+// titleAnnouncesVacancy reports whether content's Title says a specific role is
+// wanted. It is STRONG evidence: a title is a page's own claim about what the page
+// is, and "we are hiring a <role>" / "<Rolle> gesucht" is a claim only a posting
+// makes. The English and German forms sit together for the same reason applyPhrases
+// and the vocabulary groups keep both -- they are one idiom in two languages.
+func titleAnnouncesVacancy(content *crawler.Content) bool {
+	title := foldedTitle(content)
+	if containsAny(title, vacancyTitlePhrases) {
+		return true
+	}
+	for _, token := range strings.FieldsFunc(title, func(r rune) bool {
+		return !unicode.IsLetter(r)
+	}) {
+		if token == vacancyTitleWord {
+			return true
+		}
+	}
+	return false
+}
+
+// roleDesignation is the German equal-treatment marker a posting's role name carries
+// ("(m/w/d)", "(w/m/d)", "(m/f/d)", "(m/w/x)"). In a TITLE it means the title names
+// ONE ROLE.
+//
+// It is WEAK on purpose. Alone it also fires on a posting header followed by a rail
+// of other postings (jobportal.hs-hannover.de/Praktikum/<role>) and on a title with
+// no role body under it at all (qvls.de/de/postdoctoral-researcher-m-f-d) -- two of
+// the shapes the blind re-read took OUT of `detail`. As STRONG it was measured: +6
+// postings, +4 leaks including exactly those three rows.
+var roleDesignation = regexp.MustCompile(`\(\s*[mwfd]\s*[/|:]\s*[mwfdx]\s*([/|:]\s*[mwfdx]\s*)?\)`)
+
+// titleDesignatesOneRole reports whether content's Title carries a role designation.
+// It corroborates dense posting vocabulary; it never admits a page by itself, and it
+// is deliberately NOT paired with the apply affordance instead -- that pairing
+// re-admits the rail-of-postings pages, which carry an apply action and exactly one
+// posting section.
+func titleDesignatesOneRole(content *crawler.Content) bool {
+	return roleDesignation.MatchString(foldedTitle(content))
+}
+
+// foldedTitle returns content's Title case-folded and whitespace-collapsed. The
+// collapse is not cosmetic: titles in the wild carry newlines and runs of spaces,
+// which would otherwise break a phrase match down the middle.
+func foldedTitle(content *crawler.Content) string {
+	return strings.ToLower(strings.Join(strings.Fields(content.Title), " "))
+}
+
 // postingVocabularyGroups are the sections a job posting's body has and a hub's
 // does not, grouped by what each section SAYS. A group counts ONCE however many of
 // its phrases hit, so a page repeating "Aufgaben" five times is still one group --
@@ -236,20 +380,35 @@ var postingVocabularyGroups = [][]string{
 // max-recall variant that cost ~70% more calls for ~0 recall.
 const postingVocabularyGroupsRequired = 2
 
-// postingVocabulary reports whether the page's text carries at least
-// postingVocabularyGroupsRequired distinct posting sections.
-func postingVocabulary(content *crawler.Content) bool {
+// postingVocabularyGroupsStrong is the group count at which posting vocabulary stops
+// being a weak mark and stands alone: a page carrying four of the five sections a
+// posting has is not mentioning a posting, it is being one.
+//
+// FOUR, from the gold set. THREE was measured and REJECTED: it re-admits
+// massinc.org/about-us/career-opportunities and ifes.uni-hannover.de/eev/hiwi, two of
+// the standing-call and rail-of-postings rows a blind re-read had just taken out of
+// `detail`. A threshold that re-admits the rows a human just rejected is moving the
+// wrong way. FIVE recovers nothing.
+const postingVocabularyGroupsStrong = 4
+
+// vocabularyGroupCount counts the DISTINCT posting sections the page's text carries.
+// It has no early exit -- the strong-mark threshold needs the count, not a verdict --
+// and postingVocabulary is the thresholded reading of it.
+func vocabularyGroupCount(content *crawler.Content) int {
 	body := foldedBody(content)
 	groups := 0
 	for _, group := range postingVocabularyGroups {
 		if containsAny(body, group) {
 			groups++
-			if groups >= postingVocabularyGroupsRequired {
-				return true
-			}
 		}
 	}
-	return false
+	return groups
+}
+
+// postingVocabulary reports whether the page's text carries at least
+// postingVocabularyGroupsRequired distinct posting sections.
+func postingVocabulary(content *crawler.Content) bool {
+	return vocabularyGroupCount(content) >= postingVocabularyGroupsRequired
 }
 
 // foldedBody returns content's main text case-folded and whitespace-collapsed, so

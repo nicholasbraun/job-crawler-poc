@@ -42,3 +42,9 @@ spot-checked. Each row records who proposed and who confirmed it.
   roughly an order of magnitude.
 - The existing synthetic fixtures survive as cheap regression cases for the reject rungs, but
   are renamed out of "Gold Set" so they are never again mistaken for evidence.
+- The Boundary Stratum is a **census taken under one candidate rule**, so acting on what it
+  measures necessarily stops it marking a boundary. It then becomes a historical disagreement
+  set plus a recovery ledger — which is the more useful artefact, and the one #257 kept.
+  Re-draw only when a *new* boundary is actually needed, and budget the human confirmations
+  the fresh rows will owe; re-drawing to keep a provenance test green throws away the recovered
+  postings, which are the evidence the rule change produced.

@@ -229,7 +229,7 @@ The collection lane's counterpart to the Gate: a deterministic, pre-LLM pass tha
 _Avoid_: extract filter, relevance gate, ShouldExtract (in prose)
 
 **Positive Evidence**:
-The mark the Extract Gate requires before spending an extractor call: that a page *is* one posting, not merely that it is not a hub. Tiered — a posting-shaped URL or a lone structured-data posting stands on its own, while the text marks (an apply affordance, dense posting vocabulary) count only in agreement with each other.
+The mark the Extract Gate requires before spending an extractor call: that a page *is* one posting, not merely that it is not a hub. Tiered — a *strong* mark stands on its own (a posting-shaped URL, a lone structured-data posting, a title announcing one vacancy, or four of the five sections a posting has), while the *weak* marks count only in agreement: two posting sections corroborated by an apply affordance or by a role designation in the title. The tiering is the measurement, not a taste — an apply affordance alone fires on a third of non-postings — and which marks sit in which tier is settled page by page against the Extract Gold Set.
 _Avoid_: accept signal, positive signal (bare), allowlist
 
 **Free Extraction**:
