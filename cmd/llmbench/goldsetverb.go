@@ -72,6 +72,160 @@ func runGoldSetSample(args []string) int {
 	return 0
 }
 
+// runGoldSetSampleRandom draws the ADR-0043 RANDOM stratum (#262) and APPENDS it to
+// the existing Extract Gold Set: it streams the capture, narrows it to the faithful
+// frame at or after -since, drops the URLs the substrate already carries, collapses
+// every candidate's sampling cell to the verdict, draws randomSamplePlan's quotas in
+// deterministic hash order, attaches each row's weight, and rewrites the substrate
+// and both review sheets. Existing rows -- their labels, provenance and expected
+// extractions -- pass through untouched: unlike goldset-sample this verb is
+// APPEND-ONLY, because the labels it extends cost a review pass to produce.
+//
+// -accept-share is REQUIRED and never reconstructed. liveAcceptShare splits sessions
+// on a one-hour ts gap, and three of the capture's six process frames are contiguous
+// within that, so the estimator would silently merge them and produce a wrong number.
+// The reconstruction is still printed beside the supplied value as a cross-check.
+// Returns the process exit code: 2 on a usage or validation error, 1 on IO, 0 on
+// success.
+func runGoldSetSampleRandom(args []string) int {
+	fs := flag.NewFlagSet("goldset-sample-random", flag.ExitOnError)
+	capture := fs.String("capture", "", "extract-capture JSONL written by the EXTRACT_CAPTURE_PATH tap (required; gitignored, never committed)")
+	dir := fs.String("dir", defaultGoldSetDir, "directory holding the Extract Gold Set the random stratum is appended to")
+	seed := fs.String("seed", defaultRandomSeed, "seed for the deterministic within-cell selection; changing it is a deliberate resample")
+	since := fs.String("since", "", "RFC3339 cutoff: only capture records at or after it are sampled (required; excludes windows parsed by a superseded parser)")
+	acceptShare := fs.Float64("accept-share", -1, "the live extract stream's MEASURED accept share, in (0,1) (required; this verb never reconstructs it)")
+	_ = fs.Parse(args)
+
+	if *capture == "" || *since == "" {
+		fmt.Fprintln(os.Stderr, "usage: llmbench goldset-sample-random -capture <capture.jsonl> -since <RFC3339> -accept-share <p> [-dir d] [-seed s]")
+		return 2
+	}
+	cutoff, err := time.Parse(time.RFC3339, *since)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: -since %q: %v\n", *since, err)
+		return 2
+	}
+	if *acceptShare <= 0 || *acceptShare >= 1 {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: -accept-share must be in (0,1), got %g; the capture's session split merges process frames, so this verb refuses to reconstruct it\n", *acceptShare)
+		return 2
+	}
+
+	scan, err := scanCapture(*capture)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: %v\n", err)
+		return 1
+	}
+	framed, outOfFrame := frameSince(scan, cutoff)
+
+	// The substrate MUST already exist: the random stratum extends the #254 file, it
+	// never creates one. A missing file here is a wrong -dir, and silently starting a
+	// new substrate would strand every existing label.
+	substrate, sheetPath := goldSetPaths(*dir)
+	existing, err := readGoldSet(substrate)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: %v (the random stratum extends an existing gold set; run goldset-sample first)\n", err)
+		return 1
+	}
+	committed := map[string]struct{}{}
+	for _, row := range existing {
+		committed[row.URL] = struct{}{}
+	}
+	framed, alreadyCommitted := excludingURLs(framed, committed)
+
+	sel, err := applyPlan(asStratum(framed, stratumRandom), randomSamplePlan, *seed, *acceptShare)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: %v\n", err)
+		return 2
+	}
+	drawn, err := readSelected(*capture, sel)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: %v\n", err)
+		return 1
+	}
+	if err := validateDrawnRandomRows(drawn, committed); err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: %v\n", err)
+		return 2
+	}
+
+	merged := append(append([]goldRow{}, existing...), drawn...)
+	if err := writeGoldSet(substrate, merged); err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(sheetPath, renderSheet(merged), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: write %q: %v\n", sheetPath, err)
+		return 1
+	}
+	if err := os.WriteFile(expectedSheetPath(*dir), renderExpectedSheet(merged), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: write %q: %v\n", expectedSheetPath(*dir), err)
+		return 1
+	}
+
+	printRandomSampleSummary(os.Stdout, scan, framed, sel, drawn, merged, outOfFrame, alreadyCommitted, substrate)
+	return 0
+}
+
+// validateDrawnRandomRows refuses a draw that could corrupt the substrate: a row
+// already committed (one page cannot carry two drawings' incompatible weights), a
+// duplicate within the draw, a row outside the random stratum, a non-positive
+// weight, or a row that arrived carrying a label. Nothing is written until it
+// passes, so a bad draw leaves the committed file exactly as it was.
+func validateDrawnRandomRows(drawn []goldRow, committed map[string]struct{}) error {
+	seen := map[string]struct{}{}
+	for _, row := range drawn {
+		if _, dup := committed[row.URL]; dup {
+			return fmt.Errorf("drew %q, which the substrate already carries", row.URL)
+		}
+		if _, dup := seen[row.URL]; dup {
+			return fmt.Errorf("drew %q twice", row.URL)
+		}
+		seen[row.URL] = struct{}{}
+		if row.Stratum != stratumRandom {
+			return fmt.Errorf("drew %q in stratum %q, want %q", row.URL, row.Stratum, stratumRandom)
+		}
+		if row.Weight <= 0 {
+			return fmt.Errorf("drew %q with weight %g, want > 0", row.URL, row.Weight)
+		}
+		if row.Label != "" {
+			return fmt.Errorf("drew %q carrying label %q; a fresh draw is unlabelled", row.URL, row.Label)
+		}
+	}
+	return nil
+}
+
+// printRandomSampleSummary writes the account an operator needs to trust the random
+// drawing: what the capture held, what each narrowing step dropped and why, the
+// accept share the weights rest on ALONGSIDE the estimator's reconstruction (which
+// is a cross-check and does not govern), the realized per-cell design, and the two
+// row counts -- the drawing's own, whose weights must sum to it, and the union's.
+func printRandomSampleSummary(w io.Writer, scan, framed captureScan, sel selection, drawn, merged []goldRow, outOfFrame, alreadyCommitted int, substrate string) {
+	fmt.Fprintln(w, "extract gold set random stratum")
+	fmt.Fprintf(w, "  capture lines       %d\n", scan.Lines)
+	fmt.Fprintf(w, "  duplicate lines     %d (deduped by url, latest ts wins)\n", scan.Duplicates)
+	fmt.Fprintf(w, "  dropped oversized   %d (raw line > %d bytes)\n", scan.Oversized, maxCandidateBytes)
+	fmt.Fprintf(w, "  dropped bad url     %d\n", scan.BadURL)
+	fmt.Fprintf(w, "  dropped out-of-frame %d (superseded parser, or an unparseable ts)\n", outOfFrame)
+	fmt.Fprintf(w, "  dropped committed   %d (already in the substrate from an earlier drawing)\n", alreadyCommitted)
+	fmt.Fprintf(w, "  candidate frame     %d\n", len(framed.Candidates))
+	fmt.Fprintf(w, "  accept share        %.4f (supplied; governs the weights)\n", sel.AcceptShare)
+	if estimated, ok := liveAcceptShare(framed.Timeline); ok {
+		fmt.Fprintf(w, "  accept share        %.4f (liveAcceptShare's reconstruction -- CROSS-CHECK ONLY, does not govern:\n", estimated)
+		fmt.Fprintf(w, "                      its %v session split merges contiguous process frames of this capture)\n", sessionGap)
+	} else {
+		fmt.Fprintln(w, "  accept share        (liveAcceptShare could not reconstruct one from this frame)")
+	}
+	for _, c := range sel.Cells {
+		fmt.Fprintf(w, "  cell %-8s verdict=%-5v population %5d  sampled %3d  weight %.5f\n",
+			c.Key.Stratum, c.Key.Verdict, c.Population, c.Sampled, c.Weight)
+	}
+	fmt.Fprintf(w, "  drawn rows          %d\n", len(drawn))
+	fmt.Fprintf(w, "  drawn weight sum    %.4f (must equal the drawn rows)\n", weightSum(drawn))
+	fmt.Fprintf(w, "  substrate rows      %d (%d existing + %d drawn)\n", len(merged), len(merged)-len(drawn), len(drawn))
+	if info, err := os.Stat(substrate); err == nil {
+		fmt.Fprintf(w, "  wrote               %s (%d bytes)\n", substrate, info.Size())
+	}
+}
+
 // readSelected re-streams the capture and materializes the selected rows in full,
 // keyed by the exact line the dedupe chose so a re-extracted URL yields the same
 // record the stratification saw. Only selected lines are decoded whole, so peak
@@ -148,19 +302,30 @@ func printSampleSummary(w io.Writer, scan captureScan, sel selection, rows []gol
 // runGoldSetWorksheet renders the labeler's view of the committed substrate to
 // -out: per row, the page's own title, two windows into its main content, and its
 // outbound-link counts. Every structured-data-derived field -- the stratum
-// included -- is withheld, and rows are emitted in hash-shuffled order, so a label
-// cannot be inferred from the very signal the gold set exists to test the
-// mechanism against (ADR-0043). The worksheet is a working artifact and is never
-// committed. Exit: 2 on usage, 1 on IO, 0 otherwise.
+// included -- is withheld, as is the live extractor's verdict, and rows are emitted
+// in hash-shuffled order, so a label cannot be inferred from the very signals the
+// gold set exists to test the mechanism against (ADR-0043). The worksheet is a
+// working artifact and is never committed.
+//
+// -stratum narrows the sheet to one sampling cell, and -n takes only the first N
+// rows AFTER the shuffle: together they cut a deterministic, quotable subset -- the
+// 20 rows a human spot-checks the random stratum on, rather than the whole 4 MB
+// substrate. Exit: 2 on usage, 1 on IO, 0 otherwise.
 func runGoldSetWorksheet(args []string) int {
 	fs := flag.NewFlagSet("goldset-worksheet", flag.ExitOnError)
 	dir := fs.String("dir", defaultGoldSetDir, "directory holding the Extract Gold Set")
 	out := fs.String("out", "", "path to write the worksheet JSONL to (required; a working artifact, never committed)")
 	seed := fs.String("seed", defaultSeed, "seed for the presentation shuffle")
+	stratum := fs.String("stratum", "", "restrict the sheet to one stratum; empty renders every row")
+	n := fs.Int("n", 0, "render only the first N rows after the shuffle (a deterministic subset); 0 renders all")
 	_ = fs.Parse(args)
 
 	if *out == "" {
-		fmt.Fprintln(os.Stderr, "usage: llmbench goldset-worksheet -out <worksheet.jsonl> [-dir d] [-seed s]")
+		fmt.Fprintln(os.Stderr, "usage: llmbench goldset-worksheet -out <worksheet.jsonl> [-dir d] [-seed s] [-stratum s] [-n k]")
+		return 2
+	}
+	if *stratum != "" && !goldStratum(*stratum).Valid() {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-worksheet: -stratum %q is not a known stratum\n", *stratum)
 		return 2
 	}
 
@@ -173,11 +338,17 @@ func runGoldSetWorksheet(args []string) int {
 
 	sheets := make([]worksheetRow, 0, len(rows))
 	for _, row := range rows {
+		if *stratum != "" && row.Stratum != goldStratum(*stratum) {
+			continue
+		}
 		sheets = append(sheets, worksheetFor(row))
 	}
 	sort.Slice(sheets, func(i, j int) bool {
 		return seededHash(*seed, sheets[i].URL) < seededHash(*seed, sheets[j].URL)
 	})
+	if *n > 0 && *n < len(sheets) {
+		sheets = sheets[:*n]
+	}
 
 	f, err := os.Create(*out)
 	if err != nil {
@@ -560,10 +731,15 @@ func applyExpected(rows []goldRow, sheet []expectedSheetRow, proposedBy, confirm
 // lone-posting rows still have no human confirmation. The expected-extraction
 // block gets the same treatment, since it is the ground truth the #256 fidelity
 // guard rests on.
+//
+// The random stratum reports SPOT-CHECKS rather than a pending count, because
+// ADR-0043 asks it to be spot-checked rather than fully confirmed: the number that
+// matters there is how many rows a human actually read, not how many they have left.
 func printApplySummary(w io.Writer, rows []goldRow) {
 	byLabel := map[bench.ExtractLabel]int{}
 	labelled, proposedOnly, pending := 0, 0, 0
 	expected, acceptedFires, expectedPending := 0, 0, 0
+	randomRows, randomLabelled, randomSpotChecked := 0, 0, 0
 	for _, row := range rows {
 		if row.Expected != nil {
 			expected++
@@ -572,6 +748,15 @@ func printApplySummary(w io.Writer, rows []goldRow) {
 			}
 			if row.Expected.ConfirmedBy == "" {
 				expectedPending++
+			}
+		}
+		if row.Stratum == stratumRandom {
+			randomRows++
+			if row.Label.Valid() {
+				randomLabelled++
+			}
+			if row.LabelProvenance.ConfirmedBy != "" {
+				randomSpotChecked++
 			}
 		}
 		if !row.Label.Valid() {
@@ -597,6 +782,10 @@ func printApplySummary(w io.Writer, rows []goldRow) {
 	fmt.Fprintf(w, "  expected          %d\n", expected)
 	fmt.Fprintf(w, "  expected-accepted-fires %d (residue rows carrying an argued exception)\n", acceptedFires)
 	fmt.Fprintf(w, "  expected pending human  %d (rows awaiting confirmation)\n", expectedPending)
+	if randomRows > 0 {
+		fmt.Fprintf(w, "  random stratum    %d (labelled %d)\n", randomRows, randomLabelled)
+		fmt.Fprintf(w, "  spot-checked      %d (random rows a human confirmed)\n", randomSpotChecked)
+	}
 }
 
 // weightSum is the file's total sampling weight, which must equal its row count:

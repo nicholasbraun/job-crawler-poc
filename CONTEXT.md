@@ -274,6 +274,10 @@ _Avoid_: extract test set, second gold set
 The part of the Extract Gold Set drawn from pages where candidate gate variants disagree, rather than sampled from the stream — where a false-drop hides, and the only labels that must be human-confirmed. Its counterpart random stratum carries sampling weights instead, so stream-level numbers stay honest.
 _Avoid_: hard cases, edge sample, review queue
 
+**Random Stratum**:
+The part of the Extract Gold Set drawn at random from the captured extract stream rather than from where gate variants disagree. Each row carries the sampling weight that maps it back to the live stream, so composition, precision and extract-call rate computed over it describe production rather than the sample's own mix. Because the capture tap sits after the Extract Gate, it describes the stream of pages the crawler already pays an extract call on. Its labels are spot-checked, where the Boundary Stratum's must be human-confirmed.
+_Avoid_: uniform sample, control set, holdout
+
 **Shadow Extraction**:
 A sampled page the Extract Gate rejected that is extracted anyway, purely to score the gate — the extractor's verdict on it is the live false-drop measurement, which nothing else can observe. It saves nothing by construction: a Shadow Extraction can never reach the Corpus.
 _Avoid_: dry run, canary, A/B test

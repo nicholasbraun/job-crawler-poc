@@ -149,7 +149,35 @@ func printExtractReport(w io.Writer, r bench.ExtractReport) {
 		fmt.Fprintf(w, "  leak              %s (gate extracted a non-posting -- descriptive)\n", url)
 	}
 
+	printStreamScorecard(w, r.Stream)
+
 	for _, url := range e.FalseDrops {
 		fmt.Fprintln(os.Stderr, red("FALSE-DROP  "+url+" (real single-posting detail rejected by the extract gate)"))
 	}
+}
+
+// printStreamScorecard writes the sampling-weighted estimates of the live extract
+// stream (ADR-0043, #262), or nothing when the scored rows carried no weighted
+// random stratum. It leads with what population the numbers describe, because that
+// is the single thing a reader can get catastrophically wrong here: the capture tap
+// sits downstream of the Extract Gate, so a call rate near 1.0 under today's config
+// is the sampling frame showing through and NOT evidence that the gate does nothing.
+func printStreamScorecard(w io.Writer, s *bench.StreamScorecard) {
+	if s == nil {
+		return
+	}
+	fmt.Fprintf(w, "stream-weighted estimates (random stratum, n=%d, effective n=%.1f)\n", s.Rows, s.EffectiveN)
+	fmt.Fprintln(w, "  These estimate the pages the crawler ALREADY pays an extract call on: the capture")
+	fmt.Fprintln(w, "  tap sits downstream of the Extract Gate, so extract-call-rate reads as the share of")
+	fmt.Fprintln(w, "  TODAY'S calls this gate config would still make, and recall as the share of today's")
+	fmt.Fprintln(w, "  real postings it would keep. Pages the gate already rejects never reach the tap and")
+	fmt.Fprintln(w, "  are invisible here (that is the Boundary Stratum's and the Shadow Extraction's job).")
+	fmt.Fprintln(w, "  All figures below are DESCRIPTIVE -- weighted estimates with no threshold (ADR-0020).")
+	fmt.Fprintf(w, "  weight-sum        %.4f\n", s.WeightSum)
+	for _, label := range bench.AllExtractLabels {
+		fmt.Fprintf(w, "  composition %-10s %.4f  (n=%d)\n", label, s.Composition[label], s.Counts[label])
+	}
+	fmt.Fprintf(w, "  extract-call-rate %.4f  (share of today's calls this config still makes)\n", s.ExtractCallRate)
+	fmt.Fprintf(w, "  precision         %.4f  (of what it extracts, the share that is a real posting)\n", s.Precision)
+	fmt.Fprintf(w, "  recall            %.4f  (of today's real postings, the share it keeps)\n", s.Recall)
 }

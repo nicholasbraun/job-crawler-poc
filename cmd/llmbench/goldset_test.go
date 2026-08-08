@@ -15,22 +15,49 @@ import (
 )
 
 // The Extract Gold Set (cmd/llmbench/extract-goldset/goldset.jsonl) is a
-// committed, stratified sample of pages the LIVE extract stage actually decided
-// on, stored as the parsed Content the pipeline itself produced (ADR-0043) --
-// never re-fetched HTML, because a page re-fetched months later is a different
-// page and the drift corrupts the label.
+// committed sample of pages the LIVE extract stage actually decided on, stored as
+// the parsed Content the pipeline itself produced (ADR-0043) -- never re-fetched
+// HTML, because a page re-fetched months later is a different page and the drift
+// corrupts the label.
 //
-// Provenance: the extract-decision tap's local capture
-// (EXTRACT_CAPTURE_PATH=<repo>/capture/extract-capture.jsonl, gitignored), 5669
-// records captured 2026-07-24T22:51Z .. 2026-08-06T21:27Z across three collection
-// sessions; deduped by URL to 4271 pages (latest capture wins, 3 oversized lines
-// dropped); sampled 2026-08-07 by `llmbench goldset-sample -seed
-// extract-goldset-v1` under the plan in goldset.go. Labels were PROPOSED BY AN
-// LLM (the #254 delivery agent) from each page's own title, text and link
-// structure with the structured data deliberately withheld, and are confirmed by
-// a human on the lone-posting stratum -- the rows a later guard is decided on.
-// Each row records both in label_provenance; pendingHumanConfirmations below is
-// the machine-visible count of what is still unconfirmed.
+// It holds TWO DRAWINGS. They share a row format and a file; they share nothing
+// else, and their weights are never pooled (goldStratum.Drawing).
+//
+// Drawing 1 -- STRUCTURAL (#254), 149 rows. From the extract-decision tap's local
+// capture (EXTRACT_CAPTURE_PATH=<repo>/capture/extract-capture.jsonl, gitignored),
+// 5669 records captured 2026-07-24T22:51Z .. 2026-08-06T21:27Z across three
+// collection sessions; deduped by URL to 4271 pages (latest capture wins, 3
+// oversized lines dropped); sampled 2026-08-07 by `llmbench goldset-sample -seed
+// extract-goldset-v1` under samplePlan, stratified on the ADR-0042 lone-posting
+// predicate, accept share 0.3432. Labels were PROPOSED BY AN LLM (the #254
+// delivery agent) from each page's own title, text and link structure with the
+// structured data deliberately withheld, and are confirmed by a human on the
+// lone-posting stratum -- the rows a later guard is decided on.
+//
+// Drawing 2 -- RANDOM (#262), 120 rows. From the SAME capture file, grown to
+// 11772 records, narrowed to the faithful frame at or after 2026-08-07T21:13Z (the
+// first record after `fceaf87`, the last parser change; earlier windows were parsed
+// by a parser that no longer exists). That frame is 5204 distinct URLs over
+// 2026-08-07T21:13:23Z .. 2026-08-08T11:43:46Z; minus the 42 URLs drawing 1 already
+// committed it is 5162 = 1762 accept / 3400 abstain. Sampled by `llmbench
+// goldset-sample-random -seed extract-goldset-random-v1 -since 2026-08-07T21:13:00Z
+// -accept-share 0.0753` under randomSamplePlan, whose only cell is the verdict, at
+// 40 accept / 80 abstain -- 2.27% and 2.35% of their cells, so it is within a
+// percentage point of a simple random sample and the weights carry the per-verdict
+// cap correction and nothing else. The accept share is #261's census measurement of
+// the live stream (285 accepts in 3785 decisions, pooled over the capture's six
+// process frames' pre-cap prefixes), never the file's own 0.4265 mix.
+//
+// ESTIMAND. The capture tap sits DOWNSTREAM of the Extract Gate, so the population
+// the random drawing describes is the stream of extractor decisions the Collection
+// Crawl produced in that window -- pages that had ALREADY cleared the gate and been
+// paid for. Every weighted number estimates today's extract bill. It says nothing
+// about pages the gate already rejects: they never reach the tap.
+//
+// Each row records its labelling in label_provenance. The structural drawing's
+// lone-posting stratum is fully human-confirmed (pendingHumanConfirmations); the
+// random stratum is SPOT-CHECKED instead (randomSpotChecks), which is what ADR-0043
+// asks of it.
 
 // pendingHumanConfirmations is how many lone-posting rows still carry an
 // LLM-proposed label no human has confirmed. #254 requires 0.
@@ -52,6 +79,29 @@ const pendingHumanConfirmations = 1
 // question. Like pendingHumanConfirmations it is a RATCHET -- lower it as
 // confirmations land, never raise it.
 const pendingExpectedConfirmations = 1
+
+const (
+	// structuralStratumRows and randomStratumRows are the two drawings' exact row
+	// counts. They are pinned rather than bounded because a drawing is a fixed act of
+	// sampling: a row appearing or vanishing changes what every weighted number
+	// estimates, and must be seen in a diff.
+	structuralStratumRows = 149
+	randomStratumRows     = 120
+	// randomStreamAcceptRate is the accept share the random drawing's weights were
+	// built on -- #261's census measurement of the live extract stream, not the
+	// capture file's own mix. TestCommittedRandomStratumIsWeightedToTheStream
+	// reconstructs it from the committed weights, which is what proves they map the
+	// sample back to the recorded stream rather than to the file.
+	randomStreamAcceptRate = 0.0753
+)
+
+// randomSpotChecks is how many random-stratum rows a human has actually read and
+// confirmed. ADR-0043 asks this stratum to be SPOT-CHECKED rather than fully
+// confirmed, so unlike pendingHumanConfirmations this is a ratchet that RISES: it is
+// the machine-visible record of what has been checked, and what is therefore still
+// owed. It is 0 -- the labels ship LLM-proposed, and extract-goldset/README.md tells
+// the reviewer exactly which 20 rows to read and how to raise it.
+const randomSpotChecks = 0
 
 // loadCommittedGoldSet reads the committed Extract Gold Set. The working directory
 // under `go test` is the package directory, so the relative path resolves without
@@ -416,6 +466,217 @@ func TestWeightsSumToRowCountAndInvertOversampling(t *testing.T) {
 	})
 }
 
+// TestFrameSinceAndExclusionNarrowTheCandidates covers the two narrowings the #262
+// drawing rests on. The frame cutoff is what keeps content parsed by a superseded
+// parser out of a file whose whole premise is that a captured page is the exact
+// bytes the gate will later see; the exclusion is what stops one page carrying two
+// drawings' incompatible weights.
+func TestFrameSinceAndExclusionNarrowTheCandidates(t *testing.T) {
+	const cutoffText = "2026-08-07T21:13:00Z"
+	cutoff, err := time.Parse(time.RFC3339, cutoffText)
+	if err != nil {
+		t.Fatalf("parse cutoff: %v", err)
+	}
+
+	scan, err := scanCapture(writeCapture(t,
+		capturedPage(t, "https://acme.test/jobs/stale", true, "2026-08-06T10:00:00Z", nil, "parsed by the old parser"),
+		capturedPage(t, "https://acme.test/jobs/fresh", true, "2026-08-07T22:00:00Z", nil, "fresh parse"),
+		// Captured on both sides: scanCapture keeps the LATEST record, so it survives
+		// the cutoff carrying today's parse.
+		capturedPage(t, "https://acme.test/jobs/both", false, "2026-08-06T09:00:00Z", nil, "old parse"),
+		capturedPage(t, "https://acme.test/jobs/both", true, "2026-08-08T09:00:00Z", nil, "new parse"),
+		capturedPage(t, "https://acme.test/jobs/undated", false, "not-a-timestamp", nil, "unplaceable in time"),
+		capturedPage(t, "https://acme.test/jobs/committed", true, "2026-08-08T10:00:00Z", nil, "already in the substrate"),
+	))
+	if err != nil {
+		t.Fatalf("scanCapture: %v", err)
+	}
+
+	framed, outOfFrame := frameSince(scan, cutoff)
+	if outOfFrame != 2 {
+		t.Errorf("dropped %d candidates out of frame, want 2 (the stale page and the undated one)", outOfFrame)
+	}
+	inFrame := map[string]string{}
+	for _, c := range framed.Candidates {
+		inFrame[c.URL] = c.TS
+	}
+	if _, ok := inFrame["https://acme.test/jobs/stale"]; ok {
+		t.Error("a page captured only before the cutoff survived the frame")
+	}
+	if _, ok := inFrame["https://acme.test/jobs/undated"]; ok {
+		t.Error("a page whose ts does not parse survived the frame")
+	}
+	if got := inFrame["https://acme.test/jobs/both"]; got != "2026-08-08T09:00:00Z" {
+		t.Errorf("the both-sides page kept ts %q, want its post-cutoff parse", got)
+	}
+
+	// readSelected re-reads the capture by line number, so a narrowing that lost the
+	// line would materialize the wrong page (or none).
+	for _, c := range framed.Candidates {
+		if c.Line == 0 {
+			t.Errorf("%s: capture line number lost by the narrowing", c.URL)
+		}
+	}
+
+	kept, excluded := excludingURLs(framed, map[string]struct{}{"https://acme.test/jobs/committed": {}})
+	if excluded != 1 {
+		t.Errorf("excluded %d already-committed candidates, want 1", excluded)
+	}
+	for _, c := range kept.Candidates {
+		if c.URL == "https://acme.test/jobs/committed" {
+			t.Error("an already-committed url survived the exclusion and would carry two weights")
+		}
+	}
+	if len(kept.Candidates) != 2 {
+		t.Errorf("candidate frame is %d rows, want 2", len(kept.Candidates))
+	}
+}
+
+// TestRandomPlanWeightsReconstructTheStreamRate is the money property of the random
+// drawing: the weights come from the MEASURED stream accept rate and the quotas, so
+// applying them to the sample reconstructs that rate rather than the capture file's
+// own cap-distorted mix.
+func TestRandomPlanWeightsReconstructTheStreamRate(t *testing.T) {
+	lines := []string{}
+	for i := range 100 {
+		lines = append(lines, capturedPage(t, fmt.Sprintf("https://acme.test/jobs/%d", i), true, "2026-08-08T10:00:00Z", []string{lonePostingLD}, "apply now"))
+	}
+	for i := range 200 {
+		lines = append(lines, capturedPage(t, fmt.Sprintf("https://acme.test/about/%d", i), false, "2026-08-08T10:00:01Z", nil, "our culture"))
+	}
+	scan, err := scanCapture(writeCapture(t, lines...))
+	if err != nil {
+		t.Fatalf("scanCapture: %v", err)
+	}
+
+	// The same 1:2 accept:abstain quota shape randomSamplePlan uses, one tenth the
+	// size, over a capture whose own mix (1:2) is nothing like the stream's.
+	plan := []cellPlan{{stratumRandom, true, 10}, {stratumRandom, false, 20}}
+	const p = randomStreamAcceptRate
+	sel, err := applyPlan(asStratum(scan, stratumRandom), plan, defaultRandomSeed, p)
+	if err != nil {
+		t.Fatalf("applyPlan: %v", err)
+	}
+	if sel.AcceptShareEstimated {
+		t.Error("applyPlan reconstructed the accept share despite being handed one")
+	}
+
+	got := map[cellKey]cellResult{}
+	for _, c := range sel.Cells {
+		got[c.Key] = c
+	}
+	// With a 1:2 draw the weights collapse to 3p and 1.5(1-p).
+	accept, abstain := got[cellKey{stratumRandom, true}], got[cellKey{stratumRandom, false}]
+	if math.Abs(accept.Weight-3*p) > 1e-9 {
+		t.Errorf("accept weight %.6f, want %.6f (3p)", accept.Weight, 3*p)
+	}
+	if math.Abs(abstain.Weight-1.5*(1-p)) > 1e-9 {
+		t.Errorf("abstain weight %.6f, want %.6f (1.5(1-p))", abstain.Weight, 1.5*(1-p))
+	}
+	total := accept.Weight*float64(accept.Sampled) + abstain.Weight*float64(abstain.Sampled)
+	if math.Abs(total-30) > 1e-9 {
+		t.Errorf("weights sum to %.6f over 30 rows, want equal", total)
+	}
+	// The reconstruction, which is the whole reason the weights exist: the file's own
+	// accept share here is 1/3, the stream's is p, and the weighted share is p.
+	weighted := accept.Weight * float64(accept.Sampled) / total
+	if math.Abs(weighted-p) > 1e-9 {
+		t.Errorf("weighted accept share %.6f, want the measured stream rate %.6f (the file's own is %.4f)", weighted, p, 1.0/3.0)
+	}
+}
+
+// TestRandomSampleRefusesAnUnsuppliedAcceptShare guards the one decision the random
+// verb must never make for its operator. liveAcceptShare splits capture sessions on
+// a one-hour ts gap, and three of the #261 capture's six process frames are
+// contiguous within that, so the estimator would merge them and produce a WRONG
+// number with no sign that anything went wrong. A refusal is the only safe default.
+func TestRandomSampleRefusesAnUnsuppliedAcceptShare(t *testing.T) {
+	dir := t.TempDir()
+	capture := writeCapture(t,
+		capturedPage(t, "https://acme.test/jobs/1", true, "2026-08-08T10:00:00Z", []string{lonePostingLD}, "apply"),
+		capturedPage(t, "https://acme.test/about", false, "2026-08-08T10:00:01Z", nil, "culture"),
+	)
+	for name, args := range map[string][]string{
+		"no accept share at all": {"-capture", capture, "-dir", dir, "-since", "2026-08-07T21:13:00Z"},
+		"zero":                   {"-capture", capture, "-dir", dir, "-since", "2026-08-07T21:13:00Z", "-accept-share", "0"},
+		"one":                    {"-capture", capture, "-dir", dir, "-since", "2026-08-07T21:13:00Z", "-accept-share", "1"},
+		"negative":               {"-capture", capture, "-dir", dir, "-since", "2026-08-07T21:13:00Z", "-accept-share", "-0.5"},
+		"no cutoff":              {"-capture", capture, "-dir", dir, "-accept-share", "0.0753"},
+	} {
+		if code := runGoldSetSampleRandom(args); code != 2 {
+			t.Errorf("%s: exit code %d, want 2", name, code)
+		}
+		if _, err := os.Stat(filepath.Join(dir, goldSetFile)); !os.IsNotExist(err) {
+			t.Errorf("%s: the verb wrote a substrate despite refusing the draw", name)
+		}
+	}
+}
+
+// TestRandomSampleAppendsToTheExistingSubstrate proves the verb is append-only with
+// respect to labels. goldset-sample is destructive by design -- it rebuilds the file
+// and drops every label -- and the random drawing extends a file that cost a human
+// review pass, so an accidental rebuild there would be expensive and silent.
+func TestRandomSampleAppendsToTheExistingSubstrate(t *testing.T) {
+	dir := t.TempDir()
+	existing := []goldRow{{
+		URL: "https://acme.test/jobs/already", Verdict: true, TS: "2026-08-08T09:00:00Z",
+		Stratum: stratumNoPosting, Weight: 1, Label: bench.ExtractDetail,
+		LabelProvenance: goldProvenance{ProposedBy: "llm:test", ProposedAt: "2026-08-08T09:00:00Z", ConfirmedBy: "A Human", ConfirmedAt: "2026-08-08T09:00:00Z"},
+		Content:         crawler.Content{Title: "already labelled"},
+	}}
+	if err := writeGoldSet(filepath.Join(dir, goldSetFile), existing); err != nil {
+		t.Fatalf("writeGoldSet: %v", err)
+	}
+
+	lines := []string{
+		// The same URL the substrate already carries: it must be excluded, not redrawn.
+		capturedPage(t, "https://acme.test/jobs/already", true, "2026-08-08T10:00:00Z", nil, "re-visited"),
+		// Out of frame: parsed by a superseded parser.
+		capturedPage(t, "https://acme.test/jobs/stale", true, "2026-08-01T10:00:00Z", nil, "old parse"),
+	}
+	for i := range 40 {
+		lines = append(lines, capturedPage(t, fmt.Sprintf("https://acme.test/jobs/%d", i), true, "2026-08-08T10:00:00Z", []string{lonePostingLD}, "apply now"))
+	}
+	for i := range 80 {
+		lines = append(lines, capturedPage(t, fmt.Sprintf("https://acme.test/about/%d", i), false, "2026-08-08T10:00:01Z", nil, "our culture"))
+	}
+	capture := writeCapture(t, lines...)
+
+	code := runGoldSetSampleRandom([]string{
+		"-capture", capture, "-dir", dir, "-since", "2026-08-07T21:13:00Z", "-accept-share", "0.0753",
+	})
+	if code != 0 {
+		t.Fatalf("goldset-sample-random exit code %d, want 0", code)
+	}
+
+	merged, err := readGoldSet(filepath.Join(dir, goldSetFile))
+	if err != nil {
+		t.Fatalf("readGoldSet: %v", err)
+	}
+	if len(merged) != 1+randomStratumRows {
+		t.Fatalf("substrate has %d rows, want %d (1 existing + %d drawn)", len(merged), 1+randomStratumRows, randomStratumRows)
+	}
+	drawn := []goldRow{}
+	for _, row := range merged {
+		if row.URL == existing[0].URL {
+			if row.Label != bench.ExtractDetail || row.LabelProvenance.ConfirmedBy != "A Human" || row.Stratum != stratumNoPosting {
+				t.Errorf("the existing row was rewritten by the draw: %+v", row)
+			}
+			continue
+		}
+		drawn = append(drawn, row)
+		if row.Stratum != stratumRandom {
+			t.Errorf("%s: drawn in stratum %q, want %q", row.URL, row.Stratum, stratumRandom)
+		}
+		if row.Label != "" {
+			t.Errorf("%s: a fresh draw arrived labelled %q", row.URL, row.Label)
+		}
+	}
+	if !weightsBalanced(drawn, 1e-6) {
+		t.Errorf("the drawn rows' weights sum to %.6f over %d rows, want equal", weightSum(drawn), len(drawn))
+	}
+}
+
 // TestSheetRoundTrip proves the human review surface is lossless for the fields it
 // owns, and that a page title carrying a tab or a newline still yields exactly one
 // parseable line -- a captured title is arbitrary page text.
@@ -604,9 +865,11 @@ func TestApplyMergesLabelsAndStampsProvenance(t *testing.T) {
 
 // TestWorksheetWithholdsTheStructuredData is the guard on the labeling protocol:
 // the labeler's view must expose the page's own words and link structure and NOT
-// the structured data or the stratum derived from it. A labeler who can see that a
-// page publishes a lone JobPosting would agree with the structured data by
-// construction -- the exact circularity ADR-0043 exists to end.
+// the structured data, the stratum derived from it, or the live extractor's
+// verdict. A labeler who can see that a page publishes a lone JobPosting would agree
+// with the structured data by construction -- the exact circularity ADR-0043 exists
+// to end -- and one who can see the verdict would agree with the verdict, which is
+// the very thing the random stratum measures the precision of (#262).
 func TestWorksheetWithholdsTheStructuredData(t *testing.T) {
 	row := goldRow{
 		URL: "https://acme.test/careers/senior-go-engineer", Verdict: true, Stratum: stratumLonePosting,
@@ -632,6 +895,10 @@ func TestWorksheetWithholdsTheStructuredData(t *testing.T) {
 			t.Errorf("worksheet leaks %q to the labeler: %s", leak, encoded)
 		}
 	}
+	// The verdict is withheld by ABSENCE, not by a false value, so assert on the key.
+	if strings.Contains(string(encoded), `"verdict"`) {
+		t.Errorf("worksheet carries the live extractor's verdict, which the labels must be independent of: %s", encoded)
+	}
 
 	ws := worksheetFor(row)
 	if ws.URLsTotal != 3 || ws.URLsSameHost != 2 || ws.URLsJoblike != 1 {
@@ -655,8 +922,27 @@ func TestWorksheetWithholdsTheStructuredData(t *testing.T) {
 func TestCommittedGoldSetIsWellFormed(t *testing.T) {
 	rows := loadCommittedGoldSet(t)
 
-	if len(rows) < 135 || len(rows) > 165 {
-		t.Errorf("gold set has %d rows, want approximately 150", len(rows))
+	byDrawing := map[goldDrawing][]goldRow{}
+	for _, row := range rows {
+		byDrawing[row.Stratum.Drawing()] = append(byDrawing[row.Stratum.Drawing()], row)
+	}
+	if got := len(byDrawing[drawingStructural]); got != structuralStratumRows {
+		t.Errorf("the structural drawing has %d rows, want %d", got, structuralStratumRows)
+	}
+	if got := len(byDrawing[drawingRandom]); got != randomStratumRows {
+		t.Errorf("the random drawing has %d rows, want %d", got, randomStratumRows)
+	}
+	if want := structuralStratumRows + randomStratumRows; len(rows) != want {
+		t.Errorf("gold set has %d rows, want %d (the two drawings and nothing else)", len(rows), want)
+	}
+	// Per drawing AND file-wide. A weight normalizes within its drawing, so the
+	// per-drawing balance is the real invariant; the file-wide one holds only because
+	// each drawing's weights sum to its own row count, and asserting both catches a
+	// drawing that borrowed mass from the other.
+	for _, d := range []goldDrawing{drawingStructural, drawingRandom} {
+		if !weightsBalanced(byDrawing[d], 1e-6) {
+			t.Errorf("the %s drawing's weights sum to %.6f over %d rows, want equal", d, weightSum(byDrawing[d]), len(byDrawing[d]))
+		}
 	}
 	if !weightsBalanced(rows, 1e-6) {
 		t.Errorf("weights sum to %.6f over %d rows, want equal", weightSum(rows), len(rows))
@@ -717,13 +1003,21 @@ func TestCommittedGoldSetIsWellFormed(t *testing.T) {
 		// offering the posting it declares (ADR-0042). The two parted company when the predicate was
 		// narrowed to refuse withdrawn postings, so this asks the mechanism itself rather
 		// than reading firing off the stratum.
-		posting, lone := crawler.LonePosting(&row.Content)
-		fires := lone && posting.Title != "" && !crawler.WithdrawalNotice(&row.Content, posting)
-		if fires && row.Expected == nil {
-			t.Errorf("%s: the Free Extraction fires on it but it carries no expected extraction to score against", row.URL)
-		}
-		if !fires && row.Expected != nil {
-			t.Errorf("%s: carries an expected extraction the Free Extraction no longer fires on; re-run scripts/propose-expected.sh and goldset-apply", row.URL)
+		//
+		// Scoped to the STRUCTURAL drawing. #256's ground truth was proposed over that
+		// drawing alone; extending it to the random stratum would raise
+		// pendingExpectedConfirmations, a ratchet that may only fall, and is #256's
+		// business rather than the random draw's. score-free skips the same rows for
+		// the same reason.
+		if row.Stratum.Drawing() == drawingStructural {
+			posting, lone := crawler.LonePosting(&row.Content)
+			fires := lone && posting.Title != "" && !crawler.WithdrawalNotice(&row.Content, posting)
+			if fires && row.Expected == nil {
+				t.Errorf("%s: the Free Extraction fires on it but it carries no expected extraction to score against", row.URL)
+			}
+			if !fires && row.Expected != nil {
+				t.Errorf("%s: carries an expected extraction the Free Extraction no longer fires on; re-run scripts/propose-expected.sh and goldset-apply", row.URL)
+			}
 		}
 		byLabel[row.Label]++
 		byStratum[row.Stratum]++
@@ -777,6 +1071,82 @@ func TestCommittedGoldSetHumanConfirmation(t *testing.T) {
 	}
 }
 
+// TestCommittedRandomStratumIsWeightedToTheStream is the guard on what the #262
+// drawing claims to be. Its weights must come from the capture's per-verdict quotas
+// and #261's MEASURED stream accept rate -- never from the file's own accept/abstain
+// mix, which the caps produced -- so weighting the sample back must reconstruct that
+// measured rate. Everything else here is what makes such a weight readable: exactly
+// two of them (one per verdict cell), summing to the drawing's own row count.
+func TestCommittedRandomStratumIsWeightedToTheStream(t *testing.T) {
+	random := []goldRow{}
+	for _, row := range loadCommittedGoldSet(t) {
+		if row.Stratum == stratumRandom {
+			random = append(random, row)
+		}
+	}
+	if len(random) != randomStratumRows {
+		t.Fatalf("the random stratum has %d rows, want %d", len(random), randomStratumRows)
+	}
+
+	weights := map[float64]int{}
+	accepted, total := 0.0, 0.0
+	for _, row := range random {
+		weights[row.Weight]++
+		total += row.Weight
+		if row.Verdict {
+			accepted += row.Weight
+		}
+		if !row.Label.Valid() {
+			t.Errorf("%s: unlabelled", row.URL)
+		}
+		if row.LabelProvenance.ProposedBy == "" {
+			t.Errorf("%s: no label proposer", row.URL)
+		}
+		// #256's ground truth was proposed over the structural drawing alone, and a
+		// fired row with no expectation is fatal, so a random row must carry none.
+		if row.Expected != nil {
+			t.Errorf("%s: a random row carries an expected extraction, which #256 never proposed", row.URL)
+		}
+	}
+
+	// One weight per verdict cell: the draw's only sampling cell is the verdict, so a
+	// third distinct weight would mean it was stratified on something else.
+	if len(weights) != 2 {
+		t.Errorf("the random stratum carries %d distinct weights, want 2 (one per verdict cell): %v", len(weights), weights)
+	}
+	if math.Abs(total-float64(len(random))) > 1e-6 {
+		t.Errorf("weights sum to %.6f over %d rows, want equal", total, len(random))
+	}
+	if got := accepted / total; math.Abs(got-randomStreamAcceptRate) > 5e-4 {
+		t.Errorf("the weighted accept share is %.6f, want the measured stream rate %.4f; the weights are resting on the file's own mix rather than on the census", got, randomStreamAcceptRate)
+	}
+}
+
+// TestCommittedGoldSetSpotCheck is the random stratum's honest confirmation record.
+// ADR-0043 asks this stratum to be SPOT-CHECKED rather than fully confirmed, so
+// unlike the lone-posting ratchet this one rises: it asserts in BOTH directions, so
+// neither a confirmation that quietly vanished nor one that landed without the
+// constant moving can pass unseen.
+func TestCommittedGoldSetSpotCheck(t *testing.T) {
+	checked := []string{}
+	for _, row := range loadCommittedGoldSet(t) {
+		if row.Stratum != stratumRandom || row.LabelProvenance.ConfirmedBy == "" {
+			continue
+		}
+		checked = append(checked, row.URL)
+	}
+
+	if len(checked) != randomSpotChecks {
+		t.Errorf("%d random rows carry a human confirmation but randomSpotChecks is %d; set it to %d", len(checked), randomSpotChecks, len(checked))
+	}
+	for _, url := range checked {
+		t.Logf("spot-checked: %s", url)
+	}
+	if len(checked) == 0 {
+		t.Logf("no random row has been spot-checked yet (see extract-goldset/README.md for the 20 rows to read)")
+	}
+}
+
 // TestCommittedGoldSetScoresThroughScoreCapture is the acceptance guard that the
 // existing gate-scoring verb runs against the committed file with no network and
 // no model: every row replays through pagegate.ShouldExtract and folds into a
@@ -801,7 +1171,7 @@ func TestCommittedGoldSetScoresThroughScoreCapture(t *testing.T) {
 		t.Fatalf("scored %d rows, want %d", len(rows), want)
 	}
 
-	report := bench.ScoreExtract(rows)
+	report := bench.ScoreExtract(verdictRows(rows))
 	if report.Extract.Total != len(rows) {
 		t.Errorf("scorecard total = %d, want %d", report.Extract.Total, len(rows))
 	}
@@ -816,6 +1186,15 @@ func TestCommittedGoldSetScoresThroughScoreCapture(t *testing.T) {
 	for _, url := range report.Extract.FalseDrops {
 		t.Logf("false-drop: %s", url)
 	}
+
+	// The stream figures are logged, never asserted, for the same reason the
+	// false-drops are: they estimate the population the tap SAMPLED -- pages the gate
+	// already admitted -- so under today's config the call rate is near 1.0 by
+	// construction. They are the honest cost numbers only when a candidate config is
+	// scored against them.
+	stream := bench.ScoreExtractStream(verdictRowsIn(rows, stratumRandom))
+	t.Logf("stream-weighted (n=%d, effective n=%.1f): composition %v, extract-call rate %.4f, precision %.4f, recall %.4f",
+		stream.Rows, stream.EffectiveN, stream.Composition, stream.ExtractCallRate, stream.Precision, stream.Recall)
 }
 
 // TestCommittedGoldSetExpectedConfirmation is the honest ratchet on the #256

@@ -130,6 +130,12 @@ type ExtractVerdictRow struct {
 	URL     string
 	Label   ExtractLabel // gold
 	Extract bool         // predicted
+	// Weight is the row's ADR-0043 sampling weight: what one row of its sampling
+	// cell is worth in the live extract stream. It is ZERO for a row drawn outside a
+	// weighted stratum -- a synthetic reject-rung fixture, or a raw unsampled capture
+	// line -- which is why the stream scorecard is computed over an explicitly
+	// selected subset rather than over every row a caller happens to hold.
+	Weight float64
 }
 
 // ExtractScorecard is the deterministic Extract Gate regression report. The
@@ -159,11 +165,17 @@ type ExtractScorecard struct {
 // ExtractReport is the full extract-mode output.
 type ExtractReport struct {
 	Extract ExtractScorecard `json:"extract"`
+	// Stream carries the sampling-weighted estimates of the live extract stream,
+	// present only when the scored rows include a weighted random stratum (ADR-0043,
+	// #262). Nil for the synthetic fixture set, which describes no stream.
+	Stream *StreamScorecard `json:"stream,omitempty"`
 }
 
 // Failed reports whether the extract run must exit non-zero: any false-drop (a
 // real detail page the gate rejected). Leaks and the extract-call rate are
-// descriptive and never move this.
+// descriptive and never move this -- and neither does Stream: every figure in it is
+// a weighted estimate with no threshold (ADR-0020's split between a hard structural
+// guard and soft, composition-dependent measurements).
 func (r ExtractReport) Failed() bool { return len(r.Extract.FalseDrops) > 0 }
 
 // ScoreExtract folds extract verdict rows into an ExtractReport. PURE -- no
