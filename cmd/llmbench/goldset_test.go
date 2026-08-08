@@ -2180,6 +2180,44 @@ func TestApplyRefusesAMachineConfirmerOnTheSheet(t *testing.T) {
 	}
 }
 
+// TestApplyRefusesAMachineConfirmerOnTheExpectedSheet closes the same hole on the
+// OTHER sheet. -expected-confirmed-by rejects a machine name, but that guard is
+// worthless if expected.tsv's confirmer column is copied through unchecked, since a
+// machine-driven pass writes the column instead of passing the flag. What it buys is
+// smaller than on the labels sheet -- the false-drop guard arms on LABEL
+// confirmations, not on these -- but pendingExpectedConfirmations is a ratchet over
+// the #256 field-fidelity ground truth, and a machine must not lower that either.
+func TestApplyRefusesAMachineConfirmerOnTheExpectedSheet(t *testing.T) {
+	const stamp = "2026-08-08T12:00:00Z"
+	rows := []goldRow{
+		{URL: "https://a.test/jobs/1", Stratum: stratumLonePosting, Label: bench.ExtractDetail},
+	}
+	sheetWith := func(confirmer string) []expectedSheetRow {
+		return []expectedSheetRow{{
+			ID: rowID(rows[0].URL), URL: rows[0].URL, Label: rows[0].Label,
+			Title: "Senior Go Engineer", Location: "Berlin, DE", WorkArrangement: "unspecified",
+			ConfirmedBy: confirmer,
+		}}
+	}
+
+	for _, name := range []string{"llm:claude", "script:auto-confirm"} {
+		if _, err := applyExpected(rows, sheetWith(name), "", "", stamp); err == nil {
+			t.Errorf("applyExpected accepted an expected sheet confirmed by %q", name)
+		}
+	}
+
+	got, err := applyExpected(rows, sheetWith("A Human"), "", "", stamp)
+	if err != nil {
+		t.Fatalf("applyExpected rejected a human confirmer: %v", err)
+	}
+	if got[0].Expected == nil {
+		t.Fatal("no expected block was created")
+	}
+	if got[0].Expected.ConfirmedBy != "A Human" {
+		t.Errorf("confirmer = %q, want %q", got[0].Expected.ConfirmedBy, "A Human")
+	}
+}
+
 // TestApplyRetractsAConfirmationWhenAProposalChangesTheLabel pins the proposals
 // path to the sheet path's rule. A human confirmed the OLD label; a proposer that
 // replaces it must not inherit that signature, or the ledger's arming condition --

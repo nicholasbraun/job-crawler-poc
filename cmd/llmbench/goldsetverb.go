@@ -960,6 +960,16 @@ func applyExpected(rows []goldRow, sheet []expectedSheetRow, proposedBy, confirm
 		if s.FreeOK && s.Label != bench.ExtractResidue {
 			return nil, fmt.Errorf("expected row %q: free_ok on a %q row; only a residue fire is excusable (ADR-0042)", s.URL, s.Label)
 		}
+		// The sheet's confirmer column is subject to the SAME rule as the
+		// -expected-confirmed-by flag, for the reason applyLabels states about its own
+		// sheet: a machine-driven pass that writes the column otherwise walks straight
+		// past the flag guard. What it buys is smaller here -- the false-drop guard arms
+		// on LABEL confirmations, not on these -- but pendingExpectedConfirmations is a
+		// ratchet over the #256 field-fidelity ground truth, and a machine must not be
+		// able to lower that either.
+		if machineName(s.ConfirmedBy) {
+			return nil, fmt.Errorf("expected row %q: confirmed_by %q is not a human; confirmation cannot be automated (ADR-0043)", s.URL, s.ConfirmedBy)
+		}
 
 		// Copy the block before writing: merged shares its pointers with the
 		// caller's rows, so mutating in place would edit the input on a later
