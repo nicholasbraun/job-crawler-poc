@@ -517,6 +517,11 @@ func TestIsAggregatorHost(t *testing.T) {
 		{"lakestar portfolio board", "https://lakestar.com/portfolio", true},
 		{"techstars portfolio board", "https://www.techstars.com/portfolio", true},
 		{"ycombinator portfolio folds in news.ycombinator.com subdomain", "https://www.ycombinator.com/companies", true},
+		// Collection-crawl additions -- one per added denylist host.
+		{"goodjobs job board", "https://goodjobs.eu/jobs", true},
+		{"goodjobs posting folds in via the board root", "https://goodjobs.eu/jobs/senior-backend-engineer-recup-gmbh", true},
+		{"hiring.cafe aggregator", "https://hiring.cafe/job/frontend-engineer-scalable-capital-berlin-qu92", true},
+		{"hiringcafe.com alternative domain", "https://hiringcafe.com/job/frontend-engineer-scalable-capital-berlin-qu92", true},
 		{"match is case-insensitive", "https://BuiltIn.com/jobs", true},
 		// A per-tenant ATS or recruiting-platform board root is a legitimate hub,
 		// not an aggregator -- its only defect is identity attribution (#46).

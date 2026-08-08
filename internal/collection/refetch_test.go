@@ -533,6 +533,48 @@ func TestRefetchStructurallyCertainPageStaysAliveDespiteLLM(t *testing.T) {
 	}
 }
 
+// TestRefetchAggregatorPageRecordsDeadWithoutLLM covers the retroactive half of the
+// Aggregator denylist: a board catalogued BEFORE its host joined the list is reached
+// only by the Collection Crawl, whose dormancy probe trusts the structural pre-gate
+// solely on a CERTAIN verdict. The classifier is wired to its default "yes" — the
+// answer a real LLM gives for a page that genuinely is a multi-company jobs hub — so
+// an uncertain aggregator reject would keep the page Alive forever and it would go on
+// minting mis-attributed Job Listings. The probe must be Dead with no LLM call, so
+// adding a host to the list closes the rows it already minted.
+func TestRefetchAggregatorPageRecordsDeadWithoutLLM(t *testing.T) {
+	page := uuid.New()
+	const url = "https://goodjobs.eu/jobs" // aggregator host, and a career hub root
+	dl := newFakeDownloader()
+	dl.ok(url, "jobs with meaning") // 200, still a live and convincing jobs hub
+	classifier := newFakeClassifier()
+
+	dorm := &fakeDormancy{}
+	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
+		Downloader:        dl,
+		Parser:            fakeParser{},
+		Liveness:          newFakeLiveness(),
+		Dormancy:          dorm,
+		Classifier:        classifier,
+		GateConfig:        crawler.DefaultLLMGateConfig(),
+		SourceHash:        identityHash,
+		EnqueueExtract:    (&captureExtract{}).enqueue,
+		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+		DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+	})
+
+	seed := &crawler.CollectionSeed{URL: url, CompanyKey: "goodjobs.eu", CareerPageID: page}
+	if err := proc.Process(t.Context(), seed); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	probes := dorm.recorded()
+	if len(probes) != 1 || probes[0].outcome != crawler.ProbeDead || probes[0].careerPageID != page {
+		t.Fatalf("dormancy probes = %+v, want one Dead for page %v (aggregator host)", probes, page)
+	}
+	if calls := classifier.confirmed(); len(calls) != 0 {
+		t.Errorf("classifier consulted for %v, want no LLM call (the denylist is certain)", calls)
+	}
+}
+
 // TestRefetchRobotsDisallowedListingDecays is the ADR-0040 decay rule at the
 // Process seam: a per-listing refetch that the politeDownloader short-circuits
 // with ErrRobotsDisallowed records an Inconclusive crawl probe — NOT Dead — so a

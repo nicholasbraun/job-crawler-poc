@@ -489,6 +489,14 @@ var aggregatorHosts = map[string]struct{}{
 	"lakestar.com":             {},
 	"techstars.com":            {},
 	"ycombinator.com":          {}, // portfolio; folds in news.ycombinator.com (already a negative fixture)
+	// Collection-crawl additions -- boards the live Collection Crawl mined for
+	// Job Listings, each attributed to a fake host-Company ("mit Sinn finden",
+	// "HiringCafe") because the board's own /jobs root certain-accepted at the
+	// Gate as a Career Page. Their postings are other employers' postings
+	// re-hosted, so every listing they yield is mis-attributed by construction.
+	"goodjobs.eu":    {}, // purpose-driven job board (multi-company)
+	"hiring.cafe":    {}, // job-search aggregator; hiringcafe.com is the same product
+	"hiringcafe.com": {}, // alternative domain for hiring.cafe
 }
 
 // sharedHostSuffixes are registrable domains (eTLD+1) that front many INDEPENDENT

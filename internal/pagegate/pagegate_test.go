@@ -45,8 +45,11 @@ func TestCareerPage(t *testing.T) {
 		},
 		{
 			// A multi-company board is rejected outright, even though its host and
-			// on-page job links would otherwise read as a career hub.
-			name: "aggregator/board host is rejected outright",
+			// on-page job links would otherwise read as a career hub. It is the one
+			// CERTAIN reject: the curated host list admits no page-content ambiguity,
+			// so the Collection Crawl can close a catalogued board without an LLM
+			// confirm.
+			name: "aggregator/board host is rejected outright, and certainly",
 			url:  "https://builtin.com/jobs",
 			content: &crawler.Content{
 				Title: "Jobs on Built In",
@@ -54,15 +57,15 @@ func TestCareerPage(t *testing.T) {
 			},
 			cfg:         crawler.DefaultLLMGateConfig(),
 			wantAccept:  false,
-			wantCertain: false,
+			wantCertain: true,
 		},
 		{
-			name:        "VC-portfolio board on a subdomain is rejected outright",
+			name:        "VC-portfolio board on a subdomain is rejected outright, and certainly",
 			url:         "https://jobsinvc.getro.com/companies/acme",
 			content:     &crawler.Content{Title: "Portfolio jobs"},
 			cfg:         crawler.DefaultLLMGateConfig(),
 			wantAccept:  false,
-			wantCertain: false,
+			wantCertain: true,
 		},
 		{
 			name:        "ATS job posting is rejected",

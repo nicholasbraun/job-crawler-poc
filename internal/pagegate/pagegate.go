@@ -69,7 +69,8 @@ var strongTitleRoots = []string{
 // CareerPage decides whether a discovery candidate is a Career Page (accept)
 // and whether that decision is structurally definitive (certain), letting the
 // career-page pool skip the LLM classifier. A known aggregator/board host is
-// rejected outright (never a single-company hub). On a recognized ATS host the
+// rejected outright, and is the only CERTAIN reject (never a single-company hub;
+// the verdict is a curated host list, not a calibration). On a recognized ATS host the
 // decision is purely structural. On any other host: a strong-negative reject
 // path rejects without the LLM; the deterministic posting-path veto (ADR-0010)
 // then rejects a single posting or deep career sub-page -- a job-section segment
@@ -97,8 +98,18 @@ func CareerPage(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConf
 	// are never a single company's hub. Reject them before any accept path so
 	// they never become a candidate -- keeping them out of the Catalog and, in
 	// turn, out of Company identity (#46).
+	//
+	// This is the one CERTAIN reject the Gate can make: the verdict comes from a
+	// curated host list, so no page content can make it ambiguous -- unlike the
+	// structural and score rejects below, which are calibrations. Reporting it as
+	// certain is what lets the Collection Crawl's dormancy probe act on it without
+	// an LLM confirm (stillCareerPage trusts only a certain verdict), so a host
+	// added to the list retroactively closes the Catalog rows and Job Listings it
+	// already minted instead of leaving them for the Catalog Doctor. Discovery and
+	// the bench read accept=false as a reject regardless of certain, so this is
+	// inert on those paths.
 	if catalog.IsAggregatorHost(u) {
-		return false, false
+		return false, true
 	}
 	switch catalog.Classify(u) {
 	case catalog.RoleCareerPage:
