@@ -213,6 +213,20 @@ func main() {
 		log.Fatalf("error parsing SHADOW_EXTRACT_RATE: must be a fraction in [0,1], got %q", os.Getenv("SHADOW_EXTRACT_RATE"))
 	}
 
+	// EXTRACT_REQUIRE_POSITIVE_EVIDENCE is the Extract Gate's Positive Evidence rung
+	// (ADR-0044), default true: a page that clears every reject rung reaches the
+	// extractor only on evidence that it IS one posting, rather than merely because
+	// nothing rejected it. Set false to restore the pre-ADR-0044 blanket accept
+	// exactly. It is a dial rather than a deploy because the failure it can cause is
+	// the permanent one: a dropped posting is never seeded as visited, so the walk
+	// re-reaches and re-drops it every Collection Cycle, and nothing in production
+	// moves when it happens. SHADOW_EXTRACT_RATE above is the instrument that would
+	// see it; this is the switch to pull if it does.
+	requirePositiveEvidence, err := strconv.ParseBool(pgenv.EnvOr("EXTRACT_REQUIRE_POSITIVE_EVIDENCE", "true"))
+	if err != nil {
+		log.Fatalf("error parsing EXTRACT_REQUIRE_POSITIVE_EVIDENCE: must be a boolean, got %q", os.Getenv("EXTRACT_REQUIRE_POSITIVE_EVIDENCE"))
+	}
+
 	// CRAWL_MAX_WORKERS sizes the per-run discovery worker pool — how many pages
 	// are downloaded and processed in parallel per run. Crawl workers are
 	// I/O-bound (blocked on network downloads), so this
@@ -303,7 +317,8 @@ func main() {
 	savedSearchRepository := postgres.NewSavedSearchRepository(pgPool)
 
 	factory := newFactory(crawlMaxWorkers, visitedCap, robotsCacheTTL, robotsCacheSize, llmMaxWorkers, llmConfig,
-		descriptionMaxChars, extractFromJSONLD, shadowExtractRate, redisClient, companyRepository, careerPageRepository, corpusRepository)
+		descriptionMaxChars, extractFromJSONLD, shadowExtractRate, requirePositiveEvidence,
+		redisClient, companyRepository, careerPageRepository, corpusRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory,
 		// One cleaner sweeps all of a run's transient Redis state on a terminal
 		// status or factory error: the frontier keys and the LLM stage's streams
@@ -436,6 +451,7 @@ func newFactory(
 	descriptionMaxChars int,
 	extractFromJSONLD bool,
 	shadowExtractRate float64,
+	requirePositiveEvidence bool,
 	redisClient *redis.Client,
 	companyRepository crawler.CompanyRepository,
 	careerPageRepository crawler.CareerPageRepository,
@@ -496,7 +512,16 @@ func newFactory(
 
 	// Pre-LLM gate signals (ADR-0007 step 2), shared across runs: cheap URL-path
 	// checks that resolve a page's classifier/extractor verdict without a model call.
+	//
+	// ONE value serves both gates and every lane. Of the three that take it, the two
+	// consulting the EXTRACT Gate -- the walk's url processor and the refetch lane's
+	// changed-content re-extract -- are the ones the override below moves; the
+	// discovery processor reads the same struct for the DISCOVERY Gate, which never
+	// consults RequirePositiveEvidence. So the kill switch covers the whole extract
+	// path or none of it, and cannot touch Discovery.
 	gateConfig := crawler.DefaultLLMGateConfig()
+	gateConfig.RequirePositiveEvidence = requirePositiveEvidence
+	slog.Info("extract gate positive evidence (ADR-0044)", "enabled", requirePositiveEvidence)
 
 	return func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *runner.Counters, shouldStop func(context.Context) bool) (*runner.Engine, error) {
 		llmStats := &llmobs.Stats{}

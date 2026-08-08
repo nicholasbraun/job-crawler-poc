@@ -7,10 +7,10 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/pagegate"
 )
 
-// requirePositiveEvidence returns DefaultLLMGateConfig with the Positive Evidence
-// rung enabled -- the configuration #264 makes the default. Every case in
-// TestShouldExtract_PositiveEvidence runs under it; the rung ships off, so the
-// existing TestShouldExtract table is deliberately untouched.
+// requirePositiveEvidence returns the rung's configuration, which since #264 is
+// also the default. It sets the field EXPLICITLY rather than relying on that: this
+// file's whole subject is the rung, and a case here must keep saying what it says if
+// the default is ever pulled back by the kill switch.
 func requirePositiveEvidence() crawler.LLMGateConfig {
 	cfg := crawler.DefaultLLMGateConfig()
 	cfg.RequirePositiveEvidence = true
@@ -426,15 +426,34 @@ func TestShouldExtract_PositiveEvidenceAdmitsEverySharedPostingShape(t *testing.
 	}
 }
 
-// TestShouldExtract_PositiveEvidenceIsOffByDefault is the machine-visible
-// "default off" (#258 builds the rung, #264 flips it). Pages that the rung would
-// drop must still extract under the committed default, which is what makes the
-// flag a kill switch rather than a redeploy.
-func TestShouldExtract_PositiveEvidenceIsOffByDefault(t *testing.T) {
+// TestShouldExtract_PositiveEvidenceIsOnByDefault is the machine-visible "default
+// on" (#264): a signal-less page must be SHED by the configuration the crawler
+// actually ships, not merely by one a test constructs. Without it the whole rung
+// could be built, tested and left inert behind a default nobody moved -- which is
+// the failure #264 exists to prevent.
+func TestShouldExtract_PositiveEvidenceIsOnByDefault(t *testing.T) {
 	for _, raw := range []string{noEvidenceURL, "https://acme.com/senior-go-engineer"} {
 		t.Run(raw, func(t *testing.T) {
-			if !pagegate.ShouldExtract(newURL(t, raw), &crawler.Content{}, crawler.DefaultLLMGateConfig()) {
-				t.Errorf("ShouldExtract(%q) = false under DefaultLLMGateConfig, want true: the Positive Evidence rung must ship off", raw)
+			if pagegate.ShouldExtract(newURL(t, raw), &crawler.Content{}, crawler.DefaultLLMGateConfig()) {
+				t.Errorf("ShouldExtract(%q) = true under DefaultLLMGateConfig, want false: the Positive Evidence rung must ship ON", raw)
+			}
+		})
+	}
+}
+
+// TestShouldExtract_PositiveEvidenceKillSwitchRestoresTheBlanketAccept asserts the
+// kill switch as BEHAVIOUR rather than as a struct field, which is the only form in
+// which it is a kill switch. EXTRACT_REQUIRE_POSITIVE_EVIDENCE=false must restore
+// the pre-ADR-0044 gate exactly: the same two pages the shipped default now sheds
+// reach the extractor again, with no other rung consulted differently.
+func TestShouldExtract_PositiveEvidenceKillSwitchRestoresTheBlanketAccept(t *testing.T) {
+	cfg := crawler.DefaultLLMGateConfig()
+	cfg.RequirePositiveEvidence = false
+	for _, raw := range []string{noEvidenceURL, "https://acme.com/senior-go-engineer"} {
+		t.Run(raw, func(t *testing.T) {
+			if !pagegate.ShouldExtract(newURL(t, raw), &crawler.Content{}, cfg) {
+				t.Errorf("ShouldExtract(%q) = false with RequirePositiveEvidence cleared, want true: "+
+					"the kill switch must restore the blanket accept without a deploy", raw)
 			}
 		})
 	}

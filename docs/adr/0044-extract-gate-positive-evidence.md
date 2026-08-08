@@ -164,3 +164,21 @@ are dropped identically under the blanket accept.
   that a binary "is this one posting?" call is materially cheaper than a full extraction;
   once the extractor emits only a verdict and three short fields (ADR-0041), an extract call
   *is* a confirm call. The three-part data gate ADR-0019 set can no longer be met.
+- **The rung ships ON by default as of #257/#264**, and `EXTRACT_REQUIRE_POSITIVE_EVIDENCE=false`
+  restores the blanket accept with no deploy. The flip rests on the stream measurement above
+  — call rate 0.9944 → 0.1390, precision 0.0568 → 0.4063, recall unmoved at 0.9677 — of which
+  the call rate depends on no label at all. The eleven remaining drops are a census of the 188
+  hardest pages in the capture, not a stream rate, and must never be read as one.
+- **The merge gate is a ratcheted ledger, not an absolute zero.** `TestExtractGoldSetFalseDropGuard`
+  names thirteen pages, each argued individually in the section above, and fails the build on
+  any other page the rule drops. An absolute zero was unavailable in both directions: two of
+  the thirteen are reject-rung drops that predate this rung and #257 puts reject-rung tuning
+  out of scope, and the other eleven rest on labels ADR-0043 forbids acting on until a human
+  confirms them. Each entry records the confirmation state it was argued at, so a confirmation
+  pass re-opens it rather than letting it be inherited — which is how the hard zero comes to
+  cover the whole boundary without another decision.
+- **The Positive Evidence rung also sheds the deferred-L2 population on the synthetic
+  reject-rung fixtures**: they go from 13 calls / 3 leaks to 10 calls / 0 leaks, extracting
+  exactly their ten `detail` fixtures. Those three leaks were the structurally-silent residue
+  pages ADR-0020 reserved L2 for — a small independent corroboration that closing the L2
+  deferral was right.

@@ -145,7 +145,8 @@ type LLMGateConfig struct {
 	// page that has cleared every reject rung is extracted only when it carries
 	// Positive Evidence of being a single posting, instead of being admitted just
 	// because nothing rejected it. False is the previous behaviour -- the blanket
-	// accept -- and is the kill switch that restores it without a deploy.
+	// accept -- and is the kill switch that restores it without a deploy, wired to
+	// EXTRACT_REQUIRE_POSITIVE_EVIDENCE.
 	//
 	// It is a single bool rather than a set of weights on purpose: the rung is
 	// TIERED, not an additive score (a strong mark admits alone, the two weak text
@@ -154,8 +155,8 @@ type LLMGateConfig struct {
 	// terminalHubWords keeps -- so no config override can widen the extract path
 	// into the Discovery Gate or the Catalog Doctor.
 	//
-	// Default OFF in #258, which only builds the rung; #264 flips it on once the
-	// hard-zero false-drop guard is green on the rebuilt Extract Gold Set.
+	// It SHIPS ON since #264. See DefaultLLMGateConfig for the measurement that
+	// justified the flip and the guard that holds it.
 	RequirePositiveEvidence bool
 }
 
@@ -248,11 +249,25 @@ func DefaultLLMGateConfig() LLMGateConfig {
 		// captured pages already show 5 is low.
 		ExtractJobLinkSaturationCount: 5,
 
-		// Positive Evidence rung (ADR-0044), OFF in #258: this ticket builds the
-		// rung, #264 turns it on, justified by the false-drop guard being green.
-		// Stated explicitly even though it is the zero value, so the flip is a
-		// visible one-word diff rather than a field appearing out of nowhere.
-		RequirePositiveEvidence: false,
+		// Positive Evidence rung (ADR-0044), ON since #264. Measured over the Extract
+		// Gold Set's random stratum, weighted back to the live extract stream: the
+		// stream extract-call rate falls 0.9944 -> 0.1390 and the precision of a paid
+		// call rises 0.0568 -> 0.4063, with recall over today's real postings UNMOVED at
+		// 0.9677. The rung is free on recall where it can be measured against the stream
+		// and cuts the bill sevenfold.
+		//
+		// What it costs is measured on the Boundary Stratum -- a deliberately
+		// non-random census of the 188 hardest pages in the capture, drawn to
+		// over-represent drops, so its 11 remaining false-drops are NOT a stream rate.
+		// Each of the eleven is named and argued in cmd/llmbench's
+		// extractGoldSetFalseDrops, and TestExtractGoldSetFalseDropGuard fails the build
+		// on any twelfth.
+		//
+		// EXTRACT_REQUIRE_POSITIVE_EVIDENCE=false restores the blanket accept exactly,
+		// with no deploy. Prefer that dial to editing this line: the benchmark guard
+		// scores the rung whatever this default says, so turning it off here only
+		// desynchronizes the two.
+		RequirePositiveEvidence: true,
 	}
 }
 

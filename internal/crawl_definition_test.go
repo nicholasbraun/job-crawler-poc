@@ -71,12 +71,18 @@ func TestDefaultLLMGateConfig(t *testing.T) {
 			t.Errorf("JSONLDHubWeight %v must reach CertainThreshold %v so a JSON-LD hub alone certain-accepts", cfg.JSONLDHubWeight, cfg.CertainThreshold)
 		}
 	})
-	t.Run("the Positive Evidence rung ships off", func(t *testing.T) {
-		// #258 builds the rung; #264 flips it on, justified by the hard-zero
-		// false-drop guard being green on the rebuilt Extract Gold Set. Asserted so
-		// the flip is a deliberate, visible diff rather than a drift.
-		if cfg.RequirePositiveEvidence {
-			t.Error("RequirePositiveEvidence = true, want false (#258 ships the rung off; #264 flips it)")
+	t.Run("the Positive Evidence rung ships on", func(t *testing.T) {
+		// #258 built the rung; #264 turned it on, justified by the measurement recorded
+		// on DefaultLLMGateConfig (stream extract-call rate 0.9944 -> 0.1390, precision
+		// 0.0568 -> 0.4063, recall unmoved at 0.9677) and held by the false-drop guard
+		// in cmd/llmbench.
+		//
+		// This is also the one assertion that binds the shipped config to the config
+		// that guard scores, so the two cannot silently part company.
+		if !cfg.RequirePositiveEvidence {
+			t.Error("RequirePositiveEvidence = false, want true (#264 ships the rung on). " +
+				"TestExtractGoldSetFalseDropGuard scores the Positive Evidence rule whatever this default says: " +
+				"if you are turning the rung off, use EXTRACT_REQUIRE_POSITIVE_EVIDENCE=false rather than the default.")
 		}
 	})
 }

@@ -21,13 +21,25 @@ import (
 // The extract-gate URL rungs (root/locale reject + terminal-index reject) then
 // rejected the /work-with-us careers-landing leak (a terminal index word), cutting
 // extract-calls 14->13 and leaks 4->3, still false-drop = 0. The three remaining
-// leaks are the structurally-silent residue pages (about/our-culture, life,
-// culture/values) -- the deferred-L2 population the ADR-0020 content confirm targets.
+// leaks were the structurally-silent residue pages (about/our-culture, life,
+// culture/values) -- the deferred-L2 population the ADR-0020 content confirm targeted.
+//
+// #264 turned the Positive Evidence rung on by default, and it SHEDS EXACTLY THOSE
+// THREE: extract-calls 13->10, leaks 3->0, false-drop still 0. On this set the gate
+// now extracts its ten `detail` fixtures and nothing else -- precision and recall both
+// 1.0. That is a small independent corroboration that ADR-0044 was right to close the
+// deferred L2 confirm rather than leave it pending: the population L2 was reserved for
+// is the population this rung sheds.
+//
+// These fixtures remain ADR-0043 "evidence of nothing" -- they are invented, and a
+// gate that reads structured data scores perfectly on them by construction. The real
+// scoring is `score-capture` over the Extract Gold Set, guarded by
+// TestExtractGoldSetFalseDropGuard.
 const (
-	baselineExtractCalls    = 13  // was 14: the /work-with-us landing leak now rejects via the terminal-index rung
-	baselineExtractCallRate = 0.5 // was 0.5385 = round(13/26)
-	baselineLeaks           = 3   // was 4: only the 3 structurally-silent culture pages still leak
-	baselineDetailFixtures  = 10  // unchanged -- every detail still extracts (false-drop = 0)
+	baselineExtractCalls    = 10     // was 13: the Positive Evidence rung sheds the 3 residue leaks
+	baselineExtractCallRate = 0.3846 // was 0.5 = round(13/26); now round(10/26)
+	baselineLeaks           = 0      // was 3: the structurally-silent culture pages carry no Positive Evidence
+	baselineDetailFixtures  = 10     // unchanged -- every detail still extracts (false-drop = 0)
 )
 
 // TestExtractGate_CommittedSetNoFalseDrop is the automated counterpart to the
@@ -69,11 +81,10 @@ func TestExtractGate_CommittedSetNoFalseDrop(t *testing.T) {
 		t.Errorf("detail fixtures = %d, want %d", detail.Total, baselineDetailFixtures)
 	}
 
-	// The soft baseline snapshot: locks where the gate still leaks non-postings so
-	// accidental gate or fixture drift is caught. Since #115 landed the content
-	// reject rungs, the four remaining leaks are the structurally-silent residue
-	// pages (the deferred-L2 population); a mismatch here is a signal to re-baseline,
-	// never a false-drop failure.
+	// The soft baseline snapshot: locks where the gate leaks non-postings so accidental
+	// gate or fixture drift is caught. Since #264 turned the Positive Evidence rung on
+	// there are no leaks left on this synthetic set at all; a mismatch here is a signal
+	// to re-baseline, never a false-drop failure.
 	if len(e.Leaks) != baselineLeaks {
 		t.Errorf("leaks = %d %v, want baseline %d (re-baseline if the gate changed under #115)", len(e.Leaks), e.Leaks, baselineLeaks)
 	}

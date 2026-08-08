@@ -364,8 +364,12 @@ func TestProcessNeverShadowsAPageTheGateKeeps(t *testing.T) {
 	cfg.ShadowRate = 1.0
 
 	worker := urlprocessor.NewProcessor(cfg)
-	// A real posting path, so the gate's URL rungs pass and the page is kept.
-	seed, err := crawler.NewURL("http://example.com/o/senior-engineer")
+	// A posting-shaped URL, which the Positive Evidence rung admits on the URL mark
+	// alone (TestShouldExtract_PositiveEvidence pins that). The fixture must carry
+	// Positive Evidence since #264 turned the rung on by default: "clears every reject
+	// rung" no longer means "the gate keeps it", and this test is about the KEPT
+	// branch.
+	seed, err := crawler.NewURL("http://example.com/careers/senior-engineer")
 	if err != nil {
 		t.Fatalf("NewURL: %v", err)
 	}

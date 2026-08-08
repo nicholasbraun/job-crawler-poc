@@ -341,7 +341,7 @@ disagreement *defines* the stratum are functions in `cmd/llmbench/goldsetboundar
 
 | function | what it is |
 |---|---|
-| `boundaryBaselineConfig()` | today's blanket accept — `RequirePositiveEvidence` set **false explicitly**, so it keeps meaning "the previous behaviour" after #264 flips the default on |
+| `boundaryBaselineConfig()` | the pre-ADR-0044 blanket accept — `RequirePositiveEvidence` set **false explicitly**, so it kept meaning "the previous behaviour" after #264 flipped the default on |
 | `boundaryCandidateConfig()` | the tiered Positive Evidence rule of ADR-0044, implemented in `internal/pagegate/positive_evidence.go`, as the gate ships it **today** |
 
 **A moved *reject* rung invalidates this stratum**, because the pages it holds would no longer
@@ -463,8 +463,26 @@ each is argued rather than closed by a threshold nothing measured.
 
 > **The false-drop count above rests on LLM-proposed labels.** Until
 > `pendingBoundaryConfirmations` is 0 it is one model's opinion of another model's
-> opinion, and no guard may act on it. **#264 must not flip the rung on while that
-> constant is non-zero.**
+> opinion, and no guard may act on it.
+>
+> **This paragraph also said "#264 must not flip the rung on while that constant is
+> non-zero", and #264 flipped it anyway. That is a deviation, recorded here rather
+> than deleted.** The reasoning: the number that justifies the flip does not depend on
+> these labels. The stream extract-call rate (0.9944 → 0.1390) is a share of pages,
+> computed from sampling weights and the gate's own decision, with no label on either
+> side of the ratio; stream recall is label-dependent but *unmoved* at 0.9677, so it
+> cancels. What these unconfirmed labels bound is the **cost** side — the 11 — and
+> holding a measured sevenfold saving hostage to unconfirmed evidence *against* it,
+> while the evidence *for* it needs no labels at all, is the wrong way round. Two
+> things changed to make that defensible: the guard is a ledger that names each of the
+> 11 and re-opens each entry the moment a human confirms its label (see *The guard*
+> below), and `EXTRACT_REQUIRE_POSITIVE_EVIDENCE=false` reverts the rung with no
+> deploy — so a wrong rule is reversible, and the pages it dropped in the interim are
+> re-reached and re-extracted on the next Collection Cycle. The permanence argument
+> for a false-drop applies to a rule left wrong, not to one that can be pulled.
+>
+> **The confirmations are still owed**, and they are now the thing that arms the guard
+> fully. Nothing above is retracted except the prohibition itself.
 
 ### How it was labelled — batched, exactly as #262 was
 
@@ -546,67 +564,37 @@ structural drawing and 3 in the random one.
 
 ## Scorecard (today's gate, `DefaultLLMGateConfig`)
 
+Since #264 the Positive Evidence rung ships **on**, so this is the rung's scorecard.
+
 `go run ./cmd/llmbench score-capture -in cmd/llmbench/extract-goldset/goldset.jsonl`
 — no network, no model. **Exits 1** on the false-drops below.
 
 ```
 total             457
-extract-calls     453
-extract-call-rate 0.9912  (soft, no threshold)
-overall           precision 0.3341  recall 0.9867  f1 0.4992  accuracy 0.3356
-detail     recall 0.9867  (n=150, extracted 148, skipped 2)
-hub-index  accuracy 0.0263  (n=76,  skipped 2, leaked 74)
-residue    accuracy 0.0000  (n=221, skipped 0, leaked 221)
-residue-count 221, residue-extracted 221
-ambiguous         10 (excluded from scoring entirely, 10 extracted)
-
-stream-weighted estimates (random stratum, n=120, effective n=92.3)
-composition detail 0.0584 / hub-index 0.0710 / residue 0.8707
-extract-call-rate 0.9944   precision 0.0568   recall 0.9677
-
-boundary stratum (n=188, unweighted)
-extracted 188, skipped 0, false-drops 0, confirmed 0 of 188
-```
-
-The boundary block reads as all zeroes here **by construction**: every row in that
-stratum is a page today's blanket accept extracts, which is half of what put it there.
-Its information appears only under the candidate config below.
-
-**Read the drop side of this scorecard with suspicion.** The capture tap sits
-*downstream* of the Extract Gate (`job_listing_processor` calls `ShouldExtract` before
-the extractor runs), so all but a handful of rows are pages the gate already admitted.
-This file measures the gate's **leak** side honestly and its **drop** side essentially
-not at all — an extract-call rate of 0.99 is the sampling frame showing through, not a
-measurement. ADR-0044's Boundary Stratum and the Shadow Extraction are what close that
-gap; the random stratum makes the *cost* side honest, not the drop side.
-
-### The same scorecard with the Positive Evidence rung on
-
-```bash
-echo '{"RequirePositiveEvidence": true}' > /tmp/positive.json
-go run ./cmd/llmbench score-capture -in cmd/llmbench/extract-goldset/goldset.jsonl -gate-config /tmp/positive.json
-```
-
-```
+extract-calls     181
 extract-call-rate 0.3961  (raw, over all three drawings — the file's mix, not the stream's)
+overall           precision 0.7056  recall 0.9071  f1 0.7938  accuracy 0.8523
 detail     recall 0.9071  (n=140, extracted 127, skipped 13)
 hub-index  accuracy 0.8272 (n=81, skipped 67, leaked 14)
 residue    accuracy 0.8274 (n=226, skipped 187, leaked 39)
+residue-count 226, residue-extracted 39
 ambiguous         10 (excluded from scoring entirely, 1 extracted)
 
 stream-weighted estimates (random stratum, n=120, effective n=92.3)
+composition detail 0.0584 / hub-index 0.0710 / residue 0.8707
 extract-call-rate 0.1390   precision 0.4063   recall 0.9677
+projected spend   0.1390x today's extract bill
 
 boundary stratum (n=188, unweighted)
 extracted 29, skipped 159
 false-drops 11, ambiguous-skipped 9, confirmed 0 of 188
 ```
 
-The stream-weighted line is the number to quote for **cost**: the rung would cut today's
-extract calls to 13.9% of what they are — a 7.2× reduction — raise the precision of a
-paid call from 5.7% to 40.6%, and leave recall over today's real postings unmoved at
-96.8%. The raw 0.3961 above it is the *file's* composition, which now also carries a
-census of the boundary; quoting it would misstate the saving badly. That is precisely the
+The stream-weighted line is the number to quote for **cost**: the rung cuts today's
+extract calls to 13.9% of what they were — a 7.2× reduction — raises the precision of a
+paid call from 5.7% to 40.6%, and leaves recall over today's real postings unmoved at
+96.8%. The raw 0.3961 above it is the *file's* composition, which also carries a census
+of the boundary; quoting it would misstate the saving badly. That is precisely the
 confusion the random stratum exists to end.
 
 The boundary block is the number to quote for **loss**: **11 real Job Listings still
@@ -619,10 +607,52 @@ is not a stream estimate either.
 
 The cost figures are descriptive estimates of the calls the crawler already makes. The
 boundary figure is a census of a disagreement and describes no stream at all. Neither may
-be pooled with the other, and neither is a guard yet: **the 11 rests on LLM-proposed
-labels, and #259's Shadow Extraction is the live cross-check on pages the gate rejects
-before the tap.** The eleven shapes behind it, and why each is argued rather than closed
-by a threshold, are written up in ADR-0044.
+be pooled with the other. **The 11 rests on LLM-proposed labels**, which is why the guard
+below tolerates them by name rather than asserting an absolute zero, and why #259's
+Shadow Extraction is the live cross-check on pages the gate rejects before the tap. The
+eleven shapes behind it, and why each is argued rather than closed by a threshold, are
+written up in ADR-0044.
+
+### The same scorecard with the rung off (the pre-ADR-0044 blanket accept)
+
+This is what `EXTRACT_REQUIRE_POSITIVE_EVIDENCE=false` restores in production.
+
+```bash
+echo '{"RequirePositiveEvidence": false}' > /tmp/blanket.json
+go run ./cmd/llmbench score-capture -in cmd/llmbench/extract-goldset/goldset.jsonl -gate-config /tmp/blanket.json
+```
+
+```
+extract-call-rate 0.9912  (soft, no threshold)
+overall           precision 0.3115  recall 0.9857  f1 0.4734  accuracy 0.3132
+detail     recall 0.9857  (n=140, extracted 138, skipped 2)
+hub-index  accuracy 0.0247  (n=81, skipped 2, leaked 79)
+residue    accuracy 0.0000  (n=226, skipped 0, leaked 226)
+ambiguous         10 (excluded from scoring entirely, 10 extracted)
+
+stream-weighted estimates (random stratum, n=120, effective n=92.3)
+extract-call-rate 0.9944   precision 0.0568   recall 0.9677
+
+boundary stratum (n=188, unweighted)
+extracted 188, skipped 0, false-drops 0, confirmed 0 of 188
+```
+
+The boundary block reads as all zeroes here **by construction**: every row in that
+stratum is a page the blanket accept extracts, which is half of what put it there. Its
+information appears only under the rung.
+
+**Read the drop side of this scorecard with suspicion.** The capture tap sits
+*downstream* of the Extract Gate (`job_listing_processor` calls `ShouldExtract` before
+the extractor runs), so all but a handful of rows are pages the gate already admitted.
+This file measures the gate's **leak** side honestly and its **drop** side essentially
+not at all — an extract-call rate of 0.99 is the sampling frame showing through, not a
+measurement. ADR-0044's Boundary Stratum and the Shadow Extraction are what close that
+gap; the random stratum makes the *cost* side honest, not the drop side.
+
+Note that the blanket accept **also drops two `detail` rows** (`hiring.cafe/job/…` and
+`jobs.blooloop.com/jobs/…`) and therefore also exits 1. A hard zero has never been green
+on this file, with the rung or without it: those two are reject-rung drops that predate
+ADR-0044 entirely. See the guard below.
 
 ## The guard (#264)
 
@@ -890,10 +920,16 @@ labels gained a confirmer and the pass can span sessions. `-confirm-stratum boun
 still there for the final sweep once every chunk has been read.
 
 **The number that matters when this reaches 0 is `boundaryFalseDropsRemaining` — currently
-11.** That is how many real Job Listings the Positive Evidence rule still drops here, and
-it is what #264 must argue with before flipping the rung on. (`boundaryDetailRows`, 37, is
-the label census these drops are counted against, not the drop count itself — the two
-parted company when #257 widened the rung.)
+11.** That is how many real Job Listings the Positive Evidence rule still drops here.
+(`boundaryDetailRows`, 37, is the label census these drops are counted against, not the
+drop count itself — the two parted company when #257 widened the rung.)
+
+Each confirmation is now load-bearing on the guard, not just on the record: the eleven sit
+in `extractGoldSetFalseDrops` recorded at the standing they were argued at, and
+`TestExtractGoldSetFalseDropGuard` goes red on any one of them the moment a human confirms
+its label, forcing that exception to be re-argued at ADR-0043's standard. Confirming a row
+that turns out to be a hub or residue is just as valuable: the label changes, the row stops
+being a false-drop at all, and the entry must be struck.
 
 ### The random stratum is SPOT-CHECKED, not confirmed (#262)
 
