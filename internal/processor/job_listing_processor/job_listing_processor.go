@@ -193,8 +193,24 @@ func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.Raw
 	// Attribute the posting to its owning Career Page (ADR-0035) so the saved listing
 	// carries career_page_id for the crawl-lane refetch and dormancy scope. A nil hook
 	// (Discovery, or an un-scoped run) leaves CareerPageID uuid.Nil.
+	//
+	// When the hook IS wired, an unattributable posting is dropped rather than saved.
+	// The Attributor returns Nil when the Owner has no Career Page in the Cycle
+	// snapshot -- which is what a page removed mid-run looks like, while the run's
+	// frontier still holds URLs enqueued under it. Saving anyway mints a row the
+	// refetch lane can never reach: ListOpen selects BY career_page_id, so a NULL one
+	// is never re-verified and never closed, and it sits Open in the Corpus forever.
+	// This is the write-path half of the invariant migration 0027's strict FK enforces
+	// on the delete path -- a crawl-lane listing always has a Career Page. Observed
+	// live: deleting the goodjobs.eu Aggregator board mid-Cycle turned every still-queued
+	// posting under it into exactly such an unreachable row.
 	if w.attributeCareerPage != nil {
 		extraction.Listing.CareerPageID = w.attributeCareerPage(owner, workload.URL.RawURL)
+		if extraction.Listing.CareerPageID == uuid.Nil {
+			slog.Info("job_listing_processor: dropping posting with no owning career page",
+				"url", workload.URL.RawURL, "owner", owner)
+			return nil
+		}
 	}
 
 	// Resolve the Country from the free-text location at save (ADR-0029): the resolver

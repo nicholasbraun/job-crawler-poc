@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/freeextraction"
 	"github.com/nicholasbraun/job-crawler-poc/internal/listingid"
@@ -720,6 +721,74 @@ func TestJobListingProcessorFreeExtraction(t *testing.T) {
 		}
 		if free.DescriptionSource != model.DescriptionSource {
 			t.Errorf("DescriptionSource: free = %q, model = %q", free.DescriptionSource, model.DescriptionSource)
+		}
+	})
+}
+
+// TestJobListingProcessorCareerPageAttribution covers the write-path half of the
+// "a crawl-lane listing always has a Career Page" invariant that migration 0027's
+// strict FK enforces on the delete path. The Attributor returns Nil when the Owner
+// has no page in the Cycle snapshot — what a page removed mid-run looks like while
+// the frontier still holds URLs enqueued under it. Such a posting must be dropped,
+// not saved: ListOpen selects BY career_page_id, so a NULL one is unreachable by the
+// refetch lane forever — never re-verified, never closed, permanently Open.
+func TestJobListingProcessorCareerPageAttribution(t *testing.T) {
+	newRaw := func(t *testing.T) *crawler.RawJobListing {
+		t.Helper()
+		return &crawler.RawJobListing{
+			URL:     newURL(t, "https://goodjobs.eu/jobs/backend-engineer"),
+			Content: crawler.Content{MainContent: "we are hiring"},
+		}
+	}
+	newProc := func(repo *spyJobListingRepo, attribute func(string, string) uuid.UUID) *joblistingprocessor.JobListingProcessor {
+		return joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
+			Corpus:              repo,
+			JobListingExtractor: &stubExtractor{result: crawler.JobListing{Title: "Engineer"}, isPosting: true},
+			Recorder:            &spyRecorder{},
+			SourceHash:          testSourceHash,
+			AttributeCareerPage: attribute,
+		})
+	}
+
+	t.Run("an unattributable posting is dropped, not saved as an orphan", func(t *testing.T) {
+		repo := &spyJobListingRepo{}
+		proc := newProc(repo, func(string, string) uuid.UUID { return uuid.Nil })
+
+		if err := proc.Process(t.Context(), newRaw(t)); err != nil {
+			t.Fatalf("dropping an unattributable posting is not an error, got: %v", err)
+		}
+		if len(repo.saved) != 0 {
+			t.Errorf("want 0 listings saved, got %d — a NULL career_page_id is unreachable by ListOpen", len(repo.saved))
+		}
+	})
+
+	t.Run("an attributable posting is saved carrying its career page", func(t *testing.T) {
+		repo := &spyJobListingRepo{}
+		page := uuid.New()
+		proc := newProc(repo, func(string, string) uuid.UUID { return page })
+
+		if err := proc.Process(t.Context(), newRaw(t)); err != nil {
+			t.Fatalf("Process returned error: %v", err)
+		}
+		if len(repo.saved) != 1 {
+			t.Fatalf("want 1 listing saved, got %d", len(repo.saved))
+		}
+		if repo.saved[0].CareerPageID != page {
+			t.Errorf("CareerPageID = %v, want %v", repo.saved[0].CareerPageID, page)
+		}
+	})
+
+	// The hook is nil for Discovery and un-scoped runs; those paths are unchanged and
+	// must keep saving, so the guard cannot fire where there is nothing to attribute.
+	t.Run("no attributor wired still saves", func(t *testing.T) {
+		repo := &spyJobListingRepo{}
+		proc := newProc(repo, nil)
+
+		if err := proc.Process(t.Context(), newRaw(t)); err != nil {
+			t.Fatalf("Process returned error: %v", err)
+		}
+		if len(repo.saved) != 1 {
+			t.Errorf("want 1 listing saved with no attributor wired, got %d", len(repo.saved))
 		}
 	})
 }
