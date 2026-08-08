@@ -45,6 +45,55 @@ type StructuredPosting struct {
 	WorkArrangement WorkArrangement
 }
 
+// maxDeclaredToRenderedRatio bounds how much longer a posting's declared description
+// may be than the text the page actually renders before RendersDeclaredPosting judges
+// the page to have stopped publishing it.
+//
+// Measured on the 70 labelled lone-posting rows of the Extract Gold Set, the two
+// populations do not overlap: across 51 real postings the ratio tops out at 1.49,
+// while all 16 withdrawal notices -- pages still serving the original ad as
+// structured data above a body reading only "This position is no longer active", in
+// five languages -- start at 2.15. 1.8 sits in the empty band between them.
+//
+// It is placed low in that band on purpose. The two errors are not symmetric: a real
+// posting wrongly delegated merely costs one model call and is extracted anyway,
+// while a withdrawal notice wrongly extracted puts a job that does not exist into the
+// Corpus with no model in the loop -- and the refetch lane cannot remove it, because
+// the page keeps serving the same body and so reads as unchanged forever.
+const maxDeclaredToRenderedRatio = 1.8
+
+// RendersDeclaredPosting reports whether a page still renders the posting its
+// structured data declares, by comparing the declared description against the text
+// the page actually shows (ADR-0042).
+//
+// It exists because a withdrawn or filled ad is routinely served as a live one: the
+// JobPosting node keeps the full original description while the body is replaced by a
+// one-line notice. Nothing else on such a page marks it as gone -- validThrough is
+// absent on 18 of 19 measured cases and expired on none -- so the discrepancy between
+// what the page CLAIMS to publish and what it SHOWS is the only structural signal
+// there is. See maxDeclaredToRenderedRatio for the measured separation.
+//
+// A posting that declares no description is not judged (true): there is nothing to
+// compare, and absence is not evidence of withdrawal. A page that renders nothing at
+// all is judged not to render its posting.
+//
+// Deliberately NOT applied to PostingBody: reading a withdrawn ad's structured
+// description as the body is still the best text available for it (ADR-0041), and
+// changing that is a separate decision from whether to save it with no model call.
+//
+// Pure: no model, no network, no database.
+func RendersDeclaredPosting(content *Content, posting StructuredPosting) bool {
+	declared := len(strings.Join(strings.Fields(htmlToText(posting.Description)), " "))
+	if declared == 0 {
+		return true
+	}
+	rendered := len(strings.Join(strings.Fields(content.MainContent), " "))
+	if rendered == 0 {
+		return false
+	}
+	return float64(declared)/float64(rendered) <= maxDeclaredToRenderedRatio
+}
+
 // LonePosting reads the single job posting a page publishes in its structured data,
 // reporting ok only when that data is UNAMBIGUOUS: exactly one JobPosting node and no
 // openings index (ADR-0042). It is the exact complement of the openings-index shape the

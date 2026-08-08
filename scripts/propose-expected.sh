@@ -79,7 +79,9 @@ jq -c '
      nodes: ($postings | length),
      title: ($p.title | txt),
      location: ($p.jobLocation | place),
-     remote: ($p.jobLocationType | hastoken("telecommute"))}
+     remote: ($p.jobLocationType | hastoken("telecommute")),
+     description: ($p.description | if type == "string" then . else "" end),
+     body: ($row.content.MainContent // "")}
 ' "$substrate" |
 # Pass 2 (python3): apply the entity decode and whitespace collapse jq cannot --
 # the same strip / unescape / strip / collapse the domain's htmlToText applies, and
@@ -104,10 +106,24 @@ for line in sys.stdin:
     r = json.loads(line)
     if r["nodes"] != 1:
         sys.exit("propose-expected.sh: %s carries %d JobPosting nodes, want exactly 1" % (r["url"], r["nodes"]))
+    # The mechanism refuses a page that declares far more than it renders -- a
+    # withdrawn ad still served in full above a one-line notice (ADR-0042). Applied
+    # here as its own reading, with the same 1.8 bound the domain uses, so the sheet
+    # lists exactly the rows a correct Free Extraction fires on. A row that drops out
+    # here has its expectation cleared by goldset-apply.
+    declared = len(to_text(r["description"]))
+    rendered = len(" ".join(r["body"].split()))
+    if declared and (not rendered or declared / rendered > 1.8):
+        continue
+
     loc = r["location"]
     parts = [p for p in (to_text(x) for x in loc["parts"]) if p]
     location = ", ".join(parts) if parts else to_text(loc["str"])
-    free_ok = r["label"] != "detail"
+    # NEVER set by tooling: free_ok excuses a Free Extraction on a page that is not a
+    # posting, which is the one thing this guard exists to catch. A script that
+    # proposes its own exceptions cannot go red on the stratum that fires, so it must
+    # only ever be added by a human editing this sheet, with a reason in their words.
+    free_ok = False
     rows.append([
         hashlib.sha256(r["url"].encode()).hexdigest()[:12],
         r["url"],
@@ -116,7 +132,7 @@ for line in sys.stdin:
         location,
         "remote" if r["remote"] else "unspecified",
         "true" if free_ok else "false",
-        (r["note"] or "") if free_ok else "",
+        "",
         "",
         "",
     ])

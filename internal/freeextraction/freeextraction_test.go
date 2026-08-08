@@ -170,6 +170,20 @@ func TestExtractorDelegates(t *testing.T) {
 			name:    "structured data with no posting node",
 			content: crawler.Content{JSONLD: []string{`{"@type":"Organization","name":"Acme"}`}},
 		},
+		{
+			// A filled or expired ad still served in full as structured data, above a
+			// body that is only a notice. Saving it would put a job that does not exist
+			// into the Corpus with no model in the loop, and the refetch lane could never
+			// close it: the page keeps serving this same body, so it reads as unchanged
+			// forever. The model reads the notice and abstains.
+			name: "a withdrawal notice under a full declared ad",
+			content: crawler.Content{
+				MainContent: "Operations Team Lead - NYC This position is no longer active. " +
+					"Either the position was filled, or the ad has expired.",
+				JSONLD: []string{`{"@type":"JobPosting","title":"Operations Team Lead - NYC",
+					"description":"We are hiring an Operations Team Lead for our New York office. You will own the daily running of the site, lead a team of five, report to the GM, and design the processes the region scales on. We offer a competitive salary, equity, health cover, and a hybrid schedule out of Manhattan. Previous operations leadership experience in a high-growth environment is required."}`},
+			},
+		},
 	}
 
 	for _, tt := range tests {

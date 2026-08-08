@@ -40,13 +40,13 @@ import (
 const pendingHumanConfirmations = 70
 
 // pendingExpectedConfirmations is how many rows carry an agent-proposed expected
-// extraction -- and, on a residue row, an agent-proposed acceptance of the fire --
-// that no human has confirmed. #256 requires 0: the values were read off each
-// page's own JSON-LD by scripts/propose-expected.sh and a human confirms them at
-// the review gate, so this starts at the full lone-posting stratum count. Like
-// pendingHumanConfirmations it is a RATCHET -- lower it as confirmations land,
-// never raise it.
-const pendingExpectedConfirmations = 70
+// extraction that no human has confirmed. #256 requires 0: the values were read off
+// each page's own JSON-LD by scripts/propose-expected.sh and a human confirms them
+// at the review gate, so this starts at the count of rows the mechanism fires on --
+// 54 since the predicate was narrowed to refuse withdrawn ads, down from the full
+// 70-row lone-posting stratum. Like pendingHumanConfirmations it is a RATCHET --
+// lower it as confirmations land, never raise it.
+const pendingExpectedConfirmations = 54
 
 // loadCommittedGoldSet reads the committed Extract Gold Set. The working directory
 // under `go test` is the package directory, so the relative path resolves without
@@ -707,8 +707,18 @@ func TestCommittedGoldSetIsWellFormed(t *testing.T) {
 				t.Errorf("%s: free_ok on a %q row with note %q; only an argued residue fire is excusable", row.URL, row.Label, row.Expected.FreeOKNote)
 			}
 		}
-		if row.Stratum == stratumLonePosting && row.Expected == nil {
+		// The stratum is a STRUCTURAL classification -- the page carries one titled
+		// posting node -- while firing additionally requires the page to still render
+		// the ad it declares (ADR-0042). The two parted company when the predicate was
+		// narrowed to refuse withdrawn ads, so this asks the mechanism itself rather
+		// than reading firing off the stratum.
+		posting, lone := crawler.LonePosting(&row.Content)
+		fires := lone && posting.Title != "" && crawler.RendersDeclaredPosting(&row.Content, posting)
+		if fires && row.Expected == nil {
 			t.Errorf("%s: the Free Extraction fires on it but it carries no expected extraction to score against", row.URL)
+		}
+		if !fires && row.Expected != nil {
+			t.Errorf("%s: carries an expected extraction the Free Extraction no longer fires on; re-run scripts/propose-expected.sh and goldset-apply", row.URL)
 		}
 		byLabel[row.Label]++
 		byStratum[row.Stratum]++

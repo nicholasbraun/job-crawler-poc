@@ -335,6 +335,76 @@ func TestLonePosting(t *testing.T) {
 	}
 }
 
+// TestRendersDeclaredPosting covers the withdrawal-notice guard (ADR-0042): a page
+// that keeps serving a filled ad's structured data above a one-line notice claims far
+// more than it shows, and that discrepancy is the only structural signal there is --
+// validThrough is absent on 18 of 19 measured withdrawal notices and expired on none.
+func TestRendersDeclaredPosting(t *testing.T) {
+	const ad = "We are hiring a Go engineer to work on our crawler. You will design and build " +
+		"distributed systems, own services end to end, and mentor other engineers. We offer a " +
+		"competitive salary, a learning budget, and a hybrid working model out of our Berlin office."
+
+	tests := []struct {
+		name        string
+		description string
+		mainContent string
+		want        bool
+	}{
+		{
+			name:        "a page rendering the ad it declares still renders its posting",
+			description: ad,
+			mainContent: "Backend Engineer " + ad + " Apply now.",
+			want:        true,
+		},
+		{
+			// The shape this guard exists for: the full ad in JSON-LD, a notice in the body.
+			name:        "a withdrawal notice under a full ad does not render its posting",
+			description: ad,
+			mainContent: "Backend Engineer This position is no longer active. Either the position was filled, or the ad has expired.",
+			want:        false,
+		},
+		{
+			// Measured: real postings reach 1.49 without being withdrawn, so a body
+			// merely shorter than the ad must still count as rendering it.
+			name:        "a body somewhat shorter than the ad still renders it",
+			description: ad,
+			mainContent: ad[:len(ad)*2/3],
+			want:        true,
+		},
+		{
+			// HTML is reduced before measuring, or markup would inflate the ad's length
+			// and delegate live postings whose body the parser already stripped.
+			name:        "markup in the declared ad is not counted as length",
+			description: "<div class=\"x\"><p>" + ad + "</p></div>",
+			mainContent: ad,
+			want:        true,
+		},
+		{
+			// Absence is not evidence of withdrawal: nothing to compare, so no judgment.
+			name:        "a posting declaring no description is not judged",
+			description: "",
+			mainContent: "This position is no longer active",
+			want:        true,
+		},
+		{
+			name:        "a page rendering nothing does not render its posting",
+			description: ad,
+			mainContent: "",
+			want:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := &crawler.Content{MainContent: tt.mainContent}
+			posting := crawler.StructuredPosting{Title: "Backend Engineer", Description: tt.description}
+			if got := crawler.RendersDeclaredPosting(content, posting); got != tt.want {
+				t.Errorf("RendersDeclaredPosting = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestLonePostingNilContent pins the nil-page contract: no lone posting and the zero
 // value, never a panic — a caller that ignores ok reads empty fields, not a half-page.
 func TestLonePostingNilContent(t *testing.T) {

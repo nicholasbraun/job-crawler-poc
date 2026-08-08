@@ -517,6 +517,20 @@ func applyExpected(rows []goldRow, sheet []expectedSheetRow, proposedBy, confirm
 		merged[i].Expected = &expected
 	}
 
+	// The sheet is the COMPLETE set of expectations, not a patch: it lists exactly the
+	// rows a correct Free Extraction fires on. A lone-posting row missing from it no
+	// longer fires -- because the mechanism was narrowed, or the page changed -- so its
+	// expectation is stale and must go, or score-free reports it as an unused
+	// expectation forever.
+	for i := range merged {
+		if merged[i].Stratum != stratumLonePosting || merged[i].Expected == nil {
+			continue
+		}
+		if _, listed := seen[rowID(merged[i].URL)]; !listed {
+			merged[i].Expected = nil
+		}
+	}
+
 	if proposedBy == "" && confirmedBy == "" {
 		return merged, nil
 	}

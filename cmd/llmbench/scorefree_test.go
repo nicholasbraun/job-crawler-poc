@@ -27,19 +27,25 @@ import (
 // must be seen in a diff rather than absorbed silently. It is a regression ratchet
 // on a committed file, never a quality threshold on the mechanism (ADR-0020 keeps
 // coverage soft).
-const freeExtractionFires = 70
+const freeExtractionFires = 54
 
 // acceptedFreeOnResidue is how many of those rows are labelled residue and carry an
-// explicit, per-row acceptance of the fire. Sixteen are ads whose posting was
-// withdrawn while their JobPosting JSON-LD kept being served -- the Free Extraction
-// reads their fields correctly and the job is gone, which is ADR-0035's liveness
-// territory rather than a schema-traversal failure. Three are evergreen
-// "spontaneous application" pages with no specific role: those are genuine
-// precision failures and the strongest argument for narrowing ADR-0042.
+// explicit, per-row acceptance of the fire.
 //
-// All 19 are AGENT-PROPOSED AND UNCONFIRMED. RATCHET: lower it as the human
-// withdraws an acceptance, never raise it -- a new unexcused fire must go red.
-const acceptedFreeOnResidue = 19
+// It is zero, and the guard is RED because of it. Sixteen of the nineteen fires this
+// number once excused were ads withdrawn while their JobPosting JSON-LD kept being
+// served; the predicate was narrowed to refuse them (crawler.RendersDeclaredPosting)
+// rather than excuse them, and they no longer fire. The three that remain are
+// evergreen talent-pool pages -- "General Application", "Spontaneous Application",
+// an internship-enquiry page -- which carry datePosted, employmentType, identifier
+// and hiringOrganization exactly as a real posting does. No structural signal
+// separates them; only reading them does, which is what the model is for.
+//
+// So the guard is telling the truth: the mechanism still saves three pages that are
+// not postings. Excusing them needs a human to write down why, per row. RATCHET:
+// only a human may raise this, and only alongside a free_ok note in their own words
+// -- scripts/propose-expected.sh never sets one, which is what makes this real.
+const acceptedFreeOnResidue = 0
 
 // TestCommittedGoldSetFreeExtractionFidelity is the acceptance guard: it replays
 // the real decorator over every committed row and fails the build on either silent
@@ -79,13 +85,21 @@ func TestCommittedGoldSetFreeExtractionFidelity(t *testing.T) {
 		sc.FreeRate, sc.StreamFreeShare, sc.Coverage, sc.DetailTotal, sc.WeightedCoverage)
 }
 
-// TestCommittedGoldSetFreeExtractionMatchesTheLonePostingStratum is the structural
-// invariant behind the whole file: the sampler stratifies with its own walk over
-// the page's JSON-LD (stratumOf) while the decorator reads through the domain's
-// (crawler.LonePosting). The set of rows the mechanism serves must be EXACTLY the
-// lone-posting stratum; any drift between the two walks would silently change what
-// the gold set is a sample of.
-func TestCommittedGoldSetFreeExtractionMatchesTheLonePostingStratum(t *testing.T) {
+// TestCommittedGoldSetFreeExtractionIsContainedInTheLonePostingStratum is the
+// structural invariant behind the whole file: the sampler stratifies with its own
+// walk over the page's JSON-LD (stratumOf) while the decorator reads through the
+// domain's (crawler.LonePosting). Every row the mechanism serves must therefore lie
+// INSIDE the lone-posting stratum -- a fire outside it means the two walks have
+// drifted, and the gold set is no longer a sample of what it claims.
+//
+// Containment, not equality. The stratum is structural (the page carries one titled
+// posting node); firing additionally requires the page to still render the ad it
+// declares (ADR-0042). The gap between them is exactly the withdrawn ads, which the
+// stratum still samples -- deliberately, since they are what the narrowing must keep
+// refusing -- and withdrawnInLonePostingStratum pins how many there are.
+const withdrawnInLonePostingStratum = 16
+
+func TestCommittedGoldSetFreeExtractionIsContainedInTheLonePostingStratum(t *testing.T) {
 	rows, _, err := replayFreeExtraction(t.Context(), filepath.Join("extract-goldset", goldSetFile))
 	if err != nil {
 		t.Fatalf("replayFreeExtraction: %v", err)
@@ -95,14 +109,19 @@ func TestCommittedGoldSetFreeExtractionMatchesTheLonePostingStratum(t *testing.T
 		fired[row.URL] = row.Free
 	}
 
+	var refused int
 	for _, row := range loadCommittedGoldSet(t) {
 		lone := row.Stratum == stratumLonePosting
-		switch {
-		case fired[row.URL] && !lone:
+		if fired[row.URL] && !lone {
 			t.Errorf("%s: the Free Extraction fired but the sampler put it in stratum %q", row.URL, row.Stratum)
-		case !fired[row.URL] && lone:
-			t.Errorf("%s: sampled as lone-posting but the Free Extraction did not fire", row.URL)
 		}
+		if !fired[row.URL] && lone {
+			refused++
+		}
+	}
+	if refused != withdrawnInLonePostingStratum {
+		t.Errorf("the mechanism refused %d lone-posting rows, want exactly %d; a change here moves what the Free Extraction covers and must be seen in a diff",
+			refused, withdrawnInLonePostingStratum)
 	}
 }
 

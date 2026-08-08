@@ -44,9 +44,19 @@ func NewExtractor(inner joblistingprocessor.JobListingExtractor) *Extractor {
 // Extract reads the Job Listing straight from the page's lone structured-data
 // posting -- no model call -- and delegates to the wrapped extractor for every other
 // page: no structured data, an openings index (two or more posting nodes, or an
-// ItemList wrapping one), an unparseable block, or a posting node with no title. The
-// title-less node delegates on purpose: the model may find a title in the prose,
-// where a Free Extraction would only ever produce a nameless listing.
+// ItemList wrapping one), an unparseable block, a posting node with no title, or a
+// page that no longer renders the posting it declares. The title-less node delegates
+// on purpose: the model may find a title in the prose, where a Free Extraction would
+// only ever produce a nameless listing.
+//
+// The last condition is what keeps withdrawn ads out of the Corpus. A filled or
+// expired posting is routinely still served with its full original JobPosting node
+// above a body reading only "This position is no longer active"; structurally it is
+// indistinguishable from a live posting, so an earlier form of this decorator saved
+// all of them. crawler.RendersDeclaredPosting compares what the page claims to
+// publish against what it shows, which on the Extract Gold Set separates the two
+// populations exactly (see maxDeclaredToRenderedRatio). Such a page still goes to the
+// model, which reads the notice and abstains.
 //
 // It returns JUDGMENT FIELDS ONLY -- that the page is a single posting, plus title,
 // location and work arrangement. Description, Description Source and the
@@ -65,7 +75,7 @@ func NewExtractor(inner joblistingprocessor.JobListingExtractor) *Extractor {
 // verbatim.
 func (e *Extractor) Extract(ctx context.Context, raw crawler.RawJobListing) (crawler.Extraction, error) {
 	posting, ok := crawler.LonePosting(&raw.Content)
-	if !ok || posting.Title == "" {
+	if !ok || posting.Title == "" || !crawler.RendersDeclaredPosting(&raw.Content, posting) {
 		return e.inner.Extract(ctx, raw)
 	}
 	slog.Debug("freeextraction: page extracted from its own structured data, no model call",
