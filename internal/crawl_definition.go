@@ -66,7 +66,9 @@ type URLFilterConfig struct {
 // As of ADR-0016 it also carries the final-rung Confidence Score weights and
 // thresholds -- this is the shift from curated string lists to curated lists plus
 // tunable floats -- but it stays in-memory and process-wide, still with no json
-// tags.
+// tags. As of ADR-0044 it additionally carries the Extract Gate's Positive
+// Evidence switch, the one field on the extract path that is a plain on/off rather
+// than a tunable.
 type LLMGateConfig struct {
 	CareerPathSignals []string
 	RejectPathSignals []string
@@ -138,6 +140,23 @@ type LLMGateConfig struct {
 	// signal silent (jobLinkSaturation returns 0), the same fail-safe as the Discovery
 	// count — the escape hatch for dropping saturation entirely.
 	ExtractJobLinkSaturationCount int
+
+	// RequirePositiveEvidence turns on the Extract Gate's final rung (ADR-0044): a
+	// page that has cleared every reject rung is extracted only when it carries
+	// Positive Evidence of being a single posting, instead of being admitted just
+	// because nothing rejected it. False is the previous behaviour -- the blanket
+	// accept -- and is the kill switch that restores it without a deploy.
+	//
+	// It is a single bool rather than a set of weights on purpose: the rung is
+	// TIERED, not an additive score (a strong mark admits alone, the two weak text
+	// marks admit only in agreement), and the word lists behind it are curated,
+	// package-level and deliberately config-independent -- the same isolation
+	// terminalHubWords keeps -- so no config override can widen the extract path
+	// into the Discovery Gate or the Catalog Doctor.
+	//
+	// Default OFF in #258, which only builds the rung; #264 flips it on once the
+	// hard-zero false-drop guard is green on the rebuilt Extract Gold Set.
+	RequirePositiveEvidence bool
 }
 
 // DefaultLLMGateConfig returns the built-in pre-LLM gate signals. CareerPathSignals
@@ -228,6 +247,12 @@ func DefaultLLMGateConfig() LLMGateConfig {
 		// job links and single postings carry <=1. See the field comment: real
 		// captured pages already show 5 is low.
 		ExtractJobLinkSaturationCount: 5,
+
+		// Positive Evidence rung (ADR-0044), OFF in #258: this ticket builds the
+		// rung, #264 turns it on, justified by the false-drop guard being green.
+		// Stated explicitly even though it is the zero value, so the flip is a
+		// visible one-word diff rather than a field appearing out of nowhere.
+		RequirePositiveEvidence: false,
 	}
 }
 

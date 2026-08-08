@@ -7,7 +7,10 @@
 // and the parsed page structure (ADR-0019). The same career-hub path signal and
 // the same Structural Signals read oppositely on the two paths: on discovery they
 // accept a hub as a Career Page, on extract they REJECT a hub as an index to
-// crawl rather than extract — with the ATS posting deterministically exempt.
+// crawl rather than extract — with the ATS posting deterministically exempt. On
+// its final rung ShouldExtract additionally requires Positive Evidence that the
+// page IS one posting (ADR-0044, positive_evidence.go), so clearing every reject
+// rung is no longer enough to spend an extractor call.
 package pagegate
 
 import (
@@ -259,8 +262,13 @@ func jobLinkSaturation(count, k int) float64 {
 // jobs index, not a posting, and rejects. A self-hosted posting is NOT exempt — it
 // reaches the content rungs and relies on calibration (its lone JobPosting and
 // sparse sidebar trip none of them), so a /jobs/all-style hub carrying structured
-// openings data still rejects. Any page that clears every rung reaches the
-// extractor.
+// openings data still rejects. A page that clears every reject rung then reaches
+// the extractor only on Positive Evidence that it IS one posting (ADR-0044): a
+// posting-shaped URL or a lone structured-data posting admits it alone, while the
+// two text marks — an apply affordance and dense posting vocabulary — admit it only
+// in agreement with each other. That final rung fires only when
+// cfg.RequirePositiveEvidence is set; unset, the gate keeps its previous blanket
+// accept of everything nothing rejected.
 func ShouldExtract(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConfig) bool {
 	switch catalog.Classify(u) {
 	case catalog.RoleCareerPage:
@@ -308,7 +316,14 @@ func ShouldExtract(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateC
 		// ExtractJobLinkSaturationCount <= 0 makes jobLinkSaturation return 0, so
 		// this rung then never fires.
 	}
-	return true // rung 8: nothing resolved it — send to the extractor.
+	// rung 8 (ADR-0044): Positive Evidence. Every reject rung above has resolved
+	// first, so this rung only ever decides pages nothing rejected -- a hub carrying
+	// an apply affordance is already gone. When the rung is off the gate keeps its
+	// previous blanket accept, which is the kill switch.
+	if cfg.RequirePositiveEvidence && !hasPositiveEvidence(u, content) {
+		return false
+	}
+	return true
 }
 
 // containsAny reports whether s contains any of keywords, case-insensitively.
@@ -364,6 +379,11 @@ func IsHubOrRootURL(u crawler.URL) bool {
 // real deep-path hub such as /careers/open-positions). It reads only the URL, no
 // page content, so the Catalog Doctor replays the identical veto over stored
 // Career Page URLs from a single implementation.
+//
+// The Extract Gate's Positive Evidence rung reads a SEPARATE, wider posting-URL
+// predicate of its own (positive_evidence.go); the two are deliberately not merged,
+// because widening this one would retroactively delete Catalog rows and shift
+// job-link saturation counting.
 func IsPostingPath(u crawler.URL) bool {
 	return isJobPostingPath(u.RawURL) && !isTerminalHubWord(u.RawURL)
 }
