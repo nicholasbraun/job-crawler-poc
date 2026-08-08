@@ -741,7 +741,10 @@ func newFactory(
 						// page that no longer lists openings accrues dormancy like a 404.
 						Classifier: careerPageConfirmer,
 						// Structural pre-gate for the re-classification, so a page discovery
-						// certain-accepted on structure is not dormant-closed by an LLM blip.
+						// certain-accepted on structure is not dormant-closed by an LLM blip —
+						// and the Extract Gate the changed-content re-extract now consults
+						// (ADR-0044). It is the SAME gateConfig the walk's url processor gets
+						// below, so the two lanes cannot diverge.
 						GateConfig: gateConfig,
 						SourceHash: sourceHash,
 						// Legacy-summary heal (ADR-0041): rewrite a model-authored body from
@@ -755,6 +758,10 @@ func newFactory(
 						DormancyThreshold:   crawler.DefaultPageDormancyThreshold,
 						OnRefreshed:         collectionMetrics.Refreshed,
 						OnClosed:            collectionMetrics.Closed,
+						// Re-gate counter (ADR-0044): how many Open listings a full content
+						// re-gate WOULD Close. It Closes none — healing the Corpus is a
+						// separate decision, gated on this number (#208).
+						OnRegateRejected: collectionMetrics.RegateRejected,
 					})
 				}, pool.WithMaxWorkers[crawler.CollectionSeed](maxWorkers))
 
