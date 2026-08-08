@@ -71,6 +71,14 @@ func TestDefaultLLMGateConfig(t *testing.T) {
 			t.Errorf("JSONLDHubWeight %v must reach CertainThreshold %v so a JSON-LD hub alone certain-accepts", cfg.JSONLDHubWeight, cfg.CertainThreshold)
 		}
 	})
+	t.Run("the Positive Evidence rung ships off", func(t *testing.T) {
+		// #258 builds the rung; #264 flips it on, justified by the hard-zero
+		// false-drop guard being green on the rebuilt Extract Gold Set. Asserted so
+		// the flip is a deliberate, visible diff rather than a drift.
+		if cfg.RequirePositiveEvidence {
+			t.Error("RequirePositiveEvidence = true, want false (#258 ships the rung off; #264 flips it)")
+		}
+	})
 }
 
 func containsString(haystack []string, needle string) bool {
