@@ -101,6 +101,7 @@ func (s *spyRecorder) Call(_ context.Context, k llmobs.Kind, o llmobs.Outcome, _
 func (s *spyRecorder) Gated(_ context.Context, k llmobs.Kind, r llmobs.Reason) {
 	s.gates = append(s.gates, recordedGate{k, r})
 }
+func (s *spyRecorder) Shadow(context.Context, llmobs.ShadowVerdict)       {}
 func (s *spyRecorder) Content(_ context.Context, _ llmobs.Kind, _ string) { s.content++ }
 func (s *spyRecorder) Retry(context.Context, llmobs.Kind)                 {}
 func (s *spyRecorder) DeadLetter(context.Context, llmobs.Kind)            {}

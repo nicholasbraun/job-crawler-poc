@@ -49,6 +49,7 @@ import (
 	careerpageprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/career_page_processor"
 	discoveryprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/discovery_processor"
 	joblistingprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/job_listing_processor"
+	shadowextractionprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/shadow_extraction_processor"
 	urlprocessor "github.com/nicholasbraun/job-crawler-poc/internal/processor/url_processor"
 	"github.com/nicholasbraun/job-crawler-poc/internal/robotstxt"
 	"github.com/nicholasbraun/job-crawler-poc/internal/robotstxt/temoto"
@@ -107,6 +108,17 @@ const (
 	// full page content). It is a safety valve sized well above steady-state
 	// backlog, so normal operation never reaches it.
 	llmMaxBacklog = 5000
+
+	// Shadow Extraction lane sizing (ADR-0044). It is a measurement, so it is sized
+	// to stay out of the way of the work it measures: ONE consumer, so shadow calls
+	// never compete with real extraction for model concurrency; its OWN small backlog
+	// cap, so measurement can never consume the extract stage's capacity; and a short
+	// bound on the walk's enqueue, so a full shadow backlog DROPS the sample instead
+	// of pacing the crawl. A lost sample is acceptable; a slowed Collection Cycle is
+	// not.
+	shadowMaxWorkers     = 1
+	shadowMaxBacklog     = 500
+	shadowEnqueueTimeout = 2 * time.Second
 )
 
 // The collection scheduler's narrow ports are satisfied by the concrete runner
@@ -186,6 +198,19 @@ func main() {
 	extractFromJSONLD, err := strconv.ParseBool(pgenv.EnvOr("EXTRACT_FROM_JSONLD", "true"))
 	if err != nil {
 		log.Fatalf("error parsing EXTRACT_FROM_JSONLD: must be a boolean, got %q", os.Getenv("EXTRACT_FROM_JSONLD"))
+	}
+
+	// SHADOW_EXTRACT_RATE is the fraction of Extract-Gate-rejected pages that are
+	// extracted anyway, purely to measure the gate (ADR-0044). Default 0.01: post-gate
+	// the walk skips roughly 300k pages a day, so one per cent is ~3k calls — about
+	// eight cents — for the only instrument that can see a false-drop at all. A dropped
+	// page is permanent (no listing means the Collection Cycle's visited-seeding never
+	// seeds it, so the walk re-reaches and re-drops it every Cycle), and nothing else in
+	// production moves when it happens. 0 switches the mechanism off entirely: no shadow
+	// stream is created and the walk's hook stays nil.
+	shadowExtractRate, err := strconv.ParseFloat(pgenv.EnvOr("SHADOW_EXTRACT_RATE", "0.01"), 64)
+	if err != nil || shadowExtractRate < 0 || shadowExtractRate > 1 {
+		log.Fatalf("error parsing SHADOW_EXTRACT_RATE: must be a fraction in [0,1], got %q", os.Getenv("SHADOW_EXTRACT_RATE"))
 	}
 
 	// CRAWL_MAX_WORKERS sizes the per-run discovery worker pool — how many pages
@@ -278,13 +303,13 @@ func main() {
 	savedSearchRepository := postgres.NewSavedSearchRepository(pgPool)
 
 	factory := newFactory(crawlMaxWorkers, visitedCap, robotsCacheTTL, robotsCacheSize, llmMaxWorkers, llmConfig,
-		descriptionMaxChars, extractFromJSONLD, redisClient, companyRepository, careerPageRepository, corpusRepository)
+		descriptionMaxChars, extractFromJSONLD, shadowExtractRate, redisClient, companyRepository, careerPageRepository, corpusRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory,
 		// One cleaner sweeps all of a run's transient Redis state on a terminal
 		// status or factory error: the frontier keys and the LLM stage's streams
-		// (both kinds + dead-letter, via the llmstream:{runID}:* glob). A paused run
-		// (graceful shutdown) is not terminal, so its streams survive for a resumed
-		// run to redeliver.
+		// (every kind — classify, extract, shadow — plus their dead-letter streams,
+		// via the llmstream:{runID}:* glob). A paused run (graceful shutdown) is not
+		// terminal, so its streams survive for a resumed run to redeliver.
 		runner.WithFrontierCleaner(func(ctx context.Context, runID uuid.UUID) error {
 			ferr := redisfrontier.DeleteRun(ctx, redisClient, runID)
 			serr := llmstream.DeleteRun(ctx, redisClient, runID)
@@ -410,6 +435,7 @@ func newFactory(
 	llmConfig openrouter.Config,
 	descriptionMaxChars int,
 	extractFromJSONLD bool,
+	shadowExtractRate float64,
 	redisClient *redis.Client,
 	companyRepository crawler.CompanyRepository,
 	careerPageRepository crawler.CareerPageRepository,
@@ -442,6 +468,7 @@ func newFactory(
 		jobListingExtractor = freeextraction.NewExtractor(jobListingExtractor)
 	}
 	slog.Info("free extraction (ADR-0042)", "enabled", extractFromJSONLD)
+	slog.Info("shadow extraction (ADR-0044)", "rate", shadowExtractRate)
 
 	// The extraction-cache key (ADR-0035): ONE closure over the extractor's prompt
 	// window, handed to both the save processor that stamps it and the refetch lane
@@ -690,6 +717,55 @@ func newFactory(
 				return nil, fmt.Errorf("starting collection extract stage: %w", err)
 			}
 
+			// Shadow Extraction (ADR-0044): a sampled fraction of the pages the Extract
+			// Gate rejects is extracted anyway, purely to measure how often the gate drops
+			// a real posting. It travels on its OWN durable stream, drained by its OWN
+			// processor built WITHOUT a Corpus repository — a measurement must be
+			// structurally incapable of writing to the data it measures, and the separate
+			// stream also means measurement can never eat the extract stage's backlog
+			// capacity. A zero rate builds nothing and leaves the walk's hook nil.
+			closeShadow := func() {}
+			var onShadowExtract func(ctx context.Context, jl *crawler.RawJobListing) error
+			if shadowExtractRate > 0 {
+				// Its own cancellable context so Engine.Close can STOP this lane rather than
+				// DRAIN it: llmstream drains on a clean finish, and draining a backlog of
+				// measurement calls would extend every Cycle for samples nobody is waiting
+				// on. Cancelling first puts Close on its stop/shutdown path, leaving any
+				// remaining entries in the PEL to be swept with the rest of the run's streams
+				// (llmstream.DeleteRun).
+				shadowCtx, cancelShadow := context.WithCancel(ctx)
+				shadowStage := llmstream.NewStage(redisClient, runID, llmobs.KindShadow,
+					func() processor.Processor[crawler.RawJobListing] {
+						return shadowextractionprocessor.NewProcessor(&shadowextractionprocessor.Config{
+							// The SAME extractor the real lane uses, so a shadow verdict is the
+							// verdict this page would have received had the gate kept it.
+							Extractor: jobListingExtractor,
+							Recorder:  llmRecorder,
+						})
+					},
+					llmstream.WithWorkers[crawler.RawJobListing](shadowMaxWorkers),
+					llmstream.WithRecorder[crawler.RawJobListing](llmRecorder),
+					llmstream.WithMaxBacklog[crawler.RawJobListing](shadowMaxBacklog),
+					llmstream.WithMinIdle[crawler.RawJobListing](llmConfig.Timeout+time.Minute),
+				)
+				if err := shadowStage.Start(shadowCtx); err != nil {
+					// A measurement lane must never fail a Collection Cycle, and failing here
+					// would also strand the extract stage's goroutines. Log and run without it.
+					slog.Error("collection: starting the shadow extraction stage, continuing without it",
+						"err", err, "run_id", runID)
+					cancelShadow()
+				} else {
+					closeShadow = func() { cancelShadow(); shadowStage.Close() }
+					onShadowExtract = func(ctx context.Context, jl *crawler.RawJobListing) error {
+						// Bounded: a full shadow backlog must drop the sample, never park a walk
+						// worker on capacity. Enqueue honours the context (awaitCapacity).
+						ctx, cancel := context.WithTimeout(ctx, shadowEnqueueTimeout)
+						defer cancel()
+						return shadowStage.Enqueue(ctx, jl)
+					}
+				}
+			}
+
 			// ATS Fetch lane (ADR-0022/0035): LLM-free board pulls that save presence,
 			// run the absence-sweep on a complete fetch, and fold board reach into
 			// Career-Page dormancy. Built after the last fallible setup so an early error
@@ -783,6 +859,11 @@ func newFactory(
 						RelevanceFilter: contentFilter,
 						GateConfig:      gateConfig,
 						OnJobListing:    onJobListing,
+						// Shadow Extraction (ADR-0044): the sampled fraction of the pages the
+						// gate rejects, routed to the measurement lane above. Nil hook / zero
+						// rate = off.
+						OnShadowExtract: onShadowExtract,
+						ShadowRate:      shadowExtractRate,
 						HasATSFetcher:   hasATSFetcher,
 						// An ATS board embedded on a crawled page is fetched through the same
 						// deduped lane, attributed to the page's Owner, with a Nil
@@ -816,12 +897,16 @@ func newFactory(
 				// and must not enter the Frontier (ADR-0022).
 				Seeds: crawlSeeds,
 				// Close order: url pool first (stops walk pages + embed submits), then the
-				// refetch lane (wait its priming, drain — it feeds the extract stage), then
-				// the ATS lane (drains its board fetches), then the extract stage last (both
-				// refetch and walk feed it). A clean finish drains each stream to empty; a
+				// Shadow Extraction lane (its only producer is that pool), then the refetch
+				// lane (wait its priming, drain — it feeds the extract stage), then the ATS
+				// lane (drains its board fetches), then the extract stage last (both refetch
+				// and walk feed it). A clean finish drains each stream to empty; a
 				// stop/shutdown leaves the PEL for resume.
 				Close: func() {
 					urlWorkerPool.Close()
+					// Shadow Extraction is STOPPED rather than drained, so a backlog of
+					// measurement calls cannot lengthen the Cycle.
+					closeShadow()
 					refetchPriming.Wait()
 					refetchLane.Close()
 					atsLane.Close()
