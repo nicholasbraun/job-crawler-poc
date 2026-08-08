@@ -184,7 +184,19 @@ func printStreamScorecard(w io.Writer, s *bench.StreamScorecard) {
 	fmt.Fprintf(w, "  extract-call-rate %.4f  (share of today's calls this config still makes)\n", s.ExtractCallRate)
 	fmt.Fprintf(w, "  precision         %.4f  (of what it extracts, the share that is a real posting)\n", s.Precision)
 	fmt.Fprintf(w, "  recall            %.4f  (of today's real postings, the share it keeps)\n", s.Recall)
+	fmt.Fprintf(w, "  projected spend   %.4fx today's extract bill (%s)\n", s.ExtractCallRate, projectedSpendBasis)
 }
+
+// projectedSpendBasis says what the projected-spend line IS, printed beside it every
+// time so the number is never read as a currency figure somebody calibrated.
+//
+// It is the extract-call rate, relabelled, and that is the whole point: the capture
+// tap sits downstream of the Extract Gate, so the frame these rows were sampled from
+// is exactly the pages the crawler already pays for. The share of that frame a
+// config still extracts IS the multiplier on today's bill. No dollars-per-day
+// constant lives in this benchmark -- that would be an unmeasured number wearing the
+// benchmark's authority, which is what ADR-0020 refuses.
+const projectedSpendBasis = "the call rate on a frame sampled downstream of the gate"
 
 // printBoundaryScorecard writes the Boundary Stratum's own view (ADR-0043, #263),
 // or nothing when the scored rows carried no boundary stratum. Like the stream block

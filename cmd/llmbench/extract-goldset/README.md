@@ -624,6 +624,60 @@ labels, and #259's Shadow Extraction is the live cross-check on pages the gate r
 before the tap.** The eleven shapes behind it, and why each is argued rather than closed
 by a threshold, are written up in ADR-0044.
 
+## The guard (#264)
+
+The scorecards above are read by a human. The **guard** is read by CI:
+`TestExtractGoldSetFalseDropGuard` in `cmd/llmbench/goldsetguard_test.go` runs under a
+plain `go test ./...` — no network, no model, no Docker — and is the only fatal
+condition over this file. Everything else on this page is descriptive.
+
+It replays the gate twice over the whole set, under the Positive Evidence rule and
+under the blanket accept it replaces, and folds the pair through
+`bench.AuditFalseDrops`. The second replay is what makes **rung attribution** a
+measurement: the two configs differ in exactly one field, so a page both drop was
+resolved by a *reject* rung and is out of #257's scope, while a page only the rule
+drops is this rung's.
+
+**It is a ledger of named, argued exceptions — not a budget.** A budget says "up to N
+drops are tolerated" and lets a new drop inside N pass silently, which is the failure
+#257 was written against. `extractGoldSetFalseDrops` instead names thirteen specific
+pages, each with its argument and its rung, and **any other page the rule drops fails
+the build by name**. The hard zero is in force everywhere except those thirteen, all
+of which ADR-0044 writes up individually.
+
+Four fatal conditions, all exactness, none of them a threshold:
+
+| condition | what it catches |
+|---|---|
+| **unrecorded** | the rule drops a `detail` row the ledger does not name — the hard zero |
+| **recovered** | a ledger entry the rule no longer drops; strike it, the ratchet may only fall |
+| **misattributed** | an entry filed under the other rung — a reject rung has silently moved |
+| **restanding** | the entry's label gained or lost a human confirmation since it was written |
+
+(Plus two faults in the ledger itself: an entry with no `Reason`, and a URL named twice.)
+
+**Restanding is how the guard arms itself.** ADR-0043 permits a hard zero to be
+*argued* only on human-confirmed labels, and eleven of the thirteen entries rest on
+labels no human has read (`pendingBoundaryConfirmations` is 188; `goldset-apply`
+refuses an `llm:` confirmer outright, so this cannot be shortcut). Each entry records
+the confirmation state it was written at. The moment a human confirms one of those
+pages the build goes red on that entry alone, and it must be re-argued at ADR-0043's
+standard — no code change and no ADR amendment needed to trigger it. When the boundary
+is fully confirmed, the hard zero covers it automatically. See *Human confirmation —
+what is still owed* below for how to raise the ratchet.
+
+Two of the thirteen — `hiring.cafe/job/…` and `jobs.blooloop.com/jobs/…` — are dropped
+identically by the blanket accept: a reject rung resolves them before Positive Evidence
+is consulted. They predate this rung, and `ExtractJobLinkSaturationCount = 5` is
+already documented in `crawl_definition.go` as under-evidenced and the first reject
+signal to raise. Retuning it is a follow-up, not this ticket.
+
+**What the guard may never assert:** "the rule keeps the pages the extractor accepts
+today". Every Boundary Stratum row carries `verdict = accept`, so that assertion is one
+line away — and it is precisely the objective ADR-0044 considered and rejected, because
+roughly 43% of what the pipeline saves today is not a single posting. The guard file's
+doc comment signposts the trap rather than merely avoiding it.
+
 ## The Free Extraction fidelity check (#256)
 
 A Free Extraction (ADR-0042) saves a Job Listing with **no model veto anywhere in the
