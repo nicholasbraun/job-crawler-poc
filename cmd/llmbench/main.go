@@ -13,9 +13,18 @@
 // The goldset-* verbs (ADR-0043, #254) build and maintain the Extract Gold Set --
 // real pages the live extract stage decided on, stored as the parsed Content the
 // pipeline itself produced. goldset-sample draws the stratified, weighted sample
-// from the extract-decision tap's capture; goldset-worksheet renders the labeler's
-// view of it with the structured data withheld; goldset-apply folds labels and
-// their provenance back in. score-capture (#116) is what scores the resulting file
+// from the extract-decision tap's capture; goldset-sample-random (#262) APPENDS a
+// second drawing to the same file, sampled at random from the stream within its
+// verdict cell so the weighted composition, precision and extract-call rate
+// score-capture reports off it describe production rather than the sample's own
+// mix; goldset-sample-boundary (#263) APPENDS a third, drawn by replaying today's
+// blanket accept and the tiered Positive Evidence rule over the same frame and
+// taking every accepted page the two disagree on -- a census of the boundary, where
+// a false-drop hides; goldset-worksheet renders the labeler's view with the
+// structured data and the live verdict withheld; goldset-confirm-sheet renders the
+// boundary rows as ordered Markdown chunks a human confirms a chunk at a time;
+// goldset-apply folds labels and their provenance back
+// in. score-capture (#116) is what scores the resulting file
 // through the Extract Gate, with no network and no model. score-free (#256)
 // replays the real Free Extraction decorator over the same file with a stub in
 // place of the model (ADR-0042), exiting non-zero when a Free Extraction fires on a
@@ -55,8 +64,14 @@ func main() {
 		os.Exit(runScoreFree(rest))
 	case "goldset-sample":
 		os.Exit(runGoldSetSample(rest))
+	case "goldset-sample-random":
+		os.Exit(runGoldSetSampleRandom(rest))
+	case "goldset-sample-boundary":
+		os.Exit(runGoldSetSampleBoundary(rest))
 	case "goldset-worksheet":
 		os.Exit(runGoldSetWorksheet(rest))
+	case "goldset-confirm-sheet":
+		os.Exit(runGoldSetConfirmSheet(rest))
 	case "goldset-apply":
 		os.Exit(runGoldSetApply(rest))
 	case "diff":

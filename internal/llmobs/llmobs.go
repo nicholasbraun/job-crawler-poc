@@ -18,13 +18,21 @@ import (
 )
 
 // Kind identifies which LLM a call, gate decision, or content probe concerns:
-// the discovery crawl's career-page classifier, or the keyword crawl's
-// job-listing extractor.
+// the discovery crawl's career-page classifier, the collection crawl's
+// job-listing extractor, or the Shadow Extraction lane that scores the Extract
+// Gate (ADR-0044).
 type Kind string
 
 const (
 	KindClassify Kind = "classify"
 	KindExtract  Kind = "extract"
+	// KindShadow names the Shadow Extraction lane: its own durable stream
+	// (llmstream:{runID}:shadow) and the kind label on that stream's retry,
+	// dead-letter and queue-depth instruments. It is deliberately NOT a call kind --
+	// a Shadow Extraction is recorded via Recorder.Shadow on its own counter and
+	// NEVER on crawler.llm.calls, because folding measurement spend into the call
+	// counter would corrupt the extract call rate the Extract Gate is judged by.
+	KindShadow Kind = "shadow"
 )
 
 // Outcome is the coarse result of an LLM call, the outcome label on the call
@@ -41,6 +49,36 @@ const (
 	// no abstain is counted as "ok". Extract-only; the classifier never abstains.
 	OutcomeAbstain Outcome = "abstain"
 )
+
+// ShadowVerdict is the extractor's decision on one Shadow Extraction -- a page the
+// Extract Gate rejected that was extracted anyway purely to score the gate
+// (ADR-0044). ShadowAccept is the observable false-drop: the gate shed a page the
+// extractor reads as a single job posting.
+type ShadowVerdict string
+
+const (
+	ShadowAccept  ShadowVerdict = "accept"
+	ShadowAbstain ShadowVerdict = "abstain"
+	// ShadowError is a shadow extraction that produced no verdict at all (the call
+	// failed or timed out). It is counted so a broken measurement lane is visible,
+	// and excluded from the false-drop rate's denominator, which is completed
+	// verdicts only.
+	ShadowError ShadowVerdict = "error"
+)
+
+// ShadowVerdictOf maps one shadow extraction's result to its verdict. An error
+// wins over isJobPosting: on the error path the Extraction is the zero value, so
+// its verdict field means nothing.
+func ShadowVerdictOf(err error, isJobPosting bool) ShadowVerdict {
+	switch {
+	case err != nil:
+		return ShadowError
+	case isJobPosting:
+		return ShadowAccept
+	default:
+		return ShadowAbstain
+	}
+}
 
 // Reason is why a page skipped the LLM: a structurally-certain ATS board root or
 // a keyword-relevance miss. It labels the gated counter.

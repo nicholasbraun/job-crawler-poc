@@ -71,10 +71,30 @@ func (d *fakeDownloader) Get(_ context.Context, url string) (*downloader.Respons
 
 // fakeParser is an inline parser.Parser that lifts the raw bytes verbatim into
 // MainContent, so a test's SourceHash (identityHash) compares the exact stubbed body.
-type fakeParser struct{}
+// urls, when set, is published as the page's links, so a test can drive the Extract
+// Gate's same-host Job Listing link saturation rung.
+type fakeParser struct{ urls []string }
 
-func (fakeParser) Parse(b []byte) (*crawler.Content, error) {
-	return &crawler.Content{MainContent: string(b)}, nil
+func (p fakeParser) Parse(b []byte) (*crawler.Content, error) {
+	return &crawler.Content{MainContent: string(b), URLs: p.urls}, nil
+}
+
+// openingsIndexParser is an inline parser.Parser whose pages lift the raw bytes into
+// MainContent (so identityHash still compares the stubbed body) AND publish a
+// structured-data openings index — two JobPosting nodes — so the Extract Gate's
+// openings-index reject rung fires at the Process seam. That is a reject rung, not the
+// Positive Evidence rung, so a page built with this parser is rejected under every gate
+// calibration and the test does not drift when Positive Evidence lands.
+type openingsIndexParser struct{}
+
+func (openingsIndexParser) Parse(b []byte) (*crawler.Content, error) {
+	return &crawler.Content{
+		MainContent: string(b),
+		JSONLD: []string{
+			`{"@type":"JobPosting","title":"Backend Engineer"}`,
+			`{"@type":"JobPosting","title":"Frontend Engineer"}`,
+		},
+	}, nil
 }
 
 // jsonLDParser is an inline parser.Parser that lifts the raw bytes into MainContent

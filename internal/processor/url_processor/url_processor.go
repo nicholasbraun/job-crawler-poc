@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/catalog"
@@ -48,6 +49,20 @@ type Config struct {
 	// OnJobListing is called when a page passes the relevance filter.
 	// Typically this enqueues the raw listing into a job listing worker pool.
 	OnJobListing func(ctx context.Context, jobListing *crawler.RawJobListing) error
+	// OnShadowExtract receives a sampled fraction of the pages the Extract Gate
+	// REJECTED, so the extractor's verdict on them can score the gate (ADR-0044). It
+	// mirrors OnJobListing — the same seam pointed at the opposite branch, with the
+	// same fire-and-log error handling: OnJobListing carries the pages the gate kept,
+	// this one a sample of the pages it shed, each carrying the gate rung that shed it
+	// so the verdict can be filed under its cause. The callee must never save what it
+	// is handed. Optional: a nil hook disables Shadow Extraction entirely.
+	OnShadowExtract func(ctx context.Context, sample *crawler.ShadowSample) error
+	// ShadowRate is the fraction of gate-rejected pages handed to OnShadowExtract, in
+	// [0,1] — 0.01 samples one page in a hundred. Zero (the default) disables Shadow
+	// Extraction with no other change in behaviour, so an un-wired or switched-off
+	// crawl behaves exactly as before. A value at or above 1 samples every rejected
+	// page, which is a harvesting mode, not a steady state.
+	ShadowRate float64
 	// HasATSFetcher reports whether an ATS provider has a registered board-API
 	// fetcher. Only a firing ATS Embed for such a provider triggers OnATSEmbed; an
 	// embed for a clientless provider is ignored — v1 does not derive a crawlable
@@ -77,6 +92,8 @@ type urlWorker struct {
 	recorder             llmobs.Recorder
 	urlsProcessedCounter metric.Int64Counter
 	onJobListing         func(ctx context.Context, jobListing *crawler.RawJobListing) error
+	onShadowExtract      func(ctx context.Context, sample *crawler.ShadowSample) error
+	shadowRate           float64
 	hasATSFetcher        func(provider string) bool
 	onATSEmbed           func(ctx context.Context, provider, tenant, owner string) error
 }
@@ -106,6 +123,8 @@ func NewProcessor(cfg *Config) *urlWorker {
 		recorder:             recorder,
 		urlsProcessedCounter: urlsProcessedCounter,
 		onJobListing:         cfg.OnJobListing,
+		onShadowExtract:      cfg.OnShadowExtract,
+		shadowRate:           cfg.ShadowRate,
 		hasATSFetcher:        cfg.HasATSFetcher,
 		onATSEmbed:           cfg.OnATSEmbed,
 	}
@@ -144,11 +163,14 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 	// kept out of the crawl frontier) so it is otherwise unreachable.
 	w.triggerATSEmbeds(ctx, nextURL, content)
 
-	if !pagegate.ShouldExtract(*nextURL, content, w.gateConfig) {
+	if extract, rung := pagegate.ExtractDecision(*nextURL, content, w.gateConfig); !extract {
 		// The Extract Gate shed this page without the LLM extractor -- a URL signal
-		// (Career Page index or reject path) or a page-structure signal (ATS embed,
-		// JSON-LD openings index, or job-link saturation).
+		// (Career Page index or reject path), a page-structure signal (ATS embed,
+		// JSON-LD openings index, or job-link saturation), or the Positive Evidence
+		// rung. rung names which, and travels with the Shadow Extraction sample so the
+		// measured false-drop rate can be split by cause.
 		w.recorder.Gated(ctx, llmobs.KindExtract, llmobs.ReasonURLStructure)
+		w.sampleShadowExtraction(ctx, nextURL, content, rung)
 	} else if err := w.relevanceFilter(content); err == nil {
 		slog.Info("worker: content passed relevance filter", "title", content.Title, "url", nextURL.RawURL)
 
@@ -208,6 +230,40 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 
 	w.urlsProcessedCounter.Add(ctx, 1)
 	return nil
+}
+
+// sampleShadowExtraction hands a sampled fraction of the pages the Extract Gate
+// rejected to the Shadow Extraction lane (ADR-0044), so the extractor's verdict on
+// them measures how often the gate drops a real posting — a failure that is
+// otherwise completely invisible and permanent. Sampling is uniform per page rather
+// than derived from the URL: a URL-keyed sample would re-measure the same fixed
+// subset every Collection Cycle instead of estimating a rate over the stream.
+//
+// It is inert when the hook is nil or the rate is zero, which is the whole kill
+// switch. A hook error is logged and dropped, never propagated: a measurement must
+// not fail the page that produced it.
+//
+// A dropped sample is COUNTED as well as logged. The hook's Enqueue is bounded, so
+// under load it sheds — and shedding is not uniform the way the sampling is: it
+// takes whatever arrives while the stream is full. An invisible drop would leave the
+// live false-drop rate resting on a subsample nobody can characterize, so the count
+// is what makes that denominator's trustworthiness readable.
+func (w *urlWorker) sampleShadowExtraction(ctx context.Context, nextURL *crawler.URL, content *crawler.Content, rung pagegate.ExtractRung) {
+	if w.onShadowExtract == nil || w.shadowRate <= 0 {
+		return
+	}
+	// rand.Float64 returns [0,1), so a rate of 1 samples every page and the guard
+	// above covers the other end.
+	if rand.Float64() >= w.shadowRate {
+		return
+	}
+	if err := w.onShadowExtract(ctx, &crawler.ShadowSample{
+		RawJobListing: crawler.RawJobListing{URL: *nextURL, Content: *content},
+		Rung:          string(rung),
+	}); err != nil {
+		w.recorder.ShadowDropped(ctx, string(rung))
+		slog.Debug("worker: shadow extraction sample dropped", "err", err, "url", nextURL.RawURL, "rung", rung)
+	}
 }
 
 // triggerATSEmbeds fires an ATS Fetch for each firing ATS Embed on content whose

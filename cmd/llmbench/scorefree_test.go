@@ -57,12 +57,20 @@ const acceptedFreeOnResidue = 3
 // failure mode, naming the offending URL (and, for a divergence, the field and both
 // values) so a failure says exactly what broke.
 func TestCommittedGoldSetFreeExtractionFidelity(t *testing.T) {
-	rows, skipped, err := replayFreeExtraction(t.Context(), filepath.Join("extract-goldset", goldSetFile))
+	rows, skipped, outOfScope, err := replayFreeExtraction(t.Context(), filepath.Join("extract-goldset", goldSetFile))
 	if err != nil {
 		t.Fatalf("replayFreeExtraction: %v", err)
 	}
 	if skipped != 0 {
 		t.Errorf("skipped %d unlabeled rows, want 0 (every committed row carries a label)", skipped)
+	}
+	// The #256 ground truth was proposed over the structural drawing alone, and a
+	// fired row with no expectation is fatal, so every later drawing -- the random
+	// stratum and the boundary stratum -- is out of scope here by construction.
+	// Pinning the count keeps that a decision rather than an accident: if the filter
+	// ever stops biting, this number moves.
+	if want := randomStratumRows + boundaryStratumRows; outOfScope != want {
+		t.Errorf("skipped %d rows outside the #256 drawing, want %d (the random and boundary strata)", outOfScope, want)
 	}
 
 	sc := bench.ScoreFreeExtraction(rows).Free
@@ -105,7 +113,7 @@ func TestCommittedGoldSetFreeExtractionFidelity(t *testing.T) {
 const withdrawnInLonePostingStratum = 19
 
 func TestCommittedGoldSetFreeExtractionIsContainedInTheLonePostingStratum(t *testing.T) {
-	rows, _, err := replayFreeExtraction(t.Context(), filepath.Join("extract-goldset", goldSetFile))
+	rows, _, _, err := replayFreeExtraction(t.Context(), filepath.Join("extract-goldset", goldSetFile))
 	if err != nil {
 		t.Fatalf("replayFreeExtraction: %v", err)
 	}
@@ -151,7 +159,7 @@ func TestReplayObservesNoModelCall(t *testing.T) {
 		t.Fatalf("writeGoldSet: %v", err)
 	}
 
-	got, skipped, err := replayFreeExtraction(t.Context(), path)
+	got, skipped, _, err := replayFreeExtraction(t.Context(), path)
 	if err != nil {
 		t.Fatalf("replayFreeExtraction: %v", err)
 	}

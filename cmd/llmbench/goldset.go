@@ -1,7 +1,10 @@
 // This file is llmbench's Extract Gold Set substrate (ADR-0043, #254): the row
 // format, the streaming IO over the extract-decision tap's capture, and the pure
-// sampling / stratification / weighting / review-sheet helpers the three goldset-*
-// verbs drive. It produces no crawler behaviour and touches no network or model.
+// sampling / stratification / weighting / review-sheet helpers the goldset-* verbs
+// drive. The boundary drawing's own machinery -- the two gate configs whose
+// disagreement defines it, and the confirmation sheet it is owed -- lives beside this
+// in goldsetboundary.go, because it replays the gate where nothing here does. This
+// file produces no crawler behaviour and touches no network or model.
 package main
 
 import (
@@ -121,15 +124,77 @@ const (
 	// stratumNoPosting carries no JobPosting node at all -- the matched hub-index
 	// and residue population.
 	stratumNoPosting goldStratum = "no-posting"
+	// stratumRandom is the ADR-0043 random stratum (#262): pages drawn at RANDOM
+	// from the live extract stream within their verdict cell, each weighted back to
+	// it, so composition and precision computed over them describe production rather
+	// than the sample's own mix. It is a sampling cell like the other three, but it
+	// belongs to a DIFFERENT DRAWING: its weights rest on a different capture frame
+	// and a different accept-rate measurement, so they are never pooled with theirs
+	// (see goldDrawing).
+	stratumRandom goldStratum = "random"
+	// stratumBoundary is the ADR-0043 Boundary Stratum (#263): the pages where
+	// TODAY'S blanket accept and the tiered Positive Evidence rule DISAGREE --
+	// computed by replaying both gate configs over the captured content, never
+	// guessed. It is where a false-drop hides, which is why it is the stratum ADR-0043
+	// requires a human to confirm.
+	//
+	// It is a CENSUS of that disagreement's accept half, not a sample: inclusion
+	// probability 1, weight 1, and no stream behind it to weight toward. Like the
+	// random stratum it is its own DRAWING, and its rows never enter the weighted
+	// stream estimates -- a census of a disagreement set describes no population.
+	stratumBoundary goldStratum = "boundary"
 )
 
 // allStrata is the fixed print / iteration order for per-stratum breakdowns.
 // Mirrors bench.AllExtractLabels.
-var allStrata = []goldStratum{stratumLonePosting, stratumAmbiguousPosting, stratumNoPosting}
+var allStrata = []goldStratum{stratumLonePosting, stratumAmbiguousPosting, stratumNoPosting, stratumRandom, stratumBoundary}
 
-// Valid reports whether s is one of the three known strata.
+// Valid reports whether s is one of the known strata.
 func (s goldStratum) Valid() bool {
-	return s == stratumLonePosting || s == stratumAmbiguousPosting || s == stratumNoPosting
+	return s == stratumLonePosting || s == stratumAmbiguousPosting || s == stratumNoPosting ||
+		s == stratumRandom || s == stratumBoundary
+}
+
+// goldDrawing groups strata into the DRAW they came from. A drawing is the scope a
+// weight normalizes over: the #254 structural strata were drawn from the July
+// capture (4271 pages, accept share 0.3432) under a structural design, and the #262
+// random stratum from the August faithful frame (5162 pages, accept share 0.0753)
+// under a verdict-only one. Each drawing's weights sum to ITS OWN row count, so
+// pooling them across drawings would be meaningless arithmetic.
+//
+// It is derived from Stratum and never persisted -- adding a field to the row would
+// make it look like a second axis a labeler or a sheet could disagree about. It is
+// also deliberately not domain language: it is this tool's normalization scope, not
+// a term the crawler uses.
+type goldDrawing string
+
+const (
+	// drawingStructural is the #254 draw: lone-posting / ambiguous-posting /
+	// no-posting, stratified on the ADR-0042 predicate.
+	drawingStructural goldDrawing = "structural"
+	// drawingRandom is the #262 draw: a random sample of the stream, stratified on
+	// the verdict alone.
+	drawingRandom goldDrawing = "random"
+	// drawingBoundary is the #263 draw: a census of the pages two gate rules
+	// disagree on. Its weights are all 1 -- there is nothing to normalize toward,
+	// which is exactly why it is a drawing of its own rather than more rows in
+	// another one.
+	drawingBoundary goldDrawing = "boundary"
+)
+
+// Drawing returns the drawing s belongs to, or "" for a stratum-less row -- a raw,
+// unsampled capture line, which belongs to no draw and carries no weight.
+func (s goldStratum) Drawing() goldDrawing {
+	switch s {
+	case stratumLonePosting, stratumAmbiguousPosting, stratumNoPosting:
+		return drawingStructural
+	case stratumRandom:
+		return drawingRandom
+	case stratumBoundary:
+		return drawingBoundary
+	default:
+		return ""
+	}
 }
 
 // cellPlan is one line of the sampling design: how many rows to draw from the
@@ -164,6 +229,33 @@ var samplePlan = []cellPlan{
 	{stratumNoPosting, false, 45},       // population 2432 -- where hub-index and residue live
 }
 
+// randomSamplePlan is the #262 random drawing's design. Its ONLY sampling cell is
+// the verdict: the per-verdict caps are the only thing the capture design imposed,
+// so stratifying structurally as samplePlan does would destroy the honest
+// composition this stratum exists to produce -- the whole point is that the mix of
+// detail / hub-index / residue in it is the stream's mix, not a design's. Like
+// samplePlan it is a package var rather than a flag, because the design is an
+// argument rather than a knob.
+//
+// The frame is the FAITHFUL capture window only: records at or after
+// 2026-08-07T21:13Z, the first after `fceaf87 fix(parser): only strip site chrome on
+// the body fallback`. Two parser changes landed mid-capture, and ADR-0043's premise
+// is that captured content is the exact bytes the gate will later see, so content
+// from a parser that no longer exists is a different page. Deduped by URL and with
+// the 42 URLs the #254 drawing already committed excluded (a page cannot carry two
+// incompatible weights), that frame is 5162 pages: 1762 accept, 3400 abstain.
+//
+// The quotas below sample the accept cell at 40/1762 = 2.27% and the abstain cell at
+// 80/3400 = 2.35%, so the draw is within a percentage point of a simple random
+// sample of the frame and the weights carry the CAP CORRECTION and nothing else.
+// With the true stream accept rate p = 0.0753 (#261's census measurement, never the
+// file's own 0.4265 mix, which overstates accepts 5.7x) weightsFor collapses to
+// w_accept = 3p = 0.2259 and w_abstain = 1.5(1-p) = 1.38705, summing to 120.
+var randomSamplePlan = []cellPlan{
+	{stratumRandom, true, 40},  // population 1762 -- the stream's accepts
+	{stratumRandom, false, 80}, // population 3400 -- the stream's abstains
+}
+
 const (
 	// defaultGoldSetDir holds the committed Extract Gold Set, relative to the repo
 	// root (the working directory `go run ./cmd/llmbench` is invoked from).
@@ -184,6 +276,10 @@ const (
 	// defaultSeed keys the deterministic within-cell selection. Changing it is a
 	// deliberate resample, which is why it is a flag rather than a constant use.
 	defaultSeed = "extract-goldset-v1"
+	// defaultRandomSeed keys the #262 random drawing. It is a DISTINCT seed because
+	// it is a distinct draw: reusing defaultSeed would correlate the two samples'
+	// within-cell orders for no reason.
+	defaultRandomSeed = "extract-goldset-random-v1"
 	// captureScanBuffer bounds one capture line. Captured lines carry the full
 	// parsed MainContent; the largest observed is ~757 KB.
 	captureScanBuffer = 8 * 1024 * 1024
@@ -305,6 +401,80 @@ func scanCapture(path string) (captureScan, error) {
 	}
 	sort.Slice(out.Candidates, func(i, j int) bool { return out.Candidates[i].Line < out.Candidates[j].Line })
 	return out, nil
+}
+
+// frameSince narrows a scan to the capture records at or after cutoff, returning
+// the narrowed scan and how many candidates it dropped. It is how the #262 drawing
+// excludes the windows parsed by a superseded parser: ADR-0043's premise is that a
+// captured page is the exact bytes the gate will later see, and content from a
+// parser that no longer exists is a different page.
+//
+// Filtering AFTER the scan is sound, not a shortcut: scanCapture already resolved
+// each URL to its LATEST record, so a URL captured on both sides of the cutoff keeps
+// its post-cutoff parse and survives, while a URL seen only before it drops
+// entirely. A candidate whose TS does not parse drops too -- a record that cannot be
+// placed in time cannot be placed in the frame.
+//
+// Timeline is cut to match, so a caller estimating the accept share off the narrowed
+// scan reads the frame's own timeline rather than the whole file's.
+func frameSince(scan captureScan, cutoff time.Time) (captureScan, int) {
+	out := scan
+	out.Candidates = make([]candidate, 0, len(scan.Candidates))
+	dropped := 0
+	for _, c := range scan.Candidates {
+		ts, err := time.Parse(time.RFC3339, c.TS)
+		if err != nil || ts.Before(cutoff) {
+			dropped++
+			continue
+		}
+		out.Candidates = append(out.Candidates, c)
+	}
+	out.Timeline = make([]tsVerdict, 0, len(scan.Timeline))
+	for _, r := range scan.Timeline {
+		if r.TS.Before(cutoff) {
+			continue
+		}
+		out.Timeline = append(out.Timeline, r)
+	}
+	return out, dropped
+}
+
+// excludingURLs drops the candidates whose URL is already in exclude, returning the
+// narrowed scan and the count dropped. The #262 drawing excludes the URLs the #254
+// drawing already committed: a duplicate URL would fail the substrate's
+// well-formedness guard, and it would give one page two incompatible weights from
+// two different drawings.
+//
+// The exclusion carries a mild, stated bias -- the pages a walk re-visits most often
+// are the likeliest to have been drawn twice -- which is recorded in the gold set's
+// README rather than corrected for.
+func excludingURLs(scan captureScan, exclude map[string]struct{}) (captureScan, int) {
+	out := scan
+	out.Candidates = make([]candidate, 0, len(scan.Candidates))
+	dropped := 0
+	for _, c := range scan.Candidates {
+		if _, skip := exclude[c.URL]; skip {
+			dropped++
+			continue
+		}
+		out.Candidates = append(out.Candidates, c)
+	}
+	return out, dropped
+}
+
+// asStratum rewrites every candidate's stratum to s, so applyPlan draws from cells
+// keyed on the verdict alone. It is what makes the #262 drawing reuse the #254
+// weighting machinery unchanged: the random draw's only sampling cell is the
+// verdict, and collapsing the structural stratum before planning expresses that
+// without a second weighting function to keep in step with the first.
+func asStratum(scan captureScan, s goldStratum) captureScan {
+	out := scan
+	out.Candidates = make([]candidate, 0, len(scan.Candidates))
+	for _, c := range scan.Candidates {
+		c.Stratum = s
+		out.Candidates = append(out.Candidates, c)
+	}
+	return out
 }
 
 // stratumOf classifies a page's structured data into its sampling cell using the
@@ -915,11 +1085,15 @@ func truncateRunes(s string, n int) string {
 // structured data by construction -- exactly the circularity ADR-0043 exists to
 // end. It is a working artifact, never committed: it regenerates from the
 // substrate.
+//
+// The live extractor's VERDICT is withheld for the same reason (#262). The random
+// stratum's headline number is the precision of that verdict, so a labeler who could
+// see it would agree with it by construction. labels.tsv still shows the verdict:
+// that is the REVIEW surface, read after the label already exists.
 type worksheetRow struct {
-	ID      string `json:"id"`
-	URL     string `json:"url"`
-	Verdict bool   `json:"verdict"`
-	Title   string `json:"title"`
+	ID    string `json:"id"`
+	URL   string `json:"url"`
+	Title string `json:"title"`
 	// Head and Mid are two windows into the page's main content: the opening,
 	// where a posting states its role, and a middle slice, which separates a real
 	// posting body from a page whose first screen is navigation.
@@ -954,11 +1128,10 @@ func worksheetFor(row goldRow) worksheetRow {
 	}
 
 	out := worksheetRow{
-		ID:      rowID(row.URL),
-		URL:     row.URL,
-		Verdict: row.Verdict,
-		Title:   flattenField(row.Content.Title),
-		Head:    truncateRunes(flattenField(row.Content.MainContent), worksheetHeadRunes),
+		ID:    rowID(row.URL),
+		URL:   row.URL,
+		Title: flattenField(row.Content.Title),
+		Head:  truncateRunes(flattenField(row.Content.MainContent), worksheetHeadRunes),
 	}
 
 	main := []rune(flattenField(row.Content.MainContent))

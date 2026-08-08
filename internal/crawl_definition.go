@@ -66,7 +66,9 @@ type URLFilterConfig struct {
 // As of ADR-0016 it also carries the final-rung Confidence Score weights and
 // thresholds -- this is the shift from curated string lists to curated lists plus
 // tunable floats -- but it stays in-memory and process-wide, still with no json
-// tags.
+// tags. As of ADR-0044 it additionally carries the Extract Gate's Positive
+// Evidence switch, the one field on the extract path that is a plain on/off rather
+// than a tunable.
 type LLMGateConfig struct {
 	CareerPathSignals []string
 	RejectPathSignals []string
@@ -138,6 +140,24 @@ type LLMGateConfig struct {
 	// signal silent (jobLinkSaturation returns 0), the same fail-safe as the Discovery
 	// count — the escape hatch for dropping saturation entirely.
 	ExtractJobLinkSaturationCount int
+
+	// RequirePositiveEvidence turns on the Extract Gate's final rung (ADR-0044): a
+	// page that has cleared every reject rung is extracted only when it carries
+	// Positive Evidence of being a single posting, instead of being admitted just
+	// because nothing rejected it. False is the previous behaviour -- the blanket
+	// accept -- and is the kill switch that restores it without a deploy, wired to
+	// EXTRACT_REQUIRE_POSITIVE_EVIDENCE.
+	//
+	// It is a single bool rather than a set of weights on purpose: the rung is
+	// TIERED, not an additive score (a strong mark admits alone, the two weak text
+	// marks admit only in agreement), and the word lists behind it are curated,
+	// package-level and deliberately config-independent -- the same isolation
+	// terminalHubWords keeps -- so no config override can widen the extract path
+	// into the Discovery Gate or the Catalog Doctor.
+	//
+	// It SHIPS ON since #264. See DefaultLLMGateConfig for the measurement that
+	// justified the flip and the guard that holds it.
+	RequirePositiveEvidence bool
 }
 
 // DefaultLLMGateConfig returns the built-in pre-LLM gate signals. CareerPathSignals
@@ -228,6 +248,26 @@ func DefaultLLMGateConfig() LLMGateConfig {
 		// job links and single postings carry <=1. See the field comment: real
 		// captured pages already show 5 is low.
 		ExtractJobLinkSaturationCount: 5,
+
+		// Positive Evidence rung (ADR-0044), ON since #264. Measured over the Extract
+		// Gold Set's random stratum, weighted back to the live extract stream: the
+		// stream extract-call rate falls 0.9944 -> 0.1390 and the precision of a paid
+		// call rises 0.0568 -> 0.4063, with recall over today's real postings UNMOVED at
+		// 0.9677. The rung is free on recall where it can be measured against the stream
+		// and cuts the bill sevenfold.
+		//
+		// What it costs is measured on the Boundary Stratum -- a deliberately
+		// non-random census of the 188 hardest pages in the capture, drawn to
+		// over-represent drops, so its 11 remaining false-drops are NOT a stream rate.
+		// Each of the eleven is named and argued in cmd/llmbench's
+		// extractGoldSetFalseDrops, and TestExtractGoldSetFalseDropGuard fails the build
+		// on any twelfth.
+		//
+		// EXTRACT_REQUIRE_POSITIVE_EVIDENCE=false restores the blanket accept exactly,
+		// with no deploy. Prefer that dial to editing this line: the benchmark guard
+		// scores the rung whatever this default says, so turning it off here only
+		// desynchronizes the two.
+		RequirePositiveEvidence: true,
 	}
 }
 

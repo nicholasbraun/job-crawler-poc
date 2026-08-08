@@ -23,7 +23,8 @@ import (
 // reject-rung regression fixture or an Extract Gold Set page.
 // Scoring collapses it to a binary extract-vs-skip decision via Positive():
 // detail is the positive (extract) class; hub-index and residue both collapse to
-// the negative (skip) class.
+// the negative (skip) class. ExtractAmbiguous is the one label that collapses to
+// NEITHER: see Scored().
 type ExtractLabel string
 
 const (
@@ -40,19 +41,36 @@ const (
 	// skip. It is the population the deferred L2 content confirm (ADR-0020) is
 	// measured against.
 	ExtractResidue ExtractLabel = "residue"
+	// ExtractAmbiguous is a page whose correct class a review could not settle. It
+	// is NOT a fourth class the gate is scored against: it is EXCLUDED from every
+	// confusion count, so an undecidable page can never silently become a false-drop
+	// nor a non-posting the gate wrongly extracted. It exists because forcing such a
+	// page into detail or residue would fabricate exactly the evidence the Boundary
+	// Stratum is meant to supply honestly (ADR-0043).
+	ExtractAmbiguous ExtractLabel = "ambiguous"
 )
 
-// Valid reports whether l is one of the three known extract labels.
+// Valid reports whether l is one of the known extract labels, ExtractAmbiguous
+// included: a row a review could not settle is labelled, not unlabelled, and the
+// tooling that reads a gold set must carry it rather than skip it.
 func (l ExtractLabel) Valid() bool {
-	return l == ExtractDetail || l == ExtractHubIndex || l == ExtractResidue
+	return l == ExtractDetail || l == ExtractHubIndex || l == ExtractResidue || l == ExtractAmbiguous
 }
+
+// Scored reports whether l takes part in the confusion counts. Everything valid
+// does except ExtractAmbiguous, which is reported and never scored.
+func (l ExtractLabel) Scored() bool { return l.Valid() && l != ExtractAmbiguous }
 
 // Positive reports whether l is the positive (extract) class. It is the single
 // source of the binary collapse: detail is positive, hub-index and residue both
-// collapse to the negative (skip) class. Mirrors Label.Positive().
+// collapse to the negative (skip) class. Mirrors Label.Positive(). It is never
+// consulted for ExtractAmbiguous, which Scored() excludes before the collapse.
 func (l ExtractLabel) Positive() bool { return l == ExtractDetail }
 
-// AllExtractLabels is the fixed print / slice order for per-class breakdowns.
+// AllExtractLabels is the fixed print / slice order for per-class breakdowns. It
+// is the three SCORED classes: ExtractAmbiguous is deliberately absent, because
+// this slice also drives the "every label is exercised" assertion on the committed
+// gold set, and no drawing can promise an undecidable row exists.
 var AllExtractLabels = []ExtractLabel{ExtractDetail, ExtractHubIndex, ExtractResidue}
 
 // ExtractEntry is one extract reject-rung regression fixture: raw HTML on disk
@@ -130,6 +148,12 @@ type ExtractVerdictRow struct {
 	URL     string
 	Label   ExtractLabel // gold
 	Extract bool         // predicted
+	// Weight is the row's ADR-0043 sampling weight: what one row of its sampling
+	// cell is worth in the live extract stream. It is ZERO for a row drawn outside a
+	// weighted stratum -- a synthetic reject-rung fixture, or a raw unsampled capture
+	// line -- which is why the stream scorecard is computed over an explicitly
+	// selected subset rather than over every row a caller happens to hold.
+	Weight float64
 }
 
 // ExtractScorecard is the deterministic Extract Gate regression report. The
@@ -154,16 +178,33 @@ type ExtractScorecard struct {
 	// that leaked to the extractor (the ADR-0020 L2 data-gate signal).
 	ResidueCount     int `json:"residue_count"`
 	ResidueExtracted int `json:"residue_extracted"`
+	// Ambiguous is the rows a review could not classify; AmbiguousExtracted how many
+	// of them this config extracts. They are REPORTED and never scored: excluded from
+	// the confusion, from the per-class slices, from FalseDrops and from Leaks. They
+	// still count in Total and ExtractCalls, because a call is paid for whether or
+	// not anybody could say what the page was.
+	Ambiguous          int `json:"ambiguous"`
+	AmbiguousExtracted int `json:"ambiguous_extracted"`
 }
 
 // ExtractReport is the full extract-mode output.
 type ExtractReport struct {
 	Extract ExtractScorecard `json:"extract"`
+	// Stream carries the sampling-weighted estimates of the live extract stream,
+	// present only when the scored rows include a weighted random stratum (ADR-0043,
+	// #262). Nil for the synthetic fixture set, which describes no stream.
+	Stream *StreamScorecard `json:"stream,omitempty"`
+	// Boundary carries the Boundary Stratum's own unweighted view (ADR-0043, #263),
+	// present only when the scored rows include one. Nil for the synthetic fixture
+	// set and for a raw capture, neither of which draws a boundary.
+	Boundary *BoundaryScorecard `json:"boundary,omitempty"`
 }
 
 // Failed reports whether the extract run must exit non-zero: any false-drop (a
 // real detail page the gate rejected). Leaks and the extract-call rate are
-// descriptive and never move this.
+// descriptive and never move this -- and neither does Stream: every figure in it is
+// a weighted estimate with no threshold (ADR-0020's split between a hard structural
+// guard and soft, composition-dependent measurements).
 func (r ExtractReport) Failed() bool { return len(r.Extract.FalseDrops) > 0 }
 
 // ScoreExtract folds extract verdict rows into an ExtractReport. PURE -- no
@@ -172,6 +213,11 @@ func (r ExtractReport) Failed() bool { return len(r.Extract.FalseDrops) > 0 }
 // gold-positive is exactly detail, every overall false-negative IS a false-drop.
 // Slices are initialized non-nil and preserve input order, so the JSON round-trips
 // and tests can use reflect.DeepEqual.
+//
+// A row whose label is not Scored() -- an ambiguous page -- is counted in Total and
+// in ExtractCalls and then set aside: it enters no confusion cell, no per-class
+// slice, no false-drop and no leak. Collapsing an undecidable page into a class
+// would let the labeller's shrug decide whether the build goes red.
 func ScoreExtract(rows []ExtractVerdictRow) ExtractReport {
 	sc := ExtractScorecard{
 		FalseDrops: []string{},
@@ -186,6 +232,13 @@ func ScoreExtract(rows []ExtractVerdictRow) ExtractReport {
 		gold := row.Label.Positive()
 		if row.Extract {
 			sc.ExtractCalls++
+		}
+		if !row.Label.Scored() {
+			sc.Ambiguous++
+			if row.Extract {
+				sc.AmbiguousExtracted++
+			}
+			continue
 		}
 		if gold && !row.Extract {
 			sc.FalseDrops = append(sc.FalseDrops, row.URL)

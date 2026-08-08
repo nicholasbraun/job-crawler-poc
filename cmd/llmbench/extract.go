@@ -142,6 +142,9 @@ func printExtractReport(w io.Writer, r bench.ExtractReport) {
 
 	fmt.Fprintf(w, "  residue-count     %d\n", e.ResidueCount)
 	fmt.Fprintf(w, "  residue-extracted %d\n", e.ResidueExtracted)
+	if e.Ambiguous > 0 {
+		fmt.Fprintf(w, "  ambiguous         %d (excluded from scoring entirely, %d extracted)\n", e.Ambiguous, e.AmbiguousExtracted)
+	}
 
 	// Leaks print plainly to w (never red): a non-posting the gate extracted is a
 	// descriptive finding the reject rungs (#115) will target, not a regression.
@@ -149,7 +152,77 @@ func printExtractReport(w io.Writer, r bench.ExtractReport) {
 		fmt.Fprintf(w, "  leak              %s (gate extracted a non-posting -- descriptive)\n", url)
 	}
 
+	printStreamScorecard(w, r.Stream)
+	printBoundaryScorecard(w, r.Boundary)
+
 	for _, url := range e.FalseDrops {
 		fmt.Fprintln(os.Stderr, red("FALSE-DROP  "+url+" (real single-posting detail rejected by the extract gate)"))
+	}
+}
+
+// printStreamScorecard writes the sampling-weighted estimates of the live extract
+// stream (ADR-0043, #262), or nothing when the scored rows carried no weighted
+// random stratum. It leads with what population the numbers describe, because that
+// is the single thing a reader can get catastrophically wrong here: the capture tap
+// sits downstream of the Extract Gate, so a call rate near 1.0 under today's config
+// is the sampling frame showing through and NOT evidence that the gate does nothing.
+func printStreamScorecard(w io.Writer, s *bench.StreamScorecard) {
+	if s == nil {
+		return
+	}
+	fmt.Fprintf(w, "stream-weighted estimates (random stratum, n=%d, effective n=%.1f)\n", s.Rows, s.EffectiveN)
+	fmt.Fprintln(w, "  These estimate the pages the crawler ALREADY pays an extract call on: the capture")
+	fmt.Fprintln(w, "  tap sits downstream of the Extract Gate, so extract-call-rate reads as the share of")
+	fmt.Fprintln(w, "  TODAY'S calls this gate config would still make, and recall as the share of today's")
+	fmt.Fprintln(w, "  real postings it would keep. Pages the gate already rejects never reach the tap and")
+	fmt.Fprintln(w, "  are invisible here (that is the Boundary Stratum's and the Shadow Extraction's job).")
+	fmt.Fprintln(w, "  All figures below are DESCRIPTIVE -- weighted estimates with no threshold (ADR-0020).")
+	fmt.Fprintf(w, "  weight-sum        %.4f\n", s.WeightSum)
+	for _, label := range bench.AllExtractLabels {
+		fmt.Fprintf(w, "  composition %-10s %.4f  (n=%d)\n", label, s.Composition[label], s.Counts[label])
+	}
+	fmt.Fprintf(w, "  extract-call-rate %.4f  (share of today's calls this config still makes)\n", s.ExtractCallRate)
+	fmt.Fprintf(w, "  precision         %.4f  (of what it extracts, the share that is a real posting)\n", s.Precision)
+	fmt.Fprintf(w, "  recall            %.4f  (of today's real postings, the share it keeps)\n", s.Recall)
+	fmt.Fprintf(w, "  projected spend   %.4fx today's extract bill (%s)\n", s.ExtractCallRate, projectedSpendBasis)
+}
+
+// projectedSpendBasis says what the projected-spend line IS, printed beside it every
+// time so the number is never read as a currency figure somebody calibrated.
+//
+// It is the extract-call rate, relabelled, and that is the whole point: the capture
+// tap sits downstream of the Extract Gate, so the frame these rows were sampled from
+// is exactly the pages the crawler already pays for. The share of that frame a
+// config still extracts IS the multiplier on today's bill. No dollars-per-day
+// constant lives in this benchmark -- that would be an unmeasured number wearing the
+// benchmark's authority, which is what ADR-0020 refuses.
+const projectedSpendBasis = "the call rate on a frame sampled downstream of the gate"
+
+// printBoundaryScorecard writes the Boundary Stratum's own view (ADR-0043, #263),
+// or nothing when the scored rows carried no boundary stratum. Like the stream block
+// it leads with the population, because the mistake available here is the opposite
+// one: these rows are a CENSUS of a disagreement, deliberately unrepresentative, so
+// no share computed over them describes the stream. The false-drops are listed in
+// full -- that count is what a hard-zero guard turns on -- alongside how many of the
+// labels behind it a human has actually signed off.
+func printBoundaryScorecard(w io.Writer, b *bench.BoundaryScorecard) {
+	if b == nil {
+		return
+	}
+	fmt.Fprintf(w, "boundary stratum (n=%d, unweighted)\n", b.Rows)
+	fmt.Fprintln(w, "  These are the pages where today's blanket accept and the tiered Positive Evidence")
+	fmt.Fprintln(w, "  rule DISAGREE -- a census of that disagreement's accept half, not a sample. Nothing")
+	fmt.Fprintln(w, "  here estimates the stream and nothing here is weighted.")
+	for _, label := range append(append([]bench.ExtractLabel{}, bench.AllExtractLabels...), bench.ExtractAmbiguous) {
+		fmt.Fprintf(w, "  count %-10s   %d\n", label, b.Counts[label])
+	}
+	fmt.Fprintf(w, "  extracted         %d\n", b.Extracted)
+	fmt.Fprintf(w, "  skipped           %d\n", b.Skipped)
+	fmt.Fprintf(w, "  false-drops       %d (real Job Listings this config drops here)\n", len(b.FalseDrops))
+	fmt.Fprintf(w, "  ambiguous-skipped %d (dropped, unclassifiable: not a false-drop, not forgiven)\n", b.AmbiguousSkipped)
+	fmt.Fprintf(w, "  confirmed         %d of %d (%d await a human; an unconfirmed drop count is not evidence)\n",
+		b.Confirmed, b.Rows, b.Unconfirmed)
+	for _, url := range b.FalseDrops {
+		fmt.Fprintf(w, "  boundary-drop     %s\n", url)
 	}
 }

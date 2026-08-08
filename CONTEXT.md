@@ -229,7 +229,7 @@ The collection lane's counterpart to the Gate: a deterministic, pre-LLM pass tha
 _Avoid_: extract filter, relevance gate, ShouldExtract (in prose)
 
 **Positive Evidence**:
-The mark the Extract Gate requires before spending an extractor call: that a page *is* one posting, not merely that it is not a hub. Tiered — a posting-shaped URL or a lone structured-data posting stands on its own, while the text marks (an apply affordance, dense posting vocabulary) count only in agreement with each other.
+The mark the Extract Gate requires before spending an extractor call: that a page *is* one posting, not merely that it is not a hub. Tiered — a *strong* mark stands on its own (a posting-shaped URL, a lone structured-data posting, a title announcing one vacancy, or four of the five sections a posting has), while the *weak* marks count only in agreement: two posting sections corroborated by an apply affordance or by a role designation in the title. The tiering is the measurement, not a taste — an apply affordance alone fires on a third of non-postings — and which marks sit in which tier is settled page by page against the Extract Gold Set.
 _Avoid_: accept signal, positive signal (bare), allowlist
 
 **Free Extraction**:
@@ -273,6 +273,10 @@ _Avoid_: extract test set, second gold set
 **Boundary Stratum**:
 The part of the Extract Gold Set drawn from pages where candidate gate variants disagree, rather than sampled from the stream — where a false-drop hides, and the only labels that must be human-confirmed. Its counterpart random stratum carries sampling weights instead, so stream-level numbers stay honest.
 _Avoid_: hard cases, edge sample, review queue
+
+**Random Stratum**:
+The part of the Extract Gold Set drawn at random from the captured extract stream rather than from where gate variants disagree. Each row carries the sampling weight that maps it back to the live stream, so composition, precision and extract-call rate computed over it describe production rather than the sample's own mix. Because the capture tap sits after the Extract Gate, it describes the stream of pages the crawler already pays an extract call on. Its labels are spot-checked, where the Boundary Stratum's must be human-confirmed.
+_Avoid_: uniform sample, control set, holdout
 
 **Shadow Extraction**:
 A sampled page the Extract Gate rejected that is extracted anyway, purely to score the gate — the extractor's verdict on it is the live false-drop measurement, which nothing else can observe. It saves nothing by construction: a Shadow Extraction can never reach the Corpus.

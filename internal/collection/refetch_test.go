@@ -18,6 +18,11 @@ import (
 // the LEGACY description marker to pin that neither branch heals (ADR-0041): a dead
 // posting has nothing to heal, and a changed page is re-extracted, whose Save stamps a
 // real body and marker.
+//
+// The changed listing sits on a posting-shaped URL under the live GateConfig because
+// this test asserts the LANE's branch logic: its page must be one the Extract Gate
+// admits on its own merits, not one that only survives because nothing rejected it
+// (ADR-0044).
 func TestRefetchPerListingLiveness(t *testing.T) {
 	page := uuid.New()
 	dl := newFakeDownloader()
@@ -32,7 +37,7 @@ func TestRefetchPerListingLiveness(t *testing.T) {
 	dead := &crawler.JobListing{CanonicalURL: "c-dead", URL: "https://acme.com/j/dead", SourceHash: "old", CompanyKey: "acme.com",
 		DescriptionSource: crawler.DescriptionSourceLLMSummary}
 	unchanged := &crawler.JobListing{CanonicalURL: "c-unchanged", URL: "https://acme.com/j/unchanged", SourceHash: "same-body", CompanyKey: "acme.com"}
-	changed := &crawler.JobListing{CanonicalURL: "c-changed", URL: "https://acme.com/j/changed", SourceHash: "old-body", CompanyKey: "acme.com",
+	changed := &crawler.JobListing{CanonicalURL: "c-changed", URL: "https://acme.com/jobs/senior-go-engineer", SourceHash: "old-body", CompanyKey: "acme.com",
 		DescriptionSource: crawler.DescriptionSourceLLMSummary}
 	transient := &crawler.JobListing{CanonicalURL: "c-transient", URL: "https://acme.com/j/transient", SourceHash: "old", CompanyKey: "acme.com"}
 	live.open[page] = []*crawler.JobListing{dead, unchanged, changed, transient}
@@ -49,6 +54,7 @@ func TestRefetchPerListingLiveness(t *testing.T) {
 		Liveness:          live,
 		Dormancy:          &fakeDormancy{}, // Alive result (BecameDormant=false)
 		Classifier:        newFakeClassifier(),
+		GateConfig:        crawler.DefaultLLMGateConfig(),
 		SourceHash:        identityHash,
 		Descriptions:      heal,
 		EnqueueExtract:    extract.enqueue,
@@ -383,6 +389,246 @@ func TestRefetchClosesReGatedListing(t *testing.T) {
 	}
 	if caps := extract.captured(); len(caps) != 0 {
 		t.Errorf("re-gated listings must not re-extract, got %d enqueued", len(caps))
+	}
+}
+
+// TestRefetchChangedPageFailingTheExtractGateIsNotReExtracted closes the hole
+// ADR-0044 names: the changed-content path used to enqueue straight to the extractor,
+// the one caller that never consulted the Extract Gate, so a hub already saved as a Job
+// Listing was re-extracted and re-saved every time its page changed. The page here
+// publishes a structured-data openings index, which the gate rejects — so nothing is
+// enqueued, and (the load-bearing half) nothing about the listing moves either: no
+// probe, no Close, no Refreshed.
+func TestRefetchChangedPageFailingTheExtractGateIsNotReExtracted(t *testing.T) {
+	page := uuid.New()
+	dl := newFakeDownloader()
+	dl.ok("https://acme.com/careers", "hub") // the page probe reaches (not dormant)
+	live := newFakeLiveness()
+	extract := &captureExtract{}
+
+	hub := &crawler.JobListing{CanonicalURL: "c-hub", URL: "https://acme.com/jobs/berlin",
+		SourceHash: "old-body", CompanyKey: "acme.com"}
+	live.open[page] = []*crawler.JobListing{hub}
+	dl.ok(hub.URL, "new-body") // differs from the stored hash → the changed branch
+
+	var refreshed, rejected int
+	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
+		Downloader:        dl,
+		Parser:            openingsIndexParser{}, // two JobPosting nodes → gate rung 6 rejects
+		Liveness:          live,
+		Dormancy:          &fakeDormancy{},
+		Classifier:        newFakeClassifier(),
+		GateConfig:        crawler.DefaultLLMGateConfig(),
+		SourceHash:        identityHash,
+		Descriptions:      newFakeDescriptions(),
+		EnqueueExtract:    extract.enqueue,
+		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+		DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+		OnRefreshed:       func(context.Context) { refreshed++ },
+		OnRegateRejected:  func(context.Context) { rejected++ },
+	})
+
+	seed := &crawler.CollectionSeed{URL: "https://acme.com/careers", CompanyKey: "acme.com", CareerPageID: page}
+	if err := proc.Process(t.Context(), seed); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	if caps := extract.captured(); len(caps) != 0 {
+		t.Errorf("a changed page the Extract Gate rejects must not re-extract, got %d enqueued: %+v", len(caps), caps)
+	}
+	if refreshed != 0 {
+		t.Errorf("OnRefreshed = %d, want 0 (nothing was re-enqueued)", refreshed)
+	}
+	if probes := live.recordedProbes(); len(probes) != 0 {
+		t.Errorf("the re-gate must not touch Liveness, got %d probes: %+v", len(probes), probes)
+	}
+	if rejected != 1 {
+		t.Errorf("OnRegateRejected = %d, want 1", rejected)
+	}
+}
+
+// TestRefetchChangedPagePassingTheExtractGateIsReExtracted is the other half of
+// ADR-0044's gate: a changed page that still reads as a single posting is re-enqueued
+// exactly as before — byte-identical raw URL and Owner, since the save path derives the
+// Corpus identity from that stored RawURL and a re-normalized one risks minting a
+// duplicate row instead of updating one.
+func TestRefetchChangedPagePassingTheExtractGateIsReExtracted(t *testing.T) {
+	page := uuid.New()
+	dl := newFakeDownloader()
+	dl.ok("https://acme.com/careers", "hub")
+	live := newFakeLiveness()
+	extract := &captureExtract{}
+
+	posting := &crawler.JobListing{CanonicalURL: "c-posting", URL: "https://acme.com/jobs/senior-go-engineer",
+		SourceHash: "old-body", CompanyKey: "acme.com"}
+	live.open[page] = []*crawler.JobListing{posting}
+	dl.ok(posting.URL, "new-body")
+
+	var refreshed, rejected int
+	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
+		Downloader:        dl,
+		Parser:            fakeParser{},
+		Liveness:          live,
+		Dormancy:          &fakeDormancy{},
+		Classifier:        newFakeClassifier(),
+		GateConfig:        crawler.DefaultLLMGateConfig(),
+		SourceHash:        identityHash,
+		Descriptions:      newFakeDescriptions(),
+		EnqueueExtract:    extract.enqueue,
+		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+		DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+		OnRefreshed:       func(context.Context) { refreshed++ },
+		OnRegateRejected:  func(context.Context) { rejected++ },
+	})
+
+	seed := &crawler.CollectionSeed{URL: "https://acme.com/careers", CompanyKey: "acme.com", CareerPageID: page}
+	if err := proc.Process(t.Context(), seed); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	caps := extract.captured()
+	if len(caps) != 1 {
+		t.Fatalf("enqueued %d for re-extraction, want 1", len(caps))
+	}
+	if caps[0].URL.RawURL != posting.URL || caps[0].URL.Owner != "acme.com" {
+		t.Errorf("re-extract raw = %+v, want the stored URL %q with Owner acme.com", caps[0].URL, posting.URL)
+	}
+	if refreshed != 1 {
+		t.Errorf("OnRefreshed = %d, want 1", refreshed)
+	}
+	if probes := live.recordedProbes(); len(probes) != 0 {
+		t.Errorf("the changed branch applies no probe, got %+v", probes)
+	}
+	if rejected != 0 {
+		t.Errorf("OnRegateRejected = %d, want 0 (the gate admitted the page)", rejected)
+	}
+}
+
+// TestRefetchCountsAListingTheGateWouldRejectWithoutClosingIt is the counter's headline
+// contract (ADR-0044): an Open Job Listing whose page the Extract Gate would now reject
+// on full content is counted, and NOTHING else happens to it. The page is unchanged, so
+// it still records exactly one ProbeAlive — not Dead (which would be the bulk
+// destructive pass this ticket defers) and not Inconclusive (which would tick the
+// staleness backstop and Close it by the back door).
+func TestRefetchCountsAListingTheGateWouldRejectWithoutClosingIt(t *testing.T) {
+	page := uuid.New()
+	dl := newFakeDownloader()
+	dl.ok("https://acme.com/careers", "hub")
+	live := newFakeLiveness()
+	heal := newFakeDescriptions()
+	extract := &captureExtract{}
+
+	// DescriptionSource is left at its zero value, so the heal is inert and the only
+	// effect under test is the probe.
+	hub := &crawler.JobListing{CanonicalURL: "c-hub", URL: "https://acme.com/jobs/berlin",
+		SourceHash: "hub body", CompanyKey: "acme.com"}
+	live.open[page] = []*crawler.JobListing{hub}
+	dl.ok(hub.URL, "hub body") // identityHash(body) == stored SourceHash → unchanged
+
+	var rejected int
+	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
+		Downloader:        dl,
+		Parser:            openingsIndexParser{},
+		Liveness:          live,
+		Dormancy:          &fakeDormancy{},
+		Classifier:        newFakeClassifier(),
+		GateConfig:        crawler.DefaultLLMGateConfig(),
+		SourceHash:        identityHash,
+		Descriptions:      heal,
+		EnqueueExtract:    extract.enqueue,
+		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+		DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+		OnRegateRejected:  func(context.Context) { rejected++ },
+	})
+
+	seed := &crawler.CollectionSeed{URL: "https://acme.com/careers", CompanyKey: "acme.com", CareerPageID: page}
+	if err := proc.Process(t.Context(), seed); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	if rejected != 1 {
+		t.Errorf("OnRegateRejected = %d, want 1", rejected)
+	}
+	probes := live.recordedProbes()
+	if len(probes) != 1 || probes[0].canonicalURL != hub.CanonicalURL || probes[0].outcome != crawler.ProbeAlive {
+		t.Fatalf("crawl probes = %+v, want exactly one Alive for %q (the counter Closes nothing)", probes, hub.CanonicalURL)
+	}
+	if caps := extract.captured(); len(caps) != 0 {
+		t.Errorf("an unchanged page never re-extracts, got %d enqueued", len(caps))
+	}
+	if writes := heal.recorded(); len(writes) != 0 {
+		t.Errorf("a non-legacy listing must not be healed, got %+v", writes)
+	}
+}
+
+// TestRefetchReGateReadsTheLaneGateConfig proves the re-gate verdict comes from the
+// lane's OWN GateConfig — the same value cmd/server hands the walk's url processor — and
+// not from a hardcoded default, so the two lanes cannot calibrate apart (ADR-0044). The
+// same page and URL flip from re-extracted to counted purely by moving the Extract
+// Gate's job-link saturation count across the one distinct same-host posting link the
+// page publishes.
+func TestRefetchReGateReadsTheLaneGateConfig(t *testing.T) {
+	tests := []struct {
+		name         string
+		cfg          crawler.LLMGateConfig
+		wantEnqueued int
+		wantRejected int
+	}{
+		{
+			name:         "saturation count of 1 rejects the page",
+			cfg:          crawler.LLMGateConfig{ExtractJobLinkSaturationCount: 1},
+			wantEnqueued: 0,
+			wantRejected: 1,
+		},
+		{
+			name:         "saturation count of 0 leaves the rung silent",
+			cfg:          crawler.LLMGateConfig{ExtractJobLinkSaturationCount: 0},
+			wantEnqueued: 1,
+			wantRejected: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			page := uuid.New()
+			dl := newFakeDownloader()
+			dl.ok("https://acme.com/careers", "hub")
+			live := newFakeLiveness()
+			extract := &captureExtract{}
+
+			posting := &crawler.JobListing{CanonicalURL: "c-posting", URL: "https://acme.com/jobs/senior-go-engineer",
+				SourceHash: "old-body", CompanyKey: "acme.com"}
+			live.open[page] = []*crawler.JobListing{posting}
+			dl.ok(posting.URL, "new-body") // changed → the re-extract branch
+
+			var rejected int
+			proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
+				Downloader: dl,
+				// One distinct same-host job link, so the saturation rung is the only
+				// thing separating the two cases.
+				Parser:            fakeParser{urls: []string{"https://acme.com/jobs/other-role"}},
+				Liveness:          live,
+				Dormancy:          &fakeDormancy{},
+				Classifier:        newFakeClassifier(),
+				GateConfig:        tt.cfg,
+				SourceHash:        identityHash,
+				Descriptions:      newFakeDescriptions(),
+				EnqueueExtract:    extract.enqueue,
+				StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+				DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+				OnRegateRejected:  func(context.Context) { rejected++ },
+			})
+
+			seed := &crawler.CollectionSeed{URL: "https://acme.com/careers", CompanyKey: "acme.com", CareerPageID: page}
+			if err := proc.Process(t.Context(), seed); err != nil {
+				t.Fatalf("Process: %v", err)
+			}
+			if got := len(extract.captured()); got != tt.wantEnqueued {
+				t.Errorf("enqueued %d for re-extraction, want %d", got, tt.wantEnqueued)
+			}
+			if rejected != tt.wantRejected {
+				t.Errorf("OnRegateRejected = %d, want %d", rejected, tt.wantRejected)
+			}
+		})
 	}
 }
 

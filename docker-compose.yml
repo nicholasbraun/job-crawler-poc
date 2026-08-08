@@ -75,6 +75,14 @@ services:
       # Docker; ":-" expands an unset var to "" and pgenv.EnvOr reads "" as the
       # built-in default (true), keeping the default defined once, in Go.
       - EXTRACT_FROM_JSONLD=${EXTRACT_FROM_JSONLD:-}
+      # Shadow Extraction sampling rate (ADR-0044). Listed here so the dial works
+      # under Docker; ":-" expands an unset var to "" and pgenv.EnvOr reads "" as the
+      # built-in default (0.01), keeping the default defined once, in Go.
+      - SHADOW_EXTRACT_RATE=${SHADOW_EXTRACT_RATE:-}
+      # Extract Gate Positive Evidence kill switch (ADR-0044). Listed here so the dial
+      # works under Docker; ":-" expands an unset var to "" and pgenv.EnvOr reads "" as
+      # the built-in default (true), keeping the default defined once, in Go.
+      - EXTRACT_REQUIRE_POSITIVE_EVIDENCE=${EXTRACT_REQUIRE_POSITIVE_EVIDENCE:-}
       - CRAWL_MAX_WORKERS=${CRAWL_MAX_WORKERS:-50}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DATABASE_URL=postgres://crawler:crawler@postgres:5432/crawler?sslmode=disable

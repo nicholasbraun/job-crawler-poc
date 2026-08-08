@@ -44,7 +44,7 @@
       "title": "Listings found (range)",
       "description": "Postings saved by the collection lane over the range (collection.listings.found). The Cycle runs daily, so the default 24h window guarantees at least one Cycle's saves are visible.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "gridPos": { "h": 4, "w": 5, "x": 0, "y": 1 },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "fixed", "fixedColor": "green" },
@@ -75,7 +75,7 @@
       "title": "Listings refreshed (range)",
       "description": "Changed postings re-enqueued for extraction over the range (collection.listings.refreshed).",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "gridPos": { "h": 4, "w": 5, "x": 5, "y": 1 },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "fixed", "fixedColor": "blue" },
@@ -106,7 +106,7 @@
       "title": "Listings closed (range)",
       "description": "Listings closed by the absence-sweep or a dormancy cascade over the range (collection.listings.closed).",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "gridPos": { "h": 4, "w": 5, "x": 10, "y": 1 },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "fixed", "fixedColor": "text" },
@@ -137,7 +137,7 @@
       "title": "Robots-blocked refetches (range)",
       "description": "Refetches short-circuited by the robots.txt re-check over the range (collection.refetch.robots_blocked). A friction gauge: it conflates a real Disallow with a transient robots.txt 5xx, so a spike reads as a robots.txt outage more than mass Disallow adoption (ADR-0040).",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "gridPos": { "h": 4, "w": 5, "x": 15, "y": 1 },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -166,6 +166,41 @@
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "sum(increase(collection_refetch_robots_blocked_total[$__range]))",
           "legendFormat": "robots-blocked",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 9,
+      "title": "Re-gate rejects (would close, range)",
+      "description": "Open Job Listings whose page the Extract Gate would now reject on full content, over the range (collection.refetch.regate_rejected). It closes nothing — it sizes the Corpus's existing false-positive population so a bulk close can be decided on a number (ADR-0044). A lower bound: only listings actually refetched this Cycle are judged.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(increase(collection_refetch_regate_rejected_total[$__range]))",
+          "legendFormat": "re-gate rejects",
           "refId": "A"
         }
       ]
@@ -222,8 +257,8 @@
     {
       "type": "timeseries",
       "id": 6,
-      "title": "Closed vs robots friction",
-      "description": "Rate of listings closed alongside robots-blocked refetches, in one panel so a closure spike can be correlated with robots friction at a glance. robots-blocked conflates a real Disallow with a transient robots.txt 5xx (ADR-0040).",
+      "title": "Closed, robots friction & re-gate rejects",
+      "description": "Rate of listings closed alongside robots-blocked refetches, in one panel so a closure spike can be correlated with robots friction at a glance. robots-blocked conflates a real Disallow with a transient robots.txt 5xx (ADR-0040). re-gate rejects is the third, non-destructive series: listings a full content re-gate WOULD close but does not (ADR-0044), so it must never move the closed line.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
       "fieldConfig": {
@@ -265,6 +300,12 @@
           "expr": "sum(rate(collection_refetch_robots_blocked_total[$__rate_interval]))",
           "legendFormat": "robots-blocked",
           "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(collection_refetch_regate_rejected_total[$__rate_interval]))",
+          "legendFormat": "re-gate rejects",
+          "refId": "C"
         }
       ]
     },

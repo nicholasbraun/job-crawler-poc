@@ -96,3 +96,50 @@ func TestStatsAbstainOutcome(t *testing.T) {
 		t.Errorf("extract_empty_extraction_rate = %v, want 0.5", m["extract_empty_extraction_rate"])
 	}
 }
+
+// TestStatsShadowSummary checks the run's Shadow Extraction tallies (ADR-0044): the
+// live false-drop rate is accepts over COMPLETED verdicts, so an errored sample
+// (which produced no verdict) must not deflate it. It also pins the two separations
+// the measurement depends on -- a shadow verdict is never a call, and the shadow
+// stream's durable-stage retries are filed under shadow rather than silently under
+// the classifier.
+func TestStatsShadowSummary(t *testing.T) {
+	stats := &llmobs.Stats{}
+	rec := llmobs.NewRecorder(nil, nil, stats, "")
+	ctx := t.Context()
+	// Three accepts, seven abstains, one error -> a 30% live false-drop rate.
+	for i := 0; i < 3; i++ {
+		rec.Shadow(ctx, llmobs.ShadowAccept, "positive_evidence")
+	}
+	for i := 0; i < 7; i++ {
+		rec.Shadow(ctx, llmobs.ShadowAbstain, "positive_evidence")
+	}
+	rec.Shadow(ctx, llmobs.ShadowError, "reject_path")
+	rec.ShadowDropped(ctx, "positive_evidence")
+	rec.ShadowDropped(ctx, "reject_path")
+	rec.Retry(ctx, llmobs.KindShadow)
+
+	m := toMap(stats.Summary())
+
+	wantInt := map[string]int64{
+		"shadow_accepts":  3,
+		"shadow_abstains": 7,
+		"shadow_errors":   1,
+		"shadow_dropped":  2,
+		"shadow_retries":  1,
+		// A Shadow Extraction is real spend, but it must never enter the call counters
+		// the Extract Gate's call rate is read from.
+		"classify_calls":   0,
+		"extract_calls":    0,
+		"classify_retries": 0,
+	}
+	for key, want := range wantInt {
+		if got, ok := m[key].(int64); !ok || got != want {
+			t.Errorf("%s = %v, want %d", key, m[key], want)
+		}
+	}
+
+	if got, ok := m["shadow_false_drop_rate"].(float64); !ok || got != 0.3 {
+		t.Errorf("shadow_false_drop_rate = %v, want 0.3 (accepts over completed verdicts, shed samples excluded)", m["shadow_false_drop_rate"])
+	}
+}

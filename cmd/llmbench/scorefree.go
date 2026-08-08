@@ -43,7 +43,7 @@ func runScoreFree(args []string) int {
 	jsonOut := fs.Bool("json", false, "emit the free-extraction scorecard as JSON to stdout instead of the human-readable report")
 	_ = fs.Parse(args)
 
-	rows, skipped, err := replayFreeExtraction(context.Background(), *in)
+	rows, skipped, outOfScope, err := replayFreeExtraction(context.Background(), *in)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench score-free: %v\n", err)
 		return 2
@@ -54,6 +54,9 @@ func runScoreFree(args []string) int {
 	}
 	if skipped > 0 {
 		fmt.Fprintf(os.Stderr, "note: scored %d labeled rows, skipped %d unlabeled\n", len(rows), skipped)
+	}
+	if outOfScope > 0 {
+		fmt.Fprintf(os.Stderr, "note: skipped %d rows outside the #256 drawing (only the structural drawing carries expected extractions)\n", outOfScope)
 	}
 
 	report := bench.ScoreFreeExtraction(rows)
@@ -78,13 +81,20 @@ func runScoreFree(args []string) int {
 // mechanism. Rows with no valid label are skipped and counted, so an unlabeled raw
 // capture replays too.
 //
+// Rows outside the #256 DRAWING are skipped and counted separately. The #256 ground
+// truth was proposed over the structural drawing alone, and a fired row carrying no
+// expected extraction is FATAL, so replaying a later drawing here would turn the
+// guard red for rows nobody ever proposed an expectation for. Extending that ground
+// truth is #256's business, not this replay's. A row with an empty stratum still
+// replays, so a raw capture file scores as before.
+//
 // A row whose stub observation disagrees with the extraction's own Free marker is
 // an ERROR, not a score: the two must agree by construction, and a disagreement is
 // a wiring fault in the mechanism the guard cannot meaningfully measure around.
-func replayFreeExtraction(ctx context.Context, path string) (rows []bench.FreeExtractionRow, skipped int, err error) {
+func replayFreeExtraction(ctx context.Context, path string) (rows []bench.FreeExtractionRow, skipped, outOfScope int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, 0, fmt.Errorf("open %q: %w", path, err)
+		return nil, 0, 0, fmt.Errorf("open %q: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
 
@@ -99,7 +109,11 @@ func replayFreeExtraction(ctx context.Context, path string) (rows []bench.FreeEx
 		}
 		var rec goldRow
 		if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
-			return nil, skipped, fmt.Errorf("line %d: %w", lineNo, err)
+			return nil, skipped, outOfScope, fmt.Errorf("line %d: %w", lineNo, err)
+		}
+		if rec.Stratum != "" && rec.Stratum.Drawing() != drawingStructural {
+			outOfScope++
+			continue
 		}
 		if !rec.Label.Valid() {
 			skipped++
@@ -107,18 +121,18 @@ func replayFreeExtraction(ctx context.Context, path string) (rows []bench.FreeEx
 		}
 		u, err := crawler.NewURL(rec.URL)
 		if err != nil {
-			return nil, skipped, fmt.Errorf("line %d: url %q: %w", lineNo, rec.URL, err)
+			return nil, skipped, outOfScope, fmt.Errorf("line %d: url %q: %w", lineNo, rec.URL, err)
 		}
 
 		// A fresh stub per row, so calls == 0 means THIS page was served free.
 		stub := &modelStub{}
 		got, err := freeextraction.NewExtractor(stub).Extract(ctx, crawler.RawJobListing{URL: u, Content: rec.Content})
 		if err != nil {
-			return nil, skipped, fmt.Errorf("extract %q: %w", rec.URL, err)
+			return nil, skipped, outOfScope, fmt.Errorf("extract %q: %w", rec.URL, err)
 		}
 		free := stub.calls == 0
 		if free != got.Free {
-			return nil, skipped, fmt.Errorf("extract %q: the extraction's Free marker is %v but the model stub was called %d times; the mechanism disagrees with itself", rec.URL, got.Free, stub.calls)
+			return nil, skipped, outOfScope, fmt.Errorf("extract %q: the extraction's Free marker is %v but the model stub was called %d times; the mechanism disagrees with itself", rec.URL, got.Free, stub.calls)
 		}
 
 		row := bench.FreeExtractionRow{
@@ -143,9 +157,9 @@ func replayFreeExtraction(ctx context.Context, path string) (rows []bench.FreeEx
 		rows = append(rows, row)
 	}
 	if err := sc.Err(); err != nil {
-		return nil, skipped, fmt.Errorf("read %q: %w", path, err)
+		return nil, skipped, outOfScope, fmt.Errorf("read %q: %w", path, err)
 	}
-	return rows, skipped, nil
+	return rows, skipped, outOfScope, nil
 }
 
 // printFreeReport writes the free-extraction scorecard: the descriptive summary

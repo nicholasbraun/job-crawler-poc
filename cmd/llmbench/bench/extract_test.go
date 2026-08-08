@@ -367,3 +367,87 @@ func TestLoadExtractManifest_CommittedSet(t *testing.T) {
 		}
 	}
 }
+
+// TestScoreExtractSetsAmbiguousAsideEntirely is the acceptance criterion in the main
+// scorer: a page a review could not classify is REPORTED and never scored. It costs a
+// call like any other row, so it stays in Total and ExtractCalls; it enters no
+// confusion cell, no per-class slice, no false-drop and no leak, in EITHER direction
+// of the gate's decision -- because collapsing it into a class would let a labeller's
+// shrug decide whether the build goes red.
+func TestScoreExtractSetsAmbiguousAsideEntirely(t *testing.T) {
+	for name, extract := range map[string]bool{"skipped": false, "extracted": true} {
+		r := bench.ScoreExtract([]bench.ExtractVerdictRow{
+			{URL: "https://a.test/posting", Label: bench.ExtractDetail, Extract: true},
+			{URL: "https://b.test/unclear", Label: bench.ExtractAmbiguous, Extract: extract},
+		})
+		e := r.Extract
+
+		if e.Total != 2 {
+			t.Errorf("%s: Total = %d, want 2 (an unclassifiable page is still a page the gate ruled on)", name, e.Total)
+		}
+		wantCalls := 1
+		if extract {
+			wantCalls = 2
+		}
+		if e.ExtractCalls != wantCalls {
+			t.Errorf("%s: ExtractCalls = %d, want %d (cost is cost whatever the label)", name, e.ExtractCalls, wantCalls)
+		}
+		if e.Ambiguous != 1 {
+			t.Errorf("%s: Ambiguous = %d, want 1", name, e.Ambiguous)
+		}
+		if want := boolToInt(extract); e.AmbiguousExtracted != want {
+			t.Errorf("%s: AmbiguousExtracted = %d, want %d", name, e.AmbiguousExtracted, want)
+		}
+		if len(e.FalseDrops) != 0 {
+			t.Errorf("%s: an ambiguous page became a false-drop: %v", name, e.FalseDrops)
+		}
+		if len(e.Leaks) != 0 {
+			t.Errorf("%s: an ambiguous page became a leak: %v", name, e.Leaks)
+		}
+		if _, scored := e.ByClass[bench.ExtractAmbiguous]; scored {
+			t.Errorf("%s: the ambiguous label got a per-class slice; it is not a class the gate is scored against", name)
+		}
+		if e.ResidueCount != 0 {
+			t.Errorf("%s: ResidueCount = %d, want 0", name, e.ResidueCount)
+		}
+		// The one scored row is a correctly-extracted detail, so the confusion must
+		// read as a perfect 1-of-1 whatever the ambiguous row did.
+		if e.Overall.Total != 1 || e.Overall.TP != 1 {
+			t.Errorf("%s: the confusion is over %d rows (TP %d), want exactly the 1 scored row", name, e.Overall.Total, e.Overall.TP)
+		}
+	}
+}
+
+// boolToInt is the one-line adapter the table above needs to state its expectation.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// TestExtractLabelScoredSeparatesReportingFromScoring pins the distinction the whole
+// ambiguity design rests on: ambiguous is a VALID label -- a row carrying it is
+// labelled, not unlabelled, and the tooling must keep it rather than skip it -- and
+// it is not a SCORED one.
+func TestExtractLabelScoredSeparatesReportingFromScoring(t *testing.T) {
+	for _, label := range bench.AllExtractLabels {
+		if !label.Valid() || !label.Scored() {
+			t.Errorf("%q: valid=%v scored=%v, want both true", label, label.Valid(), label.Scored())
+		}
+	}
+	if !bench.ExtractAmbiguous.Valid() {
+		t.Error("ambiguous is not a valid label; a row a review could not settle is labelled, not unlabelled")
+	}
+	if bench.ExtractAmbiguous.Scored() {
+		t.Error("ambiguous reports itself as scored")
+	}
+	if bench.ExtractAmbiguous.Positive() {
+		t.Error("ambiguous reports itself as the positive class")
+	}
+	for _, label := range bench.AllExtractLabels {
+		if label == bench.ExtractAmbiguous {
+			t.Error("AllExtractLabels contains ambiguous; it drives the per-class breakdowns and the every-class-exercised guard, and no drawing can promise an undecidable row exists")
+		}
+	}
+}

@@ -32,11 +32,14 @@ type RefetchConfig struct {
 	// (bounded by Catalog size, not listing count); only its IsCareerPage verdict is
 	// read here (the employer name Discovery reads is irrelevant to liveness).
 	Classifier careerpageprocessor.Confirmer
-	// GateConfig is the pre-LLM gate config. The dormancy re-classification consults
-	// pagegate.CareerPage first (parity with Discovery's acceptance rule): a
-	// structurally-certain verdict is taken WITHOUT the LLM, so a page discovery
-	// certain-accepted on structure alone can never be deterministically false-closed
-	// by an LLM blip, and the LLM runs only for a structurally-ambiguous page.
+	// GateConfig is the pre-LLM gate config, read on TWO paths. The dormancy
+	// re-classification consults pagegate.CareerPage first (parity with Discovery's
+	// acceptance rule): a structurally-certain verdict is taken WITHOUT the LLM, so a
+	// page discovery certain-accepted on structure alone can never be deterministically
+	// false-closed by an LLM blip, and the LLM runs only for a structurally-ambiguous
+	// page. The changed-content re-extract then consults the Extract Gate with this SAME
+	// value (ADR-0044) — cmd/server hands the walk's url processor the identical config,
+	// so the two lanes cannot calibrate apart and a gate tightening reaches both at once.
 	GateConfig crawler.LLMGateConfig
 	// SourceHash computes the extraction-cache key over a page's main content —
 	// bound to crawler.SourceHash with the extractor's ExtractMaxChars so the key
@@ -68,6 +71,14 @@ type RefetchConfig struct {
 	OnRefreshed func(ctx context.Context)
 	// OnClosed is called with the listings closed by a dormancy cascade. Optional.
 	OnClosed func(ctx context.Context, n int)
+	// OnRegateRejected is called once per refetched Job Listing whose page the Extract
+	// Gate would now REJECT — the count of Open listings a full content re-gate would
+	// Close (ADR-0044). It Closes nothing: the listing's Listing Lifecycle, Liveness,
+	// streak and timestamps are untouched by this tap, because healing the Corpus is a
+	// bulk destructive decision this ticket deliberately does not take (#208). It is a
+	// lower bound: a listing on a dormant Career Page, one the URL-only re-gate already
+	// Closed, and one whose GET or parse failed are never judged. Optional.
+	OnRegateRejected func(ctx context.Context)
 }
 
 // RefetchProcessor is the crawl-lane liveness worker (ADR-0035): for one crawled
@@ -75,8 +86,10 @@ type RefetchConfig struct {
 // posting to judge its liveness directly — 404/410 closes it, an unchanged 200
 // keeps it open with no LLM call (source_hash cache) and heals a legacy,
 // model-authored description from the page already in hand (ADR-0041), a changed 200
-// re-extracts. Only listed-open URLs are touched, so a down collector closes nothing
-// (attempt-gated by construction). It implements
+// re-extracts ONLY when the Extract Gate still admits its page (ADR-0044) — and that
+// same gate evaluation feeds a counter of the Open listings a full content re-gate
+// would Close, while Closing none of them. Only listed-open URLs are touched, so a
+// down collector closes nothing (attempt-gated by construction). It implements
 // processor.Processor[crawler.CollectionSeed].
 //
 // Soft-404 (a 200 whose body no longer describes a posting) re-extracts and the
@@ -97,6 +110,7 @@ type RefetchProcessor struct {
 	dormancyThreshold   int
 	onRefreshed         func(ctx context.Context)
 	onClosed            func(ctx context.Context, n int)
+	onRegateRejected    func(ctx context.Context)
 }
 
 var _ processor.Processor[crawler.CollectionSeed] = (*RefetchProcessor)(nil)
@@ -118,6 +132,7 @@ func NewRefetchProcessor(cfg *RefetchConfig) *RefetchProcessor {
 		dormancyThreshold:   cfg.DormancyThreshold,
 		onRefreshed:         cfg.OnRefreshed,
 		onClosed:            cfg.OnClosed,
+		onRegateRejected:    cfg.OnRegateRejected,
 	}
 }
 
@@ -207,12 +222,34 @@ func (p *RefetchProcessor) stillCareerPage(ctx context.Context, url string, resp
 	return verdict.IsCareerPage, nil
 }
 
+// stillExtractable reports whether the Extract Gate would STILL send this listing's
+// page to the LLM extractor, judged on the page this refetch has ALREADY downloaded
+// and parsed (ADR-0044) — no extra fetch, no model call. It is the same Extract Gate
+// the walk applies to a freshly-crawled page, read with the same GateConfig, so a
+// stored listing and a newly-walked page can never get different answers about one URL.
+//
+// The URL is rebuilt with crawler.NewURL rather than reused as a bare RawURL literal:
+// the gate's catalog rung and its same-host Job Listing link count both read u.Hostname,
+// which a composite literal leaves empty, and an empty Hostname would silently disarm
+// those rungs on this lane alone. A URL that fails to parse returns false with an error
+// — the caller joins it and never enqueues, so a page the gate could not be run on is
+// never extracted. That branch is unreachable in practice: the URL-only re-gate above
+// already Closes every listing whose URL yields no path segments, which includes every
+// parse failure.
+func (p *RefetchProcessor) stillExtractable(listing *crawler.JobListing, content *crawler.Content) (bool, error) {
+	u, err := crawler.NewURL(listing.URL)
+	if err != nil {
+		return false, fmt.Errorf("collection: re-gating listing %q: %w", listing.CanonicalURL, err)
+	}
+	return pagegate.ShouldExtract(u, content, p.gateConfig), nil
+}
+
 // refetchOne refetches one open posting and applies its Liveness Outcome (ADR-0035):
 // a 404/410 closes it (Dead); a transient error is Inconclusive; an unchanged 200
 // keeps it open with no LLM call (source_hash matches) and heals a legacy description
 // from the page in hand (ADR-0041); a changed 200 is re-enqueued for re-extraction
 // (which re-Saves, reopening/advancing it and stamping a real body and marker) with no
-// probe.
+// probe, and only when the Extract Gate still admits the page it just parsed (ADR-0044).
 func (p *RefetchProcessor) refetchOne(ctx context.Context, listing *crawler.JobListing) error {
 	// Re-gate: a known listing whose URL the extract gate now rejects on structure
 	// alone -- a bare/locale root or a terminal jobs-index segment -- is a stale false
@@ -246,6 +283,18 @@ func (p *RefetchProcessor) refetchOne(ctx context.Context, listing *crawler.JobL
 		return nil
 	}
 
+	// Content re-gate (ADR-0044). One evaluation, two jobs. It counts the stored
+	// listings a full content re-gate WOULD Close — the size of the Corpus's existing
+	// false-positive population, as a dashboard number rather than an estimate — and it
+	// gates the changed-content re-extract below, which fed the extractor an input every
+	// other caller gates and is otherwise the only route by which a hub re-enters the
+	// Corpus. The counter Closes nothing: whatever the verdict, the branches below apply
+	// exactly the Liveness they applied before.
+	extractable, gateErr := p.stillExtractable(listing, content)
+	if gateErr == nil && !extractable && p.onRegateRejected != nil {
+		p.onRegateRejected(ctx)
+	}
+
 	if p.sourceHash(content.MainContent) == listing.SourceHash {
 		// Unchanged source content: confirmed alive with NO LLM call. The probe is
 		// applied first and independently of the heal — liveness is this lane's job and
@@ -253,15 +302,27 @@ func (p *RefetchProcessor) refetchOne(ctx context.Context, listing *crawler.JobL
 		// one failure neither hides the other nor drops the remaining postings (Process
 		// joins the per-listing errors already). errors.Join(nil, nil) is nil, so a
 		// clean pass still returns nil.
-		var errs error
+		errs := gateErr // a re-gate failure must never cost this listing its probe
 		if _, aerr := p.liveness.ApplyCrawlProbe(ctx, listing.CanonicalURL, crawler.ProbeAlive, p.staleThreshold); aerr != nil {
 			errs = errors.Join(errs, fmt.Errorf("collection: applying refetch probe for %q: %w", listing.CanonicalURL, aerr))
 		}
 		return errors.Join(errs, p.healLegacyDescription(ctx, listing, content))
 	}
 
-	// Changed content: re-extract. The re-Save reopens/advances the listing and
-	// re-stamps its hash and career_page_id; no probe is applied here.
+	// Changed content: re-extract, but only on the Extract Gate's say-so. A page that no
+	// longer reads as a single posting is left alone — no enqueue, and no probe, so the
+	// listing keeps the Listing Lifecycle it already had. Closing it is a separate,
+	// deliberate decision (the counter above is what informs it). stillExtractable
+	// returns false on error too, so a page the gate could not be run on is never
+	// enqueued; that error is returned for Process to join.
+	if !extractable {
+		slog.Debug("collection: changed page no longer passes the extract gate; not re-extracting",
+			"url", listing.URL, "canonical_url", listing.CanonicalURL)
+		return gateErr // nil when the gate simply rejected the page
+	}
+
+	// The re-Save reopens/advances the listing and re-stamps its hash and
+	// career_page_id; no probe is applied here.
 	raw := &crawler.RawJobListing{
 		URL:     crawler.URL{RawURL: listing.URL, Owner: listing.CompanyKey},
 		Content: *content,

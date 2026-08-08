@@ -42,6 +42,32 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+// TestShadowVerdictOf pins the mapping from one Shadow Extraction's result to the
+// verdict recorded for it (ADR-0044), including the error-wins rule: on the error
+// path the Extraction is the zero value, so its verdict field means nothing and a
+// stale true must never be counted as a false-drop.
+func TestShadowVerdictOf(t *testing.T) {
+	tests := []struct {
+		name         string
+		err          error
+		isJobPosting bool
+		want         llmobs.ShadowVerdict
+	}{
+		{"a posting the gate rejected is an accept", nil, true, llmobs.ShadowAccept},
+		{"an abstain is an abstain", nil, false, llmobs.ShadowAbstain},
+		{"a failed call is an error verdict", errors.New("boom"), false, llmobs.ShadowError},
+		{"an error wins over a stale verdict", errors.New("boom"), true, llmobs.ShadowError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := llmobs.ShadowVerdictOf(tt.err, tt.isJobPosting); got != tt.want {
+				t.Errorf("ShadowVerdictOf(%v, %v) = %q, want %q", tt.err, tt.isJobPosting, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDupProbeNilClientReportsUnique(t *testing.T) {
 	probe := llmobs.NewDupProbe(nil)
 
@@ -61,6 +87,8 @@ func TestNopRecorderRecordsNothing(t *testing.T) {
 	rec := llmobs.Nop()
 	rec.Call(t.Context(), llmobs.KindClassify, llmobs.OutcomeError, 0)
 	rec.Gated(t.Context(), llmobs.KindExtract, llmobs.ReasonIrrelevant)
+	rec.Shadow(t.Context(), llmobs.ShadowAccept, "positive_evidence")
+	rec.ShadowDropped(t.Context(), "positive_evidence")
 	rec.Content(t.Context(), llmobs.KindClassify, "x")
 
 	for _, kv := range toMap(stats.Summary()) {

@@ -18,6 +18,18 @@ type Recorder interface {
 	// Gated records a page a cheap gate resolved without an LLM call, and the
 	// reason it short-circuited.
 	Gated(ctx context.Context, kind Kind, reason Reason)
+	// Shadow records one Shadow Extraction: the extractor's verdict on a page the
+	// Extract Gate rejected (ADR-0044), with the gate rung that rejected it so the
+	// false-drop rate can be split by cause. Deliberately NOT Call -- a shadow
+	// extraction is real spend, but counting it as a call would corrupt the extract
+	// call rate the gate is judged by. The cost view sums the two counters; the gate's
+	// call rate reads only the call counter.
+	Shadow(ctx context.Context, verdict ShadowVerdict, rung string)
+	// ShadowDropped records a sampled gate-rejected page the Shadow Extraction lane
+	// shed before measuring it, keyed by the same rung. It is what makes the
+	// false-drop rate's denominator readable: shedding is not uniform, so a silent
+	// drop would leave that rate resting on a subsample nobody can characterize.
+	ShadowDropped(ctx context.Context, rung string)
 	// Content records the page content about to be fed to the LLM, measuring how
 	// often identical content recurs (the duplicate-content probe).
 	Content(ctx context.Context, kind Kind, content string)
@@ -69,6 +81,24 @@ func (r *recorder) Gated(ctx context.Context, kind Kind, reason Reason) {
 	}
 }
 
+func (r *recorder) Shadow(ctx context.Context, verdict ShadowVerdict, rung string) {
+	if r.metrics != nil {
+		r.metrics.recordShadow(ctx, verdict, rung)
+	}
+	if r.stats != nil {
+		r.stats.recordShadow(verdict)
+	}
+}
+
+func (r *recorder) ShadowDropped(ctx context.Context, rung string) {
+	if r.metrics != nil {
+		r.metrics.recordShadowDropped(ctx, rung)
+	}
+	if r.stats != nil {
+		r.stats.recordShadowDropped()
+	}
+}
+
 func (r *recorder) Content(ctx context.Context, kind Kind, content string) {
 	duplicate, err := r.dup.Observe(ctx, kind, content)
 	if err != nil {
@@ -115,6 +145,8 @@ type nopRecorder struct{}
 
 func (nopRecorder) Call(context.Context, Kind, Outcome, time.Duration) {}
 func (nopRecorder) Gated(context.Context, Kind, Reason)                {}
+func (nopRecorder) Shadow(context.Context, ShadowVerdict, string)      {}
+func (nopRecorder) ShadowDropped(context.Context, string)              {}
 func (nopRecorder) Content(context.Context, Kind, string)              {}
 func (nopRecorder) Retry(context.Context, Kind)                        {}
 func (nopRecorder) DeadLetter(context.Context, Kind)                   {}

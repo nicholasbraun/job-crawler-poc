@@ -1,6 +1,7 @@
 package pagegate_test
 
 import (
+	"fmt"
 	"testing"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
@@ -803,11 +804,22 @@ func TestIsPostingPath(t *testing.T) {
 }
 
 func TestShouldExtract(t *testing.T) {
-	// cfg is a pointer so a case can override the gate config (the saturation
-	// fail-safe case zeroes ExtractJobLinkSaturationCount); a nil cfg uses
-	// DefaultLLMGateConfig. content is always set (the live call sites parse the
-	// page first); the URL-rung cases use empty content because a URL rung resolves
-	// them before any content rung reads it.
+	// This table is the REJECT RUNGS. The gate's final rung -- Positive Evidence
+	// (ADR-0044) -- has its own table in positive_evidence_test.go, including its own
+	// reject-rung precedence cases.
+	//
+	// cfg is a pointer so a case can override the gate config; a nil cfg uses
+	// DefaultLLMGateConfig. Two overrides appear below. zeroExtractSaturation()
+	// exercises the rung-7 fail-safe. withoutPositiveEvidence() belongs to the four
+	// cases whose assertion is "no reject rung fires", proved on a page carrying NO
+	// signal at all: since #264 turned the final rung on, clearing every reject rung no
+	// longer implies reaching the extractor, and giving those pages posting content to
+	// make them pass under the shipped default would delete the very property they
+	// exist to pin.
+	//
+	// content is always set (the live call sites parse the page first); the URL-rung
+	// cases use empty content because a URL rung resolves them before any content rung
+	// reads it.
 	tests := []struct {
 		name    string
 		url     string
@@ -846,9 +858,10 @@ func TestShouldExtract(t *testing.T) {
 			want:    false,
 		},
 		{
-			name:    "self-hosted posting with no signal reaches the extractor",
+			name:    "self-hosted posting with no signal clears every reject rung",
 			url:     "https://acme.com/o/senior-engineer",
 			content: &crawler.Content{},
+			cfg:     withoutPositiveEvidence(),
 			want:    true,
 		},
 		{
@@ -1004,19 +1017,21 @@ func TestShouldExtract(t *testing.T) {
 			want:    false,
 		},
 		{
-			// Guard: a real single-segment posting slug must still extract -- it is not
-			// a locale and not an index word.
-			name:    "single-segment posting slug still extracts",
+			// Guard: a real single-segment posting slug must not be swallowed by rung 2b
+			// -- it is not a locale and not an index word.
+			name:    "single-segment posting slug clears rung 2b",
 			url:     "https://acme.com/senior-go-engineer",
 			content: &crawler.Content{},
+			cfg:     withoutPositiveEvidence(),
 			want:    true,
 		},
 		{
-			// Guard: a locale-prefixed real posting (deeper than one segment) still
-			// extracts -- rung 2b only fires on a locale-ONLY root.
-			name:    "locale-prefixed posting still extracts",
+			// Guard: a locale-prefixed real posting (deeper than one segment) clears
+			// rung 2b too -- it only fires on a locale-ONLY root.
+			name:    "locale-prefixed posting clears rung 2b",
 			url:     "https://acme.com/en/o/senior-engineer",
 			content: &crawler.Content{},
+			cfg:     withoutPositiveEvidence(),
 			want:    true,
 		},
 	}
@@ -1030,15 +1045,94 @@ func TestShouldExtract(t *testing.T) {
 			if got := pagegate.ShouldExtract(newURL(t, tt.url), tt.content, cfg); got != tt.want {
 				t.Errorf("ShouldExtract(%q) = %v, want %v", tt.url, got, tt.want)
 			}
+			// The attributing reading must never disagree with the plain one: the rung
+			// label on the Shadow Extraction counter describes the decision that actually
+			// ran, or it describes nothing.
+			extract, rung := pagegate.ExtractDecision(newURL(t, tt.url), tt.content, cfg)
+			if extract != tt.want {
+				t.Errorf("ExtractDecision(%q) = %v, want %v (ShouldExtract said %v)", tt.url, extract, tt.want, tt.want)
+			}
+			if extract && rung != pagegate.RungNone {
+				t.Errorf("ExtractDecision(%q) accepted but named rung %q, want RungNone", tt.url, rung)
+			}
+			if !extract && rung == pagegate.RungNone {
+				t.Errorf("ExtractDecision(%q) rejected but named no rung", tt.url)
+			}
 		})
 	}
 }
 
-// zeroExtractSaturation returns DefaultLLMGateConfig with the Extract Gate's
-// saturation count zeroed, exercising the rung-7 fail-safe (an unset count leaves
-// the saturation reject silent).
-func zeroExtractSaturation() *crawler.LLMGateConfig {
+// TestExtractDecisionAttributesTheRejectingRung pins WHICH rung each reject is filed
+// under. It is the join key on the Shadow Extraction counter (ADR-0044): a false-drop
+// under RungPositiveEvidence is one the kill switch would recover and a false-drop
+// under any reject rung is one it would not, so a reject filed under the wrong rung
+// sends the first reading after the flip after the wrong remedy.
+func TestExtractDecisionAttributesTheRejectingRung(t *testing.T) {
+	saturated := &crawler.Content{URLs: []string{}}
+	for i := 0; i < 10; i++ {
+		saturated.URLs = append(saturated.URLs, fmt.Sprintf("https://acme.com/jobs/%d", i))
+	}
+
+	tests := []struct {
+		name    string
+		url     string
+		content *crawler.Content
+		want    pagegate.ExtractRung
+	}{
+		{"rung 1: an ATS board root", "https://job-boards.greenhouse.io/acme", &crawler.Content{}, pagegate.RungATSBoardRoot},
+		{"rung 2b: a bare domain root", "https://acme.com", &crawler.Content{}, pagegate.RungBareOrLocaleRoot},
+		{"rung 2c: a terminal jobs-index segment", "https://acme.com/careers", &crawler.Content{}, pagegate.RungIndexTerminal},
+		{"rung 3: a strong-negative reject path", "https://acme.com/blog/hello", &crawler.Content{}, pagegate.RungRejectPath},
+		{"rung 4: a bare career-section index", "https://acme.com/karriere/arbeiten-bei-uns", &crawler.Content{}, pagegate.RungCareerIndex},
+		{
+			"rung 5: an embedded ATS board",
+			"https://acme.com/o/senior-engineer",
+			&crawler.Content{Embeds: []crawler.Embed{{Src: "https://acme.jobs.personio.de/search", IsFrame: true}}},
+			pagegate.RungATSEmbed,
+		},
+		{
+			"rung 6: a JSON-LD openings index",
+			"https://acme.com/o/senior-engineer",
+			&crawler.Content{JSONLD: []string{`[{"@type":"JobPosting"},{"@type":"JobPosting"}]`}},
+			pagegate.RungOpeningsIndex,
+		},
+		{"rung 7: a page saturated with same-host job links", "https://acme.com/o/senior-engineer", saturated, pagegate.RungJobLinkSaturation},
+		{"rung 8: no Positive Evidence at all", "https://acme.com/o/senior-engineer", &crawler.Content{}, pagegate.RungPositiveEvidence},
+		{"an accepted page names no rung", "https://acme.com/careers/senior-engineer", &crawler.Content{}, pagegate.RungNone},
+	}
+
 	cfg := crawler.DefaultLLMGateConfig()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			extract, rung := pagegate.ExtractDecision(newURL(t, tt.url), tt.content, cfg)
+			if rung != tt.want {
+				t.Errorf("ExtractDecision(%q) rung = %q, want %q", tt.url, rung, tt.want)
+			}
+			if extract != (tt.want == pagegate.RungNone) {
+				t.Errorf("ExtractDecision(%q) = %v, inconsistent with rung %q", tt.url, extract, rung)
+			}
+		})
+	}
+}
+
+// withoutPositiveEvidence returns DefaultLLMGateConfig with the final rung cleared,
+// leaving exactly the reject rungs this table is about. It is the pre-ADR-0044 gate,
+// and it is also what EXTRACT_REQUIRE_POSITIVE_EVIDENCE=false restores in production
+// -- so a case riding it is testing a configuration that really ships, not an
+// invented one.
+func withoutPositiveEvidence() *crawler.LLMGateConfig {
+	cfg := crawler.DefaultLLMGateConfig()
+	cfg.RequirePositiveEvidence = false
+	return &cfg
+}
+
+// zeroExtractSaturation exercises the rung-7 fail-safe: an unset saturation count
+// leaves the saturation reject silent, so a saturated page falls THROUGH rung 7. It
+// builds on withoutPositiveEvidence because that fall-through is all it is asserting
+// -- the page it rides carries no Positive Evidence, so under the shipped default the
+// final rung would shed it and the fail-safe would go untested.
+func zeroExtractSaturation() *crawler.LLMGateConfig {
+	cfg := *withoutPositiveEvidence()
 	cfg.ExtractJobLinkSaturationCount = 0
 	return &cfg
 }

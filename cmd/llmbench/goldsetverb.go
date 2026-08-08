@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -70,6 +71,384 @@ func runGoldSetSample(args []string) int {
 
 	printSampleSummary(os.Stdout, scan, sel, rows, substrate)
 	return 0
+}
+
+// runGoldSetSampleRandom draws the ADR-0043 RANDOM stratum (#262) and APPENDS it to
+// the existing Extract Gold Set: it streams the capture, narrows it to the faithful
+// frame at or after -since, drops the URLs the substrate already carries, collapses
+// every candidate's sampling cell to the verdict, draws randomSamplePlan's quotas in
+// deterministic hash order, attaches each row's weight, and rewrites the substrate
+// and both review sheets. Existing rows -- their labels, provenance and expected
+// extractions -- pass through untouched: unlike goldset-sample this verb is
+// APPEND-ONLY, because the labels it extends cost a review pass to produce.
+//
+// -accept-share is REQUIRED and never reconstructed. liveAcceptShare splits sessions
+// on a one-hour ts gap, and three of the capture's six process frames are contiguous
+// within that, so the estimator would silently merge them and produce a wrong number.
+// The reconstruction is still printed beside the supplied value as a cross-check.
+// Returns the process exit code: 2 on a usage or validation error, 1 on IO, 0 on
+// success.
+func runGoldSetSampleRandom(args []string) int {
+	fs := flag.NewFlagSet("goldset-sample-random", flag.ExitOnError)
+	capture := fs.String("capture", "", "extract-capture JSONL written by the EXTRACT_CAPTURE_PATH tap (required; gitignored, never committed)")
+	dir := fs.String("dir", defaultGoldSetDir, "directory holding the Extract Gold Set the random stratum is appended to")
+	seed := fs.String("seed", defaultRandomSeed, "seed for the deterministic within-cell selection; changing it is a deliberate resample")
+	since := fs.String("since", "", "RFC3339 cutoff: only capture records at or after it are sampled (required; excludes windows parsed by a superseded parser)")
+	acceptShare := fs.Float64("accept-share", -1, "the live extract stream's MEASURED accept share, in (0,1) (required; this verb never reconstructs it)")
+	_ = fs.Parse(args)
+
+	if *capture == "" || *since == "" {
+		fmt.Fprintln(os.Stderr, "usage: llmbench goldset-sample-random -capture <capture.jsonl> -since <RFC3339> -accept-share <p> [-dir d] [-seed s]")
+		return 2
+	}
+	cutoff, err := time.Parse(time.RFC3339, *since)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: -since %q: %v\n", *since, err)
+		return 2
+	}
+	if *acceptShare <= 0 || *acceptShare >= 1 {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: -accept-share must be in (0,1), got %g; the capture's session split merges process frames, so this verb refuses to reconstruct it\n", *acceptShare)
+		return 2
+	}
+
+	scan, err := scanCapture(*capture)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: %v\n", err)
+		return 1
+	}
+	framed, outOfFrame := frameSince(scan, cutoff)
+
+	// The substrate MUST already exist: the random stratum extends the #254 file, it
+	// never creates one. A missing file here is a wrong -dir, and silently starting a
+	// new substrate would strand every existing label.
+	substrate, sheetPath := goldSetPaths(*dir)
+	existing, err := readGoldSet(substrate)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: %v (the random stratum extends an existing gold set; run goldset-sample first)\n", err)
+		return 1
+	}
+	committed := map[string]struct{}{}
+	for _, row := range existing {
+		committed[row.URL] = struct{}{}
+	}
+	framed, alreadyCommitted := excludingURLs(framed, committed)
+
+	sel, err := applyPlan(asStratum(framed, stratumRandom), randomSamplePlan, *seed, *acceptShare)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: %v\n", err)
+		return 2
+	}
+	drawn, err := readSelected(*capture, sel)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: %v\n", err)
+		return 1
+	}
+	if err := validateDrawnRandomRows(drawn, committed); err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: %v\n", err)
+		return 2
+	}
+
+	merged := append(append([]goldRow{}, existing...), drawn...)
+	if err := writeGoldSet(substrate, merged); err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(sheetPath, renderSheet(merged), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: write %q: %v\n", sheetPath, err)
+		return 1
+	}
+	if err := os.WriteFile(expectedSheetPath(*dir), renderExpectedSheet(merged), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: write %q: %v\n", expectedSheetPath(*dir), err)
+		return 1
+	}
+
+	printRandomSampleSummary(os.Stdout, scan, framed, sel, drawn, merged, outOfFrame, alreadyCommitted, substrate)
+	return 0
+}
+
+// runGoldSetSampleBoundary draws the ADR-0043 BOUNDARY Stratum (#263) and APPENDS
+// it to the existing Extract Gold Set. It streams the capture, narrows it to the
+// faithful frame at or after -since, drops the URLs the substrate already carries,
+// then replays BOTH gate configs -- today's blanket accept and the tiered Positive
+// Evidence rule -- over every remaining candidate's captured Content and takes every
+// page the two disagree on that the LIVE extractor accepted. Like
+// goldset-sample-random it is APPEND-ONLY: existing labels, provenance and expected
+// extractions pass through untouched.
+//
+// It takes NO -gate-config and NO -seed. The rule that defines the boundary lives
+// in boundaryBaselineConfig / boundaryCandidateConfig rather than in a flag, so a
+// later run cannot silently redefine it; and the drawing is a CENSUS of the
+// disagreement's accept half, so there is no within-cell order to seed and every
+// weight is exactly 1. Returns the process exit code: 2 on a usage or validation
+// error, 1 on IO, 0 on success.
+func runGoldSetSampleBoundary(args []string) int {
+	fs := flag.NewFlagSet("goldset-sample-boundary", flag.ExitOnError)
+	capture := fs.String("capture", "", "extract-capture JSONL written by the EXTRACT_CAPTURE_PATH tap (required; gitignored, never committed)")
+	dir := fs.String("dir", defaultGoldSetDir, "directory holding the Extract Gold Set the boundary stratum is appended to")
+	since := fs.String("since", "", "RFC3339 cutoff: only capture records at or after it are drawn from (required; excludes windows parsed by a superseded parser)")
+	_ = fs.Parse(args)
+
+	if *capture == "" || *since == "" {
+		fmt.Fprintln(os.Stderr, "usage: llmbench goldset-sample-boundary -capture <capture.jsonl> -since <RFC3339> [-dir d]")
+		return 2
+	}
+	cutoff, err := time.Parse(time.RFC3339, *since)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-boundary: -since %q: %v\n", *since, err)
+		return 2
+	}
+
+	scan, err := scanCapture(*capture)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-boundary: %v\n", err)
+		return 1
+	}
+	framed, outOfFrame := frameSince(scan, cutoff)
+
+	// The substrate MUST already exist, for the same reason the random drawing
+	// requires one: this stratum extends the committed file, and silently starting a
+	// new one would strand every existing label.
+	substrate, sheetPath := goldSetPaths(*dir)
+	existing, err := readGoldSet(substrate)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-boundary: %v (the boundary stratum extends an existing gold set; run goldset-sample first)\n", err)
+		return 1
+	}
+	committed := map[string]struct{}{}
+	for _, row := range existing {
+		committed[row.URL] = struct{}{}
+	}
+	framed, alreadyCommitted := excludingURLs(framed, committed)
+
+	accept, abstain, reversed, err := boundaryDisagreements(*capture, framed)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-boundary: %v\n", err)
+		return 1
+	}
+	if len(reversed) > 0 {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-boundary: %d pages are extracted by the Positive Evidence rule and skipped by today's blanket accept (e.g. %s).\n", len(reversed), reversed[0])
+		fmt.Fprintln(os.Stderr, "  The rung is supposed to be purely ADDITIVE, so this stratum's one-sided definition no longer describes the boundary. Nothing was written.")
+		return 2
+	}
+	if len(accept) == 0 {
+		fmt.Fprintln(os.Stderr, "llmbench goldset-sample-boundary: the two configs disagree on no accepted page; there is no boundary to draw")
+		return 2
+	}
+
+	// A census, so the selection is built by hand rather than through applyPlan:
+	// there is no quota to apply and no accept share to weight by.
+	sel := selection{
+		Chosen: withStratum(accept, stratumBoundary),
+		Cells: []cellResult{{
+			Key:        cellKey{stratumBoundary, true},
+			Population: len(accept),
+			Sampled:    len(accept),
+			Weight:     boundaryCensusWeight,
+		}},
+	}
+	drawn, err := readSelected(*capture, sel)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-boundary: %v\n", err)
+		return 1
+	}
+	if err := validateDrawnBoundaryRows(drawn, committed); err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-boundary: %v\n", err)
+		return 2
+	}
+
+	merged := append(append([]goldRow{}, existing...), drawn...)
+	if err := writeGoldSet(substrate, merged); err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-boundary: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(sheetPath, renderSheet(merged), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-boundary: write %q: %v\n", sheetPath, err)
+		return 1
+	}
+	if err := os.WriteFile(expectedSheetPath(*dir), renderExpectedSheet(merged), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-boundary: write %q: %v\n", expectedSheetPath(*dir), err)
+		return 1
+	}
+
+	printBoundarySampleSummary(os.Stdout, scan, framed, drawn, merged, len(accept), len(abstain), outOfFrame, alreadyCommitted, substrate)
+	return 0
+}
+
+// validateDrawnBoundaryRows refuses a draw that could corrupt the substrate: a row
+// already committed (one page cannot carry two drawings' incompatible weights), a
+// duplicate within the draw, a row outside the boundary stratum, a weight that is
+// not the census weight, a row whose live verdict was not accept (this drawing takes
+// the accept half of the disagreement only), or a row that arrived carrying a label.
+// Nothing is written until it passes, so a bad draw leaves the committed file
+// exactly as it was.
+func validateDrawnBoundaryRows(drawn []goldRow, committed map[string]struct{}) error {
+	seen := map[string]struct{}{}
+	for _, row := range drawn {
+		if _, dup := committed[row.URL]; dup {
+			return fmt.Errorf("drew %q, which the substrate already carries", row.URL)
+		}
+		if _, dup := seen[row.URL]; dup {
+			return fmt.Errorf("drew %q twice", row.URL)
+		}
+		seen[row.URL] = struct{}{}
+		if row.Stratum != stratumBoundary {
+			return fmt.Errorf("drew %q in stratum %q, want %q", row.URL, row.Stratum, stratumBoundary)
+		}
+		if row.Weight != boundaryCensusWeight {
+			return fmt.Errorf("drew %q with weight %g, want the census weight %g", row.URL, row.Weight, boundaryCensusWeight)
+		}
+		if !row.Verdict {
+			return fmt.Errorf("drew %q, whose live verdict was abstain; this drawing takes the accept half of the disagreement", row.URL)
+		}
+		if row.Label != "" {
+			return fmt.Errorf("drew %q carrying label %q; a fresh draw is unlabelled", row.URL, row.Label)
+		}
+	}
+	return nil
+}
+
+// printBoundarySampleSummary writes the account an operator needs to trust the
+// boundary drawing: what the capture held, what each narrowing step dropped, BOTH
+// halves of the disagreement and the reversed count that proves the rung additive,
+// and the two row counts. There is deliberately NO accept share: it does not apply
+// to a census, and printing one would invite somebody to weight this drawing.
+func printBoundarySampleSummary(w io.Writer, scan, framed captureScan, drawn, merged []goldRow, disagreeAccept, disagreeAbstain, outOfFrame, alreadyCommitted int, substrate string) {
+	fmt.Fprintln(w, "extract gold set boundary stratum")
+	fmt.Fprintf(w, "  capture lines        %d\n", scan.Lines)
+	fmt.Fprintf(w, "  duplicate lines      %d (deduped by url, latest ts wins)\n", scan.Duplicates)
+	fmt.Fprintf(w, "  dropped oversized    %d (raw line > %d bytes)\n", scan.Oversized, maxCandidateBytes)
+	fmt.Fprintf(w, "  dropped bad url      %d\n", scan.BadURL)
+	fmt.Fprintf(w, "  dropped out-of-frame %d (superseded parser, or an unparseable ts)\n", outOfFrame)
+	fmt.Fprintf(w, "  dropped committed    %d (already in the substrate from an earlier drawing)\n", alreadyCommitted)
+	fmt.Fprintf(w, "  candidate frame      %d\n", len(framed.Candidates))
+	fmt.Fprintf(w, "  disagree / accept    %d (drawn: the census)\n", disagreeAccept)
+	fmt.Fprintf(w, "  disagree / abstain   %d (recorded, not drawn -- see extract-goldset/README.md)\n", disagreeAbstain)
+	fmt.Fprintf(w, "  disagree / total     %d\n", disagreeAccept+disagreeAbstain)
+	fmt.Fprintln(w, "  reversed             0 (pages the rung ADDS; the rung is purely additive, so this must be 0)")
+	fmt.Fprintf(w, "  drawn rows           %d\n", len(drawn))
+	fmt.Fprintf(w, "  drawn weight sum     %.4f (census: every weight is exactly %g)\n", weightSum(drawn), boundaryCensusWeight)
+	fmt.Fprintf(w, "  substrate rows       %d (%d existing + %d drawn)\n", len(merged), len(merged)-len(drawn), len(drawn))
+	if info, err := os.Stat(substrate); err == nil {
+		fmt.Fprintf(w, "  wrote                %s (%d bytes)\n", substrate, info.Size())
+	}
+}
+
+// runGoldSetConfirmSheet renders the Boundary Stratum's human confirmation sheet:
+// ordered Markdown chunks of -per-file rows each, written under -out-dir. It is the
+// artifact ADR-0043's confirmation rule is actually performed on, and like the
+// labeler's worksheet it is a working artifact that is never committed -- it
+// regenerates from the substrate.
+//
+// Exit: 2 on usage, 1 on IO, 0 otherwise.
+func runGoldSetConfirmSheet(args []string) int {
+	fs := flag.NewFlagSet("goldset-confirm-sheet", flag.ExitOnError)
+	dir := fs.String("dir", defaultGoldSetDir, "directory holding the Extract Gold Set")
+	outDir := fs.String("out-dir", "", "directory to write the confirmation chunks to (required; a working artifact, never committed)")
+	stratum := fs.String("stratum", string(stratumBoundary), "restrict the sheet to one stratum")
+	perFile := fs.Int("per-file", confirmRowsPerFile, "rows per chunk file")
+	_ = fs.Parse(args)
+
+	if *outDir == "" {
+		fmt.Fprintln(os.Stderr, "usage: llmbench goldset-confirm-sheet -out-dir <dir> [-dir d] [-stratum s] [-per-file n]")
+		return 2
+	}
+	if !goldStratum(*stratum).Valid() {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-confirm-sheet: -stratum %q is not a known stratum\n", *stratum)
+		return 2
+	}
+
+	substrate, _ := goldSetPaths(*dir)
+	rows, err := readGoldSet(substrate)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-confirm-sheet: %v\n", err)
+		return 1
+	}
+	selected := []goldRow{}
+	for _, row := range rows {
+		if row.Stratum == goldStratum(*stratum) {
+			selected = append(selected, row)
+		}
+	}
+	if len(selected) == 0 {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-confirm-sheet: no row is in stratum %q\n", *stratum)
+		return 2
+	}
+	if err := os.MkdirAll(*outDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-confirm-sheet: create %q: %v\n", *outDir, err)
+		return 1
+	}
+
+	chunks := renderConfirmSheet(selected, *perFile)
+	for _, chunk := range chunks {
+		path := filepath.Join(*outDir, chunk.Name)
+		if err := os.WriteFile(path, chunk.Body, 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "llmbench goldset-confirm-sheet: write %q: %v\n", path, err)
+			return 1
+		}
+	}
+	fmt.Fprintf(os.Stdout, "wrote %d chunks covering %d %s rows to %s\n", len(chunks), len(selected), *stratum, *outDir)
+	return 0
+}
+
+// validateDrawnRandomRows refuses a draw that could corrupt the substrate: a row
+// already committed (one page cannot carry two drawings' incompatible weights), a
+// duplicate within the draw, a row outside the random stratum, a non-positive
+// weight, or a row that arrived carrying a label. Nothing is written until it
+// passes, so a bad draw leaves the committed file exactly as it was.
+func validateDrawnRandomRows(drawn []goldRow, committed map[string]struct{}) error {
+	seen := map[string]struct{}{}
+	for _, row := range drawn {
+		if _, dup := committed[row.URL]; dup {
+			return fmt.Errorf("drew %q, which the substrate already carries", row.URL)
+		}
+		if _, dup := seen[row.URL]; dup {
+			return fmt.Errorf("drew %q twice", row.URL)
+		}
+		seen[row.URL] = struct{}{}
+		if row.Stratum != stratumRandom {
+			return fmt.Errorf("drew %q in stratum %q, want %q", row.URL, row.Stratum, stratumRandom)
+		}
+		if row.Weight <= 0 {
+			return fmt.Errorf("drew %q with weight %g, want > 0", row.URL, row.Weight)
+		}
+		if row.Label != "" {
+			return fmt.Errorf("drew %q carrying label %q; a fresh draw is unlabelled", row.URL, row.Label)
+		}
+	}
+	return nil
+}
+
+// printRandomSampleSummary writes the account an operator needs to trust the random
+// drawing: what the capture held, what each narrowing step dropped and why, the
+// accept share the weights rest on ALONGSIDE the estimator's reconstruction (which
+// is a cross-check and does not govern), the realized per-cell design, and the two
+// row counts -- the drawing's own, whose weights must sum to it, and the union's.
+func printRandomSampleSummary(w io.Writer, scan, framed captureScan, sel selection, drawn, merged []goldRow, outOfFrame, alreadyCommitted int, substrate string) {
+	fmt.Fprintln(w, "extract gold set random stratum")
+	fmt.Fprintf(w, "  capture lines       %d\n", scan.Lines)
+	fmt.Fprintf(w, "  duplicate lines     %d (deduped by url, latest ts wins)\n", scan.Duplicates)
+	fmt.Fprintf(w, "  dropped oversized   %d (raw line > %d bytes)\n", scan.Oversized, maxCandidateBytes)
+	fmt.Fprintf(w, "  dropped bad url     %d\n", scan.BadURL)
+	fmt.Fprintf(w, "  dropped out-of-frame %d (superseded parser, or an unparseable ts)\n", outOfFrame)
+	fmt.Fprintf(w, "  dropped committed   %d (already in the substrate from an earlier drawing)\n", alreadyCommitted)
+	fmt.Fprintf(w, "  candidate frame     %d\n", len(framed.Candidates))
+	fmt.Fprintf(w, "  accept share        %.4f (supplied; governs the weights)\n", sel.AcceptShare)
+	if estimated, ok := liveAcceptShare(framed.Timeline); ok {
+		fmt.Fprintf(w, "  accept share        %.4f (liveAcceptShare's reconstruction -- CROSS-CHECK ONLY, does not govern:\n", estimated)
+		fmt.Fprintf(w, "                      its %v session split merges contiguous process frames of this capture)\n", sessionGap)
+	} else {
+		fmt.Fprintln(w, "  accept share        (liveAcceptShare could not reconstruct one from this frame)")
+	}
+	for _, c := range sel.Cells {
+		fmt.Fprintf(w, "  cell %-8s verdict=%-5v population %5d  sampled %3d  weight %.5f\n",
+			c.Key.Stratum, c.Key.Verdict, c.Population, c.Sampled, c.Weight)
+	}
+	fmt.Fprintf(w, "  drawn rows          %d\n", len(drawn))
+	fmt.Fprintf(w, "  drawn weight sum    %.4f (must equal the drawn rows)\n", weightSum(drawn))
+	fmt.Fprintf(w, "  substrate rows      %d (%d existing + %d drawn)\n", len(merged), len(merged)-len(drawn), len(drawn))
+	if info, err := os.Stat(substrate); err == nil {
+		fmt.Fprintf(w, "  wrote               %s (%d bytes)\n", substrate, info.Size())
+	}
 }
 
 // readSelected re-streams the capture and materializes the selected rows in full,
@@ -148,19 +527,30 @@ func printSampleSummary(w io.Writer, scan captureScan, sel selection, rows []gol
 // runGoldSetWorksheet renders the labeler's view of the committed substrate to
 // -out: per row, the page's own title, two windows into its main content, and its
 // outbound-link counts. Every structured-data-derived field -- the stratum
-// included -- is withheld, and rows are emitted in hash-shuffled order, so a label
-// cannot be inferred from the very signal the gold set exists to test the
-// mechanism against (ADR-0043). The worksheet is a working artifact and is never
-// committed. Exit: 2 on usage, 1 on IO, 0 otherwise.
+// included -- is withheld, as is the live extractor's verdict, and rows are emitted
+// in hash-shuffled order, so a label cannot be inferred from the very signals the
+// gold set exists to test the mechanism against (ADR-0043). The worksheet is a
+// working artifact and is never committed.
+//
+// -stratum narrows the sheet to one sampling cell, and -n takes only the first N
+// rows AFTER the shuffle: together they cut a deterministic, quotable subset -- the
+// 20 rows a human spot-checks the random stratum on, rather than the whole 4 MB
+// substrate. Exit: 2 on usage, 1 on IO, 0 otherwise.
 func runGoldSetWorksheet(args []string) int {
 	fs := flag.NewFlagSet("goldset-worksheet", flag.ExitOnError)
 	dir := fs.String("dir", defaultGoldSetDir, "directory holding the Extract Gold Set")
 	out := fs.String("out", "", "path to write the worksheet JSONL to (required; a working artifact, never committed)")
 	seed := fs.String("seed", defaultSeed, "seed for the presentation shuffle")
+	stratum := fs.String("stratum", "", "restrict the sheet to one stratum; empty renders every row")
+	n := fs.Int("n", 0, "render only the first N rows after the shuffle (a deterministic subset); 0 renders all")
 	_ = fs.Parse(args)
 
 	if *out == "" {
-		fmt.Fprintln(os.Stderr, "usage: llmbench goldset-worksheet -out <worksheet.jsonl> [-dir d] [-seed s]")
+		fmt.Fprintln(os.Stderr, "usage: llmbench goldset-worksheet -out <worksheet.jsonl> [-dir d] [-seed s] [-stratum s] [-n k]")
+		return 2
+	}
+	if *stratum != "" && !goldStratum(*stratum).Valid() {
+		fmt.Fprintf(os.Stderr, "llmbench goldset-worksheet: -stratum %q is not a known stratum\n", *stratum)
 		return 2
 	}
 
@@ -173,11 +563,17 @@ func runGoldSetWorksheet(args []string) int {
 
 	sheets := make([]worksheetRow, 0, len(rows))
 	for _, row := range rows {
+		if *stratum != "" && row.Stratum != goldStratum(*stratum) {
+			continue
+		}
 		sheets = append(sheets, worksheetFor(row))
 	}
 	sort.Slice(sheets, func(i, j int) bool {
 		return seededHash(*seed, sheets[i].URL) < seededHash(*seed, sheets[j].URL)
 	})
+	if *n > 0 && *n < len(sheets) {
+		sheets = sheets[:*n]
+	}
 
 	f, err := os.Create(*out)
 	if err != nil {
@@ -214,15 +610,18 @@ func runGoldSetWorksheet(args []string) int {
 // Nothing is written unless every row validates, so a stale sheet fails loudly
 // rather than half-applying. An existing proposer or confirmer is NEVER
 // overwritten and its timestamp never re-stamped: provenance is an append-only
-// record of who actually saw the row. Exit: 2 on usage or a validation failure, 1
-// on IO, 0 otherwise.
+// record of who actually saw the row. The one way a confirmation leaves a row is
+// RETRACTION -- a label that changes invalidates the confirmation of the old label,
+// on both the sheet and the proposals path. Exit: 2 on usage or a validation
+// failure, 1 on IO, 0 otherwise.
 func runGoldSetApply(args []string) int {
 	fs := flag.NewFlagSet("goldset-apply", flag.ExitOnError)
 	dir := fs.String("dir", defaultGoldSetDir, "directory holding the Extract Gold Set")
 	proposals := fs.String("proposals", "", "optional TSV of id<TAB>label<TAB>note to merge before stamping (a proposer's output)")
 	proposedBy := fs.String("proposed-by", "", "name to stamp as the proposer on labelled rows that have none; prefix an automated proposer with \"llm:\"")
-	confirmedBy := fs.String("confirmed-by", "", "HUMAN name to stamp as the confirmer on labelled rows that have none; an \"llm:\" name is rejected")
+	confirmedBy := fs.String("confirmed-by", "", "HUMAN name to stamp as the confirmer on labelled rows that have none; an \"llm:\" or \"script:\" name is rejected")
 	confirmStratum := fs.String("confirm-stratum", "", "restrict -confirmed-by to one stratum; empty confirms every labelled row")
+	confirmIDs := fs.String("confirm-ids", "", "file of row ids (one per line) naming EXACTLY the rows -confirmed-by signs off; mutually exclusive with -confirm-stratum")
 	expectedProposedBy := fs.String("expected-proposed-by", "", "name to stamp as the proposer on expected extractions that have none; prefix an automated reading with \"script:\" or \"llm:\"")
 	expectedConfirmedBy := fs.String("expected-confirmed-by", "", "HUMAN name to stamp as the confirmer on expected extractions that have none; an \"llm:\" or \"script:\" name is rejected")
 	now := fs.String("now", "", "RFC3339 UTC timestamp to stamp; empty uses the current time")
@@ -237,7 +636,7 @@ func runGoldSetApply(args []string) int {
 		}
 		stamp = t.UTC().Format(time.RFC3339)
 	}
-	if strings.HasPrefix(*confirmedBy, "llm:") {
+	if machineName(*confirmedBy) {
 		fmt.Fprintf(os.Stderr, "llmbench goldset-apply: -confirmed-by %q is not a human; confirmation cannot be automated (ADR-0043)\n", *confirmedBy)
 		return 2
 	}
@@ -248,6 +647,30 @@ func runGoldSetApply(args []string) int {
 	if *confirmStratum != "" && !goldStratum(*confirmStratum).Valid() {
 		fmt.Fprintf(os.Stderr, "llmbench goldset-apply: -confirm-stratum %q is not a known stratum\n", *confirmStratum)
 		return 2
+	}
+	// One unambiguous selector for a confirmation. Both together would leave it
+	// unclear whether the id list widens the stratum or narrows it, and a confirmation
+	// nobody can read back from the flags is not reviewable.
+	if *confirmIDs != "" && *confirmStratum != "" {
+		fmt.Fprintln(os.Stderr, "llmbench goldset-apply: -confirm-ids and -confirm-stratum are mutually exclusive; a confirmation names one set of rows")
+		return 2
+	}
+	if *confirmIDs != "" && *confirmedBy == "" {
+		fmt.Fprintln(os.Stderr, "llmbench goldset-apply: -confirm-ids needs -confirmed-by; a list of rows is not a confirmer")
+		return 2
+	}
+	var confirmSet map[string]struct{}
+	if *confirmIDs != "" {
+		data, err := os.ReadFile(*confirmIDs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "llmbench goldset-apply: read %q: %v\n", *confirmIDs, err)
+			return 1
+		}
+		confirmSet, err = parseConfirmIDs(data)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "llmbench goldset-apply: %v\n", err)
+			return 2
+		}
 	}
 
 	substrate, sheetPath := goldSetPaths(*dir)
@@ -295,7 +718,7 @@ func runGoldSetApply(args []string) int {
 		return 1
 	}
 
-	merged, err := applyLabels(rows, sheet, proposed, *proposedBy, *confirmedBy, goldStratum(*confirmStratum), stamp)
+	merged, err := applyLabels(rows, sheet, proposed, *proposedBy, *confirmedBy, goldStratum(*confirmStratum), confirmSet, stamp)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench goldset-apply: %v\n", err)
 		return 2
@@ -366,8 +789,14 @@ func parseProposals(data []byte) ([]sheetRow, error) {
 // Validation is total and fails on the first fault: a sheet row whose URL or ID is
 // not in the substrate, a duplicate sheet row, a sheet stratum or verdict that
 // disagrees with the substrate (the signature of a sheet edited against an older
-// sample), or a proposal for an unknown row.
-func applyLabels(rows []goldRow, sheet, proposed []sheetRow, proposedBy, confirmedBy string, confirmStratum goldStratum, stamp string) ([]goldRow, error) {
+// sample), a sheet confirmer that names a machine, a proposal for an unknown row, or
+// a confirmId naming a row that does not exist or carries no label to confirm.
+//
+// confirmIDs, when non-nil, names EXACTLY the rows confirmedBy signs off, so a human
+// can confirm chunk by chunk across sessions and the diff shows precisely which rows
+// gained a confirmer. It and confirmStratum are alternative selectors; the caller
+// rejects both at once.
+func applyLabels(rows []goldRow, sheet, proposed []sheetRow, proposedBy, confirmedBy string, confirmStratum goldStratum, confirmIDs map[string]struct{}, stamp string) ([]goldRow, error) {
 	byID := map[string]int{}
 	for i, row := range rows {
 		byID[rowID(row.URL)] = i
@@ -391,6 +820,14 @@ func applyLabels(rows []goldRow, sheet, proposed []sheetRow, proposedBy, confirm
 		}
 		if s.Verdict != merged[i].Verdict {
 			return nil, fmt.Errorf("sheet row %q: verdict %v disagrees with the substrate (%v)", s.URL, s.Verdict, merged[i].Verdict)
+		}
+		// The sheet's confirmer column is subject to the SAME rule as the
+		// -confirmed-by flag. Without this check a machine-driven pass that writes the
+		// column walks straight past the flag guard, and the false-drop guard arms
+		// itself on these confirmations (ADR-0043/#264) -- so a machine could stamp the
+		// evidence its own labels are judged by.
+		if machineName(s.ConfirmedBy) {
+			return nil, fmt.Errorf("sheet row %q: confirmed_by %q is not a human; confirmation cannot be automated (ADR-0043)", s.URL, s.ConfirmedBy)
 		}
 		// A confirmed label that changes retracts its confirmation, for the same
 		// reason applyExpected retracts one whose values changed: the human confirmed
@@ -425,9 +862,35 @@ func applyLabels(rows []goldRow, sheet, proposed []sheetRow, proposedBy, confirm
 			return nil, fmt.Errorf("proposal for row id %q appears twice", p.ID)
 		}
 		proposedSeen[p.ID] = struct{}{}
+		// A confirmed label that changes retracts its confirmation, exactly as the
+		// sheet path above does: the human confirmed the OLD label, and leaving their
+		// name on a label a proposer has since replaced is the one thing the
+		// confirmation record must never say.
+		if merged[i].LabelProvenance.ConfirmedBy != "" && merged[i].Label != p.Label {
+			merged[i].LabelProvenance.ConfirmedBy, merged[i].LabelProvenance.ConfirmedAt = "", ""
+		}
 		merged[i].Label = p.Label
 		if p.Note != "" {
 			merged[i].LabelProvenance.Note = p.Note
+		}
+	}
+
+	// The id list is validated against the MERGED rows -- a label proposed in this
+	// same run counts -- and before anything is stamped. An unknown id is a typo or a
+	// chunk file left over from an older draw; an id on an unlabelled row is a
+	// confirmation of nothing. Sorted so the reported fault is the same one every run.
+	ids := make([]string, 0, len(confirmIDs))
+	for id := range confirmIDs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		i, ok := byID[id]
+		if !ok {
+			return nil, fmt.Errorf("-confirm-ids names unknown row id %q; regenerate the confirmation sheet from the substrate", id)
+		}
+		if !merged[i].Label.Valid() {
+			return nil, fmt.Errorf("-confirm-ids names row %q (%s), which carries no label to confirm", merged[i].URL, id)
 		}
 	}
 
@@ -444,6 +907,11 @@ func applyLabels(rows []goldRow, sheet, proposed []sheetRow, proposedBy, confirm
 		}
 		if confirmStratum != "" && merged[i].Stratum != confirmStratum {
 			continue
+		}
+		if confirmIDs != nil {
+			if _, listed := confirmIDs[rowID(merged[i].URL)]; !listed {
+				continue
+			}
 		}
 		prov.ConfirmedBy, prov.ConfirmedAt = confirmedBy, stamp
 	}
@@ -491,6 +959,16 @@ func applyExpected(rows []goldRow, sheet []expectedSheetRow, proposedBy, confirm
 		}
 		if s.FreeOK && s.Label != bench.ExtractResidue {
 			return nil, fmt.Errorf("expected row %q: free_ok on a %q row; only a residue fire is excusable (ADR-0042)", s.URL, s.Label)
+		}
+		// The sheet's confirmer column is subject to the SAME rule as the
+		// -expected-confirmed-by flag, for the reason applyLabels states about its own
+		// sheet: a machine-driven pass that writes the column otherwise walks straight
+		// past the flag guard. What it buys is smaller here -- the false-drop guard arms
+		// on LABEL confirmations, not on these -- but pendingExpectedConfirmations is a
+		// ratchet over the #256 field-fidelity ground truth, and a machine must not be
+		// able to lower that either.
+		if machineName(s.ConfirmedBy) {
+			return nil, fmt.Errorf("expected row %q: confirmed_by %q is not a human; confirmation cannot be automated (ADR-0043)", s.URL, s.ConfirmedBy)
 		}
 
 		// Copy the block before writing: merged shares its pointers with the
@@ -560,11 +1038,32 @@ func applyExpected(rows []goldRow, sheet []expectedSheetRow, proposedBy, confirm
 // lone-posting rows still have no human confirmation. The expected-extraction
 // block gets the same treatment, since it is the ground truth the #256 fidelity
 // guard rests on.
+//
+// The random stratum reports SPOT-CHECKS rather than a pending count, because
+// ADR-0043 asks it to be spot-checked rather than fully confirmed: the number that
+// matters there is how many rows a human actually read, not how many they have left.
+// The boundary stratum reports a PENDING count like the lone-posting one: ADR-0043
+// requires every one of its rows confirmed, since they are the rows a hard-zero
+// false-drop guard is decided on.
 func printApplySummary(w io.Writer, rows []goldRow) {
 	byLabel := map[bench.ExtractLabel]int{}
 	labelled, proposedOnly, pending := 0, 0, 0
 	expected, acceptedFires, expectedPending := 0, 0, 0
+	randomRows, randomLabelled, randomSpotChecked := 0, 0, 0
+	boundaryRows, boundaryLabelled, boundaryPending, boundaryAmbiguous := 0, 0, 0, 0
 	for _, row := range rows {
+		if row.Stratum == stratumBoundary {
+			boundaryRows++
+			if row.Label.Valid() {
+				boundaryLabelled++
+			}
+			if row.Label == bench.ExtractAmbiguous {
+				boundaryAmbiguous++
+			}
+			if row.Label.Valid() && row.LabelProvenance.ConfirmedBy == "" {
+				boundaryPending++
+			}
+		}
 		if row.Expected != nil {
 			expected++
 			if row.Expected.FreeOK {
@@ -572,6 +1071,15 @@ func printApplySummary(w io.Writer, rows []goldRow) {
 			}
 			if row.Expected.ConfirmedBy == "" {
 				expectedPending++
+			}
+		}
+		if row.Stratum == stratumRandom {
+			randomRows++
+			if row.Label.Valid() {
+				randomLabelled++
+			}
+			if row.LabelProvenance.ConfirmedBy != "" {
+				randomSpotChecked++
 			}
 		}
 		if !row.Label.Valid() {
@@ -592,11 +1100,22 @@ func printApplySummary(w io.Writer, rows []goldRow) {
 	for _, l := range bench.AllExtractLabels {
 		fmt.Fprintf(w, "  %-17s %d\n", l, byLabel[l])
 	}
+	// Printed outside the AllExtractLabels loop because it is not one of the scored
+	// classes, and printed unconditionally so a set with none says so.
+	fmt.Fprintf(w, "  %-17s %d (excluded from scoring)\n", bench.ExtractAmbiguous, byLabel[bench.ExtractAmbiguous])
 	fmt.Fprintf(w, "  unconfirmed       %d\n", proposedOnly)
 	fmt.Fprintf(w, "  pending human     %d (lone-posting rows awaiting confirmation)\n", pending)
 	fmt.Fprintf(w, "  expected          %d\n", expected)
 	fmt.Fprintf(w, "  expected-accepted-fires %d (residue rows carrying an argued exception)\n", acceptedFires)
 	fmt.Fprintf(w, "  expected pending human  %d (rows awaiting confirmation)\n", expectedPending)
+	if randomRows > 0 {
+		fmt.Fprintf(w, "  random stratum    %d (labelled %d)\n", randomRows, randomLabelled)
+		fmt.Fprintf(w, "  spot-checked      %d (random rows a human confirmed)\n", randomSpotChecked)
+	}
+	if boundaryRows > 0 {
+		fmt.Fprintf(w, "  boundary stratum  %d (labelled %d, ambiguous %d)\n", boundaryRows, boundaryLabelled, boundaryAmbiguous)
+		fmt.Fprintf(w, "  boundary pending  %d (boundary rows awaiting human confirmation)\n", boundaryPending)
+	}
 }
 
 // weightSum is the file's total sampling weight, which must equal its row count:
