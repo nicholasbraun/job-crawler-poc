@@ -1,7 +1,7 @@
 # A lone structured-data JobPosting is extracted without the model
 
 A page carrying exactly one JSON-LD `JobPosting` node and no `ItemList` — the exact
-complement of the Extract Gate's openings-index reject — **that still renders the ad it
+complement of the Extract Gate's openings-index reject — **that still renders the posting it
 declares** has its judgment fields (it is a posting; its title, location, and work
 arrangement) read straight from that structured data, with no LLM call. This **Free
 Extraction** is on by default; `EXTRACT_FROM_JSONLD=false` is the kill switch, kept because
@@ -17,12 +17,12 @@ junk."
 
 That claim did not survive a larger sample. On the 149-row Extract Gold Set (ADR-0043), which
 samples the abstain-override cell **exhaustively** rather than by chance, the cell is 24 pages
-and **17 of them are not postings**. Sixteen are ads whose posting was withdrawn or filled
+and **17 of them are not postings**. Sixteen are postings withdrawn or filled
 while their `JobPosting` node kept being served in full, above a body reading only "This
 position is no longer active" — in five languages across the sample. The original replay saw
 two of these and read both as model errors.
 
-This is the worst possible failure for this mechanism. A withdrawn ad saved by the free path
+This is the worst possible failure for this mechanism. A withdrawn posting saved by the free path
 enters the Corpus as a live job with no model in the loop, and the refetch lane can never
 remove it: the page keeps serving that same body, so its `SourceHash` reads unchanged and the
 listing is confirmed Alive every Collection Cycle, forever.
@@ -30,7 +30,7 @@ listing is confirmed Alive every Collection Cycle, forever.
 So the predicate gained a third condition: the page must still render the posting it declares
 (`crawler.RendersDeclaredPosting`). Nothing else marks these pages — `validThrough` is absent
 on 18 of the 19 and expired on none, and their titles appear in their bodies exactly as a live
-ad's does. The only structural signal is the discrepancy between what the page **claims** to
+posting's does. The only structural signal is the discrepancy between what the page **claims** to
 publish and what it **shows**. Measured across the 70 labelled lone-posting rows the two
 populations do not overlap: 51 real postings top out at a declared/rendered ratio of 1.49,
 while all 16 withdrawal notices start at 2.15. The bound is set at **1.8**, low in that empty
@@ -53,10 +53,10 @@ reason or the mechanism is narrowed further. That red is the guard working, not 
 That precedent — a JSON-LD bypass that cost the sibling career-page pipeline ~45% precision
 — keyed on structured data being *present* and used it to skip classification entirely. This
 one requires exactly one `JobPosting`, no `ItemList`, a non-empty title, and a page that still
-renders the ad, and it replaces only the extraction of a page the Extract Gate has already
+renders the posting, and it replaces only the extraction of a page the Extract Gate has already
 admitted. Presence is not the signal; unambiguity is.
 
-The withdrawn-ad finding above is a reminder of how thin that distinction is. Structured data
+The withdrawn-posting finding above is a reminder of how thin that distinction is. Structured data
 describes what a page *says about itself*, and a page can keep saying it long after it stops
 being true. Every future use of it should ask not only "is this unambiguous?" but "is the page
 still backing this claim?"

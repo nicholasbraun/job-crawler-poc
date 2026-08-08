@@ -107,7 +107,7 @@ for line in sys.stdin:
     if r["nodes"] != 1:
         sys.exit("propose-expected.sh: %s carries %d JobPosting nodes, want exactly 1" % (r["url"], r["nodes"]))
     # The mechanism refuses a page that declares far more than it renders -- a
-    # withdrawn ad still served in full above a one-line notice (ADR-0042). Applied
+    # withdrawn posting still served in full above a one-line notice (ADR-0042). Applied
     # here as its own reading, with the same 1.8 bound the domain uses, so the sheet
     # lists exactly the rows a correct Free Extraction fires on. A row that drops out
     # here has its expectation cleared by goldset-apply.

@@ -220,10 +220,10 @@ excusing one would mean the predicate itself is broken.
 
 | kind | n | hosts |
 |---|---:|---|
-| stale ad — withdrawn or filled, `JobPosting` JSON-LD still served | 16 | `career.avenga.com`, `career.happysocks.com` ×3, `careerpoland.autoliv.com`, `careers.atlantishealth.com`, `careers.beyond-vision.com` ×2, `careers.patria.com`, `careers.pit.com`, `careers.spacelift.io`, `careers.sundayapp.com`, `careers.tekever.com`, `careers.worldpackers.com` ×2, `jobs.pwc.de` |
+| stale posting — withdrawn or filled, `JobPosting` JSON-LD still served | 16 | `career.avenga.com`, `career.happysocks.com` ×3, `careerpoland.autoliv.com`, `careers.atlantishealth.com`, `careers.beyond-vision.com` ×2, `careers.patria.com`, `careers.pit.com`, `careers.spacelift.io`, `careers.sundayapp.com`, `careers.tekever.com`, `careers.worldpackers.com` ×2, `jobs.pwc.de` |
 | evergreen non-role — talent pool / general application / enquiry page | 3 | `careers.coverflex.com`, `karriere.mri.bund.de`, `www.fluidstack.io` |
 
-The 16 stale ads are a **liveness** problem (ADR-0035's territory): the fields are read
+The 16 stale postings are a **liveness** problem (ADR-0035's territory): the fields are read
 correctly and the job is gone. The 3 evergreen pages are genuine **precision** failures
 and the strongest argument for narrowing ADR-0042. Stated plainly: against the labels as
 they stand, the check passes *because those 19 are explicitly accepted*, not because they
@@ -241,7 +241,7 @@ this is the first real evidence about it. Out of scope for #254 (no gate code ch
 worth a follow-up.
 
 **2. 17 of the 24 exhaustively-sampled `lone-posting` abstains are not postings.**
-Fifteen of them are **expired or withdrawn ads** ("this position is no longer active",
+Fifteen of them are **expired or withdrawn postings** ("this position is no longer active",
 "a vaga já não está disponível") whose page body is gone but whose `JobPosting` JSON-LD
 block is still served. The remaining 7 are real postings the model wrongly abstained on.
 ADR-0042 measured the Free Extraction firing on "2 of 1168 abstains … both real postings
@@ -253,7 +253,7 @@ implied, and it deserves a second look before that decorator ships on by default
 
 **#256 measured exactly that risk.** The Free Extraction fires on **70 of the 149 rows**
 — precisely the `lone-posting` stratum — and **19 of those 70 are labelled `residue`**:
-16 stale ads and 3 evergreen non-roles. See "The Free Extraction fidelity check" above.
+16 stale postings and 3 evergreen non-roles. See "The Free Extraction fidelity check" above.
 
 **3. 24 of the 75 `detail` pages publish no structured data at all.** A structured-data
 path can never reach them; whatever admits and extracts those pages stays the cost
@@ -346,7 +346,7 @@ extractions. Four rows are deliberately **not** confirmed, because confirming th
 attest to something the pass found reason to doubt. They are why
 `pendingHumanConfirmations` and `pendingExpectedConfirmations` are 4 rather than 0.
 
-Three carry a closure banner above an otherwise complete ad, and are labelled `detail`:
+Three carry a closure banner above an otherwise complete posting, and are labelled `detail`:
 
 | row | body opens with |
 | --- | --- |
@@ -354,9 +354,9 @@ Three carry a closure banner above an otherwise complete ad, and are labelled `d
 | `talent.seedcamp.com/companies/source-dev/jobs/87201415-…` | "This job is no longer accepting applications" |
 | `www.builtincolorado.com/job/product-training-specialist-us/9511859` | "Sorry, this job was removed at 04:14 p.m. …" |
 
-These are the same failure as the sixteen withdrawn ads ADR-0042's narrowing removed, except
+These are the same failure as the sixteen withdrawn postings ADR-0042's narrowing removed, except
 that **the length-ratio test cannot reach them by design**: the page really does render its
-ad, so the declared/rendered ratio stays under the bound. Only the banner marks them, and a
+posting, so the declared/rendered ratio stays under the bound. Only the banner marks them, and a
 banner is template text in whatever language the ATS ships. Labelled `detail` they are
 counted among the detail fires the mechanism is measured by, which flatters it; relabelled
 `residue` they become fires on non-postings and the guard goes red until either they are

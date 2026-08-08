@@ -336,11 +336,11 @@ func TestLonePosting(t *testing.T) {
 }
 
 // TestRendersDeclaredPosting covers the withdrawal-notice guard (ADR-0042): a page
-// that keeps serving a filled ad's structured data above a one-line notice claims far
+// that keeps serving a filled posting's structured data above a one-line notice claims far
 // more than it shows, and that discrepancy is the only structural signal there is --
 // validThrough is absent on 18 of 19 measured withdrawal notices and expired on none.
 func TestRendersDeclaredPosting(t *testing.T) {
-	const ad = "We are hiring a Go engineer to work on our crawler. You will design and build " +
+	const declared = "We are hiring a Go engineer to work on our crawler. You will design and build " +
 		"distributed systems, own services end to end, and mentor other engineers. We offer a " +
 		"competitive salary, a learning budget, and a hybrid working model out of our Berlin office."
 
@@ -351,32 +351,34 @@ func TestRendersDeclaredPosting(t *testing.T) {
 		want        bool
 	}{
 		{
-			name:        "a page rendering the ad it declares still renders its posting",
-			description: ad,
-			mainContent: "Backend Engineer " + ad + " Apply now.",
+			name:        "a page rendering the posting it declares still renders it",
+			description: declared,
+			mainContent: "Backend Engineer " + declared + " Apply now.",
 			want:        true,
 		},
 		{
-			// The shape this guard exists for: the full ad in JSON-LD, a notice in the body.
-			name:        "a withdrawal notice under a full ad does not render its posting",
-			description: ad,
+			// The shape this guard exists for: the full posting in JSON-LD, a notice in
+			// the body. The notice is quoted verbatim from the pages it is drawn from --
+			// their wording, not the domain's vocabulary (CONTEXT.md, Job Listing).
+			name:        "a withdrawal notice under a full posting does not render it",
+			description: declared,
 			mainContent: "Backend Engineer This position is no longer active. Either the position was filled, or the ad has expired.",
 			want:        false,
 		},
 		{
 			// Measured: real postings reach 1.49 without being withdrawn, so a body
-			// merely shorter than the ad must still count as rendering it.
-			name:        "a body somewhat shorter than the ad still renders it",
-			description: ad,
-			mainContent: ad[:len(ad)*2/3],
+			// merely shorter than the posting must still count as rendering it.
+			name:        "a body somewhat shorter than the posting still renders it",
+			description: declared,
+			mainContent: declared[:len(declared)*2/3],
 			want:        true,
 		},
 		{
-			// HTML is reduced before measuring, or markup would inflate the ad's length
+			// HTML is reduced before measuring, or markup would inflate the posting's length
 			// and delegate live postings whose body the parser already stripped.
-			name:        "markup in the declared ad is not counted as length",
-			description: "<div class=\"x\"><p>" + ad + "</p></div>",
-			mainContent: ad,
+			name:        "markup in the declared posting is not counted as length",
+			description: "<div class=\"x\"><p>" + declared + "</p></div>",
+			mainContent: declared,
 			want:        true,
 		},
 		{
@@ -388,7 +390,7 @@ func TestRendersDeclaredPosting(t *testing.T) {
 		},
 		{
 			name:        "a page rendering nothing does not render its posting",
-			description: ad,
+			description: declared,
 			mainContent: "",
 			want:        false,
 		},

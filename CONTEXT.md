@@ -233,8 +233,12 @@ The mark the Extract Gate requires before spending an extractor call: that a pag
 _Avoid_: accept signal, positive signal (bare), allowlist
 
 **Free Extraction**:
-A Job Listing read straight from a page's lone structured-data posting, with no LLM call. It fires only where the structured data is unambiguous — exactly one posting node and no openings index — so it never overrules a model verdict it was not entitled to overrule.
+A Job Listing read straight from a page's lone structured-data posting, with no LLM call. It fires only where the structured data is unambiguous — exactly one posting node, no openings index, a title — **and the page still renders what it declares**. That last condition exists because a withdrawn or filled posting is routinely served with its structured data intact above a body reading only "this position is no longer active": unambiguous structured data alone proved to be a claim a page can keep making after it stops being true.
 _Avoid_: bypass, JSON-LD extract, shortcut
+
+**Withdrawal Notice**:
+A posting page whose structured data still declares a Job Listing while its body has been replaced by a closure message. Refused by the Free Extraction — which would otherwise save a job that no longer exists, with no model in the loop and no way for the refetch lane to Close it, since the page keeps serving that same body unchanged. Detected by the gap between what a page declares and what it renders, not by `validThrough`, which these pages leave absent.
+_Avoid_: expired posting, dead listing, stale ad
 
 **Extractor Abstain**:
 The LLM extractor's self-report that a page it was handed is not a single Job Listing — a hub, index, or career-landing page — so the extraction is discarded rather than saved. The extract path's last-resort net for a non-posting the Extract Gate let through.

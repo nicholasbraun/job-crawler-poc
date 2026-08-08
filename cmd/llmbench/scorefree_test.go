@@ -32,7 +32,7 @@ const freeExtractionFires = 54
 // acceptedFreeOnResidue is how many of those rows are labelled residue and carry an
 // explicit, per-row acceptance of the fire.
 //
-// Sixteen of the nineteen fires this number once excused were ads withdrawn while
+// Sixteen of the nineteen fires this number once excused were postings withdrawn while
 // their JobPosting JSON-LD kept being served; the predicate was narrowed to refuse
 // them (crawler.RendersDeclaredPosting) rather than excuse them, and they no longer
 // fire at all.
@@ -96,8 +96,8 @@ func TestCommittedGoldSetFreeExtractionFidelity(t *testing.T) {
 // drifted, and the gold set is no longer a sample of what it claims.
 //
 // Containment, not equality. The stratum is structural (the page carries one titled
-// posting node); firing additionally requires the page to still render the ad it
-// declares (ADR-0042). The gap between them is exactly the withdrawn ads, which the
+// posting node); firing additionally requires the page to still render the posting it
+// declares (ADR-0042). The gap between them is exactly the withdrawn postings, which the
 // stratum still samples -- deliberately, since they are what the narrowing must keep
 // refusing -- and withdrawnInLonePostingStratum pins how many there are.
 const withdrawnInLonePostingStratum = 16

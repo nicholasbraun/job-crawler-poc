@@ -38,13 +38,13 @@ import (
 // It is 4, and those four are held back deliberately rather than left over. The
 // confirmation pass found three pages whose body carries a closure banner ("This
 // job is no longer accepting applications", "this job was removed") above an
-// otherwise complete ad, all labelled detail; and one open-application page
+// otherwise complete posting, all labelled detail; and one open-application page
 // labelled detail where the same shape is labelled residue elsewhere in the set.
 // Confirming them would attest that saving a closed job is correct, and would count
 // them among the 51 detail fires the mechanism is measured by.
 //
-// They are the residue of the withdrawn-ad problem that ADR-0042's length-ratio test
-// cannot reach BY DESIGN: these pages do render their ad, so the ratio stays under
+// They are the residue of the withdrawn-posting problem that ADR-0042's length-ratio test
+// cannot reach BY DESIGN: these pages do render their posting, so the ratio stays under
 // the bound. Resolving them needs a decision, not a stamp -- see the open question
 // in the Extract Gold Set README. RATCHET: lower it as confirmations land, never
 // raise it.
@@ -720,8 +720,8 @@ func TestCommittedGoldSetIsWellFormed(t *testing.T) {
 		}
 		// The stratum is a STRUCTURAL classification -- the page carries one titled
 		// posting node -- while firing additionally requires the page to still render
-		// the ad it declares (ADR-0042). The two parted company when the predicate was
-		// narrowed to refuse withdrawn ads, so this asks the mechanism itself rather
+		// the posting it declares (ADR-0042). The two parted company when the predicate was
+		// narrowed to refuse withdrawn postings, so this asks the mechanism itself rather
 		// than reading firing off the stratum.
 		posting, lone := crawler.LonePosting(&row.Content)
 		fires := lone && posting.Title != "" && crawler.RendersDeclaredPosting(&row.Content, posting)
@@ -868,7 +868,7 @@ func TestExpectedSheetRoundTrip(t *testing.T) {
 			URL: "https://b.test/jobs/2", Stratum: stratumLonePosting, Label: bench.ExtractResidue,
 			Expected: &goldExpected{
 				Title: "#Cook\tat\nB Corp", Location: "", WorkArrangement: "remote",
-				FreeOK: true, FreeOKNote: "expired ad still serving its posting node",
+				FreeOK: true, FreeOKNote: "expired posting still serving its structured data",
 				ProposedBy: "script:test", ConfirmedBy: "A Human",
 			},
 		},
@@ -1073,7 +1073,7 @@ func TestApplyMergesExpectedAndStampsProvenance(t *testing.T) {
 	})
 
 	t.Run("an acceptance is refused where it means nothing", func(t *testing.T) {
-		accept := func(row *expectedSheetRow) { row.FreeOK, row.FreeOKNote = true, "expired ad" }
+		accept := func(row *expectedSheetRow) { row.FreeOK, row.FreeOKNote = true, "expired posting" }
 		for name, sheet := range map[string][]expectedSheetRow{
 			"free_ok on a detail row":    sheetFor(0, accept),
 			"free_ok on a hub-index row": sheetFor(2, accept),
@@ -1086,7 +1086,7 @@ func TestApplyMergesExpectedAndStampsProvenance(t *testing.T) {
 		if err != nil {
 			t.Fatalf("applyExpected refused an acceptance on a residue row: %v", err)
 		}
-		if !got[1].Expected.FreeOK || got[1].Expected.FreeOKNote != "expired ad" {
+		if !got[1].Expected.FreeOK || got[1].Expected.FreeOKNote != "expired posting" {
 			t.Errorf("expected = %+v, want the acceptance and its reason", got[1].Expected)
 		}
 	})

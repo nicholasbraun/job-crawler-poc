@@ -49,7 +49,7 @@ func NewExtractor(inner joblistingprocessor.JobListingExtractor) *Extractor {
 // on purpose: the model may find a title in the prose, where a Free Extraction would
 // only ever produce a nameless listing.
 //
-// The last condition is what keeps withdrawn ads out of the Corpus. A filled or
+// The last condition is what keeps withdrawn postings out of the Corpus. A filled or
 // expired posting is routinely still served with its full original JobPosting node
 // above a body reading only "This position is no longer active"; structurally it is
 // indistinguishable from a live posting, so an earlier form of this decorator saved

@@ -51,8 +51,8 @@ type StructuredPosting struct {
 //
 // Measured on the 70 labelled lone-posting rows of the Extract Gold Set, the two
 // populations do not overlap: across 51 real postings the ratio tops out at 1.49,
-// while all 16 withdrawal notices -- pages still serving the original ad as
-// structured data above a body reading only "This position is no longer active", in
+// while all 16 withdrawal notices -- pages still serving the original posting
+// as structured data above a body reading only "This position is no longer active", in
 // five languages -- start at 2.15. 1.8 sits in the empty band between them.
 //
 // It is placed low in that band on purpose. The two errors are not symmetric: a real
@@ -66,7 +66,7 @@ const maxDeclaredToRenderedRatio = 1.8
 // structured data declares, by comparing the declared description against the text
 // the page actually shows (ADR-0042).
 //
-// It exists because a withdrawn or filled ad is routinely served as a live one: the
+// It exists because a withdrawn or filled posting is routinely served as a live one: the
 // JobPosting node keeps the full original description while the body is replaced by a
 // one-line notice. Nothing else on such a page marks it as gone -- validThrough is
 // absent on 18 of 19 measured cases and expired on none -- so the discrepancy between
@@ -77,7 +77,7 @@ const maxDeclaredToRenderedRatio = 1.8
 // compare, and absence is not evidence of withdrawal. A page that renders nothing at
 // all is judged not to render its posting.
 //
-// Deliberately NOT applied to PostingBody: reading a withdrawn ad's structured
+// Deliberately NOT applied to PostingBody: reading a withdrawn posting's structured
 // description as the body is still the best text available for it (ADR-0041), and
 // changing that is a separate decision from whether to save it with no model call.
 //
