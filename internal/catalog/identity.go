@@ -514,6 +514,20 @@ var aggregatorHosts = map[string]struct{}{
 	"goodjobs.eu":    {}, // purpose-driven job board (multi-company)
 	"hiring.cafe":    {}, // job-search aggregator; hiringcafe.com is the same product
 	"hiringcafe.com": {}, // alternative domain for hiring.cafe
+	// Same audit, confirmed by employer diversity in the listings each had already
+	// minted rather than by host name alone.
+	"academiccareers.com": {}, // academic job board, many institutions
+	// VC-portfolio boards, the category speedinvest/lakestar/balderton above already
+	// cover; both list openings at portfolio companies, not their own firm's.
+	"accel.com": {}, // jobs.accel.com
+	"8vc.com":   {}, // jobs.8vc.com
+	// A job-board HOSTING platform: every {tenant}.careerwebsite.com is one
+	// association's or publication's board, and each lists many employers' openings
+	// (aam-us-jobs spans museums in five states; journalists spans Axios, Think Global
+	// Health, a university). So no tenant is a single Company's Career Page and the
+	// eTLD+1 match is right -- the same shape as getro.com above. Contrast a real
+	// multi-tenant ATS, where the tenant IS the employer.
+	"careerwebsite.com": {},
 }
 
 // sharedHostSuffixes are registrable domains (eTLD+1) that front many INDEPENDENT

@@ -531,6 +531,13 @@ func TestIsAggregatorHost(t *testing.T) {
 		{"goodjobs posting folds in via the board root", "https://goodjobs.eu/jobs/senior-backend-engineer-recup-gmbh", true},
 		{"hiring.cafe aggregator", "https://hiring.cafe/job/frontend-engineer-scalable-capital-berlin-qu92", true},
 		{"hiringcafe.com alternative domain", "https://hiringcafe.com/job/frontend-engineer-scalable-capital-berlin-qu92", true},
+		{"academiccareers board", "https://academiccareers.com", true},
+		{"accel portfolio board on a subdomain", "https://jobs.accel.com/jobs", true},
+		{"8vc portfolio board on a subdomain", "https://jobs.8vc.com/jobs", true},
+		// careerwebsite.com hosts one board per association/publication, each listing
+		// many employers -- so every tenant folds in via eTLD+1, unlike an ATS tenant.
+		{"careerwebsite tenant board folds in via eTLD+1", "https://aam-us-jobs.careerwebsite.com", true},
+		{"another careerwebsite tenant board", "https://crainsnewyork.careerwebsite.com/career-advice", true},
 		{"match is case-insensitive", "https://BuiltIn.com/jobs", true},
 		// A per-tenant ATS or recruiting-platform board root is a legitimate hub,
 		// not an aggregator -- its only defect is identity attribution (#46).
