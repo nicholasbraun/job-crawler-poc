@@ -320,6 +320,25 @@ const (
 	RungUnknown ExtractRung = "unknown"
 )
 
+// RejectRungs are every rung a Shadow Extraction can be attributed to: the rungs
+// that reject, plus RungUnknown. RungNone is absent -- a page that cleared every
+// rung is extracted for real and never sampled.
+//
+// It exists so the telemetry can create each series at zero BEFORE the first
+// sample lands. A counter that springs into existence on its first increment is
+// invisible to increase() over any window, because increase() measures growth from
+// the first scraped sample -- so the FIRST false-drop on a given rung, which is
+// exactly the event the live measurement exists to catch, reads as no change at
+// all. Priming the series costs a handful of permanently-zero rows and makes "this
+// rung has dropped nothing" a visible statement rather than a missing one.
+func RejectRungs() []ExtractRung {
+	return []ExtractRung{
+		RungATSBoardRoot, RungBareOrLocaleRoot, RungIndexTerminal, RungRejectPath,
+		RungCareerIndex, RungATSEmbed, RungOpeningsIndex, RungJobLinkSaturation,
+		RungPositiveEvidence, RungUnknown,
+	}
+}
+
 // ExtractDecision is ShouldExtract with the REJECTING RUNG reported alongside the
 // verdict. The two share one implementation so the attribution can never describe a
 // different sequence than the one that ran. On an accept the rung is RungNone.

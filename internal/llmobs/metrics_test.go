@@ -166,3 +166,87 @@ func TestMetricsShadowDroppedIsItsOwnCounter(t *testing.T) {
 		}
 	}
 }
+
+// TestPrimeShadowMakesTheFirstSampleVisible pins what priming is FOR, which is not
+// "the series exist" but "the first increment is observable". A counter that first
+// appears already holding 1 shows an increase() of 0 over every window, because
+// increase() measures growth from the first scraped sample -- so without this the
+// first false-drop on a rung, the event the whole lane exists to catch, is silently
+// absorbed as the series' baseline. Live verification of PR #272 hit exactly that:
+// the raw counter read 1 accept while every range-scoped panel read 0.
+//
+// The test states it as a before/after observation, the way a scrape would see it:
+// a primed series is present at 0 first, and reads 1 after one sample.
+func TestPrimeShadowMakesTheFirstSampleVisible(t *testing.T) {
+	reader := installLLMReader(t)
+	metrics := llmobs.NewMetrics()
+	rec := llmobs.NewRecorder(metrics, nil, nil, "")
+	ctx := t.Context()
+
+	metrics.PrimeShadow(ctx, []string{"positive_evidence", "index_terminal"})
+
+	value := func(t *testing.T, name, rung, verdict string) (int64, bool) {
+		t.Helper()
+		var rm metricdata.ResourceMetrics
+		if err := reader.Collect(ctx, &rm); err != nil {
+			t.Fatalf("collecting metrics: %v", err)
+		}
+		m := llmMetric(&rm, name)
+		if m == nil {
+			return 0, false
+		}
+		sum, ok := m.Data.(metricdata.Sum[int64])
+		if !ok {
+			t.Fatalf("%s: unexpected data type %T", name, m.Data)
+		}
+		for _, dp := range sum.DataPoints {
+			r, hasRung := dp.Attributes.Value("rung")
+			if !hasRung || r.Emit() != rung {
+				continue
+			}
+			if verdict == "" {
+				return dp.Value, true
+			}
+			if v, has := dp.Attributes.Value("verdict"); has && v.Emit() == verdict {
+				return dp.Value, true
+			}
+		}
+		return 0, false
+	}
+
+	// The scrape a fresh deploy takes BEFORE anything happens: the series must exist,
+	// holding zero. Without priming there is nothing here at all, and that absence is
+	// what swallows the first sample.
+	for _, c := range []struct{ name, rung, verdict string }{
+		{"crawler.llm.shadow", "positive_evidence", "accept"},
+		{"crawler.llm.shadow", "index_terminal", "accept"},
+		{"crawler.llm.shadow", "positive_evidence", "abstain"},
+		{"crawler.llm.shadow.dropped", "positive_evidence", ""},
+	} {
+		got, present := value(t, c.name, c.rung, c.verdict)
+		if !present {
+			t.Errorf("%s{rung=%s,verdict=%s} is absent before any sample; priming did not create it", c.name, c.rung, c.verdict)
+			continue
+		}
+		if got != 0 {
+			t.Errorf("%s{rung=%s,verdict=%s} = %d before any sample, want 0", c.name, c.rung, c.verdict, got)
+		}
+	}
+
+	// One sample. The series must now read 1, i.e. the growth from the primed zero is
+	// observable rather than being the series' first-ever value.
+	rec.Shadow(ctx, llmobs.ShadowAccept, "positive_evidence")
+	rec.ShadowDropped(ctx, "positive_evidence")
+
+	if got, present := value(t, "crawler.llm.shadow", "positive_evidence", "accept"); !present || got != 1 {
+		t.Errorf("shadow{rung=positive_evidence,verdict=accept} = %d (present=%v) after one sample, want 1", got, present)
+	}
+	if got, present := value(t, "crawler.llm.shadow.dropped", "positive_evidence", ""); !present || got != 1 {
+		t.Errorf("shadow.dropped{rung=positive_evidence} = %d (present=%v) after one shed sample, want 1", got, present)
+	}
+	// A rung that never fires stays at zero rather than vanishing -- that is the
+	// reading "this rung has dropped nothing", which an absent series cannot make.
+	if got, present := value(t, "crawler.llm.shadow", "index_terminal", "accept"); !present || got != 0 {
+		t.Errorf("shadow{rung=index_terminal,verdict=accept} = %d (present=%v), want a present zero", got, present)
+	}
+}

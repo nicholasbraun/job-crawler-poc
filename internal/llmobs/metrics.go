@@ -123,6 +123,35 @@ func (m *Metrics) recordShadowDropped(ctx context.Context, rung string) {
 	m.shadowDropped.Add(ctx, 1, metric.WithAttributes(attribute.String("rung", rung)))
 }
 
+// PrimeShadow creates every Shadow Extraction series at zero, for each of rungs
+// crossed with each verdict, plus the shed counter per rung. Call it once at
+// start-up, before any sample can land.
+//
+// It exists because an OTel counter has no series until its first increment, and
+// increase() measures growth from the first SCRAPED sample. A counter that appears
+// already holding 1 therefore shows an increase of 0: the first shadow accept on a
+// rung -- precisely the event this lane exists to catch -- is invisible to every
+// range-scoped panel and alert until a second one arrives. Live verification of
+// PR #272 hit exactly that, with the raw counter reading one accept while every
+// panel read zero. On a fresh deploy, which is when the first post-flip reading is
+// taken, that is the difference between "no false-drops" and "one nobody can see".
+//
+// The rungs are passed in rather than enumerated here so this package keeps knowing
+// nothing about the Extract Gate: the composition root supplies pagegate.RejectRungs.
+// The cost is a few permanently-zero rows, which also make "this rung has dropped or
+// shed nothing" an explicit reading rather than an absent one.
+func (m *Metrics) PrimeShadow(ctx context.Context, rungs []string) {
+	for _, rung := range rungs {
+		for _, verdict := range []ShadowVerdict{ShadowAccept, ShadowAbstain, ShadowError} {
+			m.shadow.Add(ctx, 0, metric.WithAttributes(
+				attribute.String("verdict", string(verdict)),
+				attribute.String("rung", rung),
+			))
+		}
+		m.shadowDropped.Add(ctx, 0, metric.WithAttributes(attribute.String("rung", rung)))
+	}
+}
+
 func (m *Metrics) recordContent(ctx context.Context, kind Kind, duplicate bool) {
 	result := "unique"
 	if duplicate {

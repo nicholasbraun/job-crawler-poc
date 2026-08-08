@@ -42,6 +42,7 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/openrouter"
 	"github.com/nicholasbraun/job-crawler-poc/internal/orchestrator"
 	myotel "github.com/nicholasbraun/job-crawler-poc/internal/otel"
+	"github.com/nicholasbraun/job-crawler-poc/internal/pagegate"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
 	"github.com/nicholasbraun/job-crawler-poc/internal/pgenv"
 	"github.com/nicholasbraun/job-crawler-poc/internal/pool"
@@ -507,6 +508,16 @@ func newFactory(
 	// its own Stats + Recorder below for the end-of-run summary log.
 	llmMetrics := llmobs.NewMetrics()
 	llmDupProbe := llmobs.NewDupProbe(redisClient)
+	// Create the Shadow Extraction series at zero before any sample can land, so the
+	// FIRST false-drop on a rung is visible to increase() rather than being absorbed
+	// as the series' baseline. llmobs owns the verdicts; pagegate owns the rungs.
+	// context.Background: this only creates zero-valued series on the meter, so there
+	// is nothing for a cancellation to abort and no run to tie it to.
+	primeRungs := make([]string, 0, len(pagegate.RejectRungs()))
+	for _, rung := range pagegate.RejectRungs() {
+		primeRungs = append(primeRungs, string(rung))
+	}
+	llmMetrics.PrimeShadow(context.Background(), primeRungs)
 
 	contentFilter := filter.Chain[*crawler.Content]() // empty chain = pass everything
 
