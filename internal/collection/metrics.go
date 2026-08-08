@@ -11,10 +11,11 @@ import (
 
 // Metrics holds the Collection Crawl's otel/Prometheus instruments (ADR-0036): the
 // per-Cycle counters (found / refreshed / closed listings, boards fetched /
-// incomplete) and the Cycle-duration histogram. They are built once and shared
-// across Cycles (like llmobs.Metrics), tapped by the ATS and refetch lanes. The
-// headline ListingsFound run counter is reused separately; these surface the
-// collection-specific detail the run row does not carry.
+// incomplete), the refetch lane's two gauges (robots friction, and the re-gate
+// rejects a full content re-gate would Close) and the Cycle-duration histogram. They
+// are built once and shared across Cycles (like llmobs.Metrics), tapped by the ATS and
+// refetch lanes. The headline ListingsFound run counter is reused separately; these
+// surface the collection-specific detail the run row does not carry.
 type Metrics struct {
 	found            metric.Int64Counter
 	refreshed        metric.Int64Counter
@@ -22,6 +23,7 @@ type Metrics struct {
 	boardsFetched    metric.Int64Counter
 	boardsIncomplete metric.Int64Counter
 	robotsBlocked    metric.Int64Counter
+	regateRejected   metric.Int64Counter
 	cycleDuration    metric.Float64Histogram
 }
 
@@ -37,6 +39,7 @@ func NewMetrics() *Metrics {
 		boardsFetched:    counter(meter, "collection.boards.fetched"),
 		boardsIncomplete: counter(meter, "collection.boards.incomplete"),
 		robotsBlocked:    counter(meter, "collection.refetch.robots_blocked"),
+		regateRejected:   counter(meter, "collection.refetch.regate_rejected"),
 		cycleDuration:    histogram(meter, "collection.cycle.duration_ms"),
 	}
 }
@@ -78,6 +81,13 @@ func (m *Metrics) BoardIncomplete(ctx context.Context) { m.boardsIncomplete.Add(
 // with a transient robots.txt 5xx the checker folds to disallow-all, so a spike
 // reads as a robots.txt outage more than mass Disallow adoption.
 func (m *Metrics) RobotsBlocked(ctx context.Context) { m.robotsBlocked.Add(ctx, 1) }
+
+// RegateRejected tallies one Open Job Listing whose page the Extract Gate would now
+// reject on full content — how many the Corpus would shed if a content re-gate ran
+// (ADR-0044). It is a measurement, not an action: nothing is Closed, and no listing's
+// Listing Lifecycle, Liveness, streak or timestamps move. Read it as an increase over a
+// Cycle, and as a LOWER bound — only listings actually refetched this Cycle are judged.
+func (m *Metrics) RegateRejected(ctx context.Context) { m.regateRejected.Add(ctx, 1) }
 
 // RecordCycle records one whole-Cycle wall-clock duration in milliseconds.
 func (m *Metrics) RecordCycle(ctx context.Context, d time.Duration) {
