@@ -46,14 +46,13 @@ type StructuredPosting struct {
 }
 
 // maxDeclaredToRenderedRatio bounds how much longer a posting's declared description
-// may be than the text the page actually renders before RendersDeclaredPosting judges
-// the page to have stopped publishing it.
+// may be than the text the page actually renders before WithdrawalNotice judges the
+// page to have stopped offering it.
 //
-// Measured on the 70 labelled lone-posting rows of the Extract Gold Set, the two
-// populations do not overlap: across 51 real postings the ratio tops out at 1.49,
-// while all 16 withdrawal notices -- pages still serving the original posting
-// as structured data above a body reading only "This position is no longer active", in
-// five languages -- start at 2.15. 1.8 sits in the empty band between them.
+// Measured on the labelled lone-posting rows of the Extract Gold Set, the two
+// populations do not overlap: across real postings the ratio tops out at 1.49, while
+// every withdrawal notice that replaces its body with a one-line message starts at
+// 2.15. 1.8 sits in the empty band between them.
 //
 // It is placed low in that band on purpose. The two errors are not symmetric: a real
 // posting wrongly delegated merely costs one model call and is extracted anyway,
@@ -62,36 +61,72 @@ type StructuredPosting struct {
 // the page keeps serving the same body and so reads as unchanged forever.
 const maxDeclaredToRenderedRatio = 1.8
 
-// RendersDeclaredPosting reports whether a page still renders the posting its
-// structured data declares, by comparing the declared description against the text
-// the page actually shows (ADR-0042).
+// closurePhrases are the sentences a page shows once it has stopped offering the
+// posting its structured data still declares. Read off the live capture rather than
+// invented: these are the banners the ATS and job-board templates in it actually
+// emit, in the languages they emit them in.
 //
-// It exists because a withdrawn or filled posting is routinely served as a live one: the
-// JobPosting node keeps the full original description while the body is replaced by a
-// one-line notice. Nothing else on such a page marks it as gone -- validThrough is
-// absent on 18 of 19 measured cases and expired on none -- so the discrepancy between
-// what the page CLAIMS to publish and what it SHOWS is the only structural signal
-// there is. See maxDeclaredToRenderedRatio for the measured separation.
+// They are whole phrases on purpose, never tokens. The same capture holds a German UI
+// control reading "nicht mehr anzeigen" ("don't show again") and French prose reading
+// "55% des postes de managers en magasins ont été pourvus en interne" -- a "nicht
+// mehr" or "pourvu" token would refuse both of those live postings. A phrase this
+// specific has no such second reading.
 //
-// A posting that declares no description is not judged (true): there is nothing to
-// compare, and absence is not evidence of withdrawal. A page that renders nothing at
-// all is judged not to render its posting.
+// Matched as a case-folded substring of the whole collapsed body: on the capture,
+// restricting the search to the first 1000 characters changed nothing (177 pages
+// either way), so the extra rule would buy no precision and would only hide a banner
+// some template places lower down.
+var closurePhrases = []string{
+	"no longer accepting applications", // Getro/Consider boards: "This job/listing is ..."
+	"this job was removed",             // BuiltIn: "Sorry, this job was removed at 04:14 p.m. ..."
+	"this position is no longer active",
+	"nie jest już aktywne",   // pl
+	"já não está disponível", // pt
+	"n'est plus disponible",  // fr
+}
+
+// WithdrawalNotice reports whether a page has stopped offering the posting its
+// structured data still declares -- a filled, expired or withdrawn posting served with
+// its JobPosting node intact (CONTEXT.md, Withdrawal Notice; ADR-0042).
 //
-// Deliberately NOT applied to PostingBody: reading a withdrawn posting's structured
-// description as the body is still the best text available for it (ADR-0041), and
-// changing that is a separate decision from whether to save it with no model call.
+// It matters because such a page is otherwise indistinguishable from a live one, and
+// saving it puts a job that does not exist into the Corpus with no model in the loop
+// and no way back out: the page keeps serving this same body, so its extraction-cache
+// key never changes and the refetch lane confirms the listing Alive every Collection
+// Cycle. validThrough does not help -- it is absent on 18 of 19 measured cases and
+// expired on none.
+//
+// Two shapes, because sites produce two. Most replace the body with a one-line
+// message, leaving the page declaring far more than it renders (see
+// maxDeclaredToRenderedRatio). The rest keep the whole posting and put a banner above
+// it, where only the words say it is gone (see closurePhrases); on the capture that
+// second shape is 95 pages the length comparison alone would have missed.
+//
+// A posting declaring no description is judged by its banner alone: there is nothing
+// to compare lengths against, and a missing description is not evidence of withdrawal.
+//
+// Deliberately NOT applied to PostingBody: a withdrawn posting's structured
+// description is still the best text available for it (ADR-0041), and changing that is
+// a separate decision from whether to save it with no model call.
 //
 // Pure: no model, no network, no database.
-func RendersDeclaredPosting(content *Content, posting StructuredPosting) bool {
+func WithdrawalNotice(content *Content, posting StructuredPosting) bool {
+	body := strings.Join(strings.Fields(content.MainContent), " ")
+	folded := strings.ToLower(body)
+	for _, phrase := range closurePhrases {
+		if strings.Contains(folded, phrase) {
+			return true
+		}
+	}
+
 	declared := len(strings.Join(strings.Fields(htmlToText(posting.Description)), " "))
 	if declared == 0 {
-		return true
-	}
-	rendered := len(strings.Join(strings.Fields(content.MainContent), " "))
-	if rendered == 0 {
 		return false
 	}
-	return float64(declared)/float64(rendered) <= maxDeclaredToRenderedRatio
+	if body == "" {
+		return true
+	}
+	return float64(declared)/float64(len(body)) > maxDeclaredToRenderedRatio
 }
 
 // LonePosting reads the single job posting a page publishes in its structured data,

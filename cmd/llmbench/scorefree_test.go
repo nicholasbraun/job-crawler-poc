@@ -27,15 +27,17 @@ import (
 // must be seen in a diff rather than absorbed silently. It is a regression ratchet
 // on a committed file, never a quality threshold on the mechanism (ADR-0020 keeps
 // coverage soft).
-const freeExtractionFires = 54
+const freeExtractionFires = 51
 
 // acceptedFreeOnResidue is how many of those rows are labelled residue and carry an
 // explicit, per-row acceptance of the fire.
 //
 // Sixteen of the nineteen fires this number once excused were postings withdrawn while
 // their JobPosting JSON-LD kept being served; the predicate was narrowed to refuse
-// them (crawler.RendersDeclaredPosting) rather than excuse them, and they no longer
-// fire at all.
+// them (crawler.WithdrawalNotice) rather than excuse them, and they no longer fire at
+// all. Three more were found during the confirmation pass -- a closure banner above an
+// otherwise complete posting, which no length comparison can see -- relabelled residue
+// and refused by the same function's banner test.
 //
 // The three that remain are evergreen talent-pool pages -- "General Application",
 // "Spontaneous Application", an internship-enquiry page -- which carry datePosted,
@@ -100,7 +102,7 @@ func TestCommittedGoldSetFreeExtractionFidelity(t *testing.T) {
 // declares (ADR-0042). The gap between them is exactly the withdrawn postings, which the
 // stratum still samples -- deliberately, since they are what the narrowing must keep
 // refusing -- and withdrawnInLonePostingStratum pins how many there are.
-const withdrawnInLonePostingStratum = 16
+const withdrawnInLonePostingStratum = 19
 
 func TestCommittedGoldSetFreeExtractionIsContainedInTheLonePostingStratum(t *testing.T) {
 	rows, _, err := replayFreeExtraction(t.Context(), filepath.Join("extract-goldset", goldSetFile))

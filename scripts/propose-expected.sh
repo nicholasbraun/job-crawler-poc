@@ -92,12 +92,42 @@ import hashlib, html, json, re, sys
 
 TAG = re.compile(r"<[^>]*>")
 
+# The banners a page shows once it has stopped offering the posting its structured
+# data still declares (internal/structured_posting.go closurePhrases). Whole phrases,
+# never tokens: the same capture holds a German "nicht mehr anzeigen" dismiss control
+# and French prose about roles "pourvus en interne".
+CLOSURE_PHRASES = (
+    "no longer accepting applications",
+    "this job was removed",
+    "this position is no longer active",
+    "nie jest ju\u017c aktywne",
+    "j\u00e1 n\u00e3o est\u00e1 dispon\u00edvel",
+    "n\u0027est plus disponible",  # apostrophe escaped: this file embeds python in a single-quoted shell string
+)
+
 def to_text(s):
     # internal/posting_body.go htmlToText: strip tags to spaces, unescape once,
     # strip again (a JSON-LD block is raw text to the tokenizer, so auto-escaped
     # markup only appears after the unescape), then collapse whitespace. Python
     # str.split() treats NBSP as whitespace exactly as Go strings.Fields does.
     return " ".join(TAG.sub(" ", html.unescape(TAG.sub(" ", s))).split())
+
+# Carry the HUMAN-authored columns through a re-proposal. This script reads the
+# machine-readable fields; free_ok, its note, and confirmed_by are a person\u0027s work and
+# are not this script\u0027s to discard. Without this, regenerating the sheet after a
+# mechanism change would silently withdraw every acceptance and every confirmation.
+# (goldset-apply still retracts a confirmation whose values actually changed.)
+human = {}
+try:
+    with open(sys.argv[1], encoding="utf-8") as prev:
+        for line in prev:
+            if line.startswith("#"):
+                continue
+            f = line.rstrip("\n").split("\t")
+            if len(f) >= 10:
+                human[f[0]] = (f[6], f[7], f[9])
+except FileNotFoundError:
+    pass
 
 rows = []
 for line in sys.stdin:
@@ -106,14 +136,18 @@ for line in sys.stdin:
     r = json.loads(line)
     if r["nodes"] != 1:
         sys.exit("propose-expected.sh: %s carries %d JobPosting nodes, want exactly 1" % (r["url"], r["nodes"]))
-    # The mechanism refuses a page that declares far more than it renders -- a
-    # withdrawn posting still served in full above a one-line notice (ADR-0042). Applied
-    # here as its own reading, with the same 1.8 bound the domain uses, so the sheet
-    # lists exactly the rows a correct Free Extraction fires on. A row that drops out
-    # here has its expectation cleared by goldset-apply.
+    # The mechanism refuses a Withdrawal Notice: a filled or expired posting still
+    # served with its JobPosting node intact (ADR-0042). Two shapes -- the body
+    # replaced by a one-line message, so the page declares far more than it renders;
+    # or the posting left whole under a banner, where only the words say it is gone.
+    # Applied here as its own reading, with the same bound and phrases the domain
+    # uses, so the sheet lists exactly the rows a correct Free Extraction fires on. A
+    # row that drops out here has its expectation cleared by goldset-apply.
+    body = " ".join(r["body"].split())
+    if any(p in body.lower() for p in CLOSURE_PHRASES):
+        continue
     declared = len(to_text(r["description"]))
-    rendered = len(" ".join(r["body"].split()))
-    if declared and (not rendered or declared / rendered > 1.8):
+    if declared and (not body or declared / len(body) > 1.8):
         continue
 
     loc = r["location"]
@@ -123,18 +157,19 @@ for line in sys.stdin:
     # posting, which is the one thing this guard exists to catch. A script that
     # proposes its own exceptions cannot go red on the stratum that fires, so it must
     # only ever be added by a human editing this sheet, with a reason in their words.
-    free_ok = False
+    rid = hashlib.sha256(r["url"].encode()).hexdigest()[:12]
+    free_ok, free_ok_note, confirmed_by = human.get(rid, ("false", "", ""))
     rows.append([
-        hashlib.sha256(r["url"].encode()).hexdigest()[:12],
+        rid,
         r["url"],
         r["label"],
         to_text(r["title"]),
         location,
         "remote" if r["remote"] else "unspecified",
-        "true" if free_ok else "false",
+        free_ok,
+        free_ok_note,
         "",
-        "",
-        "",
+        confirmed_by,
     ])
 
 rows.sort(key=lambda row: row[1])

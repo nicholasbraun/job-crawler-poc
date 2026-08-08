@@ -27,26 +27,39 @@ enters the Corpus as a live job with no model in the loop, and the refetch lane 
 remove it: the page keeps serving that same body, so its `SourceHash` reads unchanged and the
 listing is confirmed Alive every Collection Cycle, forever.
 
-So the predicate gained a third condition: the page must still render the posting it declares
-(`crawler.RendersDeclaredPosting`). Nothing else marks these pages — `validThrough` is absent
-on 18 of the 19 and expired on none, and their titles appear in their bodies exactly as a live
-posting's does. The only structural signal is the discrepancy between what the page **claims** to
-publish and what it **shows**. Measured across the 70 labelled lone-posting rows the two
-populations do not overlap: 51 real postings top out at a declared/rendered ratio of 1.49,
-while all 16 withdrawal notices start at 2.15. The bound is set at **1.8**, low in that empty
-band on purpose — a real posting wrongly delegated costs one model call and is extracted
-anyway, while a withdrawal notice wrongly extracted is permanent.
+So the predicate gained a third condition: the page must not be a **Withdrawal Notice**
+(`crawler.WithdrawalNotice`). `validThrough` cannot serve — it is absent on 18 of the 19 and
+expired on none — and neither can the title, which appears in these bodies exactly as a live
+posting's does.
 
-The narrowing removes all 16 withdrawal fires and **loses no real posting**: coverage over the
-gold set's detail rows is unchanged at 51.
+Sites produce the shape two ways, and both had to be recognized:
 
-**Three known false fires remain**, and they are recorded here rather than excused: evergreen
-talent-pool pages — "General Application", "Spontaneous Application", an internship-enquiry
-page — which publish `datePosted`, `employmentType`, `identifier`, `hiringOrganization`, and
-in one case `baseSalary`, exactly as a real posting does. No structural signal distinguishes
-them; only reading them does, which is what the model is for. The #256 fidelity check is
-therefore **red on exactly these three** until a human either accepts each one with a written
-reason or the mechanism is narrowed further. That red is the guard working, not a defect.
+- **The body is replaced by a message.** The page then declares far more than it renders.
+  Across the labelled lone-posting rows the populations do not overlap: real postings top out
+  at a declared/rendered ratio of 1.49, every one of these starts at 2.15. The bound is **1.8**,
+  low in that empty band on purpose — a real posting wrongly delegated costs one model call and
+  is extracted anyway, while a withdrawal notice wrongly extracted is permanent.
+- **The posting is left whole under a banner.** Here no length comparison can see anything: the
+  page really does render its posting, and only the words say it is gone. Recognized by a small
+  set of whole banner phrases read off the live capture. They are phrases, never tokens,
+  because the same capture holds a German "nicht mehr anzeigen" dismiss control and French prose
+  about roles "pourvus en interne" that a token would refuse. On the capture this second shape
+  is **95 pages the length comparison alone missed**.
+
+The second shape was found only during the gold set's human confirmation pass — three pages
+labelled `detail` whose bodies opened "This job is no longer accepting applications" and "Sorry,
+this job was removed at 04:14 p.m." Three code reviews, the benchmark and a live crawl had all
+passed over them. They are now labelled `residue` and refused.
+
+The narrowing **loses no real posting**: every row it removes is one a reader confirmed is not a
+live posting.
+
+**Three known false fires remain**, accepted rather than hidden: evergreen talent-pool pages —
+"General Application", "Spontaneous Application", an internship-enquiry page — which publish
+`datePosted`, `employmentType`, `identifier`, `hiringOrganization`, and in one case `baseSalary`,
+exactly as a real posting does. No structural signal distinguishes them; only reading them does,
+which is what the model is for. Each carries a written reason and a human confirmer in the gold
+set, so the count can only rise by a person's deliberate act.
 
 ## Why this is not the #45/#46 regression
 

@@ -237,7 +237,7 @@ A Job Listing read straight from a page's lone structured-data posting, with no 
 _Avoid_: bypass, JSON-LD extract, shortcut
 
 **Withdrawal Notice**:
-A posting page whose structured data still declares a Job Listing while its body has been replaced by a closure message. Refused by the Free Extraction — which would otherwise save a job that no longer exists, with no model in the loop and no way for the refetch lane to Close it, since the page keeps serving that same body unchanged. Detected by the gap between what a page declares and what it renders, not by `validThrough`, which these pages leave absent.
+A posting page whose structured data still declares a Job Listing the page has stopped offering. Refused by the Free Extraction — which would otherwise save a job that no longer exists, with no model in the loop and no way for the refetch lane to Close it, since the page keeps serving that same body unchanged. Sites produce it two ways: the body replaced by a closure message, leaving the page declaring far more than it renders; or the whole posting left in place under a closure banner, where only the wording says it is gone. `validThrough` marks neither — these pages leave it absent.
 _Avoid_: expired posting, dead listing, stale ad
 
 **Extractor Abstain**:

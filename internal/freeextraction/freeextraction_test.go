@@ -172,7 +172,7 @@ func TestExtractorDelegates(t *testing.T) {
 		},
 		{
 			// A filled or expired posting still served in full as structured data, above a
-			// body that is only a notice. Saving it would put a job that does not exist
+			// body that is only a message. Saving it would put a job that does not exist
 			// into the Corpus with no model in the loop, and the refetch lane could never
 			// close it: the page keeps serving this same body, so it reads as unchanged
 			// forever. The model reads the notice and abstains.
@@ -184,6 +184,20 @@ func TestExtractorDelegates(t *testing.T) {
 					"Either the position was filled, or the ad has expired.",
 				JSONLD: []string{`{"@type":"JobPosting","title":"Operations Team Lead - NYC",
 					"description":"We are hiring an Operations Team Lead for our New York office. You will own the daily running of the site, lead a team of five, report to the GM, and design the processes the region scales on. We offer a competitive salary, equity, health cover, and a hybrid schedule out of Manhattan. Previous operations leadership experience in a high-growth environment is required."}`},
+			},
+		}, {
+			// The other shape: the whole posting is still rendered and only a banner says
+			// it is gone, so no length comparison can see it. Banner quoted verbatim from
+			// the pages it is drawn from -- their wording, not the domain's vocabulary
+			// (CONTEXT.md, Job Listing).
+			name: "a closure banner above an otherwise complete posting",
+			content: crawler.Content{
+				MainContent: "Data Operations Specialist UVeye This job is no longer accepting applications " +
+					"See open jobs at UVeye. We are hiring a Data Operations Specialist for our R&D team. " +
+					"You will own the data pipeline end to end, work with engineering on ingestion, and " +
+					"report to the Head of Data. Tel Aviv, full-time, intermediate level.",
+				JSONLD: []string{`{"@type":"JobPosting","title":"Data Operations Specialist",
+					"description":"We are hiring a Data Operations Specialist for our R&D team. You will own the data pipeline end to end, work with engineering on ingestion, and report to the Head of Data. Tel Aviv, full-time, intermediate level."}`},
 			},
 		},
 	}

@@ -335,11 +335,12 @@ func TestLonePosting(t *testing.T) {
 	}
 }
 
-// TestRendersDeclaredPosting covers the withdrawal-notice guard (ADR-0042): a page
-// that keeps serving a filled posting's structured data above a one-line notice claims far
-// more than it shows, and that discrepancy is the only structural signal there is --
-// validThrough is absent on 18 of 19 measured withdrawal notices and expired on none.
-func TestRendersDeclaredPosting(t *testing.T) {
+// TestWithdrawalNotice covers the guard that keeps a filled or expired posting out of
+// the Corpus (ADR-0042). Sites produce two shapes of it -- a body replaced by a
+// one-line message, and the whole posting left in place under a banner -- and both
+// have to be recognized, since a page serving either is otherwise indistinguishable
+// from a live posting.
+func TestWithdrawalNotice(t *testing.T) {
 	const declared = "We are hiring a Go engineer to work on our crawler. You will design and build " +
 		"distributed systems, own services end to end, and mentor other engineers. We offer a " +
 		"competitive salary, a learning budget, and a hybrid working model out of our Berlin office."
@@ -351,48 +352,91 @@ func TestRendersDeclaredPosting(t *testing.T) {
 		want        bool
 	}{
 		{
-			name:        "a page rendering the posting it declares still renders it",
+			name:        "a page rendering the posting it declares is not a withdrawal notice",
 			description: declared,
 			mainContent: "Backend Engineer " + declared + " Apply now.",
-			want:        true,
-		},
-		{
-			// The shape this guard exists for: the full posting in JSON-LD, a notice in
-			// the body. The notice is quoted verbatim from the pages it is drawn from --
-			// their wording, not the domain's vocabulary (CONTEXT.md, Job Listing).
-			name:        "a withdrawal notice under a full posting does not render it",
-			description: declared,
-			mainContent: "Backend Engineer This position is no longer active. Either the position was filled, or the ad has expired.",
 			want:        false,
 		},
 		{
-			// Measured: real postings reach 1.49 without being withdrawn, so a body
-			// merely shorter than the posting must still count as rendering it.
-			name:        "a body somewhat shorter than the posting still renders it",
+			// Measured: real postings reach a declared/rendered ratio of 1.49 without
+			// being withdrawn, so a body merely shorter than the posting must pass.
+			name:        "a body somewhat shorter than the posting is not a withdrawal notice",
 			description: declared,
 			mainContent: declared[:len(declared)*2/3],
+			want:        false,
+		},
+		{
+			// Shape one: the body is replaced by a message, so the page declares far
+			// more than it renders.
+			name:        "a one-line message under a full declared posting",
+			description: declared,
+			mainContent: "Backend Engineer This position is no longer active.",
 			want:        true,
 		},
 		{
-			// HTML is reduced before measuring, or markup would inflate the posting's length
-			// and delegate live postings whose body the parser already stripped.
+			// Shape two: the posting is all still there and only the banner says it is
+			// gone, so no length comparison can see it. Quoted from the pages it is
+			// drawn from -- their wording, not the domain's (CONTEXT.md, Job Listing).
+			name:        "a banner above an otherwise complete posting",
+			description: declared,
+			mainContent: "Data Operations Specialist UVeye This job is no longer accepting applications " +
+				"See open jobs at UVeye. " + declared,
+			want: true,
+		},
+		{
+			name:        "a removal banner naming the time it happened",
+			description: declared,
+			mainContent: "Product Training Specialist Sorry, this job was removed at 04:14 p.m. (MST) on Saturday. " + declared,
+			want:        true,
+		},
+		{
+			name:        "a banner in another language",
+			description: declared,
+			mainContent: "HR Manager L'offre n'est plus disponible. " + declared,
+			want:        true,
+		},
+		{
+			// The phrases are whole sentences, never tokens, because the same capture
+			// holds a "don't show again" control and prose about internally filled
+			// roles that a token would refuse.
+			name:        "a dismiss control is not a closure banner",
+			description: declared,
+			mainContent: "Backend Engineer " + declared + " Nicht mehr anzeigen Bewerben Job merken",
+			want:        false,
+		},
+		{
+			name:        "prose about roles filled internally is not a closure banner",
+			description: declared,
+			mainContent: "Store Manager " + declared + " En 2025, 55% des postes de managers en magasins ont été pourvus en interne.",
+			want:        false,
+		},
+		{
+			// Absence of a description is not evidence of withdrawal, so such a page is
+			// judged by its banner alone.
+			name:        "a posting declaring no description is judged by its banner alone",
+			description: "",
+			mainContent: "Backend Engineer Apply now.",
+			want:        false,
+		},
+		{
+			name:        "a posting declaring no description still shows its banner",
+			description: "",
+			mainContent: "Backend Engineer This job is no longer accepting applications.",
+			want:        true,
+		},
+		{
+			// HTML is reduced before measuring, or markup would inflate the posting's
+			// length and refuse live pages the parser already stripped.
 			name:        "markup in the declared posting is not counted as length",
 			description: "<div class=\"x\"><p>" + declared + "</p></div>",
 			mainContent: declared,
-			want:        true,
+			want:        false,
 		},
 		{
-			// Absence is not evidence of withdrawal: nothing to compare, so no judgment.
-			name:        "a posting declaring no description is not judged",
-			description: "",
-			mainContent: "This position is no longer active",
-			want:        true,
-		},
-		{
-			name:        "a page rendering nothing does not render its posting",
+			name:        "a page rendering nothing under a declared posting",
 			description: declared,
 			mainContent: "",
-			want:        false,
+			want:        true,
 		},
 	}
 
@@ -400,8 +444,8 @@ func TestRendersDeclaredPosting(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			content := &crawler.Content{MainContent: tt.mainContent}
 			posting := crawler.StructuredPosting{Title: "Backend Engineer", Description: tt.description}
-			if got := crawler.RendersDeclaredPosting(content, posting); got != tt.want {
-				t.Errorf("RendersDeclaredPosting = %v, want %v", got, tt.want)
+			if got := crawler.WithdrawalNotice(content, posting); got != tt.want {
+				t.Errorf("WithdrawalNotice = %v, want %v", got, tt.want)
 			}
 		})
 	}

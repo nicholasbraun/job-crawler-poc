@@ -35,29 +35,23 @@ import (
 // pendingHumanConfirmations is how many lone-posting rows still carry an
 // LLM-proposed label no human has confirmed. #254 requires 0.
 //
-// It is 4, and those four are held back deliberately rather than left over. The
-// confirmation pass found three pages whose body carries a closure banner ("This
-// job is no longer accepting applications", "this job was removed") above an
-// otherwise complete posting, all labelled detail; and one open-application page
-// labelled detail where the same shape is labelled residue elsewhere in the set.
-// Confirming them would attest that saving a closed job is correct, and would count
-// them among the 51 detail fires the mechanism is measured by.
-//
-// They are the residue of the withdrawn-posting problem that ADR-0042's length-ratio test
-// cannot reach BY DESIGN: these pages do render their posting, so the ratio stays under
-// the bound. Resolving them needs a decision, not a stamp -- see the open question
-// in the Extract Gold Set README. RATCHET: lower it as confirmations land, never
-// raise it.
-const pendingHumanConfirmations = 4
+// It is 1. The confirmation pass found three pages carrying a closure banner above an
+// otherwise complete posting; they were relabelled residue and the mechanism now
+// refuses them by that banner, so their labels are confirmed and they no longer fire.
+// What remains is one open-application page labelled detail where the same shape is
+// labelled residue elsewhere in the set -- a labelling inconsistency the set should
+// answer the same way twice, written up in the Extract Gold Set README. RATCHET:
+// lower it as confirmations land, never raise it.
+const pendingHumanConfirmations = 1
 
 // pendingExpectedConfirmations is how many rows carry an agent-proposed expected
 // extraction that no human has confirmed. #256 requires 0: the values were read off
 // each page's own JSON-LD by scripts/propose-expected.sh and a human confirms them
-// at the review gate. It is 4, and they are the same four rows
-// pendingHumanConfirmations holds back: an expected extraction cannot be confirmed
-// while the label it is scored under is in question. Like pendingHumanConfirmations
-// it is a RATCHET -- lower it as confirmations land, never raise it.
-const pendingExpectedConfirmations = 4
+// at the review gate. It is 1, the same row pendingHumanConfirmations holds back: an
+// expected extraction cannot be confirmed while the label it is scored under is in
+// question. Like pendingHumanConfirmations it is a RATCHET -- lower it as
+// confirmations land, never raise it.
+const pendingExpectedConfirmations = 1
 
 // loadCommittedGoldSet reads the committed Extract Gold Set. The working directory
 // under `go test` is the package directory, so the relative path resolves without
@@ -719,12 +713,12 @@ func TestCommittedGoldSetIsWellFormed(t *testing.T) {
 			}
 		}
 		// The stratum is a STRUCTURAL classification -- the page carries one titled
-		// posting node -- while firing additionally requires the page to still render
-		// the posting it declares (ADR-0042). The two parted company when the predicate was
+		// posting node -- while firing additionally requires the page to still be
+		// offering the posting it declares (ADR-0042). The two parted company when the predicate was
 		// narrowed to refuse withdrawn postings, so this asks the mechanism itself rather
 		// than reading firing off the stratum.
 		posting, lone := crawler.LonePosting(&row.Content)
-		fires := lone && posting.Title != "" && crawler.RendersDeclaredPosting(&row.Content, posting)
+		fires := lone && posting.Title != "" && !crawler.WithdrawalNotice(&row.Content, posting)
 		if fires && row.Expected == nil {
 			t.Errorf("%s: the Free Extraction fires on it but it carries no expected extraction to score against", row.URL)
 		}
