@@ -16,9 +16,12 @@ import (
 // logged and the returned no-op instrument is still used, so a metrics hiccup
 // never breaks a crawl.
 type Metrics struct {
-	calls        metric.Int64Counter
-	duration     metric.Float64Histogram
-	gated        metric.Int64Counter
+	calls    metric.Int64Counter
+	duration metric.Float64Histogram
+	gated    metric.Int64Counter
+	// shadow counts Shadow Extractions by verdict (ADR-0044), on its own counter so
+	// measurement spend never lands in calls.
+	shadow       metric.Int64Counter
 	content      metric.Int64Counter
 	retries      metric.Int64Counter
 	deadletter   metric.Int64Counter
@@ -33,6 +36,7 @@ func NewMetrics() *Metrics {
 		calls:        counter(meter, "crawler.llm.calls"),
 		duration:     histogram(meter, "crawler.llm.call.duration", "ms"),
 		gated:        counter(meter, "crawler.llm.gated"),
+		shadow:       counter(meter, "crawler.llm.shadow"),
 		content:      counter(meter, "crawler.llm.content"),
 		retries:      counter(meter, "crawler.llm.retries"),
 		deadletter:   counter(meter, "crawler.llm.deadletter"),
@@ -79,6 +83,16 @@ func (m *Metrics) recordGated(ctx context.Context, kind Kind, reason Reason) {
 		attribute.String("kind", string(kind)),
 		attribute.String("reason", string(reason)),
 	))
+}
+
+// recordShadow counts one Shadow Extraction on its OWN counter, labelled by
+// verdict (ADR-0044). It never touches m.calls or m.duration: the shadow lane is
+// real spend the cost view sums separately, but the call counter must keep
+// meaning "extract calls the Extract Gate admitted". The counter carries only a
+// verdict attribute -- Shadow Extraction is extract-only, and a kind label would
+// invite a sum by (kind) that silently merges it with real calls.
+func (m *Metrics) recordShadow(ctx context.Context, verdict ShadowVerdict) {
+	m.shadow.Add(ctx, 1, metric.WithAttributes(attribute.String("verdict", string(verdict))))
 }
 
 func (m *Metrics) recordContent(ctx context.Context, kind Kind, duplicate bool) {

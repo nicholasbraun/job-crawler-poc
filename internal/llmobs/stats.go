@@ -12,6 +12,19 @@ import (
 type Stats struct {
 	classify kindStats
 	extract  kindStats
+	// shadow holds the Shadow Extraction stream's DURABLE-STAGE tallies (retries,
+	// dead-letters). Its verdict tallies live in shadowVerdicts instead, because a
+	// shadow verdict is deliberately not a call (ADR-0044).
+	shadow         kindStats
+	shadowVerdicts shadowStats
+}
+
+// shadowStats accumulates one run's Shadow Extraction verdicts. Separate from
+// kindStats so a shadow verdict can never be read as a call.
+type shadowStats struct {
+	accepts  atomic.Int64
+	abstains atomic.Int64
+	errors   atomic.Int64
 }
 
 type kindStats struct {
@@ -34,11 +47,29 @@ type kindStats struct {
 	deadletter atomic.Int64
 }
 
+// forKind routes a kind's tallies. KindShadow is listed explicitly because the
+// shadow stream records durable-stage retries and dead-letters under it: without
+// its own case the default would silently file them under the classifier.
 func (s *Stats) forKind(kind Kind) *kindStats {
-	if kind == KindExtract {
+	switch kind {
+	case KindExtract:
 		return &s.extract
+	case KindShadow:
+		return &s.shadow
+	default:
+		return &s.classify
 	}
-	return &s.classify
+}
+
+func (s *Stats) recordShadow(v ShadowVerdict) {
+	switch v {
+	case ShadowAccept:
+		s.shadowVerdicts.accepts.Add(1)
+	case ShadowAbstain:
+		s.shadowVerdicts.abstains.Add(1)
+	default:
+		s.shadowVerdicts.errors.Add(1)
+	}
 }
 
 func (s *Stats) recordCall(kind Kind, outcome Outcome) {
@@ -72,6 +103,7 @@ func (s *Stats) recordContent(kind Kind, duplicate bool) {
 const (
 	classifyPrefix = "classify"
 	extractPrefix  = "extract"
+	shadowPrefix   = "shadow"
 )
 
 // Summary returns the run's LLM-stage tallies as slog key/value pairs for a
@@ -80,7 +112,26 @@ const (
 // ratio), per kind.
 func (s *Stats) Summary() []any {
 	kv := s.classify.summary(classifyPrefix)
-	return append(kv, s.extract.summary(extractPrefix)...)
+	kv = append(kv, s.extract.summary(extractPrefix)...)
+	return append(kv, s.shadowSummary()...)
+}
+
+// shadowSummary reports the run's Shadow Extraction tallies (ADR-0044). It is
+// bespoke rather than kindStats.summary because most of that struct is meaningless
+// here: the shadow lane makes no gated decisions and no calls in the call-counter
+// sense. The live false-drop rate is accepts over COMPLETED verdicts -- an errored
+// sample produced no verdict and must not deflate it.
+func (s *Stats) shadowSummary() []any {
+	accepts := s.shadowVerdicts.accepts.Load()
+	abstains := s.shadowVerdicts.abstains.Load()
+	return []any{
+		shadowPrefix + "_accepts", accepts,
+		shadowPrefix + "_abstains", abstains,
+		shadowPrefix + "_errors", s.shadowVerdicts.errors.Load(),
+		shadowPrefix + "_retries", s.shadow.retries.Load(),
+		shadowPrefix + "_deadletter", s.shadow.deadletter.Load(),
+		shadowPrefix + "_false_drop_rate", ratio(accepts, accepts+abstains),
+	}
 }
 
 func (ks *kindStats) summary(prefix string) []any {
