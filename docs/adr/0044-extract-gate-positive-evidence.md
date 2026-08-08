@@ -99,7 +99,7 @@ postings at 1:3 or worse is barely better than not having the rung, and carries 
 
 | candidate | postings | leaks | stream call rate | verdict |
 |---|---:|---:|---:|---|
-| **host substring** (`jobicco`, `jobben`, `unistellenmarkt`, `wynncareers` as job hosts) | +8 | **+40** | 0.1274 → **0.1737** | reject. On a job-*board* host every page reads as a posting: company profiles, search facets, salary pages, employer résumé searches, and `Gesuch/…` pages — postings sought *by job seekers*. |
+| **host substring** (`jobicco`, `jobben`, `unistellenmarkt`, `wynncareers` as job hosts) | +8 | **+40** | 0.1274 → **0.1737** | reject. On a host that exists for jobs, every page reads as a posting: company profiles, search facets, salary pages, employer résumé searches, and `Gesuch/…` pages — postings sought *by job seekers*. |
 | final-segment job word over the full word list, ≥3 tokens | +2 | +9 | +0.0116 | reject. Reads `careers-at-sedus`, `career-open-positions`, `offene-stellen-schulamt-neuruppin` as postings. The singular restriction is the predicate. |
 | vocabulary ≥3 as a strong mark | +3 | +8 | 0.1390 → 0.1621 | reject (above) |
 | role designation in the Title as STRONG | +6 | +4 | 0.1274 | reject. Admits a posting header above a rail of other postings, and a title with no role body. |
@@ -116,13 +116,26 @@ postings at 1:3 or worse is barely better than not having the rung, and carries 
 
 It was drawn as the pages the #258 rule skipped, so widening that rule means it no longer
 marks today's boundary. Re-drawing it from the capture — which its own README instructed —
-would **delete the 26 recovered postings from the record**, which is exactly the evidence this
-work produced, and would owe 188 fresh human confirmations nobody has budgeted. The stratum is
-kept as a HISTORICAL disagreement set plus a **recovery ledger** (29 rows recovered: 26
-detail, 2 hub-index, 1 ambiguous), pinned per label so a later widening that recovers
-non-postings faster than postings goes red. The half of its provenance test that is still a
-live guard — every row is extracted by the blanket accept, i.e. no *reject* rung moved — is
-untouched.
+was rejected, but **not on cost**: a re-draw owes **zero** fresh human confirmations, and that
+is measured rather than argued. Re-running `goldset-sample-boundary` over the same capture and
+`-since` cutoff, against the committed set, reports *no accepted page the two configs disagree
+on* — every page in the disagreement is already in this file. A re-draw would therefore return
+exactly the 160 rows still here, labels and provenance intact, and no new row to confirm. A
+confirmation budget is not the reason to keep the stratum and must not be inherited as one.
+
+What a re-draw actually costs is the evidence. It **deletes the 26 recovered postings from
+the record**, and those 26 are the only durable proof the widening bought recall — stream
+recall cannot show it, being saturated at 0.9677 under every rule including the blanket
+accept. And a census taken under one candidate rule necessarily stops marking a boundary once
+you act on it: a boundary exists only against a rule that disagrees, which is why re-drawing
+today re-derives the same 160 rows rather than finding a new edge.
+
+The stratum is therefore kept as a HISTORICAL disagreement set plus a **recovery ledger** (28
+rows recovered: 26 detail, 2 hub-index, 0 ambiguous), pinned per label so a later widening
+that recovers non-postings faster than postings goes red. The half of its provenance test
+that is still a live guard — every row is extracted by the blanket accept, i.e. no *reject*
+rung moved — is untouched. Re-draw when there is a genuinely new candidate rule to disagree
+with, and budget confirmations for the rows that draw adds — not for the ones it carries over.
 
 ### Hard zero is not reached, and why
 
@@ -137,7 +150,7 @@ Eleven pages remain, stated rather than closed by a threshold nothing measured:
   which re-admits rows a human blind read already rejected.
 - **`duckwallfruit.com` (Spanish) and `liepin.com` (Chinese)** — every text mark here is
   English/German. A Spanish or Chinese phrase set cannot be validated on a handful of rows, so
-  it is a follow-up, not a guess. Separately, `liepin.com` is a large Chinese job board and
+  it is a follow-up, not a guess. Separately, `liepin.com` is a large Chinese Aggregator and
   probably belongs on the Aggregator denylist — a different mechanism.
 - **`jobicco.tu-braunschweig.de/de/1763`** — an 846-character body whose only posting marker
   is the heading "Beschreibung des Jobs"; reading its host as a job host needs the substring

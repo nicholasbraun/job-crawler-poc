@@ -218,7 +218,7 @@ func main() {
 	// extractor only on evidence that it IS one posting, rather than merely because
 	// nothing rejected it. Set false to restore the pre-ADR-0044 blanket accept
 	// exactly. It is a dial rather than a deploy because the failure it can cause is
-	// the permanent one: a dropped posting is never seeded as visited, so the walk
+	// the permanent one: a false-drop is never seeded as visited, so the walk
 	// re-reaches and re-drops it every Collection Cycle, and nothing in production
 	// moves when it happens. SHADOW_EXTRACT_RATE above is the instrument that would
 	// see it; this is the switch to pull if it does.

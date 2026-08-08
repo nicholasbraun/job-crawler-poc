@@ -46,7 +46,7 @@ var extractGoldSetFalseDrops = []bench.KnownFalseDrop{
 		URL:       "https://jobs.blooloop.com/jobs/554707184-chief-of-development-at-the-american-lgbtq-museum",
 		Rung:      bench.RungReject,
 		Confirmed: false,
-		Reason: "a sector job board's posting page behind a saturated rail of sibling postings, dropped identically " +
+		Reason: "a sector Aggregator's posting page behind a saturated rail of sibling postings, dropped identically " +
 			"by the blanket accept; the same reject rung as hiring.cafe, and out of #257's scope for the same reason",
 	},
 	{
@@ -123,7 +123,7 @@ var extractGoldSetFalseDrops = []bench.KnownFalseDrop{
 		Rung:      bench.RungPositiveEvidence,
 		Confirmed: false,
 		Reason: "a CHINESE-language posting, where the text marks cannot reach at all for the same reason; separately " +
-			"liepin.com is a large Chinese job board and probably belongs on the Aggregator denylist, a different mechanism",
+			"liepin.com is a large Chinese Aggregator and probably belongs on the Aggregator denylist, a different mechanism",
 	},
 }
 

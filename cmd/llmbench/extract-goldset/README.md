@@ -27,7 +27,7 @@ survive as cheap regression cases for the reject rungs and nothing more.
 |---|---|
 | `goldset.jsonl` | The substrate. One `goldRow` per line, sorted by URL, ~6.3 MB across all three drawings. **Generated — never hand-edited.** |
 | `labels.tsv` | The review surface rendered from the substrate: one line per row, 457 lines. This is the file a reviewer reads in a diff and edits to correct a label. A test asserts the two never drift. |
-| `expected.tsv` | The second review surface (#256): one line per row the Free Extraction fires on — its expected title, location and working mode, plus any accepted fire. 70 lines. Also rendered from the substrate, also drift-tested. |
+| `expected.tsv` | The second review surface (#256): one line per row the Free Extraction fires on — its expected title, location and working mode, plus any accepted fire. 51 lines. Also rendered from the substrate, also drift-tested. |
 
 `goldRow` is the extract-capture record (`internal/extractcapture`: `url`, `verdict`,
 `ts`, `content`) **extended in place**, not a new format. An unlabeled capture file and
@@ -316,7 +316,7 @@ human spot-check below is the only thing that measures correctness.
 
 Why this stratum exists at all: the live stream is ~94% non-postings, so the random
 drawing's 120 rows hold only a handful of pages anywhere near the decision boundary. A
-uniform sample simply cannot detect a small false-drop rate. This drawing goes to where
+stream-random draw simply cannot detect a small false-drop rate. This drawing goes to where
 the drop can happen and takes **all of it**.
 
 Consequences of it being a census, which are also its whole design:
@@ -350,14 +350,18 @@ re-derives that half over all 188 committed rows on every build and says so when
 Re-draw from the capture; do not patch the file.
 
 **A widened Positive Evidence rung does not.** The stratum was drawn against #258's rule, and
-#257 widened that rule to the false-drops this very stratum measured — 29 of these rows now
-extract. It was deliberately **kept, not re-drawn**: re-drawing discards the 26 recovered
-postings, which are the evidence the widening produced, and owes 188 fresh human confirmations
-nobody has budgeted (ADR-0043, Consequences). What the stratum measures now is that recovery,
-and `TestCommittedBoundaryRecoveryLedger` pins it **per label** — total, detail, non-posting,
-ambiguous — so a later widening that recovers non-postings faster than postings goes red
-rather than showing up as a bigger total. Re-draw only when a genuinely new boundary is
-needed.
+#257 widened that rule to the false-drops this very stratum measured — 28 of these rows now
+extract. It was deliberately **kept, not re-drawn**, and *not* because a re-draw is expensive:
+re-running `goldset-sample-boundary` over the same capture and cutoff against the committed
+set reports *no accepted page the two configs disagree on*, so a re-draw returns exactly the
+160 rows still here, labels and provenance intact, and owes **zero** fresh human
+confirmations — measured, not assumed. What re-drawing discards is the evidence: the 26
+recovered postings, the only durable proof the widening bought recall (ADR-0043, Consequences;
+ADR-0044, "The Boundary Stratum was NOT re-drawn"). What the stratum measures now is that
+recovery, and `TestCommittedBoundaryRecoveryLedger` pins it **per label** — total, detail,
+non-posting, ambiguous — so a later widening that recovers non-postings faster than postings
+goes red rather than showing up as a bigger total. Re-draw when there is a genuinely new
+candidate rule to disagree with, and budget confirmations for the rows that draw *adds*.
 
 ### The arithmetic
 
@@ -418,7 +422,8 @@ again — a test asserts it does.
 
 | | `detail` | `hub-index` | `residue` | `ambiguous` |
 |---|---:|---:|---:|---:|
-| all 188 rows (live verdict accept) | 47 | 57 | 74 | 10 |
+| all 188 rows (live verdict accept) | 37 | 62 | 79 | 10 |
+| at the draw, before the blind re-read | 47 | 57 | 74 | 10 |
 | human-confirmed | 0 | 0 | 0 | 0 |
 
 **One host, `nl.gigroup.com`, contributes 15 of the 188 rows (8%)**, all the same
@@ -445,19 +450,19 @@ this stratum exists to produce, and no label was softened to keep the number dow
 
 It has moved twice since, both times because the finding was acted on. A blind re-read of
 the 57 consequential rows settled 10 of them out of `detail` (47 → 37), and #257 then
-widened the rung to the shapes the remaining drops named, recovering 29 rows:
+widened the rung to the shapes the remaining drops named, recovering 28 rows:
 
 ```
 boundary stratum (n=188, unweighted)
   count detail 37 / hub-index 62 / residue 79 / ambiguous 10
-  extracted 29, skipped 159
+  extracted 28, skipped 160
   false-drops       11   (real Job Listings the Positive Evidence rule drops here)
-  ambiguous-skipped  9   (dropped, unclassifiable: not a false-drop, not forgiven)
+  ambiguous-skipped 10   (dropped, unclassifiable: not a false-drop, not forgiven)
   confirmed         0 of 188
 ```
 
 The label census (`count detail 37`) and the drop count (11) are now different numbers,
-and `TestCommittedBoundaryRecoveryLedger` pins the 29 per label so the split stays
+and `TestCommittedBoundaryRecoveryLedger` pins the 28 per label so the split stays
 visible. **11 is what #264 has to argue with**; ADR-0044 records the eleven shapes and why
 each is argued rather than closed by a threshold nothing measured.
 
@@ -552,15 +557,20 @@ Rubric, judging what the *page* is rather than what the URL promises:
   and privacy pages, cookie or login walls, JS shells with no parsed content, 404s, and
   "this position has been filled" pages with no role body.
 
-Rows the labeler could not decide carry `uncertain - …` in their note; there are 6 in the
+Rows the labeler could not decide carry `uncertain - …` in their note; there are 5 in the
 structural drawing and 3 in the random one.
 
 | | `detail` | `hub-index` | `residue` |
 |---|---:|---:|---:|
-| `lone-posting` | 51 | 0 | 19 |
+| `lone-posting` | 48 | 0 | 22 |
 | `ambiguous-posting` | 0 | 0 | 1 |
 | `no-posting` | 24 | 7 | 47 |
 | `random` | 31 | 12 | 77 |
+| `boundary` | 37 | 62 | 79 |
+
+(`boundary` also carries 10 `ambiguous` rows, the only stratum that does.) Three
+`lone-posting` rows moved `detail` → `residue` at the #252 review — the closure-banner pages
+under "Open question" below.
 
 ## Scorecard (today's gate, `DefaultLLMGateConfig`)
 
@@ -571,14 +581,14 @@ Since #264 the Positive Evidence rung ships **on**, so this is the rung's scorec
 
 ```
 total             457
-extract-calls     181
-extract-call-rate 0.3961  (raw, over all three drawings — the file's mix, not the stream's)
+extract-calls     180
+extract-call-rate 0.3939  (raw, over all three drawings — the file's mix, not the stream's)
 overall           precision 0.7056  recall 0.9071  f1 0.7938  accuracy 0.8523
 detail     recall 0.9071  (n=140, extracted 127, skipped 13)
 hub-index  accuracy 0.8272 (n=81, skipped 67, leaked 14)
 residue    accuracy 0.8274 (n=226, skipped 187, leaked 39)
 residue-count 226, residue-extracted 39
-ambiguous         10 (excluded from scoring entirely, 1 extracted)
+ambiguous         10 (excluded from scoring entirely, 0 extracted)
 
 stream-weighted estimates (random stratum, n=120, effective n=92.3)
 composition detail 0.0584 / hub-index 0.0710 / residue 0.8707
@@ -586,24 +596,25 @@ extract-call-rate 0.1390   precision 0.4063   recall 0.9677
 projected spend   0.1390x today's extract bill
 
 boundary stratum (n=188, unweighted)
-extracted 29, skipped 159
-false-drops 11, ambiguous-skipped 9, confirmed 0 of 188
+count detail 37 / hub-index 62 / residue 79 / ambiguous 10
+extracted 28, skipped 160
+false-drops 11, ambiguous-skipped 10, confirmed 0 of 188
 ```
 
 The stream-weighted line is the number to quote for **cost**: the rung cuts today's
 extract calls to 13.9% of what they were — a 7.2× reduction — raises the precision of a
 paid call from 5.7% to 40.6%, and leaves recall over today's real postings unmoved at
-96.8%. The raw 0.3961 above it is the *file's* composition, which also carries a census
+96.8%. The raw 0.3939 above it is the *file's* composition, which also carries a census
 of the boundary; quoting it would misstate the saving badly. That is precisely the
 confusion the random stratum exists to end.
 
 The boundary block is the number to quote for **loss**: **11 real Job Listings still
-dropped**, plus 9 pages nobody could classify. It reads as a **recovery ledger** now
-rather than as a live disagreement — the `extracted 29` are rows this stratum measured
-#258's rule dropping and #257's widening got back (26 `detail`, 2 `hub-index`, 1
-`ambiguous`). The `detail recall 0.9071` on the raw line is 13 drops seen through the
-file's own composition — 11 are the boundary and 2 come from the earlier drawings — so it
-is not a stream estimate either.
+dropped**, plus 10 pages nobody could classify. It reads as a **recovery ledger** now
+rather than as a live disagreement — the `extracted 28` are rows this stratum measured
+#258's rule dropping and #257's widening got back (26 `detail`, 2 `hub-index`). The
+`detail recall 0.9071` on the raw line is 13 drops seen through the file's own composition
+— 11 are the boundary and 2 come from the earlier drawings — so it is not a stream estimate
+either.
 
 The cost figures are descriptive estimates of the calls the crawler already makes. The
 boundary figure is a census of a disagreement and describes no stream at all. Neither may
@@ -734,25 +745,33 @@ a mechanism that stopped firing entirely cannot produce a clean scorecard.
 composition-dependent measurement), as measured today:
 
 ```
-total             149      free              70
-free-rate         0.4698   stream-free-share 0.1534  (sampling-weighted)
-detail            75 (free 51)
-coverage          0.6800   weighted-coverage 0.4996
+total             149      free              51
+free-rate         0.3423   stream-free-share 0.1396  (sampling-weighted)
+detail            72 (free 48)
+coverage          0.6667   weighted-coverage 0.4877
 ```
+
+These are the numbers **after** ADR-0042's narrowing (`crawler.WithdrawalNotice`, the length
+ratio plus the closure banner). Before it the mechanism fired on all 70 `lone-posting` rows;
+the 19 it no longer fires on are the 16 stale postings that used to need an explicit
+acceptance here, plus the 3 closure-banner rows the review relabelled `residue` (see "Open
+question" below).
 
 ### Where the expected values come from
 
 An **independent** `jq` + `python3` read of the same JSON-LD bytes
 (`scripts/propose-expected.sh`), never the Go traversal under test — generating them by
 running `crawler.LonePosting` would make the check a tautology, able to catch a future
-regression but never a bug that exists today. All 210 values (70 titles, 70 locations, 70
-working modes) matched the Go read exactly on the first pass, including the 6 rows whose
-`jobLocation` is a multi-office array, the 2 whose address is a bare string, and the
-entity-encoded titles (`Vendeur.se &quot;Ville&quot;`, `People &amp; Culture Manager`).
+regression but never a bug that exists today. At the #256 proposal pass all 210 values (70
+titles, 70 locations, 70 working modes) matched the Go read exactly on the first pass,
+including the 6 rows whose `jobLocation` is a multi-office array, the 2 whose address is a
+bare string, and the entity-encoded titles (`Vendeur.se &quot;Ville&quot;`, `People &amp;
+Culture Manager`). ADR-0042's narrowing then dropped 19 of those rows from `expected.tsv`,
+which is why it holds 51.
 
-### Accepted fires — 19 residue rows
+### Accepted fires — 3 residue rows
 
-The mechanism fires on **19 rows labelled `residue`**. They are counted and printed but
+The mechanism fires on **3 rows labelled `residue`**. They are counted and printed but
 not fatal, because each carries an explicit `free_ok` flag and a written reason **on the
 row** (never a softened threshold and never a code-side allowlist). A `hub-index` row can
 never be excused: a hub is the exact shape ADR-0042's predicate rejects structurally, so
@@ -760,14 +779,20 @@ excusing one would mean the predicate itself is broken.
 
 | kind | n | hosts |
 |---|---:|---|
-| stale posting — withdrawn or filled, `JobPosting` JSON-LD still served | 16 | `career.avenga.com`, `career.happysocks.com` ×3, `careerpoland.autoliv.com`, `careers.atlantishealth.com`, `careers.beyond-vision.com` ×2, `careers.patria.com`, `careers.pit.com`, `careers.spacelift.io`, `careers.sundayapp.com`, `careers.tekever.com`, `careers.worldpackers.com` ×2, `jobs.pwc.de` |
 | evergreen non-role — talent pool / general application / enquiry page | 3 | `careers.coverflex.com`, `karriere.mri.bund.de`, `www.fluidstack.io` |
 
-The 16 stale postings are a **liveness** problem (ADR-0035's territory): the fields are read
-correctly and the job is gone. The 3 evergreen pages are genuine **precision** failures
-and the strongest argument for narrowing ADR-0042. Stated plainly: against the labels as
-they stand, the check passes *because those 19 are explicitly accepted*, not because they
-do not happen.
+There used to be a second kind here, and the mechanism no longer produces it: **16 stale
+postings** — withdrawn or filled, `JobPosting` JSON-LD still served — on `career.avenga.com`,
+`career.happysocks.com` ×3, `careerpoland.autoliv.com`, `careers.atlantishealth.com`,
+`careers.beyond-vision.com` ×2, `careers.patria.com`, `careers.pit.com`,
+`careers.spacelift.io`, `careers.sundayapp.com`, `careers.tekever.com`,
+`careers.worldpackers.com` ×2 and `jobs.pwc.de`. Those were a **liveness** problem (ADR-0035's
+territory) — the fields were read correctly and the job was gone — and `WithdrawalNotice` now
+refuses every one of them structurally rather than excusing them row by row.
+
+The 3 evergreen pages that remain are genuine **precision** failures and the standing
+argument for narrowing ADR-0042 further. Stated plainly: against the labels as they stand,
+the check passes *because those 3 are explicitly accepted*, not because they do not happen.
 
 ## Findings
 
@@ -780,42 +805,50 @@ the synthetic fixtures — where a `detail` page has a sparse sidebar by constru
 this is the first real evidence about it. Out of scope for #254 (no gate code changes);
 worth a follow-up.
 
-**2. 17 of the 24 exhaustively-sampled `lone-posting` abstains are not postings.**
-Fifteen of them are **expired or withdrawn postings** ("this position is no longer active",
+**2. 18 of the 24 exhaustively-sampled `lone-posting` abstains are not postings.**
+Sixteen of them are **expired or withdrawn postings** ("this position is no longer active",
 "a vaga já não está disponível") whose page body is gone but whose `JobPosting` JSON-LD
-block is still served. The remaining 7 are real postings the model wrongly abstained on.
+block is still served. The remaining 6 are real postings the model wrongly abstained on.
 ADR-0042 measured the Free Extraction firing on "2 of 1168 abstains … both real postings
 the model wrongly abstained on"; on this larger, later capture the lone-posting abstain
-cell is 24 pages and **71% of it is stale structured data**. A Free Extraction that
+cell is 24 pages and **two thirds of it is stale structured data**. A Free Extraction that
 fires on structure alone would resurrect them. Whether that matters depends on liveness
 handling downstream — but it is the opposite of the shape ADR-0042's measurement
-implied, and it deserves a second look before that decorator ships on by default.
+implied, and it deserved a second look before that decorator shipped on by default.
 
-**#256 measured exactly that risk.** The Free Extraction fires on **70 of the 149 rows**
-— precisely the `lone-posting` stratum — and **19 of those 70 are labelled `residue`**:
-16 stale postings and 3 evergreen non-roles. See "The Free Extraction fidelity check" above.
+**#256 measured exactly that risk, and ADR-0042 was narrowed on what it found.** The Free
+Extraction now fires on **51 of the 149 rows** — the `lone-posting` stratum less the 19 pages
+`crawler.WithdrawalNotice` refuses — and **3 of those 51 are labelled `residue`**, all
+evergreen non-roles. See "The Free Extraction fidelity check" above.
 
-**3. 24 of the 75 `detail` pages publish no structured data at all.** A structured-data
+**3. 24 of the 72 `detail` pages publish no structured data at all.** A structured-data
 path can never reach them; whatever admits and extracts those pages stays the cost
 driver.
 
-**4. The Positive Evidence rung drops 47 real Job Listings on the boundary (#263).**
-Over the 188 pages where today's blanket accept and the tiered rule disagree and the live
-extractor accepted, **25% are pages a reading calls a real posting**, and the rule skips
-every one of them. Four shapes account for most of the 47, and all four fail for the same
-reason — no job word the rung recognises in the URL, no lone structured posting, and too
-little section vocabulary to clear the weak tier:
+**4. HISTORICAL (#263) — the rung as #258 shipped it dropped 47 real Job Listings on the
+boundary.** This is the finding #257 was written against, and #257 answered it; it is kept
+here because the shapes are what a future widening has to keep clearing. At the draw, over
+the 188 pages where the blanket accept and the tiered rule disagreed and the live extractor
+accepted, 25% read as real postings and the rule skipped every one of them. Four shapes
+accounted for most of the 47, and all four failed for the same reason — no job word the rung
+recognised in the URL, no lone structured posting, and too little section vocabulary to clear
+the weak tier:
 
-| shape | example | why the rung misses it |
-|---|---|---|
-| German apprenticeship pages | `team-volkmann.de/ausbildungsberuf/<slug>` | `ausbildung*` is not in `extractPostingWords` |
-| university research positions on institute pages | `biochemie.med.fau.de/<role-slug>` | the role is the whole path, with no section segment before it |
-| student-job ads on university boards | `jobicco.tu-braunschweig.de/de/1763` | numeric slug under a locale segment |
-| `/open-roles/<id>` career sites | `wynncareersmacau.com/open-roles/81`, `consensys.io/open-roles/8068918` | `open-roles` tokenises to `open` + `roles`, neither of which is a posting word |
+| shape | example | why the rung missed it | today |
+|---|---|---|---|
+| German apprenticeship pages | `team-volkmann.de/ausbildungsberuf/<slug>` | `ausbildung*` was not a path job word | **closed** — the apprenticeship family was added |
+| university research positions on institute pages | `biochemie.med.fau.de/<role-slug>` | the role is the whole path, with no section segment before it | **open** — 2 of the 11 remaining drops |
+| student jobs on university boards | `jobicco.tu-braunschweig.de/de/1763` | numeric slug under a locale segment | **open** — 1 of the 11; its 4 sibling rows on the same template recovered |
+| `/open-roles/<id>` career sites | `wynncareersmacau.com/open-roles/81`, `consensys.io/open-roles/8068918` | `open-roles` tokenised to `open` + `roles`, neither of which was a posting word | **closed** — `role`/`roles` were added |
 
-**These labels are LLM-proposed and unconfirmed**, so
-the 47 is a measurement to argue with, not a verdict; the confirmation pass is what turns
-it into evidence. See "The Boundary Stratum" above.
+Both numbers here have since moved, and neither by softening a label. A blind re-read of the
+57 consequential rows settled 10 of them out of `detail` (47 → 37), and #257 then widened the
+rung to the shapes above, recovering 26 of the 37. **Eleven remain** — each named in
+`extractGoldSetFalseDrops` and argued individually in ADR-0044.
+
+**These labels are still LLM-proposed and unconfirmed**, so the 11 is a measurement to argue
+with, not a verdict; the confirmation pass is what turns it into evidence. See "The Boundary
+Stratum" above.
 
 ## Regenerating and maintaining the set
 
@@ -960,28 +993,28 @@ weighted number.
 command — a full confirmation of 120 pages nobody read, which is exactly the thing the
 provenance record exists to prevent. A spot check is 20 rows a human actually opened.
 
-### Second pass — the 70 expected extractions (#256)
+### Second pass — the 51 expected extractions (#256)
 
 Everything in `expected.tsv` is **proposed by an automated script and confirmed by
 nobody**. `pendingExpectedConfirmations` in `../goldset_test.go` is the machine-visible
 count of that gap.
 
 ```bash
-# the entire #256 review surface is 70 lines, not the 2.2 MB substrate
+# the entire #256 review surface is 51 lines, not the 2.2 MB substrate
 column -t -s$'\t' cmd/llmbench/extract-goldset/expected.tsv | less -S
 ```
 
-**(a) the 19 `free_ok` acceptances first** — they are what decides whether ADR-0042 ships
-as written. If you refuse any, refuse the 3 evergreen non-roles
+**(a) the 3 `free_ok` acceptances first** — they are what decides whether ADR-0042 ships
+as written, and all three are the evergreen non-roles
 (`careers.coverflex.com/…spontaneous-application…`,
 `karriere.mri.bund.de/Anfragen-fuer-Praktikumsplaetze-…`, `www.fluidstack.io/jobs/05c2e69c-…`).
 A refused acceptance means lowering `acceptedFreeOnResidue` in `../scorefree_test.go`, and
 the check then goes red until the **mechanism** is narrowed — the fix belongs there, not
 in the benchmark.
 
-**(b) the 70 title / location / work_arrangement values.** They are the page's own
-declared data, so a wrong one is usually obvious against the `url` column. 13 rows should
-read `remote`, 57 `unspecified`.
+**(b) the 51 title / location / work_arrangement values.** They are the page's own
+declared data, so a wrong one is usually obvious against the `url` column. 8 rows should
+read `remote`, 43 `unspecified`.
 
 ```bash
 # edit any wrong value or drop any free_ok you refuse, then:
