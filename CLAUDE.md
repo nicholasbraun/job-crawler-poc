@@ -116,7 +116,7 @@ model (e.g. `qwen2.5:3b`); reasoning models spend a hidden think phase the crawl
 discards. `LLM_CLASSIFY_MAX_CHARS` / `LLM_EXTRACT_MAX_CHARS` (default 1500 / 8000)
 cap the page text sent to each LLM call, keeping a local model fast.
 
-Every knob is read in one place -- `cmd/server/main.go`, via `pgenv.EnvOr`, each
+Every knob is read in one place -- `cmd/server/main.go`, via `env.EnvOr`, each
 with a comment explaining why it exists. `README.md` carries the full table.
 Several are deliberate **kill switches** for paths that can go wrong silently and
 at scale (`EXTRACT_FROM_JSONLD`, `EXTRACT_REQUIRE_POSITIVE_EVIDENCE`,
@@ -194,6 +194,7 @@ internal/
   collection/                # Collection Cycle: seed routing, refetch/liveness, scheduler, politeness
   database/postgres/         # Postgres repositories, Corpus + FTS search, goose migrations
   downloader/                # Downloader interface, HTTP client, caching transport, retry decorator
+  env/                       # Domain-free environment lookup helper
   extractcapture/            # Extract-decision tap feeding the Extract Gold Set
   filter/                    # Generic filter chain (CheckFn[T], Chain)
   filter/job_listing_filter/ # Job listing filters (title, main content keywords)
@@ -211,7 +212,6 @@ internal/
   otel/                      # OpenTelemetry + Prometheus metrics + pprof
   pagegate/                  # Pre-LLM Gate + Extract Gate (graded score, Positive Evidence)
   parser/                    # HTML parser (goquery): main content, links, structured data
-  pgenv/                     # Env lookup helper + shared DATABASE_URL default
   pool/                      # Generic worker pool
   processor/                 # Processor interface
   processor/url_processor/                 # URL processor (download, parse, filter, discover)

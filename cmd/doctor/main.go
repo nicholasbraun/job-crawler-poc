@@ -20,7 +20,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/nicholasbraun/job-crawler-poc/internal/catalogdoctor"
 	"github.com/nicholasbraun/job-crawler-poc/internal/database/postgres"
-	"github.com/nicholasbraun/job-crawler-poc/internal/pgenv"
+	"github.com/nicholasbraun/job-crawler-poc/internal/env"
 )
 
 func main() {
@@ -36,7 +36,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	dsn := pgenv.EnvOr("DATABASE_URL", pgenv.DefaultDatabaseURL)
+	dsn := env.EnvOr("DATABASE_URL", postgres.DefaultURL)
 	// The Catalog is assumed already migrated (by the server); the Doctor never
 	// migrates, it only reads and repairs.
 	pool, err := postgres.Open(ctx, dsn)

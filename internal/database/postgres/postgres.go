@@ -13,6 +13,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// DefaultURL is the local Postgres DSN every binary falls back to when
+// DATABASE_URL is unset or empty, so the Doctor and the bench tooling target the
+// same Catalog the server migrates without extra configuration.
+const DefaultURL = "postgres://crawler:crawler@localhost:5432/crawler?sslmode=disable"
+
 // Open creates a connection pool for the given DSN and verifies connectivity
 // with a Ping. The caller owns the returned pool and must Close it.
 func Open(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
