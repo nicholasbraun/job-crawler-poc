@@ -183,7 +183,16 @@ can be exported and re-imported via `GET /api/catalog/export` and
 ## Configuration
 
 All configuration is via environment variables (loaded from `.env` in local dev
-via [godotenv](https://github.com/joho/godotenv)):
+via [godotenv](https://github.com/joho/godotenv)). Every variable is optional and
+falls back to the default below; a variable set but *empty* counts as unset. A
+malformed value stops the server before it starts serving, and startup reports
+**every** bad variable at once rather than one per restart (ADR-0045):
+
+```
+error reading configuration:
+CRAWL_MAX_WORKERS: must be a positive integer, got "-3" (default 50)
+COLLECTION_INTERVAL: must be a positive Go duration (e.g. 90s, 5m, 24h), got "daily" (default 24h0m0s)
+```
 
 | Variable             | Default                                     | Description                          |
 | -------------------- | ------------------------------------------- | ------------------------------------ |

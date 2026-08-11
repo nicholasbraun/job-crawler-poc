@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -89,6 +88,12 @@ const (
 	defaultDiscoveryMaxDepth = 7
 	defaultMaxWorkers        = 50
 
+	// defaultLLMMaxWorkers sizes the durable LLM stage's consumer group, and
+	// defaultCollectionInterval is the Collection Cycle cadence (ADR-0036); both
+	// are overridable per deployment (LLM_MAX_WORKERS / COLLECTION_INTERVAL).
+	defaultLLMMaxWorkers      = 2
+	defaultCollectionInterval = 24 * time.Hour
+
 	// ATS Fetch lane tuning (ADR-0022), shared by every Collection Cycle:
 	// defaultATSMaxWorkers sizes the ingest pool (how many tenants are fetched in
 	// parallel across providers), and defaultATSRateInterval is the minimum spacing
@@ -137,58 +142,31 @@ func main() {
 	// Missing file is fine if the vars are set in the environment.
 	_ = godotenv.Load()
 
-	// The classifier/extractor talk to any OpenAI-compatible chat API. Leave
-	// LLM_BASE_URL/LLM_MODEL unset for OpenRouter's defaults, or point them at a
-	// local server, e.g. LLM_BASE_URL=http://localhost:11434/v1/chat/completions
-	// with LLM_MODEL=qwen2.5:3b for a local Ollama. Use a non-reasoning instruct
-	// model: a reasoning model (e.g. qwen3.5) runs a hidden think phase the crawler
-	// discards, a large latency tax for a one-line verdict.
-	//
-	// LLM_CLASSIFY_MAX_CHARS / LLM_EXTRACT_MAX_CHARS cap the page text (in runes)
-	// sent to the classifier and extractor. The classify/extract signal sits near
-	// the top of the page, so capping keeps a local model fast and avoids timeouts
-	// on huge pages.
-	//
-	// LLM_TIMEOUT and LLM_MAX_WORKERS default to values tuned for a local model:
-	// a long per-request timeout (a laptop model generates serially, so queued
-	// requests wait) and few concurrent workers (matching that serialization
-	// avoids a deep server-side queue that would blow the timeout). Raise both
-	// for a fast, highly-parallel cloud API. LLM_MAX_WORKERS sizes the durable LLM
-	// stage's consumer group (how many goroutines drain the per-run Redis Stream
-	// in parallel), not an in-process pool.
-	llmTimeout, err := time.ParseDuration(env.EnvOr("LLM_TIMEOUT", "5m"))
-	if err != nil {
-		log.Fatalf("error parsing LLM_TIMEOUT: %v", err)
-	}
-	llmMaxWorkers, err := strconv.Atoi(env.EnvOr("LLM_MAX_WORKERS", "2"))
-	if err != nil || llmMaxWorkers < 1 {
-		log.Fatalf("error parsing LLM_MAX_WORKERS: must be a positive integer, got %q", os.Getenv("LLM_MAX_WORKERS"))
-	}
-	llmClassifyMaxChars, err := strconv.Atoi(env.EnvOr("LLM_CLASSIFY_MAX_CHARS", "1500"))
-	if err != nil || llmClassifyMaxChars < 1 {
-		log.Fatalf("error parsing LLM_CLASSIFY_MAX_CHARS: must be a positive integer, got %q", os.Getenv("LLM_CLASSIFY_MAX_CHARS"))
-	}
-	llmExtractMaxChars, err := strconv.Atoi(env.EnvOr("LLM_EXTRACT_MAX_CHARS", "8000"))
-	if err != nil || llmExtractMaxChars < 1 {
-		log.Fatalf("error parsing LLM_EXTRACT_MAX_CHARS: must be a positive integer, got %q", os.Getenv("LLM_EXTRACT_MAX_CHARS"))
-	}
-	llmConfig := openrouter.Config{
-		APIKey:           os.Getenv("LLM_API_KEY"),
-		BaseURL:          os.Getenv("LLM_BASE_URL"),
-		Model:            os.Getenv("LLM_MODEL"),
-		Timeout:          llmTimeout,
-		ClassifyMaxChars: llmClassifyMaxChars,
-		ExtractMaxChars:  llmExtractMaxChars,
-	}
+	// Every knob the server reads is resolved in the block below, through one
+	// env.Loader: a container started with several malformed values reports all of
+	// them on the first boot rather than one per restart (ADR-0045). Nothing may
+	// act on a knob until ld.Err() has been checked at the end of the block.
+	var ld env.Loader
+
+	// The classifier/extractor settings (LLM_API_KEY, LLM_BASE_URL, LLM_MODEL,
+	// LLM_TIMEOUT, and the two prompt-window caps) are read by the openrouter
+	// package itself, so the gate benchmarks in cmd/llmbench drive the model
+	// through exactly the same configuration this crawl does -- see
+	// openrouter.ConfigFromEnv for what each one does.
+	llmConfig := openrouter.ConfigFromEnv(&ld)
+
+	// LLM_MAX_WORKERS sizes the durable LLM stage's consumer group: how many
+	// goroutines drain the per-run Redis Stream in parallel, not an in-process
+	// pool. It defaults low to match a local model, which generates serially --
+	// more workers there only build a deep server-side queue that blows
+	// LLM_TIMEOUT. Raise it for a fast, highly-parallel cloud API.
+	llmMaxWorkers := ld.PositiveInt("LLM_MAX_WORKERS", defaultLLMMaxWorkers)
 
 	// DESCRIPTION_MAX_CHARS caps the stored Posting Body (ADR-0041). Its own knob, NOT
 	// LLM_EXTRACT_MAX_CHARS: the prompt window is a latency dial for local models and
 	// must never decide what the Corpus stores. 16000 sits above the p99 of real
 	// postings (~12k), so it only fires on a pathological parse.
-	descriptionMaxChars, err := strconv.Atoi(env.EnvOr("DESCRIPTION_MAX_CHARS", strconv.Itoa(crawler.DefaultDescriptionMaxChars)))
-	if err != nil || descriptionMaxChars < 1 {
-		log.Fatalf("error parsing DESCRIPTION_MAX_CHARS: must be a positive integer, got %q", os.Getenv("DESCRIPTION_MAX_CHARS"))
-	}
+	descriptionMaxChars := ld.PositiveInt("DESCRIPTION_MAX_CHARS", crawler.DefaultDescriptionMaxChars)
 
 	// EXTRACT_FROM_JSONLD is the Free Extraction kill switch (ADR-0042), default true:
 	// a page publishing exactly one structured-data JobPosting, no openings index and a
@@ -196,10 +174,7 @@ func main() {
 	// decorator and restore the model-only extract path exactly. It exists because this
 	// is the ONE path that can save a Job Listing with no model in the loop — if it
 	// goes wrong it goes wrong silently and at scale, and a dial beats a deploy.
-	extractFromJSONLD, err := strconv.ParseBool(env.EnvOr("EXTRACT_FROM_JSONLD", "true"))
-	if err != nil {
-		log.Fatalf("error parsing EXTRACT_FROM_JSONLD: must be a boolean, got %q", os.Getenv("EXTRACT_FROM_JSONLD"))
-	}
+	extractFromJSONLD := ld.Bool("EXTRACT_FROM_JSONLD", true)
 
 	// SHADOW_EXTRACT_RATE is the fraction of Extract-Gate-rejected pages that are
 	// extracted anyway, purely to measure the gate (ADR-0044). Default 0.01: post-gate
@@ -209,10 +184,7 @@ func main() {
 	// seeds it, so the walk re-reaches and re-drops it every Cycle), and nothing else in
 	// production moves when it happens. 0 switches the mechanism off entirely: no shadow
 	// stream is created and the walk's hook stays nil.
-	shadowExtractRate, err := strconv.ParseFloat(env.EnvOr("SHADOW_EXTRACT_RATE", "0.01"), 64)
-	if err != nil || shadowExtractRate < 0 || shadowExtractRate > 1 {
-		log.Fatalf("error parsing SHADOW_EXTRACT_RATE: must be a fraction in [0,1], got %q", os.Getenv("SHADOW_EXTRACT_RATE"))
-	}
+	shadowExtractRate := ld.Fraction("SHADOW_EXTRACT_RATE", 0.01)
 
 	// EXTRACT_REQUIRE_POSITIVE_EVIDENCE is the Extract Gate's Positive Evidence rung
 	// (ADR-0044), default true: a page that clears every reject rung reaches the
@@ -223,10 +195,7 @@ func main() {
 	// re-reaches and re-drops it every Collection Cycle, and nothing in production
 	// moves when it happens. SHADOW_EXTRACT_RATE above is the instrument that would
 	// see it; this is the switch to pull if it does.
-	requirePositiveEvidence, err := strconv.ParseBool(env.EnvOr("EXTRACT_REQUIRE_POSITIVE_EVIDENCE", "true"))
-	if err != nil {
-		log.Fatalf("error parsing EXTRACT_REQUIRE_POSITIVE_EVIDENCE: must be a boolean, got %q", os.Getenv("EXTRACT_REQUIRE_POSITIVE_EVIDENCE"))
-	}
+	requirePositiveEvidence := ld.Bool("EXTRACT_REQUIRE_POSITIVE_EVIDENCE", true)
 
 	// CRAWL_MAX_WORKERS sizes the per-run discovery worker pool — how many pages
 	// are downloaded and processed in parallel per run. Crawl workers are
@@ -234,49 +203,44 @@ func main() {
 	// can be raised well past the default to lift throughput once the frontier is
 	// no longer the bottleneck; the Postgres pool and outbound network are the next
 	// caps to watch.
-	crawlMaxWorkers, err := strconv.Atoi(env.EnvOr("CRAWL_MAX_WORKERS", strconv.Itoa(defaultMaxWorkers)))
-	if err != nil || crawlMaxWorkers < 1 {
-		log.Fatalf("error parsing CRAWL_MAX_WORKERS: must be a positive integer, got %q", os.Getenv("CRAWL_MAX_WORKERS"))
-	}
+	crawlMaxWorkers := ld.PositiveInt("CRAWL_MAX_WORKERS", defaultMaxWorkers)
 
 	// CRAWL_VISITED_CAP bounds each run's visited ZSET (ADR-0027 / #75). Read once
 	// and applied to every Frontier built for a run so the FIFO cap is consistent
 	// regardless of which Frontier performs the AddURL.
-	visitedCap, err := strconv.Atoi(env.EnvOr("CRAWL_VISITED_CAP", strconv.Itoa(redisfrontier.DefaultVisitedCap)))
-	if err != nil || visitedCap < 1 {
-		log.Fatalf("error parsing CRAWL_VISITED_CAP: must be a positive integer, got %q", os.Getenv("CRAWL_VISITED_CAP"))
-	}
+	visitedCap := ld.PositiveInt("CRAWL_VISITED_CAP", redisfrontier.DefaultVisitedCap)
 
 	// ROBOTS_CACHE_SIZE / ROBOTS_CACHE_TTL bound the shared robots.txt Rules cache
 	// (ADR-0032): how many hosts' parsed rules are held and for how long before a
 	// re-fetch, so the cache cannot grow without limit across a discovery crawl
 	// that touches tens of thousands of hosts.
-	robotsCacheSize, err := strconv.Atoi(env.EnvOr("ROBOTS_CACHE_SIZE", strconv.Itoa(robotstxt.DefaultCacheSize)))
-	if err != nil || robotsCacheSize < 1 {
-		log.Fatalf("error parsing ROBOTS_CACHE_SIZE: must be a positive integer, got %q", os.Getenv("ROBOTS_CACHE_SIZE"))
-	}
-	robotsCacheTTL, err := time.ParseDuration(env.EnvOr("ROBOTS_CACHE_TTL", robotstxt.DefaultCacheTTL.String()))
-	if err != nil || robotsCacheTTL <= 0 {
-		log.Fatalf("error parsing ROBOTS_CACHE_TTL: must be a positive duration, got %q", os.Getenv("ROBOTS_CACHE_TTL"))
-	}
+	robotsCacheSize := ld.PositiveInt("ROBOTS_CACHE_SIZE", robotstxt.DefaultCacheSize)
+	robotsCacheTTL := ld.PositiveDuration("ROBOTS_CACHE_TTL", robotstxt.DefaultCacheTTL)
 
 	// COLLECTION_INTERVAL is the Collection Cycle cadence (ADR-0036): the minimum
 	// time between Cycle starts. Default daily. COLLECTION_ENABLED (default true)
 	// is the disable flag -- set it false to stop the scheduler from starting
 	// Cycles (manual starts via the API still work).
-	collectionInterval, err := time.ParseDuration(env.EnvOr("COLLECTION_INTERVAL", "24h"))
-	if err != nil || collectionInterval <= 0 {
-		log.Fatalf("error parsing COLLECTION_INTERVAL: must be a positive duration, got %q", os.Getenv("COLLECTION_INTERVAL"))
-	}
-	collectionEnabled, err := strconv.ParseBool(env.EnvOr("COLLECTION_ENABLED", "true"))
-	if err != nil {
-		log.Fatalf("error parsing COLLECTION_ENABLED: must be a boolean, got %q", os.Getenv("COLLECTION_ENABLED"))
-	}
+	collectionInterval := ld.PositiveDuration("COLLECTION_INTERVAL", defaultCollectionInterval)
+	collectionEnabled := ld.Bool("COLLECTION_ENABLED", true)
 
 	var logLevel slog.LevelVar
-	if err := logLevel.UnmarshalText([]byte(env.EnvOr("LOG_LEVEL", defaultLogLevel))); err != nil {
-		log.Fatalf("error parsing LOG_LEVEL: %v", err)
+	ld.Text("LOG_LEVEL", &logLevel, defaultLogLevel)
+
+	// Redis holds transient per-run crawl state (frontier queues, visited set,
+	// in-flight leases); Postgres holds the durable Catalog and Corpus. Both
+	// addresses are read here with the rest of the configuration so a typo in one
+	// is reported alongside every other bad knob, before either is dialled.
+	redisAddr := ld.String("REDIS_ADDR", defaultRedisAddr)
+	databaseURL := ld.String("DATABASE_URL", postgres.DefaultURL)
+
+	// The one gate for the whole block: past this line every knob above is valid.
+	// It reports every malformed variable at once, so fixing a container's
+	// environment takes one round trip rather than one per mistake.
+	if err := ld.Err(); err != nil {
+		log.Fatalf("error reading configuration:\n%v", err)
 	}
+
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: &logLevel})))
 
 	otelShutdown, err := myotel.Setup(ctx)
@@ -284,9 +248,6 @@ func main() {
 		log.Fatalf("error setting up otel: %v", err)
 	}
 
-	// Redis holds transient per-run crawl state: the frontier queues, the
-	// visited set, and in-flight leases (keyed per run, so runs are resumable).
-	redisAddr := env.EnvOr("REDIS_ADDR", defaultRedisAddr)
 	redisClient := redis.NewClient(&redis.Options{
 		Addr: redisAddr,
 		// A finite read timeout is load-bearing for the Frontier's transient-error
@@ -300,7 +261,6 @@ func main() {
 		log.Fatalf("error connecting to redis at %s: %v", redisAddr, err)
 	}
 
-	databaseURL := env.EnvOr("DATABASE_URL", postgres.DefaultURL)
 	if err := postgres.Migrate(ctx, databaseURL); err != nil {
 		log.Fatalf("error applying postgres migrations: %v", err)
 	}

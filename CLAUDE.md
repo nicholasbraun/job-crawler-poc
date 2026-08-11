@@ -116,10 +116,20 @@ model (e.g. `qwen2.5:3b`); reasoning models spend a hidden think phase the crawl
 discards. `LLM_CLASSIFY_MAX_CHARS` / `LLM_EXTRACT_MAX_CHARS` (default 1500 / 8000)
 cap the page text sent to each LLM call, keeping a local model fast.
 
-Every knob is read in one place -- `cmd/server/main.go`, via `env.EnvOr`, each
-with a comment explaining why it exists. `README.md` carries the full table.
-Several are deliberate **kill switches** for paths that can go wrong silently and
-at scale (`EXTRACT_FROM_JSONLD`, `EXTRACT_REQUIRE_POSITIVE_EVIDENCE`,
+Every knob is read in one block at the top of `cmd/server/main.go`, through a
+single `env.Loader` (ADR-0045), each with a comment explaining why it exists.
+`README.md` carries the full table. Use the typed accessor that matches the
+knob's contract (`PositiveInt`, `PositiveDuration`, `Bool`, `Fraction`, `String`,
+`Text`) and pass the default as a **typed value owned by the package it
+configures** (`postgres.DefaultURL`, `robotstxt.DefaultCacheTTL`), never a string
+literal. The Loader accumulates failures rather than exiting, so add reads to the
+block and leave the single `ld.Err()` gate where it is -- nothing may act on a
+knob above that line. The one exception is `LLM_*`, read by
+`openrouter.ConfigFromEnv` so `cmd/server` and `cmd/llmbench` cannot drive the
+model through different settings.
+
+Several knobs are deliberate **kill switches** for paths that can go wrong
+silently and at scale (`EXTRACT_FROM_JSONLD`, `EXTRACT_REQUIRE_POSITIVE_EVIDENCE`,
 `COLLECTION_ENABLED`): when adding one, default it to the live behavior and say in
 the comment what pulling it restores.
 
@@ -194,7 +204,7 @@ internal/
   collection/                # Collection Cycle: seed routing, refetch/liveness, scheduler, politeness
   database/postgres/         # Postgres repositories, Corpus + FTS search, goose migrations
   downloader/                # Downloader interface, HTTP client, caching transport, retry decorator
-  env/                       # Domain-free environment lookup helper
+  env/                       # Domain-free env lookup + accumulating config Loader
   extractcapture/            # Extract-decision tap feeding the Extract Gold Set
   filter/                    # Generic filter chain (CheckFn[T], Chain)
   filter/job_listing_filter/ # Job listing filters (title, main content keywords)
