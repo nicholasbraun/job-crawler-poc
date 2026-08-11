@@ -8,8 +8,35 @@ Go server application implementing a web crawler for job listings, exposing a
 REST API with an embedded React dashboard. Uses clean architecture
 (ports-and-adapters): domain types and interfaces in `internal/`, infrastructure
 implementations in sub-packages. Persists to PostgreSQL and holds transient
-per-run crawl state (frontier queues, visited sets) in Redis. No web framework
--- relies on the Go standard library for HTTP, logging, and concurrency.
+per-run crawl state (frontier queues, visited sets, durable LLM work streams) in
+Redis. No web framework -- relies on the Go standard library for HTTP, logging,
+and concurrency.
+
+The domain has three parts:
+
+- **Discovery Crawl** -- one perpetual, bounded-broad crawl that finds Career
+  Pages, attributes them to Companies, and fills the **Catalog**.
+- **Collection Crawl** -- a periodic **Collection Cycle** over the whole Catalog
+  that harvests Job Listings into the **Corpus** and keeps their Liveness
+  current, via two lanes (ATS board-API fetch, or crawl-and-extract).
+- **SavedSearches** -- stored queries over the Corpus. Keyword and country filter
+  at query time, never at crawl time (ADR-0038 retired the old keyword-crawl
+  lane; do not reintroduce crawl-time keyword pruning).
+
+## Domain Language (read before writing code or prose)
+
+`CONTEXT.md` is the binding glossary. Every domain term used in code, comments,
+commit messages, issues, and docs must match it -- including its `_Avoid_` list.
+Never use an avoided word as a substitute for the term it lists (e.g. "ad",
+"vacancy", or a bare "posting" for a **Job Listing**; "job board" for an
+**Aggregator**) -- the terms `CONTEXT.md` itself builds on those words, like
+**Posting Body** and "posting page", are fine. If a definition is stale, fix
+`CONTEXT.md` rather than working around it.
+
+`docs/adr/NNNN-slug.md` is the decision record. Decisions are cited inline in the
+code they govern (`// ... (ADR-0035)`) -- ~500 such references across the tree.
+When changing behavior an ADR describes, update the ADR or write a new one; when
+adding a non-obvious constraint, cite the ADR that justifies it.
 
 ## Build / Run / Test Commands
 
@@ -50,6 +77,9 @@ go test -v -run TestParseURL/valid_url ./internal/
 # Run all tests in one package
 go test -v ./internal/database/postgres/
 go test -v ./internal/frontier/redis/
+go test -v ./internal/collection/
+go test -v ./internal/pagegate/
+go test -v ./internal/ats/
 go test -v ./internal/downloader/
 go test -v ./internal/parser/
 go test -v ./internal/filter/
@@ -57,9 +87,23 @@ go test -v ./internal/filter/
 # Run tests with race detector
 go test -race ./...     # or: make test-race
 
+# Lint (same version CI runs; install with: brew install golangci-lint)
+make lint              # == golangci-lint run ./...
+
 # Format code
 gofmt -w .
 goimports -w .
+
+# Catalog Doctor: replay today's URL-structural rules over the stored Catalog
+go run ./cmd/doctor              # dry-run report
+go run ./cmd/doctor --apply      # execute the plan
+
+# Gate benchmarks -- full verb list in cmd/llmbench/main.go's package comment
+go run ./cmd/llmbench bench -llm=false          # career-page Gate over the Gold Set, gate-only
+go run ./cmd/llmbench bench                     # ...same, but confirms uncertain fixtures with
+                                                #    the real classifier (needs LLM_* env)
+go run ./cmd/llmbench extract                   # Extract Gate over the reject-rung fixtures
+go run ./cmd/llmbench score-capture -in <labeled.jsonl>   # Extract Gate over the Extract Gold Set
 ```
 
 The server reads configuration from the environment (a `.env` file is loaded via
@@ -72,8 +116,20 @@ model (e.g. `qwen2.5:3b`); reasoning models spend a hidden think phase the crawl
 discards. `LLM_CLASSIFY_MAX_CHARS` / `LLM_EXTRACT_MAX_CHARS` (default 1500 / 8000)
 cap the page text sent to each LLM call, keeping a local model fast.
 
-The repo has a `Makefile`, `Dockerfile`, and `docker-compose.yml`. There is no
-CI/CD pipeline or linter configuration.
+Every knob is read in one place -- `cmd/server/main.go`, via `pgenv.EnvOr`, each
+with a comment explaining why it exists. `README.md` carries the full table.
+Several are deliberate **kill switches** for paths that can go wrong silently and
+at scale (`EXTRACT_FROM_JSONLD`, `EXTRACT_REQUIRE_POSITIVE_EVIDENCE`,
+`COLLECTION_ENABLED`): when adding one, default it to the live behavior and say in
+the comment what pulling it restores.
+
+The repo has a `Makefile`, `Dockerfile`, and `docker-compose.yml`. CI
+(`.github/workflows/ci.yml`) gates every push to `main` and every PR on: `gofmt
+-l` (must be empty), `golangci-lint` v2.12.2 (config in `.golangci.yml`: the
+standard set -- govet, staticcheck, errcheck, ineffassign, unused), `go build
+./...`, `go test -race ./...` against real Postgres/Redis via testcontainers, plus
+a dashboard typecheck + build. **Run `make lint` before pushing** -- `go vet` and
+`gofmt` alone miss errcheck findings, the usual cause of a red build.
 
 ## Development Workflow
 
@@ -118,46 +174,76 @@ no PR.
 ## Project Structure
 
 ```
-cmd/server/main.go           # Entry point: wires deps, serves REST API + dashboard
+cmd/server/main.go           # Entry point: wires deps, serves REST API + dashboard, manages runs
+cmd/doctor/                  # Catalog Doctor CLI: replays URL-structural rules over the Catalog
+cmd/llmbench/                # Offline gate benchmarks + Gold-Set / Extract-Gold-Set tooling
 web/                         # React/Vite dashboard; web/dist is embedded into the binary
+grafana/dashboards/          # Provisioned dashboards (frontier, downloader, collection, llm, system)
+docs/adr/                    # Architecture decision records (cited inline from the code)
 internal/
   doc.go                     # Package "crawler" -- domain root
-  url.go, job_listing.go, content.go, company.go, career_page.go,
-    crawl_definition.go, crawl_run.go  # Domain types + repository interfaces
-  api/                       # REST API handlers over the repositories
-  runner/                    # Adopts/resumes runs, drives orchestrators per run
-  catalog/                   # Company/career-page catalog identity helpers
-  database/postgres/         # Postgres repositories + goose migrations
-  downloader/                # Downloader interface, HTTP client, retry decorator
+  url.go, job_listing.go, content.go, company.go, career_page.go, corpus_search.go,
+    saved_search.go, crawl_definition.go, crawl_run.go, seed.go, liveness.go,
+    dormancy.go, posting_body.go, structured_posting.go, source_hash.go, import_job.go
+                             # Domain types + repository interfaces
+  api/                       # REST API handlers over the repositories + runner
+  ats/                       # Board-API clients for 10 ATS providers + the registry
+  atsingest/                 # ATS Fetch lane: pool, per-tenant dedup, per-provider limiter
+  catalog/                   # ATS-aware Company identity, Name Ladder, company snapshot
+  catalogdoctor/             # Catalog repair engine (plan + apply)
+  collection/                # Collection Cycle: seed routing, refetch/liveness, scheduler, politeness
+  database/postgres/         # Postgres repositories, Corpus + FTS search, goose migrations
+  downloader/                # Downloader interface, HTTP client, caching transport, retry decorator
+  extractcapture/            # Extract-decision tap feeding the Extract Gold Set
   filter/                    # Generic filter chain (CheckFn[T], Chain)
   filter/job_listing_filter/ # Job listing filters (title, main content keywords)
   filter/url/                # URL filters (TLD, subdomain, path, hostname)
+  freeextraction/            # LLM-free extraction from unambiguous structured data
   frontier/                  # Frontier interface + sentinel errors
-  frontier/redis/            # Redis-backed frontier (per-run queues, visited sets)
+  frontier/redis/            # Redis-backed frontier (per-run queues, bounded visited set, leases)
+  geo/                       # Deterministic location -> ISO country resolver + gazetteer
+  importer/                  # Catalog import jobs (async, idempotent merge)
+  listingid/                 # Canonical source-URL identity for Corpus rows
+  llmobs/                    # LLM-stage metrics, stats, content-duplication probe
+  llmstream/                 # Durable per-run LLM work stage over Redis Streams
   openrouter/                # LLM career-page classifier + job-listing extractor
   orchestrator/              # Crawl loop wiring all components
   otel/                      # OpenTelemetry + Prometheus metrics + pprof
-  parser/                    # HTML parser (goquery)
+  pagegate/                  # Pre-LLM Gate + Extract Gate (graded score, Positive Evidence)
+  parser/                    # HTML parser (goquery): main content, links, structured data
+  pgenv/                     # Env lookup helper + shared DATABASE_URL default
   pool/                      # Generic worker pool
   processor/                 # Processor interface
-  processor/url_processor/           # URL processor (download, parse, filter, discover)
-  processor/discovery_processor/     # Discovery crawl processor (fills the catalog)
-  processor/career_page_processor/   # Career-page classification processor
-  processor/job_listing_processor/   # Job listing processor
-  robotstxt/                 # robots.txt fetching, caching, and matching
+  processor/url_processor/                 # URL processor (download, parse, filter, discover)
+  processor/discovery_processor/           # Discovery crawl processor (fills the catalog)
+  processor/career_page_processor/         # Career-page classification processor
+  processor/job_listing_processor/         # Job listing processor (Corpus save)
+  processor/shadow_extraction_processor/   # Measures Extract-Gate false-drops; never saves
+  robotstxt/                 # robots.txt fetching, bounded caching, and matching
+  runner/                    # Multi-run lifecycle: start, stop, pause, resume, adopt, drain
 ```
+
+The dashboard's build output is gitignored except `web/dist/index.html`, which IS
+tracked so the `//go:embed` compiles before a first `vite build`. When a web
+source change ships, rebuild (`make web-build`) and commit the bumped asset hash
+in `web/dist/index.html` alongside the source.
 
 ## Code Style
 
 ### Formatting and Imports
 
-- Standard `gofmt` formatting. No custom linter rules.
+- Standard `gofmt` formatting, enforced by CI. Linting is `golangci-lint` with
+  the v2 standard set (`.golangci.yml`); no custom rules beyond a few errcheck
+  exclusions (`fmt.Fprint*`, `(io.Closer).Close`, and unchecked errors in tests).
 - Import groups: (1) stdlib, (2) third-party / internal packages, separated by
   a blank line.
 - The root `internal/` package is always aliased on import:
   `crawler "github.com/nicholasbraun/job-crawler-poc/internal"`
-- Avoid import collisions with aliases (e.g., `myHttp` for the internal HTTP
-  package when `net/http` is also imported).
+- Snake_case sub-packages are aliased to a run-together name on import:
+  `careerpageprocessor ".../processor/career_page_processor"`,
+  `redisfrontier ".../frontier/redis"`.
+- Avoid import collisions with aliases (e.g., `myotel` for `internal/otel` when
+  the OpenTelemetry SDK is also imported).
 
 ### Naming Conventions
 
@@ -204,11 +290,18 @@ internal/
 
 ### Concurrency
 
-- `sync.Mutex` for shared state protection.
-- Signal channels (`chan struct{}`) for goroutine wakeup.
-- Mutex is intentionally released before blocking operations (not deferred)
-  in the frontier implementation.
+- `sync.Mutex` for shared in-process state (run registry, robots cache, ATS
+  limiter and tenant dedup, worker pool).
+- Signal channels (`chan struct{}`) for goroutine wakeup and done-signalling; a
+  buffered one doubles as a semaphore (see `importer`).
 - Use `select` with `ctx.Done()` for context-aware blocking.
+- Cross-process coordination is Redis-mediated, not lock-mediated: the frontier's
+  pop/add are single Lua scripts (atomic by construction, no in-process mutex),
+  and the LLM stage uses a Stream consumer group with pending-list reclaim. When
+  touching either, preserve atomicity in the script rather than adding a lock
+  around it.
+- Anything crossing a process restart must be idempotent: LLM-stage entries are
+  redelivered on crash, so processors upsert on natural keys.
 
 ### Package Documentation
 
@@ -236,6 +329,13 @@ internal/
   ```
 - **Test helpers:** Use `t.Helper()` and place shared helpers in
   `helpers_test.go`.
+- **Gate changes are measured, not argued:** a change to `internal/pagegate` (the
+  career-page Gate or the Extract Gate) is scored offline against the labelled
+  fixture sets via `cmd/llmbench` before it ships. The hard failures are
+  irrecoverable ones -- a **Leak** or **False-Certain** on the Gold Set, a
+  **false-drop** on the Extract Gold Set -- and the benchmark exits non-zero on
+  any of them. Ground-truth labels are human-owned: never edit a label to make a
+  run pass.
 
 ### Config / Dependency Injection Pattern
 
@@ -256,9 +356,12 @@ internal/
 | `github.com/PuerkitoBio/goquery`                                         | HTML parsing with CSS selectors       |
 | `github.com/jackc/pgx/v5`                                                | PostgreSQL driver + connection pool   |
 | `github.com/pressly/goose/v3`                                            | SQL schema migrations                 |
-| `github.com/redis/go-redis/v9`                                           | Redis client (per-run frontier state) |
+| `github.com/redis/go-redis/v9`                                           | Redis client (frontier + LLM streams) |
 | `github.com/google/uuid`                                                 | UUID generation for run/entity IDs    |
 | `github.com/temoto/robotstxt`                                            | robots.txt parsing/matching           |
+| `github.com/cespare/xxhash/v2`                                           | Hashed visited-set keys (ADR-0027)    |
+| `golang.org/x/net/publicsuffix`                                          | eTLD+1 for Company identity + Scope   |
+| `golang.org/x/sync/singleflight`                                         | Collapse concurrent robots.txt fetches |
 | `github.com/joho/godotenv`                                               | Load `.env` into the environment      |
 | `github.com/prometheus/client_golang`, `go.opentelemetry.io/otel/*`      | Metrics + observability               |
 | `github.com/testcontainers/testcontainers-go` (+ postgres/redis modules) | Throwaway Postgres/Redis for tests    |
@@ -271,3 +374,8 @@ standard library.
 Follow Conventional Commits: `type: description` (lowercase, imperative mood).
 Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`.
 Scoped variants allowed: `test(redis_frontier): add cooldown tests`.
+
+GitHub issue titles are plain descriptions, NOT Conventional-Commit prefixed --
+so a PR title (which mirrors the issue) is not conventional either. When squash
+merging, pass the conventional subject explicitly so `main`'s history stays
+conventional: `gh pr merge --squash --subject "feat(scope): ..."`.
