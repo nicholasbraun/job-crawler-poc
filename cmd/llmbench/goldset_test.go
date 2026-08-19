@@ -122,9 +122,9 @@ const (
 // confirmed. ADR-0043 asks this stratum to be SPOT-CHECKED rather than fully
 // confirmed, so unlike pendingHumanConfirmations this is a ratchet that RISES: it is
 // the machine-visible record of what has been checked, and what is therefore still
-// owed. It is 0 -- the labels ship LLM-proposed, and extract-goldset/README.md tells
-// the reviewer exactly which 20 rows to read and how to raise it.
-const randomSpotChecks = 0
+// owed. It is 4 of 120 -- the rest ship LLM-proposed, and extract-goldset/README.md
+// tells the reviewer exactly which 20 rows to read and how to raise it.
+const randomSpotChecks = 4
 
 const (
 	// pendingBoundaryConfirmations is how many Boundary Stratum rows still carry an
