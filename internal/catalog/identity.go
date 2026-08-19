@@ -528,6 +528,29 @@ var aggregatorHosts = map[string]struct{}{
 	// eTLD+1 match is right -- the same shape as getro.com above. Contrast a real
 	// multi-tenant ATS, where the tenant IS the employer.
 	"careerwebsite.com": {},
+	// Extract Gold Set audit: boards the gold set caught minting other employers'
+	// postings. Each is confirmed by the employer NAMED ON THE PAGE, not by host name
+	// -- the same standard as the goodjobs.eu/hiring.cafe additions above.
+	"job38.de":        {}, // regional board; the Braunschweig posting is the Kita-Verband's, not job38's
+	"jobs-journal.de": {}, // posting board; every entry carries a "Firma" line (WIPOTEC, Insiders Technologies)
+	"aiim.org":        {}, // association career center; jobs.aiim.org served TUEV Rheinland's posting
+	"azur-online.de":  {}, // legal careers board; /jobs/{kanzlei}/{role} spans many law firms
+	// Same audit, second pass. Generic aggregators and niche/community boards, each
+	// confirmed by the employer named on the page:
+	"talent.com":          {}, // job aggregator; one page served Excelsior Wellness, another Earn Haus
+	"liepin.com":          {}, // Chinese recruitment platform; postings come from employers AND headhunters
+	"builtincolorado.com": {}, // Built In sibling of builtin.com/builtinnyc.com above; served Moov and Halter
+	"moovijob.com":        {}, // Luxembourg board; /company/{slug} spans Chemgas Barging, Fixemer, Sibelit
+	"rubyonrails.org":     {}, // jobs.rubyonrails.org (JobKit); served Better Futures MAT and Fleetio
+	"vuejobs.com":         {}, // Vue.js community board, paid postings ("Post a job $199"); served Valtech
+	"nwb-jobboerse.de":    {}, // tax/legal board; gesuche.* are candidate ads, employer "nicht genannt"
+	"unistellenmarkt.de":  {}, // student job market; its Uniklinik Bonn ad is re-hosted from studierendenwerk-bonn.de
+	"pro-physik.de":       {}, // physics portal; jobs.pro-physik.de is a Stellenmarkt across many institutes
+	"jobs-heroes.de":      {}, // sister board of jobs-journal.de -- both carried the SAME Insiders Technologies posting
+	// VC-portfolio board, the speedinvest/balderton/accel category above: talent.seedcamp.com
+	// lists portfolio companies' openings (Elliptic, Source.dev). As with those firms, the
+	// eTLD+1 match also sheds Seedcamp's own handful of postings -- the accepted trade.
+	"seedcamp.com": {},
 }
 
 // sharedHostSuffixes are registrable domains (eTLD+1) that front many INDEPENDENT
@@ -559,6 +582,12 @@ var sharedHostSuffixes = map[string]struct{}{
 	"beehiiv.com":   {}, // newsletters, one per {tenant}.beehiiv.com — same cross-promo link trap as Substack
 	"ghost.io":      {}, // Ghost(Pro), one publication per {tenant}.ghost.io
 	"wordpress.com": {}, // blogs, thousands of independent sites at {tenant}.wordpress.com
+	// A career-site platform, NOT an Aggregator: every {tenant}.helixjobs.com is ONE
+	// employer's own board (kskmse = Kreissparkasse München, sparkasse-heidelberg = its
+	// own), each listing only its own openings. That is the "tenant IS the employer"
+	// contrast the careerwebsite.com note draws, so it belongs here -- fencing a seed to
+	// its own subdomain -- and NOT on aggregatorHosts, which would shed real Career Pages.
+	"helixjobs.com": {},
 }
 
 // IsAggregatorHost reports whether u sits on a known multi-company aggregator,
