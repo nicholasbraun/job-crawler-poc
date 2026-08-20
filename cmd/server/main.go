@@ -469,6 +469,10 @@ func newFactory(
 	}
 	slog.Info("free extraction (ADR-0042)", "enabled", extractFromJSONLD)
 	slog.Info("shadow extraction (ADR-0044)", "rate", shadowExtractRate)
+	// The renderer is stamped on every extract-capture record and decides what the
+	// two prompts read, so which one is running has to be legible from the log
+	// rather than inferred from the environment (ADR-0046).
+	slog.Info("structural rendering (ADR-0046)", "enabled", structuralRendering, "renderer", htmlParser.RendererID())
 
 	// The extraction-cache key (ADR-0035): ONE closure over the extractor's prompt
 	// window, handed to both the save processor that stamps it and the refetch lane

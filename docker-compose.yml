@@ -83,6 +83,10 @@ services:
       # works under Docker; ":-" expands an unset var to "" and env.EnvOr reads "" as
       # the built-in default (true), keeping the default defined once, in Go.
       - EXTRACT_REQUIRE_POSITIVE_EVIDENCE=${EXTRACT_REQUIRE_POSITIVE_EVIDENCE:-}
+      # Structural Rendering kill switch (ADR-0046). Listed here so the dial works
+      # under Docker; ":-" expands an unset var to "" and env.EnvOr reads "" as the
+      # built-in default (false), keeping the default defined once, in Go.
+      - PARSE_STRUCTURAL_RENDERING=${PARSE_STRUCTURAL_RENDERING:-}
       - CRAWL_MAX_WORKERS=${CRAWL_MAX_WORKERS:-50}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DATABASE_URL=postgres://crawler:crawler@postgres:5432/crawler?sslmode=disable
