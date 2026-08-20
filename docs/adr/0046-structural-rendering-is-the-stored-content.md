@@ -68,6 +68,7 @@ on what the page itself had at the boundary:
 | table cell, page had whitespace | `"\t"` | one space |
 | table cell, page had none | `""` | nothing |
 | no boundary, page had whitespace | `" "` | one space |
+| line-prefix terminator | `"\v"` | nothing, with its prefix |
 
 The JOIN is not a nicety. `goquery`'s `.Text()` concatenates text nodes with no separator at
 all, so a minified `<p>A</p><p>B</p>` is `AB` in today's output — and **58 of the 90 committed
@@ -77,10 +78,32 @@ a space would re-key 64% of the Corpus. The rendering therefore records the abse
 derivation deletes the mark instead of folding it.
 
 Line prefixes — `#`…`######` for a heading level, `-` for a list item or an option, `|` for a
-table row — are written after the newline and end in a **tab**, not a space, and are emitted
-lazily so an empty block contributes nothing. Tab-anchoring is what keeps the strip's
-`^(#{1,6}|-|\|)\t` rule off a paragraph whose own text begins `"- "` or `"# 1 in Germany"`.
+table row — are written after the newline and end in a **vertical tab**, and are emitted
+lazily so an empty block contributes nothing. `"\v"` terminates a prefix and does nothing
+else in this grammar, so the strip's `^(#{1,6}|-|\|)\v` rule has exactly one reading.
 The one shape never written is a tab immediately before a newline other than the JOIN itself.
+
+**This was originally a tab, and that was a round-trip break.** The reasoning was that page
+text can hold `"- "` but never `"-\t"`, so an anchored rule cannot eat a paragraph beginning
+`"- "` — true, but it guards the wrong side. The JOIN *is* `"\t\n"` and a cell separator *is*
+`"\t"`, so a page word that is exactly `-`, `|` or `#` and lands at the start of a rendered
+line is followed by a synthesized tab: `^-\t` matched, and the strip deleted both the page's
+own character and the boundary behind it, folding `Salary-Berlin` into `Salary Berlin` with a
+new `SourceHash`. None of the 90 committed fixtures contains the shape — 30 of them carry a
+standalone `-`/`|`/`#` token but never in that position — so the round-trip test was green
+while the invariant was false. Three independent reviews of #279 found it (#289). A terminator
+the JOIN cannot forge is what makes the grammar injective here rather than merely unfalsified;
+the case is pinned by hand-written pages, since no fixture can pin it.
+
+**The two wrapping markers decline themselves rather than corrupt their text.** Page text that
+would make a marker unreadable — an unbalanced `]`, which closes the marker early, or text that
+turns `[…]` into something the strip reads as a control marker, as in `<a>input your details</a>`
+— is written bare, with no marking at all. `crawler.WrappableMarkerText` is the single predicate,
+and it lives beside the strip's patterns because the question is entirely about how the strip
+reads a marker. Before it, `<a href="/x">See ] more</a>` left `[See ] more](/x)` — the raw
+marker *and the href* — in the Posting Body, the Corpus search index and `SourceHash`. Losing a
+marking costs the model a signal; corrupting the text costs the Corpus a re-extraction, so the
+trade is not close.
 
 Markers are built from **attributes only** — `href`, `alt`, `value`, `type`, `placeholder`,
 `aria-label`, `name` — none of which is in today's flattened output, so each may strip to
@@ -114,7 +137,7 @@ What #280 built: the narrowing is `crawler.WithoutLinkTargets`, a pure deletion 
 `(href)` half of a link marker, so the labeller's variant is literally a superset of the
 prompt's rather than a second rendering that has to be kept in step. The brackets stay — a
 rail of "similar jobs" links has to remain distinguishable from the posting's own prose, and
-dropping them buys nothing. The tab-anchored line prefixes and the JOIN reach the model
+dropping them buys nothing. The line prefixes and the JOIN reach the model
 unchanged: they are what make the rendering strippable, and they read as structure as they
 are. The cap applies to the narrowed form, measured over the 90 committed fixtures at
 **1.253x** the Flattened Text with targets and **1.081x** without, beside the 36-live-page
@@ -126,11 +149,11 @@ scores its removal.
 What #282 measured: `cmd/llmbench score-rendering` replays the extract path over the committed
 pages twice — once through a flattening parser, once through a rendering one — at one prompt
 budget applied identically to both arms, with no network and no model. It confirms the
-narrowed form's cost at the cap rather than correcting it: **1.0950x** the Flattened Text in
+narrowed form's cost at the cap rather than correcting it: **1.0937x** the Flattened Text in
 runes over the 90 real fixtures and **1.0689x** over the 26 labelled ones, beside the 1.081x
 uncapped and 1.10x live figures above. Where that lands is the number the decision turns on:
-at an 8000-rune budget the rendering delivers **1.69% fewer page words** to the extractor over
-the 90 real pages (40488 against 41184 of 60432 available), and takes the pages the cap
+at an 8000-rune budget the rendering delivers **1.80% fewer page words** to the extractor over
+the 90 real pages (40444 against 41184 of 60432 available), and takes the pages the cap
 truncates from 13 to 15 of 90 — `governikus.de/karriere/arbeiten-bei-uns` and `xing.com`. The
 standing context is that the cap, not the rendering, is what bounds what the extractor sees:
 62 of the 457 real Extract Gold Set rows (13.6%) already exceed the budget today, and only

@@ -6,6 +6,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/PuerkitoBio/goquery"
+	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"golang.org/x/net/html"
 )
 
@@ -45,17 +46,39 @@ import (
 //	table-cell boundary, page had whitespace   "\t"      -> one space
 //	table-cell boundary, page had none         ""        -> nothing
 //	no boundary, page had whitespace           " "       -> one space
+//	line-prefix terminator                     "\v"      -> nothing, with its prefix
 //
 // Line prefixes (#..###### for a heading level, - for a list item or option, | for
 // a table row) are written after the newline as part of the same lazy flush, so an
-// empty block contributes nothing at all. They end in a TAB rather than a space
-// because source-derived text can never contain a tab -- every tab and newline in a
-// rendering is synthesized -- so the strip's anchored prefix rule can never eat a
-// paragraph whose own text starts with "- " or "# ".
+// empty block contributes nothing at all. They end in a VERTICAL TAB, which is the
+// one character this grammar writes for a single purpose: it terminates a prefix
+// and it does nothing else. Page text cannot contain one -- renderer.text splits on
+// strings.Fields, and unicode.IsSpace counts "\v", so a vertical tab in the source
+// becomes a word boundary and is never written raw.
+//
+// It used to be a tab, and that was wrong in a way no fixture happened to expose.
+// The reasoning was "source-derived text can never contain a tab, so an anchored
+// prefix rule cannot eat a paragraph whose own text starts '- '" -- true, but it
+// guards the wrong side. The danger is the tab AFTER the word: joinMarker is "\t\n"
+// and a cell separator is "\t", so a page word that is exactly "-", "|" or "#" and
+// lands at the start of a rendered line is followed by a synthesized tab, and the
+// strip's "^-\t" read it as a bullet. It deleted the page's own character AND the
+// JOIN behind it, and the orphaned newline then folded to a space the page never
+// had: "Salary-Berlin" came back as "Salary Berlin", with a new SourceHash. Three
+// independent reviews of #279 found it; none of the 90 committed fixtures contains
+// the shape, so the round-trip test was green while the invariant was false. A
+// terminator the JOIN cannot forge is what makes the grammar injective here rather
+// than merely unfalsified (#289).
 //
 // The one thing never written is a tab immediately before a newline other than the
 // JOIN itself: a cell boundary owed when a block break flushes is dropped, or it
 // would delete a boundary the page really had.
+//
+// The two markers that WRAP page text decline themselves rather than corrupt it.
+// crawler.WrappableMarkerText decides: page text that would make the marker
+// unreadable -- an unbalanced "]", or text that turns "[...]" into something the
+// strip reads as a control marker -- is written bare, with no marking at all. The
+// text always survives; only the signal that it was a link or a button is lost.
 const (
 	// joinMarker records a block boundary the page itself ran together. The strip
 	// deletes it; a bare "\n" it leaves as whitespace.
@@ -65,6 +88,11 @@ const (
 	// paragraph-length aria-label would otherwise dominate the rendering the human
 	// labeller and the extractor read, and none of it is page text.
 	markerMaxRunes = 80
+
+	// prefixTerminator ends a line prefix. It is deliberately NOT the tab that
+	// starts the JOIN and separates cells -- see the grammar note above for the
+	// round-trip break that sharing one character caused (#289).
+	prefixTerminator = "\v"
 )
 
 // Renderer identifiers, stamped on every extract-capture record so a captured page
@@ -87,8 +115,14 @@ const (
 // the two identifiers read the same way, and so a change nobody expects has
 // somewhere to be recorded.
 const (
-	RendererFlattened  = "flattened-v1"
-	RendererStructural = "structural-v1"
+	RendererFlattened = "flattened-v1"
+
+	// structural-v2: line prefixes moved from a tab terminator to a vertical tab,
+	// and the two wrapping markers now decline themselves on page text they cannot
+	// hold. Both were round-trip breaks found reviewing #279 (#289). No row was
+	// ever stamped structural-v1 -- the switch has never been on outside tests --
+	// so the bump costs nothing and keeps the rule honest.
+	RendererStructural = "structural-v2"
 )
 
 // RendererID names the renderer this parser writes Content.MainContent with, so the
@@ -112,11 +146,12 @@ var blockTags = map[string]string{
 	"nav": "", "ol": "", "p": "", "pre": "", "section": "", "select": "",
 	"table": "", "tbody": "", "textarea": "", "tfoot": "", "thead": "", "ul": "",
 
-	"h1": "#\t", "h2": "##\t", "h3": "###\t", "h4": "####\t", "h5": "#####\t", "h6": "######\t",
+	"h1": "#" + prefixTerminator, "h2": "##" + prefixTerminator, "h3": "###" + prefixTerminator,
+	"h4": "####" + prefixTerminator, "h5": "#####" + prefixTerminator, "h6": "######" + prefixTerminator,
 
-	"li":     "-\t",
-	"option": "-\t",
-	"tr":     "|\t",
+	"li":     "-" + prefixTerminator,
+	"option": "-" + prefixTerminator,
+	"tr":     "|" + prefixTerminator,
 }
 
 // cellTags are the elements that separate cells within a rendered table row,
@@ -131,14 +166,17 @@ func renderStructural(sel *goquery.Selection) string {
 	for _, n := range sel.Nodes {
 		r.node(n)
 	}
-	return r.buf.String()
+	return string(r.buf)
 }
 
 // renderer accumulates a rendering. Every separator is owed rather than written:
 // the flags say what the page put between what is already written and whatever
 // comes next, and flush turns them into characters only once there is a next.
 type renderer struct {
-	buf strings.Builder
+	// buf is a byte slice rather than a strings.Builder because a wrapping marker
+	// can only decide it is safe once its page text is rendered, and declining it
+	// means truncating back to where its opening bracket went (see wrapper).
+	buf []byte
 
 	pendingSpace  bool   // the page had whitespace at this boundary
 	pendingBreak  bool   // a block boundary is owed
@@ -210,23 +248,13 @@ func (r *renderer) element(n *html.Node) {
 			r.children(n)
 			break
 		}
-		r.write("[")
-		r.inWrapper++
-		r.children(n)
-		r.inWrapper--
-		// Written raw: a trailing space inside the link is still owed to whatever
-		// follows the marker, so the closing bracket must not consume it.
-		r.writeRaw("](" + markerHref(href) + ")")
+		r.wrapper(n, "[", "]("+markerHref(href)+")")
 	case "button":
 		if r.inWrapper > 0 {
 			r.children(n)
 			break
 		}
-		r.write("[button: ")
-		r.inWrapper++
-		r.children(n)
-		r.inWrapper--
-		r.writeRaw("]")
+		r.wrapper(n, "[button: ", "]")
 	default:
 		r.children(n)
 	}
@@ -285,14 +313,39 @@ func (r *renderer) text(s string) {
 // write emits page text or a marker, paying whatever separator is owed first.
 func (r *renderer) write(s string) {
 	r.flush()
-	r.buf.WriteString(s)
+	r.buf = append(r.buf, s...)
 	r.wrote = true
 }
 
 // writeRaw closes a wrapping marker without paying a separator, leaving what the
 // page owed to be paid after the marker instead of inside it.
 func (r *renderer) writeRaw(s string) {
-	r.buf.WriteString(s)
+	r.buf = append(r.buf, s...)
+}
+
+// wrapper renders a marker that wraps page text -- [text](href) and [button: text],
+// the only two whose contents must survive the strip verbatim. It writes the
+// opening, renders the children, and then asks crawler.WrappableMarkerText whether
+// the text it got back can live inside a marker at all. When it cannot, the marker
+// is DECLINED: the buffer truncates to where the opening went and the page's own
+// text is written bare. Losing the marking costs the model a signal; corrupting the
+// text costs the Corpus a SourceHash (#289).
+func (r *renderer) wrapper(n *html.Node, open, close string) {
+	r.write(open)
+	start := len(r.buf)
+
+	r.inWrapper++
+	r.children(n)
+	r.inWrapper--
+
+	text := string(r.buf[start:])
+	if !crawler.WrappableMarkerText(text) {
+		r.buf = append(r.buf[:start-len(open)], text...)
+		return
+	}
+	// Written raw: a trailing space inside the marker is still owed to whatever
+	// follows it, so the closing must not consume it.
+	r.writeRaw(close)
 }
 
 func (r *renderer) flush() {
@@ -300,22 +353,22 @@ func (r *renderer) flush() {
 	case r.pendingBreak:
 		if r.wrote {
 			if r.pendingSpace {
-				r.buf.WriteString("\n")
+				r.buf = append(r.buf, '\n')
 			} else {
-				r.buf.WriteString(joinMarker)
+				r.buf = append(r.buf, joinMarker...)
 			}
 		}
 		// A cell boundary owed at the same moment is dropped rather than written:
 		// its tab would land immediately before the newline and read as a JOIN,
 		// deleting a boundary the page really had.
-		r.buf.WriteString(r.pendingPrefix)
+		r.buf = append(r.buf, r.pendingPrefix...)
 	case r.pendingCell:
 		if r.pendingSpace && r.wrote {
-			r.buf.WriteString("\t")
+			r.buf = append(r.buf, '\t')
 		}
 	case r.pendingSpace:
 		if r.wrote {
-			r.buf.WriteString(" ")
+			r.buf = append(r.buf, ' ')
 		}
 	}
 	r.pendingBreak, r.pendingCell, r.pendingSpace = false, false, false

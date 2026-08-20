@@ -31,20 +31,20 @@ var narrowCases = []struct {
 		"[Docs](/a%29b)",
 		"[Docs]",
 	},
-	{"several links on one line", "-\t[A](/a) and [B](/b)", "-\t[A] and [B]"},
+	{"several links on one line", "-\v[A](/a) and [B](/b)", "-\v[A] and [B]"},
 
 	// Everything the model is meant to see, one case per shape.
-	{"a heading's level prefix survives", "#\tOpen positions", "#\tOpen positions"},
-	{"a list item's bullet survives", "-\tGo", "-\tGo"},
-	{"a table row survives", "|\tBackend Engineer\tBerlin", "|\tBackend Engineer\tBerlin"},
+	{"a heading's level prefix survives", "#\vOpen positions", "#\vOpen positions"},
+	{"a list item's bullet survives", "-\vGo", "-\vGo"},
+	{"a table row survives", "|\vBackend Engineer\tBerlin", "|\vBackend Engineer\tBerlin"},
 	{"the JOIN survives", "Über Redcare\t\nNewsroom", "Über Redcare\t\nNewsroom"},
 	{"a form control's marker survives", "[input checkbox: role]", "[input checkbox: role]"},
 	{
 		// ADR-0046's advertorial.de case: a picker of roles must not read as an index
 		// of them, which it only does while the select marker is still there.
 		"a select and its options survive",
-		"[select: Position]\n-\tSales Manager (m/w/d)",
-		"[select: Position]\n-\tSales Manager (m/w/d)",
+		"[select: Position]\n-\vSales Manager (m/w/d)",
+		"[select: Position]\n-\vSales Manager (m/w/d)",
 	},
 	{"a button's marker survives", "[button: Senden]", "[button: Senden]"},
 	{"an image's marker survives", "[img: 1A SMS GmbH]", "[img: 1A SMS GmbH]"},

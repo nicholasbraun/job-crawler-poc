@@ -207,9 +207,16 @@ func main() {
 	// round-trip is asserted byte for byte over the 90 committed fixtures. What the
 	// switch really changes for a running crawl is the two LLM prompts: the classifier
 	// and the extractor read the rendering with link targets omitted (#280). Setting it
-	// back to false restores
-	// today's parser exactly, with no second DOM walk on any page the Discovery Crawl
-	// fetches, which is why it stays off until a harvest has scored it.
+	// back to false restores today's parser exactly, with no second DOM walk on any page
+	// the Discovery Crawl fetches, which is why it stays off until a harvest has scored
+	// it.
+	//
+	// One thing the switch does NOT gate: crawler.FlattenedText now sits in front of the
+	// persisted paths unconditionally, so page text that itself contains marker syntax
+	// ("[select all]", a literal "](") is rewritten whether this is on or off. Measured
+	// zero across the 90 committed fixtures and all 457 Extract Gold Set rows, and
+	// asserted by TestFlattenedTextIsIdentityOnTodaysOutput -- but "off is byte-identical
+	// to before the renderer existed" is true of the parser, not of the derivation.
 	structuralRendering := ld.Bool("PARSE_STRUCTURAL_RENDERING", parser.DefaultStructuralRendering)
 
 	// CRAWL_MAX_WORKERS sizes the per-run discovery worker pool — how many pages

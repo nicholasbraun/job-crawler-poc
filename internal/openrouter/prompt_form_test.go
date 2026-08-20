@@ -17,6 +17,10 @@ func TestPromptFormNarrowsThenCaps(t *testing.T) {
 		in       string
 		maxChars int
 		want     string
+		// keepsParens marks the cases where a "](" legitimately survives: a
+		// non-link marker glued to page text that opens with a parenthesis. The
+		// pair is only a link target when a link rule claims it (#289).
+		keepsParens bool
 	}{
 		{
 			// Flattened Text carries no markers, so the narrowing is the identity: the
@@ -29,9 +33,43 @@ func TestPromptFormNarrowsThenCaps(t *testing.T) {
 		},
 		{
 			name:     "link target dropped, brackets kept",
-			in:       "-\t[Apply now](/apply)\nTASKS",
+			in:       "-\v[Apply now](/apply)\nTASKS",
 			maxChars: 100,
-			want:     "-\t[Apply now]\nTASKS",
+			want:     "-\v[Apply now]\nTASKS",
+		},
+		{
+			// #289: every marker ends in "]", so a link rule on its own claimed an
+			// image or a control glued to a page parenthetical and deleted the
+			// page's own words. "(m/w/d)" is exactly the token that marks a German
+			// role title, so this was a real loss in the prompt the change exists
+			// to improve.
+			name:        "a parenthetical after an image marker is page text, not a target",
+			in:          "#\vSales Manager[img: Acme logo](m/w/d)\nBerlin",
+			maxChars:    200,
+			want:        "#\vSales Manager[img: Acme logo](m/w/d)\nBerlin",
+			keepsParens: true,
+		},
+		{
+			name:        "a parenthetical after a control marker survives too",
+			in:          "[input text: Vorname](optional) Nachname",
+			maxChars:    200,
+			want:        "[input text: Vorname](optional) Nachname",
+			keepsParens: true,
+		},
+		{
+			name:        "a parenthetical after a button survives too",
+			in:          "[button: Senden](freiwillig)",
+			maxChars:    200,
+			want:        "[button: Senden](freiwillig)",
+			keepsParens: true,
+		},
+		{
+			// ...while a real link still loses its target, including one whose text
+			// holds a bracketed run.
+			name:     "a genuine link still drops its target",
+			in:       "[Fixed Term [12 Months]](/careers/468) (m/w/d)",
+			maxChars: 200,
+			want:     "[Fixed Term [12 Months]] (m/w/d)",
 		},
 		{
 			// The whole reason the two steps live in one function: capping first would
@@ -63,7 +101,7 @@ func TestPromptFormNarrowsThenCaps(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("PromptForm(%q, %d) = %q, want %q", tt.in, tt.maxChars, got, tt.want)
 			}
-			if strings.Contains(got, "](") {
+			if !tt.keepsParens && strings.Contains(got, "](") {
 				t.Errorf("PromptForm(%q, %d) = %q, which still carries a link target", tt.in, tt.maxChars, got)
 			}
 			if n := utf8.RuneCountInString(got); n > tt.maxChars {

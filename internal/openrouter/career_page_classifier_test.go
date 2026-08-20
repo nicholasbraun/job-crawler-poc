@@ -185,8 +185,8 @@ func TestConfirmPromptReadsTheStructuralRendering(t *testing.T) {
 	srv := newCapturingServer(t, `{"is_career_page":true,"company_name":null}`, &captured)
 
 	classifier := openrouter.NewCareerPageClassifier(openrouter.Config{BaseURL: srv.URL, APIKey: "test"})
-	content := &crawler.Content{Title: "x", MainContent: "#\tOpen positions\n" +
-		"-\t[Backend Engineer](/jobs/backend)\n" +
+	content := &crawler.Content{Title: "x", MainContent: "#\vOpen positions\n" +
+		"-\v[Backend Engineer](/jobs/backend)\n" +
 		"[input checkbox: role]\tSales Manager (m/w/d)\n" +
 		"[button: Jetzt bewerben]"}
 
@@ -196,8 +196,8 @@ func TestConfirmPromptReadsTheStructuralRendering(t *testing.T) {
 
 	userMessage := promptMessage(t, captured, "user")
 	for _, want := range []string{
-		"#\tOpen positions",
-		"-\t[Backend Engineer]",
+		"#\vOpen positions",
+		"-\v[Backend Engineer]",
 		"[input checkbox: role]",
 		"[button: Jetzt bewerben]",
 	} {

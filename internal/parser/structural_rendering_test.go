@@ -54,7 +54,7 @@ func TestStructuralRendering(t *testing.T) {
 		</main></body></html>`
 
 		rendering := renderHTML(t, page)
-		for _, want := range []string{"#\tOpen positions", "##\tEngineering"} {
+		for _, want := range []string{"#\vOpen positions", "##\vEngineering"} {
 			if !strings.Contains(rendering, want) {
 				t.Errorf("rendering should carry %q, got: %q", want, rendering)
 			}
@@ -69,12 +69,12 @@ func TestStructuralRendering(t *testing.T) {
 		</ul></main></body></html>`
 
 		rendering := renderHTML(t, page)
-		for _, want := range []string{"-\tGo", "-\tPostgres"} {
+		for _, want := range []string{"-\vGo", "-\vPostgres"} {
 			if !strings.Contains(rendering, want) {
 				t.Errorf("rendering should carry %q, got: %q", want, rendering)
 			}
 		}
-		if lines := strings.Count(rendering, "-\t"); lines != 2 {
+		if lines := strings.Count(rendering, "-\v"); lines != 2 {
 			t.Errorf("want one line per list item, got %d in %q", lines, rendering)
 		}
 		assertRoundTrip(t, page)
@@ -110,7 +110,7 @@ func TestStructuralRendering(t *testing.T) {
 		// The cell separator carries what the page had between the cells: a tab here,
 		// nothing at all in a minified row whose cells the page itself ran together.
 		rendering := renderHTML(t, page)
-		for _, want := range []string{"|\tBackend Engineer\tBerlin", "|\tData Engineer\tMunich"} {
+		for _, want := range []string{"|\vBackend Engineer\tBerlin", "|\vData Engineer\tMunich"} {
 			if !strings.Contains(rendering, want) {
 				t.Errorf("rendering should carry the row %q, got: %q", want, rendering)
 			}
@@ -282,6 +282,49 @@ func TestStructuralRendering(t *testing.T) {
 		}
 	})
 
+	// The #289 family. Each of these round-trips through page shapes no committed
+	// fixture happens to contain, which is exactly why they are hand-written: the
+	// 90-fixture round-trip was green while the invariant was false. A failure here
+	// means the rendering reaches SourceHash as different bytes than the flattening
+	// parser produced, and the response is to fix the grammar, never the case.
+	t.Run("a page word that is exactly a line prefix survives", func(t *testing.T) {
+		// Minified, so every block boundary is a JOIN -- whose first byte is the
+		// tab the prefix rule used to key on.
+		for _, page := range []string{
+			`<html><body><main><div>Salary</div><div>-</div><div>Berlin</div></main></body></html>`,
+			`<html><body><main><div>|</div><div>Berlin</div></main></body></html>`,
+			`<html><body><main><div>#</div><div>1 in Germany</div></main></body></html>`,
+			`<html><body><main><div>######</div><div>x</div></main></body></html>`,
+			`<html><body><main><table><tr><td><div>Salary</div></td><td>-</td> <td>Remote</td></tr></table></main></body></html>`,
+		} {
+			assertRoundTrip(t, page)
+		}
+	})
+
+	t.Run("a wrapping marker declines rather than corrupt its text", func(t *testing.T) {
+		// Page text that would make the marker unreadable: an unbalanced "]" closes
+		// it early, and text shaped like a control marker gets claimed by the strip
+		// as a form control. Both used to leave the raw marker -- and a link's href
+		// -- in the Posting Body, the search index and SourceHash.
+		for _, page := range []string{
+			`<html><body><main><p>x</p><a href="/x">See ] more</a></main></body></html>`,
+			`<html><body><main><p>x</p><a href="/x">m/w/d [DE</a></main></body></html>`,
+			`<html><body><main><p>x</p><a href="/x">[[a]]</a></main></body></html>`,
+			`<html><body><main><p>x</p><a href="/x">input your details</a></main></body></html>`,
+			`<html><body><main><p>x</p><a href="/x">button: Senden</a></main></body></html>`,
+			`<html><body><main><p>x</p><button>a]b</button></main></body></html>`,
+			`<html><body><main><p>x</p><button>Apply [now</button></main></body></html>`,
+		} {
+			assertRoundTrip(t, page)
+		}
+
+		// Declining costs the marking, never the words.
+		page := `<html><body><main><a href="/x">See ] more</a></main></body></html>`
+		if rendering := renderHTML(t, page); strings.Contains(rendering, "/x") {
+			t.Errorf("a declined link must not leave its target behind, got: %q", rendering)
+		}
+	})
+
 	t.Run("the switch is off by default", func(t *testing.T) {
 		page := `<html><body><main>
 			<h1>Open positions</h1>
@@ -291,7 +334,7 @@ func TestStructuralRendering(t *testing.T) {
 		</main></body></html>`
 
 		flat := flatHTML(t, page)
-		if strings.ContainsAny(flat, "[\t\n") {
+		if strings.ContainsAny(flat, "[\t\n\v") {
 			t.Errorf("the default parser must emit no rendered structure at all, got: %q", flat)
 		}
 		if want := "Open positions Go Apply now"; flat != want {

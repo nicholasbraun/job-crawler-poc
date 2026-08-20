@@ -271,7 +271,8 @@ func replayRenderingFixtures(fsys fs.FS, loadRefs func(fs.FS) ([]fixtureRef, err
 // arm. On a row captured before the renderer stamp existed (ADR-0047) the reduction
 // is the identity -- FlattenedText is idempotent -- so both arms read the same bytes
 // and the row reports TwoArmed false, which is the honest statement rather than a
-// hidden zero. A row stamped structural-v1 is genuinely two-armed and is scored as
+// hidden zero. A row stamped with the current structural renderer is genuinely
+// two-armed and is scored as
 // such the moment a harvest under the flag produces one.
 //
 // Returns the measured rows, the renderer census, the count of skipped unlabelled
@@ -526,7 +527,7 @@ func printRenderingReport(w io.Writer, r renderingReport) {
 	if b := r.GoldSet; b != nil {
 		fmt.Fprintf(w, "\nExtract Gold Set (%s, n=%d labelled real rows)\n", b.Source, b.Labelled)
 		fmt.Fprintln(w, "  These rows are parser-blind BY DESIGN: ADR-0043 stores the parsed Content and never")
-		fmt.Fprintln(w, "  the HTML, so no renderer can be replayed over them. A row stamped structural-v1 IS")
+		fmt.Fprintf(w, "  the HTML, so no renderer can be replayed over them. A row stamped %s IS\n", parser.RendererStructural)
 		fmt.Fprintln(w, "  measured in both arms (its stored bytes are one arm, their reduction the other); a row")
 		fmt.Fprintln(w, "  drawn before the stamp (ADR-0047) reduces to itself, so its two arms read the same")
 		fmt.Fprintln(w, "  bytes and their delta is 0 by derivation rather than by measurement. What this block")

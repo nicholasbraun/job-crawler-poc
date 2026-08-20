@@ -40,6 +40,21 @@ import "strings"
 // carried before the renderer existed -- asserted over all 90 fixtures by
 // TestPromptVariantIsIdentityOnFlattenedText.
 //
+// Only a LINK's target goes. A link rule on its own cannot express that, because
+// every marker ends in "]" and so satisfies the left half of linkMarkerPattern: an
+// image or a control glued to page text that opens with a parenthesis reads as a
+// link with a target, and the page's own parenthetical is what gets deleted.
+//
+//	"#\vSales Manager[img: Acme logo](m/w/d)"  ->  "(m/w/d)" deleted, the exact
+//	                                               token that marks a German role
+//	"[input text: Vorname](optional) Nachname" ->  "(optional)" deleted
+//
+// So the scan recognises an attribute-only marker and a button FIRST and leaves
+// them alone, and only what is left is read as a link (#289). Nothing persisted was
+// ever at risk -- FlattenedText strips control and button markers before the link
+// rule and so never had the ambiguity -- but the loss landed in the two prompts,
+// which is the one place this whole change exists to improve.
+//
 // The residual, stated rather than hidden: page text that literally contains "]("
 // loses the run between them. The empty "[]" marker of a link with no text and the
 // "[[img: ...]]" of an image inside a link are left exactly as the renderer wrote
@@ -55,5 +70,11 @@ func WithoutLinkTargets(rendering string) string {
 	if !strings.Contains(rendering, "](") {
 		return rendering
 	}
-	return linkMarkerPattern.ReplaceAllString(rendering, "[${1}]")
+	return anyMarkerOrLink.ReplaceAllStringFunc(rendering, func(marker string) string {
+		groups := linkMarkerPattern.FindStringSubmatch(marker)
+		if groups == nil {
+			return marker // an image, a control or a button: not a link, keep it whole
+		}
+		return "[" + groups[1] + "]"
+	})
 }

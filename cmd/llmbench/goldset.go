@@ -42,7 +42,7 @@ type goldRow struct {
 	Verdict bool   `json:"verdict"`
 	TS      string `json:"ts"`
 	// Renderer names the renderer that produced Content.MainContent
-	// (parser.RendererID, #281): "structural-v1" for a Structural Rendering,
+	// (parser.RendererID, #281): parser.RendererStructural for a Structural Rendering,
 	// "flattened-v1" for the plain Flattened Text. ABSENT on every row drawn before
 	// the stamp existed -- all 457 committed rows -- which is why it is omitempty:
 	// those rows carry an UNKNOWN renderer, not an empty one, and re-serializing the

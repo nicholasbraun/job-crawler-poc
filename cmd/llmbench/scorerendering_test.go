@@ -145,7 +145,7 @@ func TestMatchedBudgetBoundsBothArms(t *testing.T) {
 
 // TestGoldSetLegScoresAStructuralRowInBothArms drives the gold-set leg over a
 // two-line file: one row drawn before the renderer stamp existed and one stamped
-// structural-v1.
+// with the current structural renderer.
 //
 // It is what makes that leg a real code path rather than theatre. The 457 committed
 // rows are all unstamped, so today the leg reports a derived zero; the seam starts
@@ -191,7 +191,7 @@ func TestGoldSetLegScoresAStructuralRowInBothArms(t *testing.T) {
 		t.Errorf("skipped = %d, want 0: both rows carry a valid label", skipped)
 	}
 	if census[parser.RendererStructural] != 1 || census[rendererUnstamped] != 1 {
-		t.Errorf("renderer census = %v, want one structural-v1 and one unstamped", census)
+		t.Errorf("renderer census = %v, want one %s and one unstamped", census, parser.RendererStructural)
 	}
 
 	byURL := map[string]renderingRow{}
@@ -204,7 +204,7 @@ func TestGoldSetLegScoresAStructuralRowInBothArms(t *testing.T) {
 
 	got := byURL[structuralURL]
 	if !got.TwoArmed {
-		t.Errorf("%s: TwoArmed = false, want true: a structural-v1 row's stored bytes and their reduction differ", structuralURL)
+		t.Errorf("%s: TwoArmed = false, want true: a stamped row's stored bytes and their reduction differ", structuralURL)
 	}
 	if got.Flat.Extract != got.Struct.Extract {
 		t.Errorf("%s: the two arms disagree (flattened %v rung %q, structural %v rung %q)",

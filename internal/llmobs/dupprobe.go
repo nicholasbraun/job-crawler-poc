@@ -17,10 +17,17 @@ const defaultDupTTL = 7 * 24 * time.Hour
 
 // DupProbe measures how often identical page content is fed to the LLM -- an
 // upper bound on what step 3's content-hash verdict cache would save. It hashes
-// the exact MainContent sent to the model and records recurrence in a Redis set
-// shared across runs, so both within-run and cross-run duplicates count. The set
-// is keyed by kind (the classifier and extractor cache separately in step 3) and
-// is TTL-bounded and never persisted.
+// the page's Flattened Text and records recurrence in a Redis set shared across
+// runs, so both within-run and cross-run duplicates count. The set is keyed by
+// kind (the classifier and extractor cache separately in step 3) and is
+// TTL-bounded and never persisted.
+//
+// Flattened Text rather than the bytes the model actually receives (ADR-0046):
+// what reaches the model is the Structural Rendering narrowed and capped, so
+// hashing that would make the recurrence counts incomparable across the
+// PARSE_STRUCTURAL_RENDERING kill switch and across a cap change. Two pages that
+// say the same thing are duplicates whichever renderer wrote them down -- the key
+// is deliberately coarser than the prompt, and both call sites say so.
 type DupProbe struct {
 	client *redis.Client
 	ttl    time.Duration

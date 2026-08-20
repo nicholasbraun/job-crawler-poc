@@ -25,11 +25,13 @@ func TestStructuralRenderingRoundTrip(t *testing.T) {
 	golden := readGoldenRows(t)
 	rendering := parser.NewHTMLParser(parser.WithStructuralRendering(true))
 
+	scored := 0
 	for _, name := range goldenFixtureNames(t) {
 		want, ok := golden[name]
 		if !ok {
 			continue // TestFlattenedTextGolden reports the missing row
 		}
+		scored++
 		t.Run(name, func(t *testing.T) {
 			b, err := os.ReadFile(filepath.Join(goldFixturesDir, name))
 			if err != nil {
@@ -50,4 +52,20 @@ func TestStructuralRenderingRoundTrip(t *testing.T) {
 				name, len(got), len(want), offset, gotWindow, wantWindow)
 		})
 	}
+
+	// A floor, because this test is the whole safety argument and it skips any
+	// fixture the golden artefact lacks. Without it a truncated artefact leaves the
+	// invariant asserted over one page and still reporting success, and the
+	// cross-check that would catch that lives in a different test -- which
+	// `go test -run TestStructuralRenderingRoundTrip` does not run.
+	if scored < roundTripFixturesMin {
+		t.Fatalf("the round-trip was asserted over only %d fixtures, want at least %d -- "+
+			"the golden artefact is truncated, and an invariant this narrow proves nothing (ADR-0046)",
+			scored, roundTripFixturesMin)
+	}
 }
+
+// roundTripFixturesMin is the floor on fixtures the round-trip must cover. It sits
+// below today's 90 so adding or retiring a fixture is not a build break, and far
+// enough above zero that a truncated artefact is.
+const roundTripFixturesMin = 80

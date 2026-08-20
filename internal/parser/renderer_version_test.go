@@ -14,11 +14,11 @@ const (
 	// fingerprintVersion is the parser.RendererStructural value the fingerprint
 	// below was taken at. The two move together: a grammar change moves the hash,
 	// and the version has to move with it, in the same commit.
-	fingerprintVersion = "structural-v1"
+	fingerprintVersion = "structural-v2"
 
 	// structuralRenderingFingerprint is sha256 over every committed classifier
 	// fixture's Structural Rendering, in sorted fixture order.
-	structuralRenderingFingerprint = "78bcd72561c1fe3eaf15360b1b98f6ce612e4159623106b72ab5c9708b0e6c31"
+	structuralRenderingFingerprint = "a27db469bcfcfe4119dbcf23d035a42e01fd2df4e03c4fce090dcdd8ab0a8a47"
 )
 
 // TestRendererIDNamesTheRendererInUse asserts a parser states which renderer it

@@ -491,8 +491,8 @@ func TestExtractPromptReadsTheStructuralRendering(t *testing.T) {
 	ext := openrouter.NewJobListingExtractor(openrouter.Config{BaseURL: srv.URL, APIKey: "test"})
 	raw := crawler.RawJobListing{
 		URL: newURL(t, "https://careers.acme.com/jobs/1"),
-		Content: crawler.Content{MainContent: "#\tOpen positions\n" +
-			"-\t[Backend Engineer](/jobs/backend)\n" +
+		Content: crawler.Content{MainContent: "#\vOpen positions\n" +
+			"-\v[Backend Engineer](/jobs/backend)\n" +
 			"[input checkbox: role]\tSales Manager (m/w/d)\n" +
 			"[button: Jetzt bewerben]"},
 	}
@@ -503,8 +503,8 @@ func TestExtractPromptReadsTheStructuralRendering(t *testing.T) {
 
 	userMessage := promptMessage(t, captured, "user")
 	for _, want := range []string{
-		"#\tOpen positions",
-		"-\t[Backend Engineer]",
+		"#\vOpen positions",
+		"-\v[Backend Engineer]",
 		"[input checkbox: role]",
 		"[button: Jetzt bewerben]",
 	} {
@@ -558,7 +558,7 @@ func TestExtractPromptCapsTheRendering(t *testing.T) {
 	// the raw field end mid-href, so the two orderings are distinguishable.
 	const promptCap = 24
 	ext := openrouter.NewJobListingExtractor(openrouter.Config{BaseURL: srv.URL, APIKey: "test", ExtractMaxChars: promptCap})
-	const mainContent = "-\t[Apply](/a/very/long/target/path)\n#\tRole details\nTASKS"
+	const mainContent = "-\v[Apply](/a/very/long/target/path)\n#\vRole details\nTASKS"
 	raw := crawler.RawJobListing{
 		URL:     newURL(t, "https://careers.acme.com/jobs/1"),
 		Content: crawler.Content{MainContent: mainContent},
@@ -569,7 +569,7 @@ func TestExtractPromptCapsTheRendering(t *testing.T) {
 	}
 
 	userMessage := promptMessage(t, captured, "user")
-	if want := "-\t[Apply]\n#\tRole details"; !strings.Contains(userMessage, want) {
+	if want := "-\v[Apply]\n#\vRole details"; !strings.Contains(userMessage, want) {
 		t.Errorf("the cap should bound the narrowed rendering, so the user message should carry %q, got:\n%s", want, userMessage)
 	}
 	if strings.Contains(userMessage, "/a/very/long") {
