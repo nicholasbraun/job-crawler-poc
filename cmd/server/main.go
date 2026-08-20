@@ -210,11 +210,13 @@ func main() {
 	// back to false restores today's parser exactly, with no second DOM walk on any page
 	// the Discovery Crawl fetches.
 	//
-	// Which way to set it DEPENDS ON THE MODEL (#289): scored online over 25 re-fetched
-	// real postings, the rendering lifted a 3B instruct model's recall 44%->56% and left
-	// a 9B's unchanged at 92%, costing +17%/+41% wall time. A small model gains what a
-	// large one has no headroom to gain, so whoever changes LLM_MODEL owns re-deciding
-	// this, with cmd/extractbench -fixtures ... -structural.
+	// Which way to set it DEPENDS ON THE MODEL (#289). Scored online over re-fetched real
+	// postings, the rendering left a 9B's recall unchanged at 92% -- it has no headroom --
+	// but on the pages that actually REACH the model (Free Extraction takes the rest with
+	// no call at all) it nearly doubled a 3B instruct model's recall, 28.0%->50.6%. What
+	// falls through carries no usable JSON-LD, so the DOM is the only signal left, and
+	// discarding it costs most exactly where the model is weakest. Whoever changes
+	// LLM_MODEL owns re-deciding this, with cmd/extractbench -fixtures ... -structural.
 	//
 	// One thing the switch does NOT gate: crawler.FlattenedText now sits in front of the
 	// persisted paths unconditionally, so page text that itself contains marker syntax

@@ -195,14 +195,46 @@ paid for nothing.
 So the default is **conditional, not absolute**:
 
 - **Serving a large model** — keep the switch `false`. Measured: no recall gain, +41% latency.
-- **Serving a small local model to cut the extract bill** — turn it `true`. It recovers a
-  meaningful slice of exactly what a small model loses, and the extract bill is the reason to
-  be running one.
+- **Serving a small local model to cut the extract bill** — turn it `true`. On the pages that
+  actually reach the model it nearly doubles a 3B's recall (28.0% -> 50.6%), the largest
+  effect measured anywhere in this ADR.
 
 This is one model pair, one page sample, **n=25**, and the 3B effect is 3 rows (a confidence
 interval of roughly ±20 points). It is a signal strong enough to condition a flag on, not an
 established effect size. A harvest under the flag (which stamps rows `structural-v2` and gives
 `score-rendering`'s gold-set leg a real second arm) is still what would settle it at scale.
+
+### Re-measured on the pages that actually reach the model
+
+That run mixed two populations. Free Extraction (ADR-0042) reads a lone structured posting
+with NO model call, so a page carrying usable JSON-LD never reaches the extractor at all — and
+those pages are also the semantically best-marked ones. Scoring the model over a set that
+includes them measures it on work it never does, and flatters it.
+
+Re-run over the honest denominator: all 140 `detail` rows re-fetched live (123 still served;
+17 returned 404/410, excluded as genuinely expired rather than counted as false-drops), then
+partitioned by `freeextraction`'s own condition. **40 of 123 (32.5%) are Free-Extracted and
+never reach the model; 83 do.** On those 83:
+
+| model | arm | recall | false-drops | wall |
+| --- | --- | --- | --- | --- |
+| Qwen2.5-3B-Instruct | flattened | 28.0% (23/82, 1 error) | 59 | 10m19s |
+| Qwen2.5-3B-Instruct | **structural** | **50.6% (42/83)** | 41 | 17m21s |
+
+**The rendering is worth +22.6 points here, not +12, and it nearly doubles the small model's
+recall.** What falls through to the model is messy HTML where the DOM is the only remaining
+signal, so discarding structure costs most exactly where the model is weakest. The mixed set
+understated the benefit by including pages the renderer was never needed for.
+
+One correction to the reasoning above: figures quoted from the unweighted `score-free`
+scorecard overstate real coverage, because the gold set is stratified. `stream-free-share` is
+**0.1396**, and this live re-fetch measured 32.5% — the model carries roughly two-thirds of
+postings, not one-third.
+
+The absolute level still does not make a 3B shippable alone: half of real postings lost, and a
+false-drop is permanent (never seeded as visited, re-dropped every Collection Cycle). What it
+does establish is that **if a small model is used at all, the switch belongs on** — it buys
+more there than anywhere else measured.
 
 ## Consequences
 
