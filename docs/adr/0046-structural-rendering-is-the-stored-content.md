@@ -131,6 +131,17 @@ scores its removal.
 - The renderer's version is stamped on each extract-capture record. A renderer change then
   shows up as rows produced by two renderers rather than silently mixing them, which matters
   because a Structural Rendering is a derived artefact the Extract Gold Set will store.
+
+  What #281 built: `parser.RendererFlattened` / `parser.RendererStructural`, read off the
+  parser INSTANCE through `RendererID()` so the stamp cannot drift from the bytes it
+  describes, written as the record's `renderer` key beside `url`, `verdict` and `ts`. A sink
+  that cannot name its renderer is refused at construction rather than writing rows nobody can
+  attribute later. The bump is mechanical, not remembered:
+  `TestStructuralRendererFingerprint` hashes the rendering of all 90 committed fixtures and
+  fails until both the hash and the version recorded beside it have moved. On the gold set's
+  own `goldRow` the field is `omitempty`, so the 457 rows drawn before the stamp keep reading
+  as an *unknown* renderer — the population below, and ADR-0047's subject — rather than
+  acquiring an empty one and rewriting 6.3 MB of substrate.
 - The Extract Gold Set inherits it for free: the capture tap already serializes the parsed
   content, so rows drawn after this carry their own Structural Rendering with no side store,
   no digest join, and no new file format. Raw HTML was considered for that job and rejected —

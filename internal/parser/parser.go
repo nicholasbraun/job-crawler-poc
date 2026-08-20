@@ -35,6 +35,8 @@ type HTMLParser struct {
 type HTMLParserOption func(*HTMLParser)
 
 // WithStructuralRendering turns the Structural Rendering on or off (ADR-0046).
+// RendererID (structural_rendering.go) names the renderer this switch selects, so
+// a captured page can say which one produced it (#281).
 func WithStructuralRendering(on bool) HTMLParserOption {
 	return func(p *HTMLParser) { p.structuralRendering = on }
 }

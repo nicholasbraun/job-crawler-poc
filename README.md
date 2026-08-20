@@ -217,7 +217,7 @@ COLLECTION_INTERVAL: must be a positive Go duration (e.g. 90s, 5m, 24h), got "da
 | `DATABASE_URL`       | `postgres://crawler:crawler@localhost:5432/crawler?sslmode=disable` | Postgres DSN |
 | `REDIS_ADDR`         | `localhost:6379`                            | Redis `host:port`                    |
 | `LOG_LEVEL`          | `INFO`                                      | slog level (DEBUG/INFO/WARN/ERROR)   |
-| `EXTRACT_CAPTURE_PATH` | —                                         | When set, taps every extract decision to a JSONL file for gold-set harvesting (ADR-0043) |
+| `EXTRACT_CAPTURE_PATH` | —                                         | When set, taps every extract decision to a JSONL file for gold-set harvesting (ADR-0043). Each record names the renderer that produced its content, so a harvest under `PARSE_STRUCTURAL_RENDERING` is distinguishable from one without it (ADR-0046) |
 
 Crawl tuning defaults (max depth, the baseline Discovery seed list, and the
 URL-filter lists that steer crawls toward career pages) live in Go —

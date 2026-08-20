@@ -1,9 +1,15 @@
 // Package extractcapture taps the extract stage to harvest a verdict-tagged
 // sample of crawled pages for the Extract Gold Set (#116). When
 // EXTRACT_CAPTURE_PATH is set, every completed extractor decision appends one
-// JSONL record {url, verdict, ts, content} to that file, capped per verdict so
-// the rare positives are not drowned by abstains. With EXTRACT_CAPTURE_PATH unset
-// the tap is off and Hook is nil -- a no-op at the call site.
+// JSONL record {url, verdict, ts, renderer, content} to that file, capped per
+// verdict so the rare positives are not drowned by abstains. With
+// EXTRACT_CAPTURE_PATH unset the tap is off and Hook is nil -- a no-op at the call
+// site.
+//
+// renderer names the renderer that produced the captured content
+// (parser.RendererID), bound once when the sink is built. A Structural Rendering
+// is a derived artefact, so a renderer change has to show up as rows produced by
+// two renderers rather than mixing silently inside one drawing (ADR-0046, #281).
 //
 // What this file writes IS the gold-set substrate (ADR-0043): the captured
 // content is the parsed page the live gate and extractor saw, and
@@ -17,6 +23,7 @@ package extractcapture
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -48,6 +55,12 @@ const (
 	defaultMaxPerVerdict = 2000
 )
 
+// ErrNoRenderer rejects a capture sink that cannot say which renderer produced the
+// content it stores. An unattributable record is worse than a missing one: it
+// mixes two renderings inside one drawing, which is the exact failure the stamp
+// exists to prevent (ADR-0046, #281).
+var ErrNoRenderer = errors.New("extractcapture: renderer must be named (parser.RendererID)")
+
 var (
 	once sync.Once
 	hook Hook
@@ -58,7 +71,11 @@ var (
 // nil -- a no-op tap -- when EXTRACT_CAPTURE_PATH is unset or the file cannot be
 // opened (the error is logged, never fatal: a capture-experiment fault must not
 // take down the crawl).
-func FromEnv() Hook {
+//
+// renderer is parser.RendererID from the parser that produces the captured
+// content. Like the sink and the file it is bound by the FIRST call and memoized
+// with it, which is correct because a process runs one parser configuration.
+func FromEnv(renderer string) Hook {
 	once.Do(func() {
 		path := os.Getenv(pathEnv)
 		if path == "" {
@@ -72,7 +89,7 @@ func FromEnv() Hook {
 				slog.Error("extractcapture: invalid "+maxEnv+", using default", "value", v, "default", defaultMaxPerVerdict)
 			}
 		}
-		h, _, err := New(path, maxPerVerdict)
+		h, _, err := New(path, maxPerVerdict, renderer)
 		if err != nil {
 			slog.Error("extractcapture: capture disabled", "err", err)
 			return
@@ -81,7 +98,7 @@ func FromEnv() Hook {
 		// is a direct O_APPEND write (durable without an explicit Close), and the OS
 		// closes it on exit. A short-lived capture experiment does not warrant
 		// threading a Closer through the run lifecycle.
-		slog.Info("extractcapture: extract-decision capture enabled", "path", path, "max_per_verdict", maxPerVerdict)
+		slog.Info("extractcapture: extract-decision capture enabled", "path", path, "max_per_verdict", maxPerVerdict, "renderer", renderer)
 		hook = h
 	})
 	return hook
@@ -89,9 +106,15 @@ func FromEnv() Hook {
 
 // New opens path for appending and returns a capture Hook that writes one JSONL
 // record per extractor decision, capped at maxPerVerdict records per verdict
-// (0 = unbounded). Close the returned io.Closer to release the file. New is the
-// testable core; production wiring uses FromEnv.
-func New(path string, maxPerVerdict int) (Hook, io.Closer, error) {
+// (0 = unbounded). renderer names the renderer that produced the content the Hook
+// will be handed (parser.RendererID) and is stamped on every record; an empty one
+// is refused with ErrNoRenderer before the file is even created. Close the
+// returned io.Closer to release the file. New is the testable core; production
+// wiring uses FromEnv.
+func New(path string, maxPerVerdict int, renderer string) (Hook, io.Closer, error) {
+	if renderer == "" {
+		return nil, nil, ErrNoRenderer
+	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return nil, nil, fmt.Errorf("extractcapture: open %q: %w", path, err)
@@ -100,7 +123,7 @@ func New(path string, maxPerVerdict int) (Hook, io.Closer, error) {
 	// Keep '&', '<', '>' literal so a captured URL's query string re-fetches
 	// verbatim; the default HTML-escaping would turn "&" into "&".
 	enc.SetEscapeHTML(false)
-	s := &sink{file: f, enc: enc, maxPerVerdict: maxPerVerdict}
+	s := &sink{file: f, enc: enc, maxPerVerdict: maxPerVerdict, renderer: renderer}
 	return s.record, f, nil
 }
 
@@ -114,6 +137,9 @@ type sink struct {
 	maxPerVerdict int
 	accepts       int
 	abstains      int
+	// renderer is stamped on every record this sink writes; it is fixed for the
+	// file's lifetime because a process runs one parser configuration (#281).
+	renderer string
 }
 
 // record is one captured decision. Field order is fixed (url, verdict first) so a
@@ -124,7 +150,12 @@ type record struct {
 	URL     string `json:"url"`
 	Verdict bool   `json:"verdict"`
 	TS      string `json:"ts"`
-	Content any    `json:"content,omitempty"`
+	// Renderer names the renderer that produced Content (parser.RendererFlattened
+	// or parser.RendererStructural). It carries no omitempty: it is never empty,
+	// because a sink that cannot name its renderer is refused at construction, and
+	// an absent renderer must keep meaning "written before the stamp existed".
+	Renderer string `json:"renderer"`
+	Content  any    `json:"content,omitempty"`
 }
 
 func (s *sink) record(_ context.Context, url string, isJobPosting bool, content any) {
@@ -138,7 +169,7 @@ func (s *sink) record(_ context.Context, url string, isJobPosting bool, content 
 	if s.maxPerVerdict > 0 && *counter >= s.maxPerVerdict {
 		return
 	}
-	if err := s.enc.Encode(record{URL: url, Verdict: isJobPosting, TS: time.Now().UTC().Format(time.RFC3339), Content: content}); err != nil {
+	if err := s.enc.Encode(record{URL: url, Verdict: isJobPosting, TS: time.Now().UTC().Format(time.RFC3339), Renderer: s.renderer, Content: content}); err != nil {
 		slog.Error("extractcapture: write failed", "err", err)
 		return
 	}

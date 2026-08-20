@@ -67,6 +67,41 @@ const (
 	markerMaxRunes = 80
 )
 
+// Renderer identifiers, stamped on every extract-capture record so a captured page
+// states which renderer produced it (ADR-0046). A Structural Rendering is a DERIVED
+// artefact -- the Extract Gold Set stores it as the page a labeller reads and the
+// extractor saw -- so a renderer change has to show up as rows produced by two
+// renderers rather than mixing silently inside one drawing (#281).
+//
+// BUMPING THE VERSION IS PART OF CHANGING THE GRAMMAR ABOVE, in the same commit: a
+// new marker, a different separator, another block or cell tag, a changed
+// markerMaxRunes -- anything that moves what renderStructural writes -- takes
+// RendererStructural to the next -vN. TestStructuralRendererFingerprint makes that
+// mechanical rather than remembered: it hashes the rendering of all 90 committed
+// classifier fixtures and fails until both the hash and the version recorded beside
+// it have moved.
+//
+// RendererFlattened has no bump in prospect: normalizeWS's output is frozen byte for
+// byte by TestFlattenedTextGolden, because a different value reaching SourceHash
+// silently re-extracts ~46k job_listing rows (ADR-0046). It is versioned anyway so
+// the two identifiers read the same way, and so a change nobody expects has
+// somewhere to be recorded.
+const (
+	RendererFlattened  = "flattened-v1"
+	RendererStructural = "structural-v1"
+)
+
+// RendererID names the renderer this parser writes Content.MainContent with, so the
+// extract-capture tap can attribute a captured page to it (#281). It is read off the
+// parser INSTANCE rather than re-derived from the kill switch at the wiring site,
+// which is what keeps the stamp from disagreeing with the bytes it describes.
+func (p *HTMLParser) RendererID() string {
+	if p.structuralRendering {
+		return RendererStructural
+	}
+	return RendererFlattened
+}
+
 // blockTags are the elements whose boundaries start a line, mapped to the prefix
 // that line carries. A prefix is set on enter and cleared on leave, so a <p> nested
 // in an <li> keeps the bullet while the <div> after the list does not.

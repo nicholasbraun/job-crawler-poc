@@ -714,10 +714,14 @@ func newFactory(
 							collectionMetrics.Found(ctx)
 						},
 						// Extract Gold Set harvest tap (#116, ADR-0043): off unless
-						// EXTRACT_CAPTURE_PATH is set. Emits {url, verdict, ts, content} per
-						// extraction; `llmbench goldset-sample` commits a stratified,
-						// weighted sample of it as the gold set.
-						CaptureDecision: extractcapture.FromEnv(),
+						// EXTRACT_CAPTURE_PATH is set. Emits
+						// {url, verdict, ts, renderer, content} per extraction; `llmbench
+						// goldset-sample` commits a stratified, weighted sample of it as the
+						// gold set. The renderer is taken from the parser that actually
+						// produces the captured content rather than re-derived from the kill
+						// switch here, so a harvest run with PARSE_STRUCTURAL_RENDERING on is
+						// distinguishable row by row from one with it off (ADR-0046, #281).
+						CaptureDecision: extractcapture.FromEnv(htmlParser.RendererID()),
 					})
 				},
 				llmstream.WithWorkers[crawler.RawJobListing](llmMaxWorkers),

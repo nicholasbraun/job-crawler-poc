@@ -25,8 +25,8 @@ import (
 )
 
 // goldRow is one Extract Gold Set row: an extract-capture record
-// (internal/extractcapture: url, verdict, ts, content) extended IN PLACE with the
-// label and sampling metadata ADR-0043 requires. It is deliberately a superset of
+// (internal/extractcapture: url, verdict, ts, renderer, content) extended IN PLACE
+// with the label and sampling metadata ADR-0043 requires. It is deliberately a superset of
 // the tap's own record rather than a new format, so an unlabeled capture file and
 // a committed gold-set row read through the same decoder, and a later spec can add
 // a stratum to the same file with no migration.
@@ -39,9 +39,18 @@ type goldRow struct {
 	// Verdict is the extractor's ORIGINAL live accept/abstain (true = it read a
 	// single job posting off the page). It is evidence, never a re-run, and it is
 	// half of the sampling cell — never the label.
-	Verdict bool               `json:"verdict"`
-	TS      string             `json:"ts"`
-	Label   bench.ExtractLabel `json:"label"`
+	Verdict bool   `json:"verdict"`
+	TS      string `json:"ts"`
+	// Renderer names the renderer that produced Content.MainContent
+	// (parser.RendererID, #281): "structural-v1" for a Structural Rendering,
+	// "flattened-v1" for the plain Flattened Text. ABSENT on every row drawn before
+	// the stamp existed -- all 457 committed rows -- which is why it is omitempty:
+	// those rows carry an UNKNOWN renderer, not an empty one, and re-serializing the
+	// substrate must leave them byte for byte as they are. A row with no renderer is
+	// also the row that cannot be shown structurally to a labeller and has to be
+	// re-fetched instead (ADR-0047).
+	Renderer string             `json:"renderer,omitempty"`
+	Label    bench.ExtractLabel `json:"label"`
 	// Stratum is the STRUCTURAL cell the row was drawn from, not its label: you
 	// cannot stratify on a label you have not produced yet, and a stratum defined
 	// by the label would make the sample circular.
