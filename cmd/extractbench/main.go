@@ -13,6 +13,14 @@
 //
 //	go run ./cmd/extractbench -per-class 25            # 25 rows per label class
 //	go run ./cmd/extractbench -urls rows.txt -out r.jsonl
+//	go run ./cmd/extractbench -fixtures cmd/llmbench/extract-testdata -structural
+//	                                                  # ...the same fixtures rendered
+//
+// -structural parses the -fixtures HTML into a Structural Rendering (ADR-0046)
+// rather than Flattened Text, so the two prompt forms can be scored against each
+// other on one model, or one form across two models. It is meaningless with -in:
+// gold-set rows store parsed Content and never the HTML (ADR-0043), so no renderer
+// can be replayed over them.
 //
 // THIS IS A MEASURING INSTRUMENT, NOT A GATE. Unlike every llmbench verb it always
 // exits 0, so a false-drop is reported and not enforced; it hand-rolls its
@@ -83,13 +91,18 @@ func main() {
 	baseURL := flag.String("base-url", "", "override LLM_BASE_URL (e.g. swap host.docker.internal for localhost when running outside Docker)")
 	model := flag.String("model", "", "override LLM_MODEL (the local server may have a different one loaded)")
 	maxChars := flag.Int("max-chars", 0, "override LLM_EXTRACT_MAX_CHARS")
+	structural := flag.Bool("structural", false, "parse -fixtures into a Structural Rendering (ADR-0046) instead of Flattened Text; ignored by -in, whose rows store no HTML")
 	flag.Parse()
 
 	var rows []goldRow
 	var err error
 	if *fixtures != "" {
-		rows, err = loadFixtures(*fixtures)
+		rows, err = loadFixtures(*fixtures, *structural)
 	} else {
+		if *structural {
+			fmt.Fprintln(os.Stderr, "-structural needs -fixtures: gold-set rows store parsed Content and no HTML (ADR-0043), so no renderer can be replayed over them")
+			os.Exit(2)
+		}
 		rows, err = loadGold(*in)
 	}
 	if err != nil {
@@ -393,7 +406,7 @@ func hasCountryCodeTail(loc string) bool {
 // loadFixtures reads an llmbench HTML fixture set (manifest.json + pages/) and
 // parses each page with the real parser, so a fixture reaches the extractor as the
 // same *Content the crawl would have produced.
-func loadFixtures(dir string) ([]goldRow, error) {
+func loadFixtures(dir string, structural bool) ([]goldRow, error) {
 	b, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
 	if err != nil {
 		return nil, err
@@ -407,7 +420,7 @@ func loadFixtures(dir string) ([]goldRow, error) {
 	if err := json.Unmarshal(b, &manifest); err != nil {
 		return nil, err
 	}
-	p := parser.NewHTMLParser()
+	p := parser.NewHTMLParser(parser.WithStructuralRendering(structural))
 	var rows []goldRow
 	for _, m := range manifest {
 		switch m.Label {
