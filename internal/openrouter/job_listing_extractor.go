@@ -51,6 +51,16 @@ const (
 	// (see llmstream's defaults_test).
 	DefaultTimeout = 5 * time.Minute
 
+	// openrouterPrompt is the extractor's system prompt. Its second REQUIREMENTS bullet
+	// -- judge a single posting by DETAIL, not by how many role names appear, because
+	// the others may be an apply form's dropdown, a "more vacancies" strip, a sidebar or
+	// the navigation -- exists only to compensate for flattening: without structure the
+	// model cannot tell a picker of three roles from an index of three roles (ADR-0046's
+	// advertorial.de case). #280 gives the model that structure but does NOT retire the
+	// bullet: PARSE_STRUCTURAL_RENDERING is off by default, so production still reads
+	// Flattened Text and the bullet is the only thing standing in for the missing form
+	// controls there. Prompt changes in this repo are measured, not argued -- #282 is the
+	// ticket that scores its removal on an A/B, and it is the one that may delete it.
 	openrouterPrompt = `
 Parse the crawled page content and find out if the page is a SINGLE JOB POSTING of a company's career page.
 
@@ -109,6 +119,15 @@ const (
 	// sits near the top of the page, so truncating keeps the context small: huge pages
 	// otherwise dominate prompt-processing latency and time out on local models.
 	// Override per deployment via Config (LLM_CLASSIFY_MAX_CHARS / LLM_EXTRACT_MAX_CHARS).
+	//
+	// What the cap bounds moved with #280: it is applied to the Structural Rendering the
+	// prompts read, link targets already omitted. That form measures ~1.08x the Flattened
+	// Text over the 90 committed fixtures (~1.10x over the live pages in ADR-0046), so
+	// once PARSE_STRUCTURAL_RENDERING is on the same cap shows the model roughly a tenth
+	// less page in exchange for its structure. The variant that kept the targets would
+	// have cost ~1.25-1.43x, which is why the prompts read the narrowed one instead of
+	// the cap being raised: "keep the targets" and "raise the cap" compound rather than
+	// compose, and raising it is its own decision, scored on its own (spec #275).
 	defaultClassifyMaxChars = 1500
 	defaultExtractMaxChars  = 8000
 )
@@ -280,12 +299,14 @@ func (jle *JobListingExtractor) Extract(ctx context.Context, raw crawler.RawJobL
 	// to judge, tuned for local-model latency. What the Corpus stores and the
 	// extraction-cache key are both derived at save from the full page instead.
 	//
-	// The prompt reads the page's Flattened Text (ADR-0046), so it is byte-identical to
-	// today's whether or not the parser renders structure. #280 swaps this for the
-	// href-free rendering variant, which is the whole point of the rendering — the
-	// measured cost is why the model reads that variant and not the one carrying link
-	// targets. Flatten BEFORE capping, so the cut can never land mid-marker.
-	capped := capChars(crawler.FlattenedText(raw.Content.MainContent), jle.extractMaxChars)
+	// The prompt reads the page's Structural Rendering with link targets omitted
+	// (ADR-0046): headings, list items, table rows and form controls reach the model,
+	// the hrefs do not, because carrying them would cost about a quarter of the prompt
+	// window at an unchanged cap. With PARSE_STRUCTURAL_RENDERING off the parser hands
+	// over Flattened Text, which carries no markers, so the narrowing is the identity
+	// and the prompt is byte-identical to today's. Narrow BEFORE capping, so a cut can
+	// never land inside a target and leave a dangling "](".
+	capped := capChars(crawler.WithoutLinkTargets(raw.Content.MainContent), jle.extractMaxChars)
 	reqBody := chatRequest{
 		Model: jle.model,
 		Messages: []message{

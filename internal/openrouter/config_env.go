@@ -22,6 +22,10 @@ import "github.com/nicholasbraun/job-crawler-poc/internal/env"
 // before its first token. LLM_CLASSIFY_MAX_CHARS / LLM_EXTRACT_MAX_CHARS cap the
 // page text (in runes) sent to each call; the signal sits near the top of a
 // page, so capping keeps a local model fast and avoids timeouts on huge pages.
+// What they bound is what the prompt actually carries: with
+// PARSE_STRUCTURAL_RENDERING on that is the Structural Rendering with link
+// targets omitted, ~1.1x the Flattened Text, so the same cap shows the model
+// about a tenth less page in exchange for its structure (ADR-0046).
 //
 // Failures are recorded on ld, not returned: the caller reads the rest of its
 // configuration and then decides what a bad knob costs (see env.Loader).

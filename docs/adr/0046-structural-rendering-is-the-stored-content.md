@@ -110,6 +110,19 @@ the tags" and "raise the cap" compound rather than compose. The extractor prompt
 reads the href-free variant; the labelling UI reads the full one, because `/organization/…`
 versus `/jobs/…` is exactly what settles a page like `neckarfilsjobs.de`.
 
+What #280 built: the narrowing is `crawler.WithoutLinkTargets`, a pure deletion of the
+`(href)` half of a link marker, so the labeller's variant is literally a superset of the
+prompt's rather than a second rendering that has to be kept in step. The brackets stay — a
+rail of "similar jobs" links has to remain distinguishable from the posting's own prose, and
+dropping them buys nothing. The tab-anchored line prefixes and the JOIN reach the model
+unchanged: they are what make the rendering strippable, and they read as structure as they
+are. The cap applies to the narrowed form, measured over the 90 committed fixtures at
+**1.253x** the Flattened Text with targets and **1.081x** without, beside the 36-live-page
+figures above. The extractor's "judge by DETAIL, not by how many role names appear" bullet is
+**kept**, not retired: the kill switch is off by default, so production still reads Flattened
+Text where the bullet stands in for the missing form controls, and #282 is the ticket that
+scores its removal.
+
 ## Consequences
 
 - Rendering doubles the parser's DOM walk on **every** crawled page, discovery included. It

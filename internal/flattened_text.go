@@ -125,6 +125,9 @@ var (
 	// is NOT this shape -- its caption is an attribute and must vanish.
 	buttonMarkerPattern = regexp.MustCompile(`\[button: (` + markedText + `)\]`)
 
-	// linkMarkerPattern keeps a link's text and drops its target.
+	// linkMarkerPattern keeps a link's text and drops its target. It has two
+	// readers with two replacements: FlattenedText keeps the text alone, and
+	// WithoutLinkTargets keeps it still bracketed (see structural_rendering.go).
+	// One grammar, so the two readings can never disagree about what a link is.
 	linkMarkerPattern = regexp.MustCompile(`\[(` + markedText + `)\]\([^)]*\)`)
 )

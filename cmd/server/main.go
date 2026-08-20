@@ -201,9 +201,13 @@ func main() {
 	// flattening it (ADR-0046), default false: the Flattened Text it has always
 	// produced. Set true and the parser renders headings, list items, table rows,
 	// link targets and form controls -- the difference between one application form
-	// offering three roles and an index of three roles. Every consumer still reads
-	// crawler.FlattenedText, so nothing downstream moves; the round-trip is asserted
-	// byte for byte over the 90 committed fixtures. Setting it back to false restores
+	// offering three roles and an index of three roles. Every NON-MODEL consumer still
+	// reads crawler.FlattenedText -- the Posting Body, the extraction-cache key, the
+	// Gate's phrase marks, the duplication probe -- so nothing persisted moves, and the
+	// round-trip is asserted byte for byte over the 90 committed fixtures. What the
+	// switch really changes for a running crawl is the two LLM prompts: the classifier
+	// and the extractor read the rendering with link targets omitted (#280). Setting it
+	// back to false restores
 	// today's parser exactly, with no second DOM walk on any page the Discovery Crawl
 	// fetches, which is why it stays off until a harvest has scored it.
 	structuralRendering := ld.Bool("PARSE_STRUCTURAL_RENDERING", parser.DefaultStructuralRendering)

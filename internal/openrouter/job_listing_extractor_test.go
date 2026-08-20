@@ -45,6 +45,63 @@ func newExtractorServer(t *testing.T, content string) *openrouter.JobListingExtr
 	return openrouter.NewJobListingExtractor(openrouter.Config{BaseURL: srv.URL, APIKey: "test"})
 }
 
+// newCapturingServer stands up a server that records the raw request body into
+// captured and always replies with reply as the LLM message content. The prompt
+// assertions in this package are all made at this seam -- the bytes that actually
+// leave the process -- rather than against a formatted string, so a prompt that is
+// assembled correctly but sent wrong still fails.
+func newCapturingServer(t *testing.T, reply string, captured *string) *httptest.Server {
+	t.Helper()
+
+	var env chatEnvelope
+	env.Choices = make([]struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}, 1)
+	env.Choices[0].Message.Content = reply
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		*captured = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(env); err != nil {
+			t.Errorf("encode envelope: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	return srv
+}
+
+// promptMessage decodes a captured request body and returns the content of the
+// message with the given role. Decoding rather than matching the raw body matters
+// once a Structural Rendering is in the prompt: its tabs and newlines reach the wire
+// as JSON escapes, and a raw match would be asserting about the encoding.
+func promptMessage(t *testing.T, capturedBody, role string) string {
+	t.Helper()
+
+	var sent struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(capturedBody), &sent); err != nil {
+		t.Fatalf("unmarshal captured request: %v", err)
+	}
+	for _, m := range sent.Messages {
+		if m.Role == role {
+			return m.Content
+		}
+	}
+	t.Fatalf("captured request carries no %s message: %s", role, capturedBody)
+	return ""
+}
+
 func newURL(t *testing.T, raw string) crawler.URL {
 	t.Helper()
 	u, err := crawler.NewURL(raw)
@@ -418,68 +475,139 @@ func TestExtractPromptOmitsDescription(t *testing.T) {
 	}
 }
 
-// TestExtractPromptReadsFlattenedText asserts the extractor's user message carries the
-// page's Flattened Text (ADR-0046) rather than the content field raw, so today's prompt
-// stays byte-identical whether or not the parser renders structure. #280 is what
-// deliberately swaps this for the href-free rendering variant; until then a rendering
-// reaching the prompt would silently re-baseline every extraction.
+// TestExtractPromptReadsTheStructuralRendering asserts the extractor's user message
+// carries the page's Structural Rendering with link targets omitted (ADR-0046, #280):
+// the heading, the list bullet, the link's text and the form controls reach the model,
+// the hrefs do not.
 //
-// It asserts the flattened phrase is present rather than "the message has no newlines":
-// the untrusted-data seal contributes newlines of its own.
-func TestExtractPromptReadsFlattenedText(t *testing.T) {
+// The form controls are the point rather than a detail. Flattened, an application
+// form's role picker and an index of the same roles are the same run of words, which is
+// the ambiguity the extractor's prompt has had to compensate for; marked as controls
+// they are not.
+func TestExtractPromptReadsTheStructuralRendering(t *testing.T) {
 	var captured string
-
-	var env chatEnvelope
-	env.Choices = make([]struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	}, 1)
-	env.Choices[0].Message.Content = `{"title":"X","is_job_posting":true}`
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read request body: %v", err)
-		}
-		captured = string(body)
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(env); err != nil {
-			t.Errorf("encode envelope: %v", err)
-		}
-	}))
-	t.Cleanup(srv.Close)
+	srv := newCapturingServer(t, `{"title":"X","is_job_posting":true}`, &captured)
 
 	ext := openrouter.NewJobListingExtractor(openrouter.Config{BaseURL: srv.URL, APIKey: "test"})
 	raw := crawler.RawJobListing{
-		URL:     newURL(t, "https://careers.acme.com/jobs/1"),
-		Content: crawler.Content{MainContent: "Backend Engineer\n\n- Go"},
+		URL: newURL(t, "https://careers.acme.com/jobs/1"),
+		Content: crawler.Content{MainContent: "#\tOpen positions\n" +
+			"-\t[Backend Engineer](/jobs/backend)\n" +
+			"[input checkbox: role]\tSales Manager (m/w/d)\n" +
+			"[button: Jetzt bewerben]"},
 	}
 
 	if _, err := ext.Extract(t.Context(), raw); err != nil {
 		t.Fatalf("Extract returned error: %v", err)
 	}
 
-	var sent struct {
-		Messages []struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal([]byte(captured), &sent); err != nil {
-		t.Fatalf("unmarshal captured request: %v", err)
-	}
-
-	var userMessage string
-	for _, m := range sent.Messages {
-		if m.Role == "user" {
-			userMessage = m.Content
+	userMessage := promptMessage(t, captured, "user")
+	for _, want := range []string{
+		"#\tOpen positions",
+		"-\t[Backend Engineer]",
+		"[input checkbox: role]",
+		"[button: Jetzt bewerben]",
+	} {
+		if !strings.Contains(userMessage, want) {
+			t.Errorf("user message should carry the page's structure %q, got:\n%s", want, userMessage)
 		}
 	}
-	if userMessage == "" {
-		t.Fatalf("captured request carries no user message: %s", captured)
+	for _, unwanted := range []string{"/jobs/backend", "]("} {
+		if strings.Contains(userMessage, unwanted) {
+			t.Errorf("user message should carry no link targets, but contains %q:\n%s", unwanted, userMessage)
+		}
 	}
-	if want := "Backend Engineer - Go"; !strings.Contains(userMessage, want) {
-		t.Errorf("user message should carry the page's Flattened Text %q, got:\n%s", want, userMessage)
+}
+
+// TestExtractPromptIsUnchangedByFlattenedText asserts #280's kill-switch criterion at
+// this seam: with PARSE_STRUCTURAL_RENDERING off the parser hands over Flattened Text,
+// which carries no markers, so the narrowing is the identity and the prompt is
+// byte-identical to the one that shipped before the rendering existed. The scale
+// version runs over all 90 committed fixtures in
+// internal/parser/prompt_variant_test.go.
+func TestExtractPromptIsUnchangedByFlattenedText(t *testing.T) {
+	var captured string
+	srv := newCapturingServer(t, `{"title":"X","is_job_posting":true}`, &captured)
+
+	ext := openrouter.NewJobListingExtractor(openrouter.Config{BaseURL: srv.URL, APIKey: "test"})
+	const flattened = "Open roles Backend Engineer Apply now"
+	raw := crawler.RawJobListing{
+		URL:     newURL(t, "https://careers.acme.com/jobs/1"),
+		Content: crawler.Content{MainContent: flattened},
+	}
+
+	if _, err := ext.Extract(t.Context(), raw); err != nil {
+		t.Fatalf("Extract returned error: %v", err)
+	}
+
+	if userMessage := promptMessage(t, captured, "user"); !strings.Contains(userMessage, flattened) {
+		t.Errorf("with the rendering off the user message should carry the page text unchanged (%q), got:\n%s", flattened, userMessage)
+	}
+}
+
+// TestExtractPromptCapsTheRendering asserts LLM_EXTRACT_MAX_CHARS bounds the form the
+// prompt actually carries -- the rendering with its targets already gone -- and not the
+// field the parser produced. Ordering the two the other way round both wastes the window
+// on hrefs the model never sees and can cut inside a target, leaving a dangling "](" in
+// the prompt.
+func TestExtractPromptCapsTheRendering(t *testing.T) {
+	var captured string
+	srv := newCapturingServer(t, `{"title":"X","is_job_posting":true}`, &captured)
+
+	// 24 runes of the narrowed rendering end exactly after "Role details"; 24 runes of
+	// the raw field end mid-href, so the two orderings are distinguishable.
+	const promptCap = 24
+	ext := openrouter.NewJobListingExtractor(openrouter.Config{BaseURL: srv.URL, APIKey: "test", ExtractMaxChars: promptCap})
+	const mainContent = "-\t[Apply](/a/very/long/target/path)\n#\tRole details\nTASKS"
+	raw := crawler.RawJobListing{
+		URL:     newURL(t, "https://careers.acme.com/jobs/1"),
+		Content: crawler.Content{MainContent: mainContent},
+	}
+
+	if _, err := ext.Extract(t.Context(), raw); err != nil {
+		t.Fatalf("Extract returned error: %v", err)
+	}
+
+	userMessage := promptMessage(t, captured, "user")
+	if want := "-\t[Apply]\n#\tRole details"; !strings.Contains(userMessage, want) {
+		t.Errorf("the cap should bound the narrowed rendering, so the user message should carry %q, got:\n%s", want, userMessage)
+	}
+	if strings.Contains(userMessage, "/a/very/long") {
+		t.Errorf("the cap was applied before the narrowing: the user message still carries a link target:\n%s", userMessage)
+	}
+	if strings.Contains(userMessage, "TASKS") {
+		t.Errorf("the cap of %d runes did not engage, so this proves nothing:\n%s", promptCap, userMessage)
+	}
+}
+
+// TestExtractPromptKeepsThePickerRule records a deliberate decision rather than a
+// property of the model: the REQUIREMENTS bullet telling the extractor to judge a single
+// posting by DETAIL, not by how many role names appear, exists only to compensate for
+// flattening -- and #280 keeps it. PARSE_STRUCTURAL_RENDERING is off by default, so
+// production still reads Flattened Text where that bullet stands in for the form
+// controls the model cannot see, and prompt changes here are settled by measurement:
+// #282 is the ticket that scores its removal on an A/B.
+//
+// So this failing means someone retired the rule without that evidence. The match is
+// loose, like TestExtractPromptNudgesCountryName's, so a reword does not break it.
+func TestExtractPromptKeepsThePickerRule(t *testing.T) {
+	var captured string
+	srv := newCapturingServer(t, `{"title":"X","is_job_posting":true}`, &captured)
+
+	ext := openrouter.NewJobListingExtractor(openrouter.Config{BaseURL: srv.URL, APIKey: "test"})
+	raw := crawler.RawJobListing{
+		URL:     newURL(t, "https://careers.acme.com/jobs/1"),
+		Content: crawler.Content{MainContent: "some page text"},
+	}
+
+	if _, err := ext.Extract(t.Context(), raw); err != nil {
+		t.Fatalf("Extract returned error: %v", err)
+	}
+
+	systemPrompt := promptMessage(t, captured, "system")
+	for _, want := range []string{"DETAIL", "dropdown"} {
+		if !strings.Contains(systemPrompt, want) {
+			t.Errorf("the system prompt should still teach that an apply form's picker is not an openings index (looking for %q), got:\n%s", want, systemPrompt)
+		}
 	}
 }

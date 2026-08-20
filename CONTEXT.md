@@ -199,7 +199,7 @@ A momentary Redis disruption (a blip, failover, or dropped connection) the Front
 _Avoid_: outage, crash
 
 **Structural Rendering**:
-A fetched page's main content kept in the form that shows its structure — headings, list items, table rows, link text with its target, and form controls — rather than collapsed into one run of words. What the extractor and a human labeller read, because the structure is frequently what decides whether a page is one Job Listing at all: three role titles in a row are an index, the same three inside an apply form's picker are one posting.
+A fetched page's main content kept in the form that shows its structure — headings, list items, table rows, link text with its target, and form controls — rather than collapsed into one run of words. What the extractor and a human labeller read, because the structure is frequently what decides whether a page is one Job Listing at all: three role titles in a row are an index, the same three inside an apply form's picker are one posting. A human labeller reads it whole, link text with its target; the model reads a narrowing of it with the targets omitted, because carrying them would cost about a quarter of the prompt window at an unchanged cap.
 _Avoid_: markdown (bare), markup, rich text, HTML
 
 **Flattened Text**:
