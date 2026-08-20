@@ -106,3 +106,22 @@ func TestRelevanceFilterComposition(t *testing.T) {
 		})
 	}
 }
+
+// TestMainContentContainsReadsFlattenedText pins the keyword checks to the page's
+// Flattened Text (ADR-0046). A keyword phrase carries a literal space, so it cannot
+// match across the line break a Structural Rendering puts between a heading and its
+// body — reading the content field raw would silently start dropping Job Listings the
+// moment the parser renders structure.
+func TestMainContentContainsReadsFlattenedText(t *testing.T) {
+	checkFn := joblistingfilter.MainContentContains(filter.Contains("apply now"))
+
+	split := &crawler.Content{MainContent: "please apply\nnow"}
+	if err := checkFn(split); !errors.Is(err, filter.ErrPass) {
+		t.Errorf("expected %v for a phrase split by page structure, got: %v", filter.ErrPass, err)
+	}
+
+	absent := &crawler.Content{MainContent: "read our\nblog"}
+	if err := checkFn(absent); err != nil {
+		t.Errorf("expected no match, got: %v", err)
+	}
+}

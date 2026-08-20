@@ -45,8 +45,9 @@ const DefaultDescriptionMaxChars = 16000
 // the Description Source that produced it (ADR-0041). Precedence: the description of
 // the page's LONE structured-data posting (LonePosting) — exactly one JobPosting node
 // and no openings index, the exact complement of the Extract Gate's openings-index
-// reject — reduced to plain text; otherwise the page's main content. Both are capped
-// to maxChars runes.
+// reject — reduced to text; otherwise the page's Flattened Text (ADR-0046), so a
+// Structural Rendering's syntax never reaches the Corpus or the search index it feeds.
+// Both are capped to maxChars runes.
 //
 // A page whose lone posting carries no usable description falls through to main
 // content rather than storing an empty body. A non-positive maxChars falls back to
@@ -66,7 +67,9 @@ func PostingBody(content *Content, maxChars int) (body string, source Descriptio
 			return capChars(validUTF8(structured), maxChars), DescriptionSourceStructuredData
 		}
 	}
-	return capChars(validUTF8(content.MainContent), maxChars), DescriptionSourcePageContent
+	// Flatten BEFORE capping: capping first would let the cap land mid-marker once the
+	// parser renders structure, making the stored body depend on where the cut fell.
+	return capChars(validUTF8(FlattenedText(content.MainContent)), maxChars), DescriptionSourcePageContent
 }
 
 // validUTF8 drops bytes that are not valid UTF-8. A page served as ISO-8859-1 — or

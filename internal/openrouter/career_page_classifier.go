@@ -89,12 +89,15 @@ func NewCareerPageClassifier(cfg Config) *CareerPageClassifier {
 // seed), and page content is sealed as untrusted DATA so an injected name can at
 // most set a display-only label, never Company identity.
 func (c *CareerPageClassifier) Confirm(ctx context.Context, url string, content *crawler.Content) (careerpageprocessor.Verdict, error) {
+	// The prompt reads the page's Flattened Text (ADR-0046), so it stays byte-identical
+	// to today's whether or not the parser renders structure. Flatten BEFORE capping,
+	// so the cut can never land mid-marker.
 	userContent := fmt.Sprintf(
 		"%s\nURL: %s\nTitle: %s\n\n%s\n%s",
 		untrustedOpen,
 		sealUntrusted(url),
 		sealUntrusted(content.Title),
-		sealUntrusted(capChars(content.MainContent, c.classifyMaxChars)),
+		sealUntrusted(capChars(crawler.FlattenedText(content.MainContent), c.classifyMaxChars)),
 		untrustedClose,
 	)
 	reqBody := chatRequest{

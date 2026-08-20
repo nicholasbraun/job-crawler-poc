@@ -279,7 +279,13 @@ func (jle *JobListingExtractor) Extract(ctx context.Context, raw crawler.RawJobL
 	// The cap bounds the prompt window only — how much page text the model is asked
 	// to judge, tuned for local-model latency. What the Corpus stores and the
 	// extraction-cache key are both derived at save from the full page instead.
-	capped := capChars(raw.Content.MainContent, jle.extractMaxChars)
+	//
+	// The prompt reads the page's Flattened Text (ADR-0046), so it is byte-identical to
+	// today's whether or not the parser renders structure. #280 swaps this for the
+	// href-free rendering variant, which is the whole point of the rendering — the
+	// measured cost is why the model reads that variant and not the one carrying link
+	// targets. Flatten BEFORE capping, so the cut can never land mid-marker.
+	capped := capChars(crawler.FlattenedText(raw.Content.MainContent), jle.extractMaxChars)
 	reqBody := chatRequest{
 		Model: jle.model,
 		Messages: []message{

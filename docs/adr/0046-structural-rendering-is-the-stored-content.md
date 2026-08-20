@@ -30,8 +30,8 @@ input, the duplication probe, the keyword filters — and that markup would pois
 That is the right worry and the wrong conclusion. A Structural Rendering reduces to today's
 plain text deterministically; today's plain text cannot be raised back into structure. The
 richer form is therefore what belongs in storage, and every plain-text consumer derives its
-own input through one pure function (`PlainText`) rather than reading a second field that can
-drift from the first.
+own input through one pure function (`FlattenedText`) rather than reading a second field
+that can drift from the first.
 
 ## The round-trip test is the entire safety argument
 
@@ -43,7 +43,7 @@ location the model reads back.
 
 That is avoided if and only if the derivation is exact, so it is asserted rather than argued:
 
-    PlainText(StructuralRendering(html)) == getMainContent(html)
+    FlattenedText(StructuralRendering(html)) == getMainContent(html)
 
 byte for byte, over the 90 real committed classifier fixtures. The invariant constrains the
 renderer — `[input text: Vorname]` must strip to nothing because the `<label>` already

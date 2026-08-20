@@ -106,6 +106,64 @@ func TestRefetchPerListingLiveness(t *testing.T) {
 	}
 }
 
+// TestRefetchComparesTheKeyOverFlattenedText asserts the refetch lane recomputes the
+// extraction-cache key over the page's Flattened Text (ADR-0046), not over the content
+// field raw. It is the other half of the pair the save side pins
+// (internal/processor/job_listing_processor, TestJobListingProcessorKeysOnFlattenedText).
+//
+// The stored key was computed from flat text; the page here comes back carrying line
+// structure. Reading the field raw makes it read as CHANGED — no Alive probe at all, and
+// a re-extract enqueued — so once the parser renders structure the whole Corpus
+// re-extracts in one wave and every title and location is re-baselined.
+func TestRefetchComparesTheKeyOverFlattenedText(t *testing.T) {
+	page := uuid.New()
+	dl := newFakeDownloader()
+	live := newFakeLiveness()
+	extract := &captureExtract{}
+
+	// The page itself is reachable, so it never goes dormant this probe.
+	dl.ok("https://acme.com/careers", "hub")
+
+	// No DescriptionSource, so the heal is a no-op and only the key comparison is
+	// under test.
+	unchanged := &crawler.JobListing{CanonicalURL: "c-unchanged", URL: "https://acme.com/j/unchanged", SourceHash: "same body", CompanyKey: "acme.com"}
+	live.open[page] = []*crawler.JobListing{unchanged}
+
+	// The same words the stored key was computed from, carrying a rendering's line
+	// structure. identityHash returns its input, so the comparison is the flatten.
+	dl.ok(unchanged.URL, "same\nbody")
+
+	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
+		Downloader:        dl,
+		Parser:            fakeParser{},
+		Liveness:          live,
+		Dormancy:          &fakeDormancy{},
+		Classifier:        newFakeClassifier(),
+		GateConfig:        crawler.DefaultLLMGateConfig(),
+		SourceHash:        identityHash,
+		Descriptions:      newFakeDescriptions(),
+		EnqueueExtract:    extract.enqueue,
+		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+		DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+	})
+
+	seed := &crawler.CollectionSeed{URL: "https://acme.com/careers", CompanyKey: "acme.com", CareerPageID: page}
+	if err := proc.Process(t.Context(), seed); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	probes := live.recordedProbes()
+	if len(probes) != 1 {
+		t.Fatalf("recorded %d probes, want 1 (the listing must read as unchanged and be confirmed alive): %+v", len(probes), probes)
+	}
+	if probes[0].canonicalURL != unchanged.CanonicalURL || probes[0].outcome != crawler.ProbeAlive {
+		t.Errorf("probe = %+v, want %q Alive", probes[0], unchanged.CanonicalURL)
+	}
+	if caps := extract.captured(); len(caps) != 0 {
+		t.Errorf("enqueued %d for re-extraction, want 0: the key must be compared over Flattened Text, not the content field raw", len(caps))
+	}
+}
+
 // TestRefetchHealsLegacyDescription is the ADR-0041 heal at the Process seam: on the
 // unchanged-content branch, a listing still marked with the legacy model-authored
 // source has its description and marker rewritten from the page the refetch already

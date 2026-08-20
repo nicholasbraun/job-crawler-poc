@@ -417,3 +417,69 @@ func TestExtractPromptOmitsDescription(t *testing.T) {
 		}
 	}
 }
+
+// TestExtractPromptReadsFlattenedText asserts the extractor's user message carries the
+// page's Flattened Text (ADR-0046) rather than the content field raw, so today's prompt
+// stays byte-identical whether or not the parser renders structure. #280 is what
+// deliberately swaps this for the href-free rendering variant; until then a rendering
+// reaching the prompt would silently re-baseline every extraction.
+//
+// It asserts the flattened phrase is present rather than "the message has no newlines":
+// the untrusted-data seal contributes newlines of its own.
+func TestExtractPromptReadsFlattenedText(t *testing.T) {
+	var captured string
+
+	var env chatEnvelope
+	env.Choices = make([]struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}, 1)
+	env.Choices[0].Message.Content = `{"title":"X","is_job_posting":true}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		captured = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(env); err != nil {
+			t.Errorf("encode envelope: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	ext := openrouter.NewJobListingExtractor(openrouter.Config{BaseURL: srv.URL, APIKey: "test"})
+	raw := crawler.RawJobListing{
+		URL:     newURL(t, "https://careers.acme.com/jobs/1"),
+		Content: crawler.Content{MainContent: "Backend Engineer\n\n- Go"},
+	}
+
+	if _, err := ext.Extract(t.Context(), raw); err != nil {
+		t.Fatalf("Extract returned error: %v", err)
+	}
+
+	var sent struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(captured), &sent); err != nil {
+		t.Fatalf("unmarshal captured request: %v", err)
+	}
+
+	var userMessage string
+	for _, m := range sent.Messages {
+		if m.Role == "user" {
+			userMessage = m.Content
+		}
+	}
+	if userMessage == "" {
+		t.Fatalf("captured request carries no user message: %s", captured)
+	}
+	if want := "Backend Engineer - Go"; !strings.Contains(userMessage, want) {
+		t.Errorf("user message should carry the page's Flattened Text %q, got:\n%s", want, userMessage)
+	}
+}

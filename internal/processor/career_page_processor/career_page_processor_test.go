@@ -93,6 +93,10 @@ type spyRecorder struct {
 	calls   []recordedCall
 	gates   []recordedGate
 	content int
+	// contentTexts holds what the duplication probe was actually handed, so a test can
+	// assert the FORM as well as the count: the probe counts duplicate pages, so it must
+	// digest Flattened Text on both sides of the rendering kill switch (ADR-0046).
+	contentTexts []string
 }
 
 func (s *spyRecorder) Call(_ context.Context, k llmobs.Kind, o llmobs.Outcome, _ time.Duration) {
@@ -103,9 +107,12 @@ func (s *spyRecorder) Gated(_ context.Context, k llmobs.Kind, r llmobs.Reason) {
 }
 func (s *spyRecorder) Shadow(context.Context, llmobs.ShadowVerdict, string) {}
 func (s *spyRecorder) ShadowDropped(context.Context, string)                {}
-func (s *spyRecorder) Content(_ context.Context, _ llmobs.Kind, _ string)   { s.content++ }
-func (s *spyRecorder) Retry(context.Context, llmobs.Kind)                   {}
-func (s *spyRecorder) DeadLetter(context.Context, llmobs.Kind)              {}
+func (s *spyRecorder) Content(_ context.Context, _ llmobs.Kind, text string) {
+	s.content++
+	s.contentTexts = append(s.contentTexts, text)
+}
+func (s *spyRecorder) Retry(context.Context, llmobs.Kind)      {}
+func (s *spyRecorder) DeadLetter(context.Context, llmobs.Kind) {}
 func (s *spyRecorder) QueueDepth(context.Context, llmobs.Kind, int64, int64) {
 }
 
@@ -588,5 +595,35 @@ func TestCareerPageProcessorNameNeverTouchesIdentity(t *testing.T) {
 	}
 	if c.DisplayDomain != "evil.com" {
 		t.Errorf("DisplayDomain = %q, want evil.com", c.DisplayDomain)
+	}
+}
+
+// TestCareerPageProcessorProbesFlattenedText asserts the duplication probe is handed
+// the page's Flattened Text (ADR-0046) rather than the content field raw. The probe
+// counts duplicate PAGES, so it must digest the same form on both sides of the
+// rendering kill switch, or its recurrence numbers jump the moment the switch flips
+// and the metric stops meaning what the dashboard says it means.
+func TestCareerPageProcessorProbesFlattenedText(t *testing.T) {
+	rec := &spyRecorder{}
+	proc := careerpageprocessor.NewProcessor(&careerpageprocessor.Config{
+		CompanyRepository:    &spyCompanyRepo{assignID: uuid.New()},
+		CareerPageRepository: &spyCareerPageRepo{},
+		Confirmer:            &spyConfirmer{verdict: careerpageprocessor.Verdict{IsCareerPage: true}},
+		Recorder:             rec,
+	})
+
+	raw := &crawler.RawCareerPage{
+		URL:     newURL(t, "https://careers.acme.com/jobs"),
+		Content: crawler.Content{Title: "Careers at Acme", MainContent: "Open roles\n\n- Backend Engineer"},
+	}
+	if err := proc.Process(t.Context(), raw); err != nil {
+		t.Fatalf("Process returned error: %v", err)
+	}
+
+	if len(rec.contentTexts) != 1 {
+		t.Fatalf("want 1 duplication-probe record, got %d", len(rec.contentTexts))
+	}
+	if want := "Open roles - Backend Engineer"; rec.contentTexts[0] != want {
+		t.Errorf("duplication probe saw %q, want %q (the page's Flattened Text)", rec.contentTexts[0], want)
 	}
 }

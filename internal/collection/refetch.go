@@ -295,7 +295,11 @@ func (p *RefetchProcessor) refetchOne(ctx context.Context, listing *crawler.JobL
 		p.onRegateRejected(ctx)
 	}
 
-	if p.sourceHash(content.MainContent) == listing.SourceHash {
+	// The extraction-cache key is compared over the page's Flattened Text (ADR-0046),
+	// so a Structural Rendering never re-keys the Corpus. This side and the save side
+	// (job_listing_processor) must flatten identically: if only one of them does, every
+	// stored listing reads as changed and the whole Corpus re-extracts in one wave.
+	if p.sourceHash(crawler.FlattenedText(content.MainContent)) == listing.SourceHash {
 		// Unchanged source content: confirmed alive with NO LLM call. The probe is
 		// applied first and independently of the heal — liveness is this lane's job and
 		// must never hinge on a description rewrite — and the two errors are joined so

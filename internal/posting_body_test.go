@@ -68,6 +68,19 @@ func TestPostingBody(t *testing.T) {
 			wantSource: crawler.DescriptionSourceStructuredData,
 		},
 		{
+			// The stored body is the page's Flattened Text (ADR-0046), so the line
+			// structure a Structural Rendering carries never reaches the Corpus or the
+			// weight-B search index it feeds: a reader searching the Corpus must never
+			// meet syntax the page did not say.
+			name: "a rendering's line structure never reaches the stored body",
+			content: &crawler.Content{
+				MainContent: "Backend Engineer\n\n- Go\n- Postgres",
+			},
+			maxChars:   1000,
+			wantBody:   "Backend Engineer - Go - Postgres",
+			wantSource: crawler.DescriptionSourcePageContent,
+		},
+		{
 			// A page served as ISO-8859-1 reaches the parser as bytes Go never
 			// re-encodes. Postgres rejects such a write (SQLSTATE 22021), so the body
 			// must be valid UTF-8 by the time it leaves this function. 0xe4 is Latin-1

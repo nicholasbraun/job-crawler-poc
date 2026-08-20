@@ -171,3 +171,47 @@ func TestConfirmPromptRequestsCompanyName(t *testing.T) {
 		t.Errorf("classifier request should instruct a null-biased name, got:\n%s", captured)
 	}
 }
+
+// TestConfirmPromptReadsFlattenedText asserts the classifier's user message carries the
+// page's Flattened Text (ADR-0046) rather than the content field raw, so today's prompt
+// stays byte-identical whether or not the parser renders structure. The negative half
+// reads the RAW request body, where a newline in the page text would appear as the
+// two-character JSON escape.
+func TestConfirmPromptReadsFlattenedText(t *testing.T) {
+	var captured string
+
+	var env chatEnvelope
+	env.Choices = make([]struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	}, 1)
+	env.Choices[0].Message.Content = `{"is_career_page":true,"company_name":null}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		captured = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(env); err != nil {
+			t.Errorf("encode envelope: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	classifier := openrouter.NewCareerPageClassifier(openrouter.Config{BaseURL: srv.URL, APIKey: "test"})
+	content := &crawler.Content{Title: "x", MainContent: "Backend Engineer\n\n- Go"}
+
+	if _, err := classifier.Confirm(t.Context(), "https://careers.acme.com/jobs", content); err != nil {
+		t.Fatalf("Confirm returned error: %v", err)
+	}
+
+	if want := "Backend Engineer - Go"; !strings.Contains(captured, want) {
+		t.Errorf("classifier request should carry the page's Flattened Text %q, got:\n%s", want, captured)
+	}
+	if raw := `Backend Engineer\n`; strings.Contains(captured, raw) {
+		t.Errorf("classifier request carries the page's line structure, want it flattened, got:\n%s", captured)
+	}
+}

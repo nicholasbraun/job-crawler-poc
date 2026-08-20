@@ -111,7 +111,10 @@ var closurePhrases = []string{
 //
 // Pure: no model, no network, no database.
 func WithdrawalNotice(content *Content, posting StructuredPosting) bool {
-	body := strings.Join(strings.Fields(content.MainContent), " ")
+	// The banner phrases and the length comparison both read the page's Flattened Text
+	// (ADR-0046), so a Structural Rendering neither hides a closure phrase behind a
+	// line break nor inflates the rendered length with syntax the page never said.
+	body := FlattenedText(content.MainContent)
 	folded := strings.ToLower(body)
 	for _, phrase := range closurePhrases {
 		if strings.Contains(folded, phrase) {

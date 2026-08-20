@@ -142,7 +142,10 @@ func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.Raw
 	// The dedup probe measures the EXTRACT STREAM, not the model's input: it fires for
 	// every page reaching this processor, including one a Free Extraction then resolves
 	// with no model call.
-	w.recorder.Content(ctx, llmobs.KindExtract, workload.Content.MainContent)
+	// It hashes the page's Flattened Text (ADR-0046) rather than the field raw: the probe
+	// counts duplicate PAGES, so it must digest the same form on both sides of the
+	// rendering kill switch or its recurrence numbers jump when the switch flips.
+	w.recorder.Content(ctx, llmobs.KindExtract, crawler.FlattenedText(workload.Content.MainContent))
 	start := time.Now()
 	extraction, err := w.jobListingExtractor.Extract(ctx, *workload)
 	// A Free Extraction (ADR-0042) resolved this page from its own structured data
@@ -253,11 +256,14 @@ func (w *JobListingProcessor) Process(ctx context.Context, workload *crawler.Raw
 		extraction.Listing.DescriptionSource = crawler.DescriptionSourceLLMSummary
 	}
 
-	// Stamp the extraction-cache key (ADR-0035) from the page's main content, capped
+	// Stamp the extraction-cache key (ADR-0035) from the page's Flattened Text, capped
 	// by the same prompt window the refetch lane hashes with, so an unchanged page is
 	// confirmed alive with no model call. SourceHash caps internally, so this is
 	// byte-identical to the extractor's historical stamp over the already-capped text.
-	extraction.Listing.SourceHash = w.sourceHash(workload.Content.MainContent)
+	// Flattened rather than raw so a Structural Rendering never re-keys the Corpus
+	// (ADR-0046); the refetch lane's comparison flattens identically, and a mismatch
+	// between the two re-extracts every stored listing in one wave.
+	extraction.Listing.SourceHash = w.sourceHash(crawler.FlattenedText(workload.Content.MainContent))
 
 	if err := w.corpus.Save(ctx, &extraction.Listing); err != nil {
 		return fmt.Errorf("job_listing_processor: error saving processed job listing %v: %w", *workload, err)
