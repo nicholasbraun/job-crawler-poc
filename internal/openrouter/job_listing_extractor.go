@@ -114,7 +114,7 @@ const (
 	// across runs.
 	llmSeed = 42
 
-	// defaultClassifyMaxChars / defaultExtractMaxChars cap the page text (in runes)
+	// defaultClassifyMaxChars / DefaultExtractMaxChars cap the page text (in runes)
 	// sent to the model when Config leaves the cap unset. The classify/extract signal
 	// sits near the top of the page, so truncating keeps the context small: huge pages
 	// otherwise dominate prompt-processing latency and time out on local models.
@@ -128,8 +128,15 @@ const (
 	// have cost ~1.25-1.43x, which is why the prompts read the narrowed one instead of
 	// the cap being raised: "keep the targets" and "raise the cap" compound rather than
 	// compose, and raising it is its own decision, scored on its own (spec #275).
+	//
+	// The extract cap is exported because the offline rendering A/B (#282) has to run
+	// both arms at the budget production really uses -- a benchmark that picked its own
+	// number would measure a cap nothing ships with. The classify cap stays unexported
+	// until something outside this package needs it.
 	defaultClassifyMaxChars = 1500
-	defaultExtractMaxChars  = 8000
+
+	// DefaultExtractMaxChars is LLM_EXTRACT_MAX_CHARS' default: see above.
+	DefaultExtractMaxChars = 8000
 )
 
 // capChars truncates s to at most max runes.
@@ -213,7 +220,7 @@ func (c Config) withDefaults() Config {
 		c.ClassifyMaxChars = defaultClassifyMaxChars
 	}
 	if c.ExtractMaxChars <= 0 {
-		c.ExtractMaxChars = defaultExtractMaxChars
+		c.ExtractMaxChars = DefaultExtractMaxChars
 	}
 	return c
 }
@@ -304,9 +311,9 @@ func (jle *JobListingExtractor) Extract(ctx context.Context, raw crawler.RawJobL
 	// the hrefs do not, because carrying them would cost about a quarter of the prompt
 	// window at an unchanged cap. With PARSE_STRUCTURAL_RENDERING off the parser hands
 	// over Flattened Text, which carries no markers, so the narrowing is the identity
-	// and the prompt is byte-identical to today's. Narrow BEFORE capping, so a cut can
-	// never land inside a target and leave a dangling "](".
-	capped := capChars(crawler.WithoutLinkTargets(raw.Content.MainContent), jle.extractMaxChars)
+	// and the prompt is byte-identical to today's. PromptForm owns the narrow-then-cap
+	// order and why it is load-bearing.
+	capped := PromptForm(raw.Content.MainContent, jle.extractMaxChars)
 	reqBody := chatRequest{
 		Model: jle.model,
 		Messages: []message{

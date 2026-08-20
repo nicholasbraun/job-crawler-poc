@@ -40,6 +40,6 @@ func ConfigFromEnv(ld *env.Loader) Config {
 
 		Timeout:          ld.PositiveDuration("LLM_TIMEOUT", DefaultTimeout),
 		ClassifyMaxChars: ld.PositiveInt("LLM_CLASSIFY_MAX_CHARS", defaultClassifyMaxChars),
-		ExtractMaxChars:  ld.PositiveInt("LLM_EXTRACT_MAX_CHARS", defaultExtractMaxChars),
+		ExtractMaxChars:  ld.PositiveInt("LLM_EXTRACT_MAX_CHARS", DefaultExtractMaxChars),
 	}
 }

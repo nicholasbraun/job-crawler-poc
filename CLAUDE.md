@@ -104,6 +104,7 @@ go run ./cmd/llmbench bench                     # ...same, but confirms uncertai
                                                 #    the real classifier (needs LLM_* env)
 go run ./cmd/llmbench extract                   # Extract Gate over the reject-rung fixtures
 go run ./cmd/llmbench score-capture -in <labeled.jsonl>   # Extract Gate over the Extract Gold Set
+go run ./cmd/llmbench score-rendering            # A/B: Flattened Text vs Structural Rendering at one prompt budget
 ```
 
 The server reads configuration from the environment (a `.env` file is loaded via

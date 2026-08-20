@@ -30,6 +30,14 @@
 // place of the model (ADR-0042), exiting non-zero when a Free Extraction fires on a
 // page that is not a posting or reads a field that diverges from its confirmed
 // expected value.
+//
+// score-rendering (ADR-0046, #282) is the A/B that closes spec #275: it replays the
+// extract path over the committed pages twice -- once with the parser flattening and
+// once with it rendering structure -- at one shared prompt budget applied identically
+// to both arms, and reports each arm's extract-call rate and false-drop count beside
+// the delta between them. It exits non-zero on a DISAGREEMENT between the arms, never
+// on their level: the absolute false-drop count is extract's and score-capture's to
+// guard. No network, no model.
 package main
 
 import (
@@ -62,6 +70,8 @@ func main() {
 		os.Exit(runScoreCapture(rest))
 	case "score-free":
 		os.Exit(runScoreFree(rest))
+	case "score-rendering":
+		os.Exit(runScoreRendering(rest))
 	case "goldset-sample":
 		os.Exit(runGoldSetSample(rest))
 	case "goldset-sample-random":

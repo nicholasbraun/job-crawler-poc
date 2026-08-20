@@ -207,7 +207,7 @@ COLLECTION_INTERVAL: must be a positive Go duration (e.g. 90s, 5m, 24h), got "da
 | `EXTRACT_FROM_JSONLD`    | `true`                                  | Free Extraction kill switch (ADR-0042): read a lone structured-data posting with no model call |
 | `EXTRACT_REQUIRE_POSITIVE_EVIDENCE` | `true`                       | Extract Gate must see positive evidence a page *is* one posting, not just that nothing rejected it (ADR-0044) |
 | `SHADOW_EXTRACT_RATE`    | `0.01`                                  | Fraction of Extract-Gate-rejected pages extracted anyway to measure false-drops; `0` disables |
-| `PARSE_STRUCTURAL_RENDERING` | `false`                             | Parser keeps page structure — headings, list items, table rows, link targets, form controls (ADR-0046); non-model consumers still read the Flattened Text derived from it, while the classifier and extractor prompts read the rendering with link targets omitted. `false` restores today's flattened output and skips the second DOM walk |
+| `PARSE_STRUCTURAL_RENDERING` | `false`                             | Parser keeps page structure — headings, list items, table rows, link targets, form controls (ADR-0046); non-model consumers still read the Flattened Text derived from it, while the classifier and extractor prompts read the rendering with link targets omitted. `false` restores today's flattened output and skips the second DOM walk. Measured by `llmbench score-rendering`: the Extract Gate decides identically under both renderings (0 flips over 116 committed pages), and at the 8000-rune budget the rendering costs 1.69% of the page words the extractor sees |
 | `CRAWL_MAX_WORKERS`  | `50`                                        | Per-run crawl worker pool size (I/O-bound; raise for throughput) |
 | `CRAWL_VISITED_CAP`  | `5000000`                                   | Per-run ceiling on the visited set before FIFO eviction (ADR-0027) |
 | `ROBOTS_CACHE_SIZE`  | `16384`                                     | Hosts held in the shared robots.txt rules cache (ADR-0032) |
@@ -256,6 +256,12 @@ against curated fixtures — the **Gold Set** for the career-page Gate and the
 **Extract Gold Set** (real pages the live extract stage decided on) for the
 Extract Gate — so a gate change is measured before it ships, with no network and
 no model in the loop.
+
+Its `score-rendering` verb is the same discipline applied to the parser: it
+replays the extract path over the committed pages twice, once with the parser
+flattening and once with it rendering structure, at one shared prompt budget, and
+prints each arm's extract-call rate and false-drop count beside the delta between
+them. It exits non-zero when the two arms disagree, never on their level.
 
 ## Project Structure
 

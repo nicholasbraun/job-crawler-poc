@@ -123,6 +123,26 @@ figures above. The extractor's "judge by DETAIL, not by how many role names appe
 Text where the bullet stands in for the missing form controls, and #282 is the ticket that
 scores its removal.
 
+What #282 measured: `cmd/llmbench score-rendering` replays the extract path over the committed
+pages twice — once through a flattening parser, once through a rendering one — at one prompt
+budget applied identically to both arms, with no network and no model. It confirms the
+narrowed form's cost at the cap rather than correcting it: **1.0950x** the Flattened Text in
+runes over the 90 real fixtures and **1.0689x** over the 26 labelled ones, beside the 1.081x
+uncapped and 1.10x live figures above. Where that lands is the number the decision turns on:
+at an 8000-rune budget the rendering delivers **1.69% fewer page words** to the extractor over
+the 90 real pages (40488 against 41184 of 60432 available), and takes the pages the cap
+truncates from 13 to 15 of 90 — `governikus.de/karriere/arbeiten-bei-uns` and `xing.com`. The
+standing context is that the cap, not the rendering, is what bounds what the extractor sees:
+62 of the 457 real Extract Gold Set rows (13.6%) already exceed the budget today, and only
+78.3% of their page words reach the model at all.
+
+So `PARSE_STRUCTURAL_RENDERING` **stays `false`**, and the "judge by DETAIL" bullet stays with
+it. The A/B establishes safety and bounds the cost; the benefit — a model reading an apply
+form's picker as a picker — is only observable WITH a model, and an offline benchmark cannot
+settle a prompt question any more than it can settle a model one. Flipping the default waits
+on a harvest run under the flag (which also stamps rows `structural-v1`, and so gives this
+verb's gold-set leg a real second arm) plus an online scoring against it.
+
 ## Consequences
 
 - Rendering doubles the parser's DOM walk on **every** crawled page, discovery included. It
@@ -150,3 +170,14 @@ scores its removal.
   gold set, for an archival property the round-trip test makes unnecessary.
 - Rows captured BEFORE this change keep only flattened text. They are unreachable by any
   renderer and are the subject of ADR-0047.
+- The rendering is scored against the flattening rather than argued about, by
+  `llmbench score-rendering` (#282). The Extract Gate is invariant to the rendering BY
+  CONSTRUCTION — every page-text input it reads goes through `crawler.FlattenedText`, whose
+  round-trip this ADR already pins — so the verb's gate half is a neutrality demonstration at
+  a longer seam than the parser's golden file covers, and it holds: **0 flips over 116
+  committed pages**, with each arm's extract-call rate and false-drop count identical
+  (0.3846 / 0 drops on the labelled fixtures, 0.1111 on the real pages, 0.3939 / 13 drops on
+  the gold set). The verb therefore exits non-zero on a DISAGREEMENT between the arms and
+  never on their level: the absolute false-drop count is `extract`'s and `score-capture`'s to
+  guard, and a verb that inherited that rule would be red on day one over the 13 drops
+  `extractGoldSetFalseDrops` already tolerates, hiding the A/B's own finding underneath it.

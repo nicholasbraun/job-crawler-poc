@@ -95,14 +95,13 @@ func (c *CareerPageClassifier) Confirm(ctx context.Context, url string, content 
 	// about a quarter of the prompt window at an unchanged cap. With
 	// PARSE_STRUCTURAL_RENDERING off the parser hands over Flattened Text, which carries
 	// no markers, so the narrowing is the identity and the prompt is byte-identical to
-	// today's. Narrow BEFORE capping, so a cut can never land inside a target and leave
-	// a dangling "](".
+	// today's. PromptForm owns the narrow-then-cap order and why it is load-bearing.
 	userContent := fmt.Sprintf(
 		"%s\nURL: %s\nTitle: %s\n\n%s\n%s",
 		untrustedOpen,
 		sealUntrusted(url),
 		sealUntrusted(content.Title),
-		sealUntrusted(capChars(crawler.WithoutLinkTargets(content.MainContent), c.classifyMaxChars)),
+		sealUntrusted(PromptForm(content.MainContent, c.classifyMaxChars)),
 		untrustedClose,
 	)
 	reqBody := chatRequest{
