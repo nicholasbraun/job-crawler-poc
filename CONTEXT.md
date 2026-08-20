@@ -125,7 +125,7 @@ Which of the two paths collected a Job Listing — an ATS Fetch (structured boar
 _Avoid_: source type, method, channel
 
 **Posting Body**:
-The posting's own text as stored on a Job Listing — the page's structured-data description where there is one, otherwise its main content, and the board API's text on an ATS Fetch. Never model-authored: the LLM judges a page, it does not transcribe it.
+The posting's own text as stored on a Job Listing — the page's structured-data description where there is one, otherwise the page's Flattened Text, and the board API's text on an ATS Fetch. Never model-authored: the LLM judges a page, it does not transcribe it.
 _Avoid_: description (bare), summary, body text
 
 **Description Source**:
@@ -198,6 +198,14 @@ _Avoid_: board fetch, API scrape, direct ingest
 A momentary Redis disruption (a blip, failover, or dropped connection) the Frontier rides out by retrying while the Crawl Run's context is live, so the run stays Running rather than Failing. Distinct from a fatal Frontier error — a corrupt or unrecognized Redis reply — which still Fails the run.
 _Avoid_: outage, crash
 
+**Structural Rendering**:
+A fetched page's main content kept in the form that shows its structure — headings, list items, table rows, link text with its target, and form controls — rather than collapsed into one run of words. What the extractor and a human labeller read, because the structure is frequently what decides whether a page is one Job Listing at all: three role titles in a row are an index, the same three inside an apply form's picker are one posting.
+_Avoid_: markdown (bare), markup, rich text, HTML
+
+**Flattened Text**:
+A Structural Rendering with its structure stripped back out — the plain run of words every non-model consumer reads: the Posting Body, the search index, and the Extract Gate's phrase marks. Derived on demand rather than stored beside it, so the two can never disagree about what a page says.
+_Avoid_: main content (bare), plain text (bare), normalized text
+
 ### Classification
 
 **Gate**:
@@ -267,7 +275,7 @@ The curated collection of real HTML pages, each stored with its true URL, a huma
 _Avoid_: test set, fixtures (bare), corpus, sample
 
 **Extract Gold Set**:
-The Extract Gate's counterpart to the Gold Set: real pages the live extract stream was sampled from, each labelled single-posting **detail**, **hub/index**, or structurally-silent **residue**, scored on the binary extract-or-skip decision (a false-drop is the hard failure). Stored as the parsed page content the pipeline itself produced rather than as re-fetchable HTML, since a page re-fetched later is a different page. Distinct from the Gold Set, which labels Career-Page-vs-not over a discovery sample.
+The Extract Gate's counterpart to the Gold Set: real pages the live extract stream was sampled from, each labelled single-posting **detail**, **hub/index**, or structurally-silent **residue**, scored on the binary extract-or-skip decision (a false-drop is the hard failure). Stored as the parsed page content the pipeline itself produced rather than as re-fetchable HTML, since a page re-fetched later is a different page — a later fetch can only ever be an aid to reading a row, admitted under Capture Fidelity, never the thing a label describes. Distinct from the Gold Set, which labels Career-Page-vs-not over a discovery sample.
 _Avoid_: extract test set, second gold set
 
 **Boundary Stratum**:
@@ -281,3 +289,15 @@ _Avoid_: uniform sample, control set, holdout
 **Shadow Extraction**:
 A sampled page the Extract Gate rejected that is extracted anyway, purely to score the gate — the extractor's verdict on it is the live false-drop measurement, which nothing else can observe. It saves nothing by construction: a Shadow Extraction can never reach the Corpus.
 _Avoid_: dry run, canary, A/B test
+
+**Capture Fidelity**:
+How much of an Extract Gold Set row's captured text a fresh fetch of its URL still carries — *same*, *drifted*, or *gone*. It decides whether a live re-fetch may be shown to a labeller as a view of that row: the captured content is always the authority, and a re-fetch is admissible only while fidelity says the page is still the one that was captured. A *gone* page is the dangerous case, not the useless one — a closed posting argues confidently for the wrong label.
+_Avoid_: freshness, staleness, drift (bare)
+
+**Proposed Label**:
+The label a proposer put on an Extract Gold Set row, kept on the record even after a human overrides it. It is what makes a confirmation pass measurable: how often an independent human and the proposer reach the same answer is the evidence for what the still-unconfirmed rows are worth.
+_Avoid_: original label, suggestion, prior, model label
+
+**Blind Confirmation**:
+A confirmation given before the labeller is shown the Proposed Label. The gold set's review surfaces already withhold structured data and the live verdict so a label cannot be read off the signals the set exists to test; the proposed label is the strongest anchor of all, since it is a direct answer to the question being asked. Only a blind confirmation makes agreement with the proposer evidence rather than an echo.
+_Avoid_: double-blind, independent review, unbiased labelling
