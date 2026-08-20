@@ -197,6 +197,17 @@ func main() {
 	// see it; this is the switch to pull if it does.
 	requirePositiveEvidence := ld.Bool("EXTRACT_REQUIRE_POSITIVE_EVIDENCE", true)
 
+	// PARSE_STRUCTURAL_RENDERING makes the parser keep a page's structure instead of
+	// flattening it (ADR-0046), default false: the Flattened Text it has always
+	// produced. Set true and the parser renders headings, list items, table rows,
+	// link targets and form controls -- the difference between one application form
+	// offering three roles and an index of three roles. Every consumer still reads
+	// crawler.FlattenedText, so nothing downstream moves; the round-trip is asserted
+	// byte for byte over the 90 committed fixtures. Setting it back to false restores
+	// today's parser exactly, with no second DOM walk on any page the Discovery Crawl
+	// fetches, which is why it stays off until a harvest has scored it.
+	structuralRendering := ld.Bool("PARSE_STRUCTURAL_RENDERING", parser.DefaultStructuralRendering)
+
 	// CRAWL_MAX_WORKERS sizes the per-run discovery worker pool — how many pages
 	// are downloaded and processed in parallel per run. Crawl workers are
 	// I/O-bound (blocked on network downloads), so this
@@ -278,7 +289,7 @@ func main() {
 	savedSearchRepository := postgres.NewSavedSearchRepository(pgPool)
 
 	factory := newFactory(crawlMaxWorkers, visitedCap, robotsCacheTTL, robotsCacheSize, llmMaxWorkers, llmConfig,
-		descriptionMaxChars, extractFromJSONLD, shadowExtractRate, requirePositiveEvidence,
+		descriptionMaxChars, extractFromJSONLD, shadowExtractRate, requirePositiveEvidence, structuralRendering,
 		redisClient, companyRepository, careerPageRepository, corpusRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory,
 		// One cleaner sweeps all of a run's transient Redis state on a terminal
@@ -413,6 +424,7 @@ func newFactory(
 	extractFromJSONLD bool,
 	shadowExtractRate float64,
 	requirePositiveEvidence bool,
+	structuralRendering bool,
 	redisClient *redis.Client,
 	companyRepository crawler.CompanyRepository,
 	careerPageRepository crawler.CareerPageRepository,
@@ -424,7 +436,7 @@ func newFactory(
 	sharedTransport := downloader.NewCachingTransport()
 	httpClient := downloader.NewClient(userAgent, downloader.WithTransport(sharedTransport))
 	retryHTTPClient := downloader.NewRetryClient(httpClient)
-	htmlParser := parser.NewHTMLParser()
+	htmlParser := parser.NewHTMLParser(parser.WithStructuralRendering(structuralRendering))
 
 	robotsTxtParser := temoto.NewRobotsTxtParser(userAgent)
 	robotsTxtDownloader := robotstxt.NewRobotsTxtDownloader(userAgent, sharedTransport)

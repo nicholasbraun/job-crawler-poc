@@ -34,6 +34,53 @@ var flattenCases = []struct {
 		"Qualit\xe4tssicherung engineer",
 	},
 	{"whitespace only flattens to empty", " \n\t ", ""},
+
+	// The rendering's own syntax, one case per rule the strip owes ADR-0046. Each is
+	// a shape the renderer synthesizes, so each must come back out exactly as the
+	// page would have read without it.
+	{"a heading's level prefix is dropped", "#\tOpen positions", "Open positions"},
+	{"a sub-heading's prefix is dropped too", "##\tSub", "Sub"},
+	{"a list item's bullet is dropped", "-\tGo", "Go"},
+	{"a table row's bar is dropped", "|\tBerlin", "Berlin"},
+	{"a table cell separator is whitespace like any other", "|\tName\tBerlin", "Name Berlin"},
+	{
+		// The 56-of-90 case: the page itself ran the two blocks together, so the
+		// boundary the rendering makes visible must vanish rather than fold.
+		"the JOIN deletes a boundary the page ran together",
+		"Über Redcare\t\nNewsroom",
+		"Über RedcareNewsroom",
+	},
+	{
+		"a plain newline is an ordinary boundary and folds",
+		"Über Redcare \nNewsroom",
+		"Über Redcare Newsroom",
+	},
+	{"a form input contributes nothing", "[input text: Vorname]", ""},
+	{"a select contributes nothing", "[select: Position]", ""},
+	{"a textarea's marker contributes nothing", "[textarea: message]", ""},
+	{"a submit input's caption is an attribute and vanishes", "[input submit: Senden]", ""},
+	{"a button's own text survives", "[button: Senden]", "Senden"},
+	{"an image's alternative text vanishes", "[img: 1A SMS GmbH]", ""},
+	{"a link keeps its text and drops its target", "[Apply now](/apply)", "Apply now"},
+	{
+		// Four of the 90 fixtures link text with brackets in it.
+		"bracketed page text inside a link survives",
+		"[Fixed Term [12 Months]](/careers/468)",
+		"Fixed Term [12 Months]",
+	},
+	{
+		// Prefixes are tab-anchored precisely so page text of this shape is safe.
+		"page text that starts like a bullet is untouched",
+		"- not a marker",
+		"- not a marker",
+	},
+	{"page text that starts like a heading is untouched", "# 1 in Germany", "# 1 in Germany"},
+	{
+		// news.ycombinator.com's real page text: no rule may key on a bare pipe.
+		"page text full of pipes is untouched",
+		"new | past | comments | ask",
+		"new | past | comments | ask",
+	},
 }
 
 func TestFlattenedText(t *testing.T) {

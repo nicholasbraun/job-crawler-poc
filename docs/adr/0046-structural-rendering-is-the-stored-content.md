@@ -47,9 +47,59 @@ That is avoided if and only if the derivation is exact, so it is asserted rather
 
 byte for byte, over the 90 real committed classifier fixtures. The invariant constrains the
 renderer — `[input text: Vorname]` must strip to nothing because the `<label>` already
-contributed the word, `[button: Senden]` must strip to `Senden`, an `![alt]` must vanish
-because today's text has no alt text — and the test is what proves it holds. **If it cannot be
+contributed the word, `[button: Senden]` must strip to `Senden`, an image's `[img: alt]` must
+vanish because today's text has no alt text — and the test is what proves it holds. **If it cannot be
 held, the fallback is #275's two-field design**, taken on evidence rather than on caution.
+
+## The rendering grammar
+
+The invariant decides the syntax, so the syntax is recorded here rather than left to the
+renderer (#279). The illustrations above are prose; this is the grammar.
+
+Every run of whitespace inside a text node becomes a *separator* rather than characters, so
+**source-derived text in a rendering never contains a tab or a newline** — every one of them
+is synthesized, which is what makes the strip unambiguous. Which separator is written depends
+on what the page itself had at the boundary:
+
+| boundary | rendered | flattens to |
+| --- | --- | --- |
+| block, page had whitespace | `"\n"` | one space |
+| block, page had none | `"\t\n"` (the JOIN) | nothing |
+| table cell, page had whitespace | `"\t"` | one space |
+| table cell, page had none | `""` | nothing |
+| no boundary, page had whitespace | `" "` | one space |
+
+The JOIN is not a nicety. `goquery`'s `.Text()` concatenates text nodes with no separator at
+all, so a minified `<p>A</p><p>B</p>` is `AB` in today's output — and **58 of the 90 committed
+fixtures** run words together across at least one block boundary (`Über RedcareNewsroom`,
+`SolutionsSOLUTIONSCedar Pay`). A renderer that emitted a newline there and let it collapse to
+a space would re-key 64% of the Corpus. The rendering therefore records the absence, and the
+derivation deletes the mark instead of folding it.
+
+Line prefixes — `#`…`######` for a heading level, `-` for a list item or an option, `|` for a
+table row — are written after the newline and end in a **tab**, not a space, and are emitted
+lazily so an empty block contributes nothing. Tab-anchoring is what keeps the strip's
+`^(#{1,6}|-|\|)\t` rule off a paragraph whose own text begins `"- "` or `"# 1 in Germany"`.
+The one shape never written is a tab immediately before a newline other than the JOIN itself.
+
+Markers are built from **attributes only** — `href`, `alt`, `value`, `type`, `placeholder`,
+`aria-label`, `name` — none of which is in today's flattened output, so each may strip to
+nothing: `[img: alt]`, `[input text: Vorname]`, `[select: Position]`, `[textarea: message]`,
+`[input submit: Senden]`. Exactly two markers wrap page text and both give it back:
+`[button: Senden]` and `[text](href)`. An `<option>`'s and a `<textarea>`'s own text is page
+text and stands beside its marker rather than inside it. Attribute text is sanitized by the
+renderer (whitespace collapsed, brackets turned to parentheses, `)` percent-encoded in an
+href, capped) — it is synthetic, so this is free and exact.
+
+The `![alt]` spelling was tried for images and dropped: page text ending in `!` directly before
+a link or a button forged an image marker on three fixtures, and the strip then ate text the
+page really had. Wrapping markers tolerate one level of brackets in the text they wrap,
+because four fixtures link text like `[email protected]`, `Fixed Term [12 Months]` and
+`(1965) [pdf]`.
+
+What remains ambiguous is page text that literally contains `](` or a marker's own shape.
+Zero occurrences across the 526 KB of page text in the 90 fixtures; the round-trip test is the
+standing check; the rendering is off by default until a harvest has scored it.
 
 ## The prompt and the human read different variants
 

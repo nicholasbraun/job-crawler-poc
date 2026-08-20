@@ -207,6 +207,7 @@ COLLECTION_INTERVAL: must be a positive Go duration (e.g. 90s, 5m, 24h), got "da
 | `EXTRACT_FROM_JSONLD`    | `true`                                  | Free Extraction kill switch (ADR-0042): read a lone structured-data posting with no model call |
 | `EXTRACT_REQUIRE_POSITIVE_EVIDENCE` | `true`                       | Extract Gate must see positive evidence a page *is* one posting, not just that nothing rejected it (ADR-0044) |
 | `SHADOW_EXTRACT_RATE`    | `0.01`                                  | Fraction of Extract-Gate-rejected pages extracted anyway to measure false-drops; `0` disables |
+| `PARSE_STRUCTURAL_RENDERING` | `false`                             | Parser keeps page structure — headings, list items, table rows, link targets, form controls (ADR-0046); consumers still read the Flattened Text derived from it. `false` restores today's flattened output and skips the second DOM walk |
 | `CRAWL_MAX_WORKERS`  | `50`                                        | Per-run crawl worker pool size (I/O-bound; raise for throughput) |
 | `CRAWL_VISITED_CAP`  | `5000000`                                   | Per-run ceiling on the visited set before FIFO eviction (ADR-0027) |
 | `ROBOTS_CACHE_SIZE`  | `16384`                                     | Hosts held in the shared robots.txt rules cache (ADR-0032) |
