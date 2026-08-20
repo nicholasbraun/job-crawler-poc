@@ -208,8 +208,13 @@ func main() {
 	// switch really changes for a running crawl is the two LLM prompts: the classifier
 	// and the extractor read the rendering with link targets omitted (#280). Setting it
 	// back to false restores today's parser exactly, with no second DOM walk on any page
-	// the Discovery Crawl fetches, which is why it stays off until a harvest has scored
-	// it.
+	// the Discovery Crawl fetches.
+	//
+	// Which way to set it DEPENDS ON THE MODEL (#289): scored online over 25 re-fetched
+	// real postings, the rendering lifted a 3B instruct model's recall 44%->56% and left
+	// a 9B's unchanged at 92%, costing +17%/+41% wall time. A small model gains what a
+	// large one has no headroom to gain, so whoever changes LLM_MODEL owns re-deciding
+	// this, with cmd/extractbench -fixtures ... -structural.
 	//
 	// One thing the switch does NOT gate: crawler.FlattenedText now sits in front of the
 	// persisted paths unconditionally, so page text that itself contains marker syntax

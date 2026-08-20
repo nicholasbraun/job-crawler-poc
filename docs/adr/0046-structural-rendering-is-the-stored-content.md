@@ -162,15 +162,56 @@ standing context is that the cap, not the rendering, is what bounds what the ext
 So `PARSE_STRUCTURAL_RENDERING` **stays `false`**, and the "judge by DETAIL" bullet stays with
 it. The A/B establishes safety and bounds the cost; the benefit — a model reading an apply
 form's picker as a picker — is only observable WITH a model, and an offline benchmark cannot
-settle a prompt question any more than it can settle a model one. Flipping the default waits
-on a harvest run under the flag (which also stamps rows `structural-v1`, and so gives this
-verb's gold-set leg a real second arm) plus an online scoring against it.
+settle a prompt question any more than it can settle a model one.
+
+### The online measurement (#289): the default is conditional on the model
+
+That online scoring has now been run, against a local server with two models loaded, using
+`extractbench -fixtures ... [-structural]`. It could not use the committed Extract Gold Set —
+those rows are parser-blind (ADR-0043) and no renderer can be replayed over them — so the 25
+`detail` rows that `subsample()` selects were **re-fetched live** to make them re-renderable.
+Both arms then read identical HTML, temperature 0 and seed 42 as in production, and the
+flattened arm was run twice to confirm the numbers reproduce exactly.
+
+| model | arm | recall | false-drops | wall |
+| --- | --- | --- | --- | --- |
+| Qwen2.5-3B-Instruct | flattened | 44.0% (11/25) | 14 | 1m58s |
+| Qwen2.5-3B-Instruct | **structural** | **56.0% (14/25)** | **11** | 2m18s |
+| Qwen3.5-9B | flattened | 92.0% (23/25) | 2 | 5m57s |
+| Qwen3.5-9B | **structural** | 92.0% (23/25) | 2 | 8m25s |
+
+**Structure buys the small model +12 points of recall and buys the large model nothing.** The
+9B has no headroom to gain: it scored 100% recall on the STORED versions of these same rows,
+and the 2 false-drops here are pages that changed or expired between labelling and the
+re-fetch — page drift, not the renderer, and it applies to both arms equally. That also puts
+the achievable ceiling on this set at 23/25, so the 3B went from 11 to 14 of a possible 23:
+the rendering closes about a quarter of the gap between the two models. It does not rescue a
+small model; it meaningfully narrows the distance.
+
+The cost is the mirror image. Structural is **+41% wall time on the 9B** and +17% on the 3B —
+the ~1.09x prompt tokens above, amplified by generation. On a model with no headroom that is
+paid for nothing.
+
+So the default is **conditional, not absolute**:
+
+- **Serving a large model** — keep the switch `false`. Measured: no recall gain, +41% latency.
+- **Serving a small local model to cut the extract bill** — turn it `true`. It recovers a
+  meaningful slice of exactly what a small model loses, and the extract bill is the reason to
+  be running one.
+
+This is one model pair, one page sample, **n=25**, and the 3B effect is 3 rows (a confidence
+interval of roughly ±20 points). It is a signal strong enough to condition a flag on, not an
+established effect size. A harvest under the flag (which stamps rows `structural-v2` and gives
+`score-rendering`'s gold-set leg a real second arm) is still what would settle it at scale.
 
 ## Consequences
 
 - Rendering doubles the parser's DOM walk on **every** crawled page, discovery included. It
   sits behind a kill switch defaulted to today's plain text, so production pays nothing until
   a harvest or an A/B deliberately turns it on.
+- The right setting of that switch **depends on the model being served** (#289): worth turning
+  on for a small local model, worth leaving off for a large one. Whoever changes `LLM_MODEL`
+  owns re-deciding it, and `extractbench -fixtures ... -structural` is how.
 - The renderer's version is stamped on each extract-capture record. A renderer change then
   shows up as rows produced by two renderers rather than silently mixing them, which matters
   because a Structural Rendering is a derived artefact the Extract Gold Set will store.
