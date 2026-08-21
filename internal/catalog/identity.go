@@ -551,6 +551,23 @@ var aggregatorHosts = map[string]struct{}{
 	// lists portfolio companies' openings (Elliptic, Source.dev). As with those firms, the
 	// eTLD+1 match also sheds Seedcamp's own handful of postings -- the accepted trade.
 	"seedcamp.com": {},
+	// Corpus audit: two boards the live Collection Crawl had already minted Job
+	// Listings for, each collapsed onto ONE fake host-Company while the pages
+	// themselves name somebody else. Confirmed by the employer NAMED ON THE PAGE,
+	// the same standard as every entry above.
+	//
+	// 80000hours.org: 22 listings, all attributed to "80,000 Hours", titled
+	// "OpenAI - 27 Open Roles", "5 open roles at Center for AI Safety", "AI Safety
+	// & Policy Roles at Coefficient Giving", "MATS Research - Open Roles", "Open
+	// roles at Encode". The board is jobs.80000hours.org; as with ycombinator.com
+	// and the VC firms above, the eTLD+1 match also sheds 80,000 Hours' own
+	// openings -- the accepted trade.
+	"80000hours.org": {},
+	// globalcharityjobs.com: 15 listings, all attributed to "GlobalCharityJobs",
+	// titled "Clean Air Fund Director of Super Pollutants and Health", "WWF
+	// International Manager, People & Culture Operations", "NPH Belgium Board
+	// Members", "Tenure Facility Chief Operating Officer".
+	"globalcharityjobs.com": {},
 }
 
 // sharedHostSuffixes are registrable domains (eTLD+1) that front many INDEPENDENT

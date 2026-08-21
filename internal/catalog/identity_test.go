@@ -539,6 +539,11 @@ func TestIsAggregatorHost(t *testing.T) {
 		{"careerwebsite tenant board folds in via eTLD+1", "https://aam-us-jobs.careerwebsite.com", true},
 		{"another careerwebsite tenant board", "https://crainsnewyork.careerwebsite.com/career-advice", true},
 		{"match is case-insensitive", "https://BuiltIn.com/jobs", true},
+		// Corpus audit -- one per added denylist host. Both minted Job Listings under
+		// a fake host-Company while the pages named somebody else.
+		{"80000hours board on a subdomain", "https://jobs.80000hours.org/", true},
+		{"80000hours' own site folds in via eTLD+1", "https://80000hours.org/careers/", true},
+		{"globalcharityjobs board", "https://www.globalcharityjobs.com/jobs", true},
 		// A per-tenant ATS or recruiting-platform board root is a legitimate hub,
 		// not an aggregator -- its only defect is identity attribution (#46).
 		{"smartrecruiters tenant is not an aggregator", "https://jobs.smartrecruiters.com/ScalableGmbH", false},
