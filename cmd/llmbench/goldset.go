@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -282,6 +283,10 @@ const (
 	// change parseSheet's column contract. This one focuses the #256 review on its
 	// own 70 rows.
 	expectedFile = "expected.tsv"
+	// goldSetPerm is the mode every COMMITTED gold-set file lands with. It is named
+	// because the write path stages through os.CreateTemp, which creates 0600: a
+	// committed file must not silently become owner-only on the next apply (#283).
+	goldSetPerm os.FileMode = 0o644
 	// defaultSeed keys the deterministic within-cell selection. Changing it is a
 	// deliberate resample, which is why it is a flag rather than a constant use.
 	defaultSeed = "extract-goldset-v1"
@@ -845,31 +850,37 @@ func readGoldSet(path string) ([]goldRow, error) {
 	return rows, nil
 }
 
-// writeGoldSet writes rows to path as JSONL sorted by URL, one row per line with a
-// trailing newline. HTML escaping is off, matching the tap, so a captured URL's
-// "&" stays literal and the file diffs as the operator reads it.
-func writeGoldSet(path string, rows []goldRow) error {
+// goldSetWrite returns the staged write that lays the substrate down at path: rows
+// sorted by URL, one JSON object per line with a trailing newline, HTML escaping off
+// to match the tap so a captured URL's "&" stays literal and the file diffs as the
+// operator reads it. Encoding streams straight into the staging file, so a row the
+// encoder refuses aborts the write before anything is renamed.
+//
+// The sort happens here rather than inside the closure: the closure runs after the
+// group's other files are staged, and a caller mutating rows in between would
+// otherwise reorder this file and not the review sheets rendered from the same rows.
+func goldSetWrite(path string, rows []goldRow) fileWrite {
 	ordered := make([]goldRow, len(rows))
 	copy(ordered, rows)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].URL < ordered[j].URL })
 
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("create %q: %w", path, err)
-	}
-	enc := json.NewEncoder(f)
-	enc.SetEscapeHTML(false)
-	for _, row := range ordered {
-		if err := enc.Encode(row); err != nil {
-			_ = f.Close()
-			return fmt.Errorf("encode %q: %w", row.URL, err)
+	return fileWrite{Path: path, Perm: goldSetPerm, Write: func(w io.Writer) error {
+		enc := json.NewEncoder(w)
+		enc.SetEscapeHTML(false)
+		for _, row := range ordered {
+			if err := enc.Encode(row); err != nil {
+				return fmt.Errorf("encode %q: %w", row.URL, err)
+			}
 		}
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("close %q: %w", path, err)
-	}
-	return nil
+		return nil
+	}}
 }
+
+// writeGoldSet writes rows to path as the substrate, atomically: the content is
+// staged beside path and renamed over it, so a crash, a full disk or a row the
+// encoder refuses leaves the committed file exactly as it was rather than truncated
+// (#283).
+func writeGoldSet(path string, rows []goldRow) error { return atomicWrite(goldSetWrite(path, rows)) }
 
 // sheetHeader names the review sheet's columns. It is written as a leading
 // comment line so the file is self-describing in a diff.
@@ -1177,3 +1188,29 @@ func goldSetPaths(dir string) (substrate, sheet string) {
 
 // expectedSheetPath returns the expected-extraction review sheet's path under dir.
 func expectedSheetPath(dir string) string { return filepath.Join(dir, expectedFile) }
+
+// sheetWrite returns the staged write for the labels review sheet rendered from rows.
+func sheetWrite(path string, rows []goldRow) fileWrite {
+	return fileWrite{Path: path, Perm: goldSetPerm, Write: writeBytes(renderSheet(rows))}
+}
+
+// expectedWrite returns the staged write for the expected-extraction review sheet
+// rendered from rows.
+func expectedWrite(path string, rows []goldRow) fileWrite {
+	return fileWrite{Path: path, Perm: goldSetPerm, Write: writeBytes(renderExpectedSheet(rows))}
+}
+
+// writeGoldSetFiles writes the substrate and BOTH review sheets under dir from one
+// merged slice, staging all three before any of them is renamed into place. The three
+// are rendered from the same rows and a reader is entitled to assume they agree --
+// ADR-0048's guard asserts the substrate and labels.tsv name the same confirmers -- so
+// a failure must leave all three on their previous version rather than two on the new
+// one (#283).
+func writeGoldSetFiles(dir string, rows []goldRow) error {
+	substrate, sheet := goldSetPaths(dir)
+	return atomicWriteAll(
+		goldSetWrite(substrate, rows),
+		sheetWrite(sheet, rows),
+		expectedWrite(expectedSheetPath(dir), rows),
+	)
+}

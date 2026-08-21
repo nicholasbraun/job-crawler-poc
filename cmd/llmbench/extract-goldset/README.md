@@ -29,6 +29,13 @@ survive as cheap regression cases for the reject rungs and nothing more.
 | `labels.tsv` | The review surface rendered from the substrate: one line per row, 457 lines. This is the file a reviewer reads in a diff and edits to correct a label. A test asserts the two never drift. |
 | `expected.tsv` | The second review surface (#256): one line per row the Free Extraction fires on — its expected title, location and working mode, plus any accepted fire. 51 lines. Also rendered from the substrate, also drift-tested. |
 
+All three files are written **atomically**: each is staged in a temporary file beside it
+and renamed over it, and the whole group is staged before any of it is renamed, so a
+crash or a full disk mid-write leaves the previous versions intact rather than a
+truncated 6.3 MB substrate (#283). A `.goldset.jsonl.tmp-…` left in this directory is the
+debris of a process killed mid-write — it is gitignored, it is never the record, and
+deleting it is safe.
+
 `goldRow` is the extract-capture record (`internal/extractcapture`: `url`, `verdict`,
 `ts`, `renderer`, `content`) **extended in place**, not a new format. All 457 committed
 rows predate the renderer stamp (#281) and therefore carry no `renderer` at all: they

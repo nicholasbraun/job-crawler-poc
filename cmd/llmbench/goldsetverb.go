@@ -59,13 +59,12 @@ func runGoldSetSample(args []string) int {
 		fmt.Fprintf(os.Stderr, "llmbench goldset-sample: create %q: %v\n", *dir, err)
 		return 1
 	}
+	// A fresh draw carries no expected extractions, so this verb writes the substrate
+	// and the labels sheet only -- expected.tsv is created by the first goldset-apply.
+	// Both are staged and renamed together, so a failure leaves neither truncated (#283).
 	substrate, sheet := goldSetPaths(*dir)
-	if err := writeGoldSet(substrate, rows); err != nil {
+	if err := atomicWriteAll(goldSetWrite(substrate, rows), sheetWrite(sheet, rows)); err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench goldset-sample: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(sheet, renderSheet(rows), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "llmbench goldset-sample: write %q: %v\n", sheet, err)
 		return 1
 	}
 
@@ -121,7 +120,7 @@ func runGoldSetSampleRandom(args []string) int {
 	// The substrate MUST already exist: the random stratum extends the #254 file, it
 	// never creates one. A missing file here is a wrong -dir, and silently starting a
 	// new substrate would strand every existing label.
-	substrate, sheetPath := goldSetPaths(*dir)
+	substrate, _ := goldSetPaths(*dir)
 	existing, err := readGoldSet(substrate)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: %v (the random stratum extends an existing gold set; run goldset-sample first)\n", err)
@@ -149,16 +148,8 @@ func runGoldSetSampleRandom(args []string) int {
 	}
 
 	merged := append(append([]goldRow{}, existing...), drawn...)
-	if err := writeGoldSet(substrate, merged); err != nil {
+	if err := writeGoldSetFiles(*dir, merged); err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(sheetPath, renderSheet(merged), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: write %q: %v\n", sheetPath, err)
-		return 1
-	}
-	if err := os.WriteFile(expectedSheetPath(*dir), renderExpectedSheet(merged), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-random: write %q: %v\n", expectedSheetPath(*dir), err)
 		return 1
 	}
 
@@ -208,7 +199,7 @@ func runGoldSetSampleBoundary(args []string) int {
 	// The substrate MUST already exist, for the same reason the random drawing
 	// requires one: this stratum extends the committed file, and silently starting a
 	// new one would strand every existing label.
-	substrate, sheetPath := goldSetPaths(*dir)
+	substrate, _ := goldSetPaths(*dir)
 	existing, err := readGoldSet(substrate)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-boundary: %v (the boundary stratum extends an existing gold set; run goldset-sample first)\n", err)
@@ -257,16 +248,8 @@ func runGoldSetSampleBoundary(args []string) int {
 	}
 
 	merged := append(append([]goldRow{}, existing...), drawn...)
-	if err := writeGoldSet(substrate, merged); err != nil {
+	if err := writeGoldSetFiles(*dir, merged); err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-boundary: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(sheetPath, renderSheet(merged), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-boundary: write %q: %v\n", sheetPath, err)
-		return 1
-	}
-	if err := os.WriteFile(expectedSheetPath(*dir), renderExpectedSheet(merged), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "llmbench goldset-sample-boundary: write %q: %v\n", expectedSheetPath(*dir), err)
 		return 1
 	}
 
@@ -729,16 +712,8 @@ func runGoldSetApply(args []string) int {
 		return 2
 	}
 
-	if err := writeGoldSet(substrate, merged); err != nil {
+	if err := writeGoldSetFiles(*dir, merged); err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench goldset-apply: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(sheetPath, renderSheet(merged), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "llmbench goldset-apply: write %q: %v\n", sheetPath, err)
-		return 1
-	}
-	if err := os.WriteFile(expectedPath, renderExpectedSheet(merged), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "llmbench goldset-apply: write %q: %v\n", expectedPath, err)
 		return 1
 	}
 

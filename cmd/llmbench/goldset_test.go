@@ -2390,3 +2390,151 @@ func TestCommittedGoldSetIsByteStableThroughTheDecoder(t *testing.T) {
 			len(rows), len(got), len(committed), offset)
 	}
 }
+
+// TestWriteGoldSetLeavesTheSubstrateIntactWhenARowFailsToEncode is the interrupted
+// write driven through the real production function, with no test-only seam: the
+// encoder writes the first rows into the staging file and then refuses the last one,
+// which is exactly the state a killed process or a full disk leaves behind. The
+// committed 6.4 MB of ground truth must still be there, complete and readable (#283).
+//
+// A NaN weight is the fault used because it is the only one a goldRow can carry that
+// the JSON encoder rejects, and it is a fault the substrate can never legitimately
+// hold -- every weight is finite by construction -- so the test cannot mask a real
+// defect. The failing row sorts LAST so the rows before it are already written when
+// it fails.
+func TestWriteGoldSetLeavesTheSubstrateIntactWhenARowFailsToEncode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, goldSetFile)
+
+	good := []goldRow{
+		{
+			URL: "https://a.test/1", Verdict: true, TS: "2026-08-20T10:00:00Z",
+			Stratum: stratumLonePosting, Weight: 1, Label: bench.ExtractDetail,
+			LabelProvenance: goldProvenance{ProposedBy: "llm:test", ProposedAt: "2026-08-20T10:00:00Z", ConfirmedBy: "A Human", ConfirmedAt: "2026-08-20T10:00:00Z"},
+			Content:         crawler.Content{Title: "Senior Go Engineer", MainContent: "your tasks"},
+		},
+		{
+			URL: "https://b.test/2", Verdict: false, TS: "2026-08-20T10:00:01Z",
+			Stratum: stratumNoPosting, Weight: 1, Label: bench.ExtractResidue,
+			LabelProvenance: goldProvenance{ProposedBy: "llm:test", ProposedAt: "2026-08-20T10:00:01Z"},
+			Content:         crawler.Content{Title: "About us"},
+		},
+	}
+	if err := writeGoldSet(path, good); err != nil {
+		t.Fatalf("writeGoldSet: %v", err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the committed substrate: %v", err)
+	}
+
+	doomed := append(append([]goldRow{}, good...), goldRow{
+		URL: "https://z.test/3", Stratum: stratumRandom, Weight: math.NaN(),
+		Content: crawler.Content{Title: "the row the encoder refuses"},
+	})
+	err = writeGoldSet(path, doomed)
+	if err == nil {
+		t.Fatal("writeGoldSet returned nil for a row the encoder cannot serialize")
+	}
+	if !strings.Contains(err.Error(), "https://z.test/3") {
+		t.Errorf("error %q does not name the row it failed on", err)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the substrate after the failed write: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("the failed write changed the substrate: %d bytes now, %d before -- an interrupted write must leave the committed file exactly as it was", len(after), len(before))
+	}
+	rows, err := readGoldSet(path)
+	if err != nil {
+		t.Fatalf("readGoldSet after the failed write: %v", err)
+	}
+	if len(rows) != len(good) {
+		t.Fatalf("read %d rows back, want the %d that were committed before the failed write", len(rows), len(good))
+	}
+	if rows[0].URL != good[0].URL || rows[1].URL != good[1].URL {
+		t.Errorf("read back %q and %q, want %q and %q", rows[0].URL, rows[1].URL, good[0].URL, good[1].URL)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != goldSetFile {
+		t.Errorf("directory holds %d entries after the failed write, want only %s -- nothing half-written may survive", len(entries), goldSetFile)
+	}
+}
+
+// TestWriteGoldSetFilesReplacesEveryCommittedFile pins the seam the goldset-* verbs
+// write through: the substrate and BOTH review sheets land together, each rendered
+// from the same rows, each 0644 (#283). It is the drift the two committed-sheet
+// tests assert on the real files, checked here at the writer instead.
+func TestWriteGoldSetFilesReplacesEveryCommittedFile(t *testing.T) {
+	dir := t.TempDir()
+	rows := []goldRow{
+		{
+			URL: "https://a.test/jobs/1", Verdict: true, TS: "2026-08-20T10:00:00Z",
+			Stratum: stratumLonePosting, Weight: 1, Label: bench.ExtractDetail,
+			LabelProvenance: goldProvenance{ProposedBy: "llm:test", ProposedAt: "2026-08-20T10:00:00Z", ConfirmedBy: "A Human", ConfirmedAt: "2026-08-20T10:00:00Z"},
+			Expected:        &goldExpected{Title: "Senior Go Engineer", Location: "Berlin, DE", WorkArrangement: "unspecified", ProposedBy: "script:test"},
+			Content:         crawler.Content{Title: "Senior Go Engineer", MainContent: "your tasks"},
+		},
+		{
+			URL: "https://b.test/about", Verdict: false, TS: "2026-08-20T10:00:01Z",
+			Stratum: stratumNoPosting, Weight: 1, Label: bench.ExtractResidue,
+			LabelProvenance: goldProvenance{ProposedBy: "llm:test", ProposedAt: "2026-08-20T10:00:01Z"},
+			Content:         crawler.Content{Title: "About us"},
+		},
+	}
+
+	substrate, sheet := goldSetPaths(dir)
+	expected := expectedSheetPath(dir)
+	for _, path := range []string{substrate, sheet, expected} {
+		if err := os.WriteFile(path, []byte("stale\n"), 0o644); err != nil {
+			t.Fatalf("seed %q: %v", path, err)
+		}
+	}
+
+	if err := writeGoldSetFiles(dir, rows); err != nil {
+		t.Fatalf("writeGoldSetFiles: %v", err)
+	}
+
+	got, err := readGoldSet(substrate)
+	if err != nil {
+		t.Fatalf("readGoldSet: %v", err)
+	}
+	if len(got) != len(rows) {
+		t.Fatalf("substrate holds %d rows, want %d", len(got), len(rows))
+	}
+	if !reflect.DeepEqual(got, rows) {
+		t.Errorf("the substrate did not round-trip the rows it was written from")
+	}
+	if data, err := os.ReadFile(sheet); err != nil {
+		t.Fatalf("read %q: %v", sheet, err)
+	} else if !bytes.Equal(data, renderSheet(rows)) {
+		t.Errorf("%s is not the sheet rendered from the rows it was written with", labelsFile)
+	}
+	if data, err := os.ReadFile(expected); err != nil {
+		t.Fatalf("read %q: %v", expected, err)
+	} else if !bytes.Equal(data, renderExpectedSheet(rows)) {
+		t.Errorf("%s is not the sheet rendered from the rows it was written with", expectedFile)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Errorf("directory holds %d entries, want exactly the three committed files with no staging leftovers", len(entries))
+	}
+	for _, path := range []string{substrate, sheet, expected} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %q: %v", path, err)
+		}
+		if perm := info.Mode().Perm(); perm != goldSetPerm {
+			t.Errorf("%s mode = %v, want %v", filepath.Base(path), perm, goldSetPerm)
+		}
+	}
+}

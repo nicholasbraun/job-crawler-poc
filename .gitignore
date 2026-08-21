@@ -21,6 +21,10 @@
 # stray binary from `go build ./cmd/llmbench` (the Makefile builds to /bin)
 /llmbench
 
+# Staged writes of the committed Extract Gold Set: a temporary file beside the record
+# only survives a process killed mid-write (#283), and it is never the record.
+/cmd/llmbench/extract-goldset/.*.tmp-*
+
 # Node / Vite
 web/node_modules/
 
