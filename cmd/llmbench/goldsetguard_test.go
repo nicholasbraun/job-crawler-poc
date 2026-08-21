@@ -45,7 +45,7 @@ var extractGoldSetFalseDrops = []bench.KnownFalseDrop{
 	{
 		URL:       "https://jobs.blooloop.com/jobs/554707184-chief-of-development-at-the-american-lgbtq-museum",
 		Rung:      bench.RungReject,
-		Confirmed: false,
+		Confirmed: true,
 		Reason: "a sector Aggregator's posting page behind a saturated rail of sibling postings, dropped identically " +
 			"by the blanket accept; the same reject rung as hiring.cafe, and out of #257's scope for the same reason",
 	},

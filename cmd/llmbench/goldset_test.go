@@ -143,9 +143,13 @@ const (
 // nine confirmations that LANDED (52a8c15) turned `main` red, and it stayed red until
 // the constant was hand-edited (ead832e).
 //
-// It is 4 of 120 -- the rest ship LLM-proposed, and extract-goldset/README.md tells
-// the reviewer exactly which rows to read and how to raise it.
-const randomSpotChecks = 4
+// It is 120 of 120: the stratum is FULLY confirmed. The first 4 were spot-checked by
+// hand; the remaining 116 were read one at a time through goldset-ui's Blind
+// Confirmation (#274), which is what ADR-0043 wanted and could not afford before a
+// row cost one keystroke. The stratum has graduated from spot-checked to confirmed,
+// so what it says about production is a human's reading and no longer one model's
+// opinion of another's.
+const randomSpotChecks = 120
 
 const (
 	// pendingBoundaryConfirmations is how many Boundary Stratum rows still carry an
@@ -166,7 +170,12 @@ const (
 	// what the confusion counts are computed over and must be seen in a diff. It is
 	// deliberately NOT one of ADR-0048's floors: marking a page unresolvable is a rare,
 	// deliberate keystroke, and it should stop the build until it is acknowledged.
-	ambiguousRows = 10
+	//
+	// It rose 10 -> 15 when the Random Stratum was confirmed row by row (#274): five
+	// pages a human read and could not settle, each carrying a note saying what the
+	// tension was. That is the guard working -- the rise was seen and acknowledged
+	// here, in the same commit as the confirmations that produced it.
+	ambiguousRows = 15
 	// boundaryDetailRows is how many Boundary Stratum rows are labelled detail. Until
 	// #257 that was also how many Job Listings the Positive Evidence rule dropped
 	// here, because the stratum was DRAWN as the pages that rule skipped; #257 widened

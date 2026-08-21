@@ -79,10 +79,17 @@ relabelled during the pass that confirmed them. It is deliberately **not** a col
   the plan in `../goldset.go`. Same capture + same seed → byte-identical file.
 - **Labels** were **proposed by an LLM** (the #254 delivery agent) from each page's own
   title, text and outbound-link counts, with the structured data *deliberately
-  withheld* — see "The labeling protocol" below. **78 of the 457 rows now carry a human
-  confirmer** (69 `lone-posting`, 5 `no-posting`, 4 `random`); the other 379 carry a
+  withheld* — see "The labeling protocol" below. **194 of the 457 rows now carry a human
+  confirmer** (69 `lone-posting`, 5 `no-posting`, 120 `random`); the other 263 carry a
   **Proposed Label** and no confirmer, and the four confirmation counts in
   `../goldset_test.go` are the machine-visible measure of that gap.
+- **The random stratum is fully confirmed.** Its 116 outstanding rows were read one at a
+  time through `llmbench goldset-ui` (#274) under **Blind Confirmation**: the labeller
+  saw the page and answered before the **Proposed Label** was revealed. The human and the
+  proposer agreed on **109 of 116 rows (94.0%)**; the 7 disagreements each carry a note
+  saying why, and each preserves what the proposer actually proposed. That agreement rate
+  is the direct measurement of what the *remaining* unconfirmed rows are worth — it is
+  evidence about the proposer, not a licence to skip reading them (ADR-0048).
 
 ## Why parsed Content and not re-fetchable HTML
 
@@ -1089,10 +1096,11 @@ weighted number.
 command — a full confirmation of 120 pages nobody read, which is exactly the thing the
 provenance record exists to prevent. A spot check is 20 rows a human actually opened.
 
-`goldset-ui -stratum random` is the way to turn that warning into work: it is the 116
-rows still owed a confirmer, read one at a time for a keystroke each, which is what the
-warning was always asking for — the objection is to stamping 120 rows nobody read, not
-to reading them.
+`goldset-ui -stratum random` is what turned that warning into work, and the stratum is
+now **fully confirmed**: the 116 rows still owed a confirmer were read one at a time for
+a keystroke each, which is what the warning was always asking for — the objection is to
+stamping 120 rows nobody read, not to reading them. The warning still stands for any
+future drawing: `-confirm-stratum` remains the wrong instrument, whatever the stratum.
 
 ### Second pass — the 51 expected extractions (#256)
 
