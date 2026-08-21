@@ -76,6 +76,19 @@ type goldProvenance struct {
 	// ProposedBy names the proposer, prefixed "llm:" for a model-authored label.
 	ProposedBy string `json:"proposed_by"`
 	ProposedAt string `json:"proposed_at"` // RFC3339 UTC
+	// ProposedLabel is the label ProposedBy actually proposed, kept when a human
+	// overrides it (ADR-0048). It is what makes a confirmation pass measurable: how
+	// often an independent human and the proposer reach the same answer is the direct
+	// evidence for what the still-unconfirmed rows are worth. It is
+	// first-writer-wins exactly as ProposedBy is, so the two always name one
+	// proposer and the label that proposer gave.
+	//
+	// omitempty because it is ABSENT on the rows a human confirmed before it
+	// existed: the set does not record which of those were relabelled during the pass
+	// that confirmed them, and an empty-but-present field would be a claim that none
+	// were. Re-serializing such a row must leave it byte for byte as it is
+	// (TestCommittedGoldSetIsByteStableThroughTheDecoder).
+	ProposedLabel bench.ExtractLabel `json:"proposed_label,omitempty"`
 	// ConfirmedBy names the human who confirmed the label. A confirmation is only
 	// meaningful from a person, so goldset-apply rejects an "llm:" name here.
 	ConfirmedBy string `json:"confirmed_by"`

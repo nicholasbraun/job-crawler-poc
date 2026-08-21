@@ -45,6 +45,22 @@ a labelled gold-set row therefore read through the same decoder, `score-capture`
 this file unchanged, and a later spec can add a random stratum or the `expected`
 field-fidelity block with no migration.
 
+### The Proposed Label
+
+`label_provenance.proposed_label` is the label the row's proposer actually proposed
+(ADR-0048, #284). It is written once, beside `proposed_by`, and **survives a human
+override**, so a row can say "the model proposed `residue`, a human made it `detail` and
+signed for it". That is what makes a confirmation pass measurable: `goldset-apply` prints
+the agreement rate between human confirmers and proposers at the end of every run, and
+that rate is the evidence for what the still-unconfirmed rows are worth.
+
+It is additive and omitted when absent, so a row that never carried one re-serializes
+unchanged. Backfill filled it on the **379 rows carrying no confirmer**, where it is
+truthful because nobody had overridden the proposer's label; the **78 rows a human had
+already confirmed carry none**, because the set does not record which of those were
+relabelled during the pass that confirmed them. It is deliberately **not** a column on
+`labels.tsv`: it records what a proposer said, and is not a field a reviewer edits.
+
 ## Provenance
 
 - **Source**: the extract-decision tap's local capture,
@@ -905,7 +921,9 @@ go run ./cmd/llmbench score-free
 
 To **correct a label**, edit the `label` column of `labels.tsv` and run
 `goldset-apply`; it rewrites both files canonically and refuses a sheet whose stratum or
-verdict disagrees with the substrate.
+verdict disagrees with the substrate. A correction keeps `proposed_label`, so the record
+— and the agreement figure `goldset-apply` prints — still say what the proposer had
+proposed.
 
 ## Human confirmation — what is still owed
 

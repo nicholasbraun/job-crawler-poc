@@ -965,6 +965,148 @@ func TestApplyMergesLabelsAndStampsProvenance(t *testing.T) {
 			t.Errorf("parsed %+v, want two proposals", got)
 		}
 	})
+
+	// The Proposed Label (ADR-0048): what the proposer actually proposed survives a
+	// human overriding it, so the record says what happened and a confirmation pass
+	// produces a measurement rather than an echo.
+	t.Run("an override preserves the label the proposer proposed", func(t *testing.T) {
+		rows := base()
+		rows[0].Label = bench.ExtractDetail
+		rows[0].LabelProvenance = goldProvenance{ProposedBy: "llm:test", ProposedAt: "2026-01-01T00:00:00Z", Note: "one role, apply button"}
+		id := rowID("https://a.test/jobs/1")
+		proposals := []sheetRow{{ID: id, Label: bench.ExtractResidue, Note: "an index of roles"}}
+		got, err := applyLabels(rows, sheetFor(rows), proposals, "", "A Human", "", map[string]struct{}{id: {}}, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		prov := got[0].LabelProvenance
+		if got[0].Label != bench.ExtractResidue {
+			t.Errorf("label = %q, want residue", got[0].Label)
+		}
+		if prov.ProposedLabel != bench.ExtractDetail {
+			t.Errorf("proposed_label = %q, want the label the proposer had put on the row", prov.ProposedLabel)
+		}
+		if prov.ProposedBy != "llm:test" {
+			t.Errorf("proposer = %q, want the original untouched", prov.ProposedBy)
+		}
+		if prov.ConfirmedBy != "A Human" || prov.ConfirmedAt != stamp {
+			t.Errorf("provenance = %+v, want the human's signature on the label they gave", prov)
+		}
+		if prov.Note != "an index of roles" {
+			t.Errorf("note = %q, want the overriding note", prov.Note)
+		}
+	})
+
+	t.Run("agreement records the same Proposed Label and keeps the proposer's note", func(t *testing.T) {
+		rows := base()
+		rows[0].Label = bench.ExtractDetail
+		rows[0].LabelProvenance = goldProvenance{ProposedBy: "llm:test", ProposedAt: "2026-01-01T00:00:00Z", Note: "one role, apply button"}
+		id := rowID("https://a.test/jobs/1")
+		got, err := applyLabels(rows, sheetFor(rows), nil, "", "A Human", "", map[string]struct{}{id: {}}, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		prov := got[0].LabelProvenance
+		if got[0].Label != bench.ExtractDetail || prov.ProposedLabel != bench.ExtractDetail {
+			t.Errorf("label %q / proposed_label %q, want both detail", got[0].Label, prov.ProposedLabel)
+		}
+		if prov.Note != "one role, apply button" {
+			t.Errorf("note = %q, want the proposer's own untouched", prov.Note)
+		}
+		if prov.ConfirmedBy != "A Human" {
+			t.Errorf("confirmer = %q, want the human", prov.ConfirmedBy)
+		}
+	})
+
+	t.Run("backfill only touches rows with no confirmer", func(t *testing.T) {
+		rows := base()
+		rows[0].Label = bench.ExtractDetail
+		rows[0].LabelProvenance = goldProvenance{
+			ProposedBy: "llm:test", ProposedAt: "2026-01-01T00:00:00Z",
+			ConfirmedBy: "A Human", ConfirmedAt: "2026-01-02T00:00:00Z",
+		}
+		rows[1].Label = bench.ExtractResidue
+		rows[1].LabelProvenance = goldProvenance{ProposedBy: "llm:test", ProposedAt: "2026-01-01T00:00:00Z"}
+		got, err := applyLabels(rows, sheetFor(rows), nil, "", "", "", nil, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		if got[0].LabelProvenance.ProposedLabel != "" {
+			t.Errorf("proposed_label = %q on an already-confirmed row; the set does not record what was proposed there", got[0].LabelProvenance.ProposedLabel)
+		}
+		if got[1].LabelProvenance.ProposedLabel != bench.ExtractResidue {
+			t.Errorf("proposed_label = %q, want residue on the unconfirmed row", got[1].LabelProvenance.ProposedLabel)
+		}
+		if got[0].Label != bench.ExtractDetail || got[1].Label != bench.ExtractResidue {
+			t.Errorf("labels = %q / %q, want them untouched by a backfill", got[0].Label, got[1].Label)
+		}
+		if got[0].LabelProvenance.ConfirmedBy != "A Human" || got[1].LabelProvenance.ConfirmedBy != "" {
+			t.Errorf("confirmers = %q / %q, want them untouched by a backfill", got[0].LabelProvenance.ConfirmedBy, got[1].LabelProvenance.ConfirmedBy)
+		}
+	})
+
+	t.Run("an unlabelled row gains no Proposed Label", func(t *testing.T) {
+		rows := base()
+		got, err := applyLabels(rows, sheetFor(rows), nil, "", "", "", nil, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		for _, row := range got {
+			if row.LabelProvenance.ProposedLabel != "" || row.LabelProvenance.ProposedBy != "" {
+				t.Errorf("%s: unlabelled row carries provenance %+v", row.URL, row.LabelProvenance)
+			}
+		}
+	})
+
+	t.Run("a label that first lands in this run is its own Proposed Label", func(t *testing.T) {
+		rows := base()
+		proposals := []sheetRow{{ID: rowID("https://a.test/jobs/1"), Label: bench.ExtractDetail}}
+		got, err := applyLabels(rows, sheetFor(rows), proposals, "llm:test-agent", "", "", nil, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		prov := got[0].LabelProvenance
+		if prov.ProposedLabel != bench.ExtractDetail || prov.ProposedBy != "llm:test-agent" || prov.ProposedAt != stamp {
+			t.Errorf("provenance = %+v, want the agent's own label stamped at %s", prov, stamp)
+		}
+	})
+
+	t.Run("a first label with no proposer carries no Proposed Label", func(t *testing.T) {
+		rows := base()
+		proposals := []sheetRow{{ID: rowID("https://a.test/jobs/1"), Label: bench.ExtractDetail}}
+		got, err := applyLabels(rows, sheetFor(rows), proposals, "", "", "", nil, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		prov := got[0].LabelProvenance
+		if got[0].Label != bench.ExtractDetail {
+			t.Errorf("label = %q, want detail", got[0].Label)
+		}
+		// The well-formedness guard rejects a Proposed Label with no proposer, so the
+		// merge must never be able to produce one.
+		if prov.ProposedBy != "" || prov.ProposedLabel != "" {
+			t.Errorf("provenance = %+v, want no proposer and no proposed label", prov)
+		}
+	})
+
+	t.Run("an existing Proposed Label is never rewritten", func(t *testing.T) {
+		rows := base()
+		rows[0].Label = bench.ExtractHubIndex
+		rows[0].LabelProvenance = goldProvenance{
+			ProposedBy: "llm:first", ProposedAt: "2026-01-01T00:00:00Z", ProposedLabel: bench.ExtractDetail,
+		}
+		proposals := []sheetRow{{ID: rowID("https://a.test/jobs/1"), Label: bench.ExtractResidue}}
+		got, err := applyLabels(rows, sheetFor(rows), proposals, "", "", "", nil, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		if got[0].Label != bench.ExtractResidue {
+			t.Errorf("label = %q, want residue", got[0].Label)
+		}
+		if got[0].LabelProvenance.ProposedLabel != bench.ExtractDetail {
+			t.Errorf("proposed_label = %q, want the first proposal kept (first-writer-wins, like proposed_by)", got[0].LabelProvenance.ProposedLabel)
+		}
+	})
 }
 
 // TestWorksheetWithholdsTheStructuredData is the guard on the labeling protocol:
@@ -1090,6 +1232,18 @@ func TestCommittedGoldSetIsWellFormed(t *testing.T) {
 		}
 		if row.LabelProvenance.ProposedBy == "" || row.LabelProvenance.ProposedAt == "" {
 			t.Errorf("%s: label has no proposer (%+v)", row.URL, row.LabelProvenance)
+		}
+		// The Proposed Label is a claim about what a NAMED proposer said (ADR-0048), so
+		// it cannot stand on a row that names none, and it must be a label the set
+		// actually scores. A row confirmed before the field existed carries none at all --
+		// that absence is honest, and is not what this rejects.
+		if prov := row.LabelProvenance; prov.ProposedLabel != "" {
+			if prov.ProposedBy == "" {
+				t.Errorf("%s: proposed_label %q with no proposer (%+v)", row.URL, prov.ProposedLabel, prov)
+			}
+			if !prov.ProposedLabel.Valid() {
+				t.Errorf("%s: proposed_label %q is not one of detail / hub-index / residue / ambiguous", row.URL, prov.ProposedLabel)
+			}
 		}
 		// A page that parsed to nothing is real evidence about the stream (the live
 		// extractor still ruled on it), so it stays in the sample -- but it can
@@ -2251,6 +2405,12 @@ func TestApplyRetractsAConfirmationWhenAProposalChangesTheLabel(t *testing.T) {
 	if got := changed[0].LabelProvenance.ConfirmedAt; got != "" {
 		t.Errorf("confirmed_at = %q after a retraction, want empty", got)
 	}
+	// A retraction clears the confirmer, so the row is once again one whose label is
+	// its proposer's own -- and the proposal that overturned it is what the record
+	// must name as proposed (ADR-0048).
+	if got := changed[0].LabelProvenance.ProposedLabel; got != bench.ExtractResidue {
+		t.Errorf("proposed_label = %q after a retraction, want the label the proposal put on the row", got)
+	}
 
 	same, err := applyLabels(base(), nil, []sheetRow{{ID: id, Label: bench.ExtractDetail}}, "", "", "", nil, stamp)
 	if err != nil {
@@ -2258,6 +2418,63 @@ func TestApplyRetractsAConfirmationWhenAProposalChangesTheLabel(t *testing.T) {
 	}
 	if same[0].LabelProvenance.ConfirmedBy != "A Human" || same[0].LabelProvenance.ConfirmedAt != "2026-08-02T00:00:00Z" {
 		t.Errorf("provenance = %+v; a proposal re-stating the same label retracts nothing", same[0].LabelProvenance)
+	}
+	// The confirmation stands, so the row stays one the set cannot say what was
+	// proposed on: a confirmed row's empty Proposed Label is never filled in.
+	if got := same[0].LabelProvenance.ProposedLabel; got != "" {
+		t.Errorf("proposed_label = %q on a row whose confirmation still stands, want empty", got)
+	}
+}
+
+// TestApplySummaryReportsAgreementWithTheProposer pins the by-product a blind
+// confirmation pass exists to produce (ADR-0048): how often an independent human
+// reached the label the proposer proposed. Only rows where BOTH are known are
+// comparable -- a confirmation given before the Proposed Label existed says nothing
+// about agreement, and counting it as agreement would inflate the very number the
+// still-unconfirmed rows are trusted on.
+func TestApplySummaryReportsAgreementWithTheProposer(t *testing.T) {
+	row := func(url string, label, proposed bench.ExtractLabel, confirmer string) goldRow {
+		return goldRow{
+			URL: url, Verdict: true, Stratum: stratumLonePosting, Weight: 1, Label: label,
+			LabelProvenance: goldProvenance{
+				ProposedBy: "llm:test", ProposedAt: "2026-08-01T00:00:00Z",
+				ProposedLabel: proposed, ConfirmedBy: confirmer,
+			},
+		}
+	}
+
+	rows := []goldRow{
+		row("https://a.test/1", bench.ExtractDetail, bench.ExtractDetail, "A Human"),
+		row("https://a.test/2", bench.ExtractResidue, bench.ExtractResidue, "A Human"),
+		row("https://a.test/3", bench.ExtractDetail, bench.ExtractHubIndex, "A Human"),
+		// Confirmed before the Proposed Label existed: not comparable either way.
+		row("https://a.test/4", bench.ExtractDetail, "", "A Human"),
+		// Proposed but never confirmed: there is no independent reading to compare to.
+		row("https://a.test/5", bench.ExtractDetail, bench.ExtractDetail, ""),
+	}
+	if agreed, comparable := labelAgreement(rows); agreed != 2 || comparable != 3 {
+		t.Errorf("labelAgreement = %d/%d, want 2/3 (the pre-field and unconfirmed rows count in neither)", agreed, comparable)
+	}
+
+	var buf bytes.Buffer
+	printApplySummary(&buf, rows)
+	if want := "agreement         2/3 (66.7%)"; !strings.Contains(buf.String(), want) {
+		t.Errorf("summary does not report %q:\n%s", want, buf.String())
+	}
+
+	// A set whose confirmations all predate the field has an empty denominator, which
+	// must read as "nothing to compare" rather than as a NaN percentage.
+	none := []goldRow{
+		row("https://b.test/1", bench.ExtractDetail, "", "A Human"),
+		row("https://b.test/2", bench.ExtractDetail, bench.ExtractDetail, ""),
+	}
+	buf.Reset()
+	printApplySummary(&buf, none)
+	if !strings.Contains(buf.String(), "agreement         0/0") {
+		t.Errorf("summary does not report an empty agreement:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "NaN") {
+		t.Errorf("summary divided by zero:\n%s", buf.String())
 	}
 }
 

@@ -771,6 +771,13 @@ func parseProposals(data []byte) ([]sheetRow, error) {
 // can confirm chunk by chunk across sessions and the diff shows precisely which rows
 // gained a confirmer. It and confirmStratum are alternative selectors; the caller
 // rejects both at once.
+//
+// It also backfills the Proposed Label onto every labelled row that carries a
+// proposer and no confirmer, BEFORE the merge (ADR-0048), so a human overriding a
+// label preserves what the proposer proposed rather than overwriting it. Like
+// ProposedBy it is first-writer-wins and is never filled on an already-confirmed
+// row: the set does not record which of those were relabelled during the pass that
+// confirmed them.
 func applyLabels(rows []goldRow, sheet, proposed []sheetRow, proposedBy, confirmedBy string, confirmStratum goldStratum, confirmIDs map[string]struct{}, stamp string) ([]goldRow, error) {
 	byID := map[string]int{}
 	for i, row := range rows {
@@ -779,6 +786,20 @@ func applyLabels(rows []goldRow, sheet, proposed []sheetRow, proposedBy, confirm
 
 	merged := make([]goldRow, len(rows))
 	copy(merged, rows)
+
+	// Backfill the Proposed Label before anything here can change a label (ADR-0048).
+	// A row with no confirmer still carries the label its proposer put on it --
+	// nobody has overridden it -- so its current label IS the Proposed Label. An
+	// already confirmed row is left empty: the set does not record which of those
+	// were relabelled during the pass that confirmed them, and filling it would put a
+	// claim on the record that nothing supports. Running before the merge is what
+	// makes an override preserve the OLD label rather than the human's new one.
+	for i := range merged {
+		prov := &merged[i].LabelProvenance
+		if prov.ProposedLabel == "" && prov.ConfirmedBy == "" && prov.ProposedBy != "" && merged[i].Label.Valid() {
+			prov.ProposedLabel = merged[i].Label
+		}
+	}
 
 	seen := map[string]struct{}{}
 	for _, s := range sheet {
@@ -876,6 +897,16 @@ func applyLabels(rows []goldRow, sheet, proposed []sheetRow, proposedBy, confirm
 		prov := &merged[i].LabelProvenance
 		if proposedBy != "" && prov.ProposedBy == "" {
 			prov.ProposedBy, prov.ProposedAt = proposedBy, stamp
+		}
+		// A label that first lands in THIS run has no earlier label to preserve, so the
+		// proposal itself is the Proposed Label -- including on a row whose proposer was
+		// stamped a few lines above. Guarded on the confirmer like the backfill: a row a
+		// human had already signed keeps an empty Proposed Label, and a row being
+		// confirmed in this run still reads empty here, which is exactly the moment its
+		// label is still the proposer's own. A retraction (above) clears the confirmer, so
+		// a proposal that overturns a confirmed label is recorded as the proposal it is.
+		if prov.ProposedLabel == "" && prov.ConfirmedBy == "" && prov.ProposedBy != "" {
+			prov.ProposedLabel = merged[i].Label
 		}
 		if confirmedBy == "" || prov.ConfirmedBy != "" {
 			continue
@@ -1020,6 +1051,11 @@ func applyExpected(rows []goldRow, sheet []expectedSheetRow, proposedBy, confirm
 // The boundary stratum reports a PENDING count like the lone-posting one: ADR-0043
 // requires every one of its rows confirmed, since they are the rows a hard-zero
 // false-drop guard is decided on.
+//
+// The agreement line is what a blind confirmation pass is FOR (ADR-0048): how often
+// an independent human confirmer reached the label the row's proposer proposed. Its
+// denominator counts only the rows where both are known, so it is legitimately zero
+// on a set whose confirmations all predate the Proposed Label.
 func printApplySummary(w io.Writer, rows []goldRow) {
 	byLabel := map[bench.ExtractLabel]int{}
 	labelled, proposedOnly, pending := 0, 0, 0
@@ -1080,6 +1116,15 @@ func printApplySummary(w io.Writer, rows []goldRow) {
 	fmt.Fprintf(w, "  %-17s %d (excluded from scoring)\n", bench.ExtractAmbiguous, byLabel[bench.ExtractAmbiguous])
 	fmt.Fprintf(w, "  unconfirmed       %d\n", proposedOnly)
 	fmt.Fprintf(w, "  pending human     %d (lone-posting rows awaiting confirmation)\n", pending)
+	// Agreement between an independent human and the proposer, which is what a blind
+	// confirmation pass is FOR (ADR-0048). ConfirmedBy is always a human -- both write
+	// paths reject a machine name -- so no filter is needed here.
+	if agreed, comparable := labelAgreement(rows); comparable > 0 {
+		fmt.Fprintf(w, "  agreement         %d/%d (%.1f%%) (a human confirmer against the Proposed Label)\n",
+			agreed, comparable, 100*float64(agreed)/float64(comparable))
+	} else {
+		fmt.Fprintln(w, "  agreement         0/0 (no confirmed row carries a Proposed Label yet)")
+	}
 	fmt.Fprintf(w, "  expected          %d\n", expected)
 	fmt.Fprintf(w, "  expected-accepted-fires %d (residue rows carrying an argued exception)\n", acceptedFires)
 	fmt.Fprintf(w, "  expected pending human  %d (rows awaiting confirmation)\n", expectedPending)
@@ -1091,6 +1136,28 @@ func printApplySummary(w io.Writer, rows []goldRow) {
 		fmt.Fprintf(w, "  boundary stratum  %d (labelled %d, ambiguous %d)\n", boundaryRows, boundaryLabelled, boundaryAmbiguous)
 		fmt.Fprintf(w, "  boundary pending  %d (boundary rows awaiting human confirmation)\n", boundaryPending)
 	}
+}
+
+// labelAgreement counts the rows where a human confirmer and the row's proposer can
+// be compared at all -- a confirmed row that kept the label its proposer proposed --
+// and how many of those agree. It is the measurement ADR-0048 asks a blind
+// confirmation pass to produce: how often an independent human reaches the proposer's
+// answer is the evidence for what the still-unconfirmed rows are worth. Rows confirmed
+// before the Proposed Label existed carry none and are not comparable, so they are
+// counted in neither figure rather than scored as agreement. ambiguous is compared like
+// any other label: a proposer and a human who both found a page unresolvable agree.
+func labelAgreement(rows []goldRow) (agreed, comparable int) {
+	for _, row := range rows {
+		prov := row.LabelProvenance
+		if prov.ConfirmedBy == "" || prov.ProposedLabel == "" || !row.Label.Valid() {
+			continue
+		}
+		comparable++
+		if prov.ProposedLabel == row.Label {
+			agreed++
+		}
+	}
+	return agreed, comparable
 }
 
 // weightSum is the file's total sampling weight, which must equal its row count:
