@@ -32,6 +32,23 @@ is not:
   is `residue` in the labelling rubric, so the live page argues confidently for the wrong
   answer.
 
+The two thresholds are not symmetric, and deliberately so. `same` is retention >= 0.90; `gone`
+is retention < 0.30, with everything between them `drifted`. Calling a live page `gone` costs an
+aid — the row is still labellable from its captured text, and the URL is still one click away.
+Calling a `gone` page `drifted` costs a *label*. A page that has kept under a third of its
+captured 3-grams has lost its body; what survives is furniture, and furniture cannot support a
+label. The title is the third input and it only ever *withdraws* a claim: a page whose text is
+0.90 retained but whose title has changed is `drifted`, never `same`, because `same` promises
+the page on screen is the page the label is about and a changed title is the page itself saying
+otherwise. A title is read only when both the captured page and the live one carry one;
+otherwise retention decides alone.
+
+Two cases fall outside retention. A row whose captured text is under three words has no 3-grams
+and so no retention: it is `drifted` — a hint, never evidence — unless the live page is also
+textless and the titles agree, which is the JS-shell case below, where the aid agrees with the
+capture. And a host that refuses the re-fetch under robots.txt is *not measured at all*: `gone`
+is a statement about the page, and we did not look.
+
 Measured over 40 unconfirmed rows re-fetched on 2026-08-20: **25 same, 11 drifted, 4 gone**.
 So roughly 62% of the standing backlog is labellable this way, and the remainder is identified
 rather than guessed at.
@@ -48,6 +65,43 @@ The rendering is an **aid**. The label is a statement about the captured content
 shown alongside it, and the screen states which is which. This is not a formality: without it
 the tool quietly redefines what a gold-set label means, and the whole set's value rests on
 that meaning being fixed.
+
+## What #288 built: the rendering is served, never framed
+
+The page a labeller reads is the row's **Structural Rendering**, drawn as HTML by the tool
+and served from its own loopback origin. Framing the site directly was the obvious thing and
+is wrong twice: a site's `X-Frame-Options` refuses it, and a browser running the site's own
+CSS and scripts would show a *richer* page than the crawler ever saw — the crawler executes
+no JavaScript, so what the Extract Gate read is the parse, not the painted page. Serving the
+parse has neither problem, and it is the same rendering the extractor reads, with the link
+targets kept (ADR-0046: `/organization/…` against `/jobs/…` is what settles an employer
+directory).
+
+The frame is `sandbox`ed with no `allow-scripts` and no `allow-same-origin`, and the document
+is served under `default-src 'none'`, so the third-party text on screen cannot reach the
+network and cannot see the session that writes committed ground truth. A `<base>` reference
+is injected so a target the page wrote relative resolves to the site it came from; a click
+opens a real tab. Link targets are shown as the renderer recorded them — sanitized and capped
+at 80 runes — so a long target displays and clicks short. That is stated on screen rather than
+papered over: the rendering is what is being judged, and the tool does not invent a target the
+rendering does not have.
+
+*same* is rendered as the primary view beside the captured text; *drifted* behind a visible
+warning with the captured text restated as the authority; *gone* is refused **at the wire**,
+with a 409 and no bytes of the live page in the response, not merely hidden in the page's CSS.
+
+The aid is never allowed to outlive the row it belongs to. A frame goes on showing its previous
+document until the next one paints, and dropping its `src` does not blank it synchronously, so
+the tool replaces the frame element on every row and keeps the new one covered until it reports
+*this* row's document loaded — a cover only that row's own load may lift. The failure this
+forecloses is not cosmetic: a page read against the wrong question corrupts a label rather than
+merely weakening it, and the labeller has no way to notice, because both halves of the screen
+look like they belong together.
+
+A row that carries its own Structural Rendering is shown it directly, with no fetch at all —
+fidelity `same` by construction, and no live view offered because none is needed. That is the
+path that outlives this ADR: once a fresh drawing carries its own rendering, the re-fetch half
+is dead weight and the display half is all that is left.
 
 ## Consequences
 

@@ -194,11 +194,14 @@ func renderConfirmSheet(rows []goldRow, perFile int) []confirmChunk {
 		chunk := confirmChunk{Name: fmt.Sprintf("confirm-%02d.md", index)}
 		var b strings.Builder
 		fmt.Fprintf(&b, "# Boundary Stratum confirmation %d/%d\n\n", index, total)
-		b.WriteString("One question per row: **is this page ONE Job Listing?**\n\n")
-		b.WriteString("- `detail` -- the page IS one Job Listing: one role's responsibilities or requirements, and an apply action.\n")
-		b.WriteString("- `hub-index` -- the page LISTS openings (a board root, a search result, a location or department facet). A page listing exactly one opening is still `hub-index`.\n")
-		b.WriteString("- `residue` -- neither: culture, about, benefits, blog, press, contact, a cookie or login wall, a JS shell, a 404, a salary guide, a \"post a job\" form, or a withdrawn posting with no role body.\n")
-		b.WriteString("- `ambiguous` -- the page genuinely does not resolve. Say what the tension is in the note.\n\n")
+		// The question and the rubric come from the shared value goldset-ui also
+		// renders, so the two review surfaces can never put different definitions to
+		// the same human (#286).
+		fmt.Fprintf(&b, "One question per row: **%s**\n\n", extractLabelQuestion)
+		for _, e := range extractLabelRubric {
+			fmt.Fprintf(&b, "- `%s` -- %s\n", e.Label, e.Text)
+		}
+		b.WriteString("\n")
 		b.WriteString("The proposed label is an LLM's. Disagreeing with it is the point of this pass.\n\n")
 		for _, row := range ordered[i:end] {
 			c := confirmViewOf(row)

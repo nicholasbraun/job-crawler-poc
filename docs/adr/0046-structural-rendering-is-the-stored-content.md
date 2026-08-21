@@ -146,6 +146,17 @@ figures above. The extractor's "judge by DETAIL, not by how many role names appe
 Text where the bullet stands in for the missing form controls, and #282 is the ticket that
 scores its removal.
 
+What #288 built: `crawler.ScanRendering`, the third reading of the one grammar — beside
+`FlattenedText`'s strip and `WithoutLinkTargets`' narrowing — which reads a rendering back as
+its lines and their pieces so the labelling UI can draw headings as headings and a link's
+target beside its text. It resolves the line prefixes and the JOIN before it reads the
+markers, in the strip's own order, because a marker can straddle a line boundary — an `<a>`
+around a block renders as `[\t\nWebsite](http://fugro.com)`, and two of the 90 fixtures do it.
+It is asserted lossless with respect to page text: reassembling its pieces reproduces
+`FlattenedText` byte for byte over all 90 committed fixtures, so a rendering on screen can
+never show words the text the gate keyed on does not have. It is a reader and not the
+renderer, so it does not move `RendererStructural`.
+
 What #282 measured: `cmd/llmbench score-rendering` replays the extract path over the committed
 pages twice — once through a flattening parser, once through a rendering one — at one prompt
 budget applied identically to both arms, with no network and no model. It confirms the

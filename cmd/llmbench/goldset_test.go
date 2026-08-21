@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -80,7 +81,9 @@ import (
 // random stratum is SPOT-CHECKED instead (randomSpotChecks), which is what ADR-0043
 // asks of it; the boundary stratum must be FULLY confirmed
 // (pendingBoundaryConfirmations), because it is the stratum a hard-zero false-drop
-// guard is decided on.
+// guard is decided on. Every one of those counts is a one-directional ratchet rather
+// than a pin (ADR-0048); which rows carry a confirmer is pinned instead, across both
+// files, by TestCommittedRecordAgreesOnWhoConfirmedWhat.
 
 // pendingHumanConfirmations is how many lone-posting rows still carry an
 // LLM-proposed label no human has confirmed. #254 requires 0.
@@ -90,8 +93,12 @@ import (
 // refuses them by that banner, so their labels are confirmed and they no longer fire.
 // What remains is one open-application page labelled detail where the same shape is
 // labelled residue elsewhere in the set -- a labelling inconsistency the set should
-// answer the same way twice, written up in the Extract Gold Set README. RATCHET:
-// lower it as confirmations land, never raise it.
+// answer the same way twice, written up in the Extract Gold Set README.
+//
+// RATCHET, asserted in ONE direction only (confirmationFloor, ADR-0048): a pending
+// count that RISES fails the build, because that means a signature vanished; one that
+// falls is logged with the number to set this to, never fatal. Lower it in the same
+// commit as the confirmations -- `goldset-apply` prints the new figure.
 const pendingHumanConfirmations = 1
 
 // pendingExpectedConfirmations is how many rows carry an agent-proposed expected
@@ -99,8 +106,9 @@ const pendingHumanConfirmations = 1
 // each page's own JSON-LD by scripts/propose-expected.sh and a human confirms them
 // at the review gate. It is 1, the same row pendingHumanConfirmations holds back: an
 // expected extraction cannot be confirmed while the label it is scored under is in
-// question. Like pendingHumanConfirmations it is a RATCHET -- lower it as
-// confirmations land, never raise it.
+// question. Like pendingHumanConfirmations it is a one-directional RATCHET
+// (confirmationFloor, ADR-0048): a rise fails the build, a fall is logged with the
+// number to lower it to.
 const pendingExpectedConfirmations = 1
 
 const (
@@ -109,6 +117,10 @@ const (
 	// drawing is a fixed act of sampling: a row appearing or vanishing changes what
 	// every weighted number estimates, and must be seen in a diff. The boundary count
 	// is not even a sample size -- it is the size of the disagreement itself.
+	//
+	// Unlike the confirmation counts below they are NOT floors: ADR-0048 relaxed those
+	// because confirmations landing is progress, and a row appearing or vanishing never
+	// is.
 	structuralStratumRows = 149
 	randomStratumRows     = 120
 	boundaryStratumRows   = 188
@@ -122,11 +134,22 @@ const (
 
 // randomSpotChecks is how many random-stratum rows a human has actually read and
 // confirmed. ADR-0043 asks this stratum to be SPOT-CHECKED rather than fully
-// confirmed, so unlike pendingHumanConfirmations this is a ratchet that RISES: it is
-// the machine-visible record of what has been checked, and what is therefore still
-// owed. It is 4 of 120 -- the rest ship LLM-proposed, and extract-goldset/README.md
-// tells the reviewer exactly which 20 rows to read and how to raise it.
-const randomSpotChecks = 4
+// confirmed, so unlike the pending counts this figure RISES as work lands: it is the
+// machine-visible record of what has been checked, and what is therefore still owed.
+//
+// It is a FLOOR (confirmationFloor, ADR-0048), not a pin: falling below it fails the
+// build, because a spot-check that vanished means a signature was lost; rising above
+// it only logs the figure to raise it to. It was asserted in both directions until
+// nine confirmations that LANDED (52a8c15) turned `main` red, and it stayed red until
+// the constant was hand-edited (ead832e).
+//
+// It is 120 of 120: the stratum is FULLY confirmed. The first 4 were spot-checked by
+// hand; the remaining 116 were read one at a time through goldset-ui's Blind
+// Confirmation (#274), which is what ADR-0043 wanted and could not afford before a
+// row cost one keystroke. The stratum has graduated from spot-checked to confirmed,
+// so what it says about production is a human's reading and no longer one model's
+// opinion of another's.
+const randomSpotChecks = 120
 
 const (
 	// pendingBoundaryConfirmations is how many Boundary Stratum rows still carry an
@@ -137,14 +160,22 @@ const (
 	// It ships at the full stratum count: the labels were proposed in twelve 16-row
 	// batches and nobody has read them yet. Until it reaches 0, the false-drop count
 	// this stratum produces is one model's opinion of another model's opinion and no
-	// guard may act on it. RATCHET: lower it as confirmations land, never raise it.
+	// guard may act on it. RATCHET in ONE direction (confirmationFloor, ADR-0048): a
+	// rise fails the build, a fall is logged with the number to lower it to.
 	// extract-goldset/README.md says exactly how.
 	pendingBoundaryConfirmations = 188
 	// ambiguousRows is how many rows carry the ambiguous label -- pages a reading
 	// could not settle, recorded rather than forced into a class. Pinned in BOTH
 	// directions: an ambiguity that appears, or one that quietly resolves, changes
-	// what the confusion counts are computed over and must be seen in a diff.
-	ambiguousRows = 10
+	// what the confusion counts are computed over and must be seen in a diff. It is
+	// deliberately NOT one of ADR-0048's floors: marking a page unresolvable is a rare,
+	// deliberate keystroke, and it should stop the build until it is acknowledged.
+	//
+	// It rose 10 -> 15 when the Random Stratum was confirmed row by row (#274): five
+	// pages a human read and could not settle, each carrying a note saying what the
+	// tension was. That is the guard working -- the rise was seen and acknowledged
+	// here, in the same commit as the confirmations that produced it.
+	ambiguousRows = 15
 	// boundaryDetailRows is how many Boundary Stratum rows are labelled detail. Until
 	// #257 that was also how many Job Listings the Positive Evidence rule dropped
 	// here, because the stratum was DRAWN as the pages that rule skipped; #257 widened
@@ -206,6 +237,63 @@ const (
 	// applyPhrases overlap put them back together.
 	boundaryAmbiguousSkipped = 10
 )
+
+// confirmationFloor is the shape every confirmation guard takes since ADR-0048: a
+// recorded standard that fails the build only in the direction that means a human
+// signature VANISHED, and logs the current figure in the direction that means work
+// landed.
+//
+// THE SECOND DIRECTION WAS DROPPED DELIBERATELY. Do not restore it as a fix.
+// Asserted as an equality, a confirmation that LANDED failed the build until somebody
+// hand-edited a constant -- nine of them did exactly that (52a8c15, green again only
+// in ead832e) -- and a tool that makes confirmation cheap makes that worse in
+// proportion to how well it works. It was never the safety property it looked like: a
+// confirmation cannot land unseen, because it arrives inside a commit that diffs both
+// goldset.jsonl and labels.tsv, and `goldset-apply` prints the new counts at the end
+// of every run. What the equality was standing in for is asserted directly and more
+// sharply by TestCommittedRecordAgreesOnWhoConfirmedWhat, which names the rows the two
+// files disagree on instead of reporting that a total moved.
+//
+// Row counts and ambiguousRows are NOT floors and stay pinned in both directions
+// (TestCommittedGoldSetIsWellFormed, TestCommittedGoldSetAmbiguityIsRecorded): a
+// drawing is a fixed act of sampling, and an ambiguity that appears or resolves
+// changes what every confusion number is computed over.
+type confirmationFloor struct {
+	// constant names the identifier to edit, so a log line says what to change rather
+	// than merely that something changed.
+	constant string
+	// counts describes what the figure is, in the words the failure should read in.
+	counts string
+	// current is the figure read off the committed record; recorded is the constant.
+	current, recorded int
+	// rises reports which direction confirmations move the figure in: true for a
+	// CONFIRMED count, false for a PENDING count. A pending count is the complement of
+	// a confirmation count over a row count pinned in both directions, so a ceiling on
+	// pending is exactly a floor on confirmations -- which is why both live here.
+	rises bool
+}
+
+// assert fails when the figure moved in the direction that means a signature was lost,
+// and ALWAYS logs the figure: the number a ratchet is set to must never have to be
+// computed by hand (ADR-0048).
+func (f confirmationFloor) assert(t *testing.T) {
+	t.Helper()
+	switch {
+	case f.rises && f.current < f.recorded:
+		t.Errorf("%d %s, BELOW the recorded floor of %d (%s): a human confirmation has vanished from the record. "+
+			"Find it in the diff -- a confirmation is a signature, and the floor may only be lowered by the person who withdraws one.",
+			f.current, f.counts, f.recorded, f.constant)
+	case !f.rises && f.current > f.recorded:
+		t.Errorf("%d %s, ABOVE the recorded ratchet of %d (%s): a human confirmation has vanished from the record. "+
+			"Find it in the diff -- a confirmation is a signature, and the ratchet may only be raised by the person who withdraws one.",
+			f.current, f.counts, f.recorded, f.constant)
+	case f.current != f.recorded:
+		t.Logf("%d %s; set %s to %d in the same commit as the confirmations (it is %d)",
+			f.current, f.counts, f.constant, f.current, f.recorded)
+	default:
+		t.Logf("%d %s (%s)", f.current, f.counts, f.constant)
+	}
+}
 
 // loadCommittedGoldSet reads the committed Extract Gold Set. The working directory
 // under `go test` is the package directory, so the relative path resolves without
@@ -965,6 +1053,148 @@ func TestApplyMergesLabelsAndStampsProvenance(t *testing.T) {
 			t.Errorf("parsed %+v, want two proposals", got)
 		}
 	})
+
+	// The Proposed Label (ADR-0048): what the proposer actually proposed survives a
+	// human overriding it, so the record says what happened and a confirmation pass
+	// produces a measurement rather than an echo.
+	t.Run("an override preserves the label the proposer proposed", func(t *testing.T) {
+		rows := base()
+		rows[0].Label = bench.ExtractDetail
+		rows[0].LabelProvenance = goldProvenance{ProposedBy: "llm:test", ProposedAt: "2026-01-01T00:00:00Z", Note: "one role, apply button"}
+		id := rowID("https://a.test/jobs/1")
+		proposals := []sheetRow{{ID: id, Label: bench.ExtractResidue, Note: "an index of roles"}}
+		got, err := applyLabels(rows, sheetFor(rows), proposals, "", "A Human", "", map[string]struct{}{id: {}}, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		prov := got[0].LabelProvenance
+		if got[0].Label != bench.ExtractResidue {
+			t.Errorf("label = %q, want residue", got[0].Label)
+		}
+		if prov.ProposedLabel != bench.ExtractDetail {
+			t.Errorf("proposed_label = %q, want the label the proposer had put on the row", prov.ProposedLabel)
+		}
+		if prov.ProposedBy != "llm:test" {
+			t.Errorf("proposer = %q, want the original untouched", prov.ProposedBy)
+		}
+		if prov.ConfirmedBy != "A Human" || prov.ConfirmedAt != stamp {
+			t.Errorf("provenance = %+v, want the human's signature on the label they gave", prov)
+		}
+		if prov.Note != "an index of roles" {
+			t.Errorf("note = %q, want the overriding note", prov.Note)
+		}
+	})
+
+	t.Run("agreement records the same Proposed Label and keeps the proposer's note", func(t *testing.T) {
+		rows := base()
+		rows[0].Label = bench.ExtractDetail
+		rows[0].LabelProvenance = goldProvenance{ProposedBy: "llm:test", ProposedAt: "2026-01-01T00:00:00Z", Note: "one role, apply button"}
+		id := rowID("https://a.test/jobs/1")
+		got, err := applyLabels(rows, sheetFor(rows), nil, "", "A Human", "", map[string]struct{}{id: {}}, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		prov := got[0].LabelProvenance
+		if got[0].Label != bench.ExtractDetail || prov.ProposedLabel != bench.ExtractDetail {
+			t.Errorf("label %q / proposed_label %q, want both detail", got[0].Label, prov.ProposedLabel)
+		}
+		if prov.Note != "one role, apply button" {
+			t.Errorf("note = %q, want the proposer's own untouched", prov.Note)
+		}
+		if prov.ConfirmedBy != "A Human" {
+			t.Errorf("confirmer = %q, want the human", prov.ConfirmedBy)
+		}
+	})
+
+	t.Run("backfill only touches rows with no confirmer", func(t *testing.T) {
+		rows := base()
+		rows[0].Label = bench.ExtractDetail
+		rows[0].LabelProvenance = goldProvenance{
+			ProposedBy: "llm:test", ProposedAt: "2026-01-01T00:00:00Z",
+			ConfirmedBy: "A Human", ConfirmedAt: "2026-01-02T00:00:00Z",
+		}
+		rows[1].Label = bench.ExtractResidue
+		rows[1].LabelProvenance = goldProvenance{ProposedBy: "llm:test", ProposedAt: "2026-01-01T00:00:00Z"}
+		got, err := applyLabels(rows, sheetFor(rows), nil, "", "", "", nil, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		if got[0].LabelProvenance.ProposedLabel != "" {
+			t.Errorf("proposed_label = %q on an already-confirmed row; the set does not record what was proposed there", got[0].LabelProvenance.ProposedLabel)
+		}
+		if got[1].LabelProvenance.ProposedLabel != bench.ExtractResidue {
+			t.Errorf("proposed_label = %q, want residue on the unconfirmed row", got[1].LabelProvenance.ProposedLabel)
+		}
+		if got[0].Label != bench.ExtractDetail || got[1].Label != bench.ExtractResidue {
+			t.Errorf("labels = %q / %q, want them untouched by a backfill", got[0].Label, got[1].Label)
+		}
+		if got[0].LabelProvenance.ConfirmedBy != "A Human" || got[1].LabelProvenance.ConfirmedBy != "" {
+			t.Errorf("confirmers = %q / %q, want them untouched by a backfill", got[0].LabelProvenance.ConfirmedBy, got[1].LabelProvenance.ConfirmedBy)
+		}
+	})
+
+	t.Run("an unlabelled row gains no Proposed Label", func(t *testing.T) {
+		rows := base()
+		got, err := applyLabels(rows, sheetFor(rows), nil, "", "", "", nil, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		for _, row := range got {
+			if row.LabelProvenance.ProposedLabel != "" || row.LabelProvenance.ProposedBy != "" {
+				t.Errorf("%s: unlabelled row carries provenance %+v", row.URL, row.LabelProvenance)
+			}
+		}
+	})
+
+	t.Run("a label that first lands in this run is its own Proposed Label", func(t *testing.T) {
+		rows := base()
+		proposals := []sheetRow{{ID: rowID("https://a.test/jobs/1"), Label: bench.ExtractDetail}}
+		got, err := applyLabels(rows, sheetFor(rows), proposals, "llm:test-agent", "", "", nil, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		prov := got[0].LabelProvenance
+		if prov.ProposedLabel != bench.ExtractDetail || prov.ProposedBy != "llm:test-agent" || prov.ProposedAt != stamp {
+			t.Errorf("provenance = %+v, want the agent's own label stamped at %s", prov, stamp)
+		}
+	})
+
+	t.Run("a first label with no proposer carries no Proposed Label", func(t *testing.T) {
+		rows := base()
+		proposals := []sheetRow{{ID: rowID("https://a.test/jobs/1"), Label: bench.ExtractDetail}}
+		got, err := applyLabels(rows, sheetFor(rows), proposals, "", "", "", nil, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		prov := got[0].LabelProvenance
+		if got[0].Label != bench.ExtractDetail {
+			t.Errorf("label = %q, want detail", got[0].Label)
+		}
+		// The well-formedness guard rejects a Proposed Label with no proposer, so the
+		// merge must never be able to produce one.
+		if prov.ProposedBy != "" || prov.ProposedLabel != "" {
+			t.Errorf("provenance = %+v, want no proposer and no proposed label", prov)
+		}
+	})
+
+	t.Run("an existing Proposed Label is never rewritten", func(t *testing.T) {
+		rows := base()
+		rows[0].Label = bench.ExtractHubIndex
+		rows[0].LabelProvenance = goldProvenance{
+			ProposedBy: "llm:first", ProposedAt: "2026-01-01T00:00:00Z", ProposedLabel: bench.ExtractDetail,
+		}
+		proposals := []sheetRow{{ID: rowID("https://a.test/jobs/1"), Label: bench.ExtractResidue}}
+		got, err := applyLabels(rows, sheetFor(rows), proposals, "", "", "", nil, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		if got[0].Label != bench.ExtractResidue {
+			t.Errorf("label = %q, want residue", got[0].Label)
+		}
+		if got[0].LabelProvenance.ProposedLabel != bench.ExtractDetail {
+			t.Errorf("proposed_label = %q, want the first proposal kept (first-writer-wins, like proposed_by)", got[0].LabelProvenance.ProposedLabel)
+		}
+	})
 }
 
 // TestWorksheetWithholdsTheStructuredData is the guard on the labeling protocol:
@@ -1091,6 +1321,18 @@ func TestCommittedGoldSetIsWellFormed(t *testing.T) {
 		if row.LabelProvenance.ProposedBy == "" || row.LabelProvenance.ProposedAt == "" {
 			t.Errorf("%s: label has no proposer (%+v)", row.URL, row.LabelProvenance)
 		}
+		// The Proposed Label is a claim about what a NAMED proposer said (ADR-0048), so
+		// it cannot stand on a row that names none, and it must be a label the set
+		// actually scores. A row confirmed before the field existed carries none at all --
+		// that absence is honest, and is not what this rejects.
+		if prov := row.LabelProvenance; prov.ProposedLabel != "" {
+			if prov.ProposedBy == "" {
+				t.Errorf("%s: proposed_label %q with no proposer (%+v)", row.URL, prov.ProposedLabel, prov)
+			}
+			if !prov.ProposedLabel.Valid() {
+				t.Errorf("%s: proposed_label %q is not one of detail / hub-index / residue / ambiguous", row.URL, prov.ProposedLabel)
+			}
+		}
 		// A page that parsed to nothing is real evidence about the stream (the live
 		// extractor still ruled on it), so it stays in the sample -- but it can
 		// never be a posting: there is nothing on it to be one.
@@ -1158,8 +1400,10 @@ func TestCommittedGoldSetIsWellFormed(t *testing.T) {
 // confirmation rule: every lone-posting row -- the stratum a later false-drop
 // guard is decided on -- must carry a HUMAN confirmation. Labels land
 // LLM-proposed, so this starts at the full stratum count and is driven to zero by
-// the human's review commit. It also refuses a machine confirmation outright, so
-// the gap can never be closed by the tooling that opened it.
+// the human's review commit; it is asserted as a one-directional ratchet
+// (confirmationFloor, ADR-0048) so that driving it down never turns the build red. It
+// also refuses a machine confirmation outright, so the gap can never be closed by the
+// tooling that opened it.
 func TestCommittedGoldSetHumanConfirmation(t *testing.T) {
 	rows := loadCommittedGoldSet(t)
 
@@ -1177,15 +1421,11 @@ func TestCommittedGoldSetHumanConfirmation(t *testing.T) {
 		}
 	}
 
-	if len(pending) > pendingHumanConfirmations {
-		t.Errorf("%d lone-posting rows await human confirmation, above the ratchet of %d", len(pending), pendingHumanConfirmations)
-	}
-	if len(pending) < pendingHumanConfirmations {
-		t.Errorf("only %d lone-posting rows await confirmation but the ratchet is %d; lower pendingHumanConfirmations to %d", len(pending), pendingHumanConfirmations, len(pending))
-	}
-	if len(pending) > 0 {
-		t.Logf("awaiting human confirmation on %d lone-posting rows (see extract-goldset/README.md)", len(pending))
-	}
+	confirmationFloor{
+		constant: "pendingHumanConfirmations",
+		counts:   "lone-posting rows await human confirmation (see extract-goldset/README.md)",
+		current:  len(pending), recorded: pendingHumanConfirmations,
+	}.assert(t)
 }
 
 // TestCommittedRandomStratumIsWeightedToTheStream is the guard on what the #262
@@ -1241,9 +1481,10 @@ func TestCommittedRandomStratumIsWeightedToTheStream(t *testing.T) {
 
 // TestCommittedGoldSetSpotCheck is the random stratum's honest confirmation record.
 // ADR-0043 asks this stratum to be SPOT-CHECKED rather than fully confirmed, so
-// unlike the lone-posting ratchet this one rises: it asserts in BOTH directions, so
-// neither a confirmation that quietly vanished nor one that landed without the
-// constant moving can pass unseen.
+// unlike the lone-posting ratchet this one rises as work lands. It is a FLOOR
+// (ADR-0048): a spot-check that vanished fails the build, one that landed logs the
+// number to raise the constant to. The direction it lost is asserted more sharply by
+// TestCommittedRecordAgreesOnWhoConfirmedWhat.
 func TestCommittedGoldSetSpotCheck(t *testing.T) {
 	checked := []string{}
 	for _, row := range loadCommittedGoldSet(t) {
@@ -1253,14 +1494,13 @@ func TestCommittedGoldSetSpotCheck(t *testing.T) {
 		checked = append(checked, row.URL)
 	}
 
-	if len(checked) != randomSpotChecks {
-		t.Errorf("%d random rows carry a human confirmation but randomSpotChecks is %d; set it to %d", len(checked), randomSpotChecks, len(checked))
-	}
+	confirmationFloor{
+		constant: "randomSpotChecks",
+		counts:   "random rows carry a human confirmation",
+		current:  len(checked), recorded: randomSpotChecks, rises: true,
+	}.assert(t)
 	for _, url := range checked {
 		t.Logf("spot-checked: %s", url)
-	}
-	if len(checked) == 0 {
-		t.Logf("no random row has been spot-checked yet (see extract-goldset/README.md for the 20 rows to read)")
 	}
 }
 
@@ -1344,15 +1584,11 @@ func TestCommittedGoldSetExpectedConfirmation(t *testing.T) {
 		}
 	}
 
-	if len(pending) > pendingExpectedConfirmations {
-		t.Errorf("%d expected extractions await human confirmation, above the ratchet of %d", len(pending), pendingExpectedConfirmations)
-	}
-	if len(pending) < pendingExpectedConfirmations {
-		t.Errorf("only %d expected extractions await confirmation but the ratchet is %d; lower pendingExpectedConfirmations to %d", len(pending), pendingExpectedConfirmations, len(pending))
-	}
-	if len(pending) > 0 {
-		t.Logf("awaiting human confirmation on %d expected extractions (see extract-goldset/README.md)", len(pending))
-	}
+	confirmationFloor{
+		constant: "pendingExpectedConfirmations",
+		counts:   "expected extractions await human confirmation (see extract-goldset/README.md)",
+		current:  len(pending), recorded: pendingExpectedConfirmations,
+	}.assert(t)
 }
 
 // TestExpectedSheetRoundTrip proves the #256 review surface is lossless for the
@@ -1626,6 +1862,295 @@ func TestCommittedExpectedSheetMatchesTheGoldSet(t *testing.T) {
 	}
 }
 
+// confirmerLine is one row reduced to what the cross-file confirmation guard
+// compares: the id that keys it in both files, the url that names it in a failure,
+// and the confirmer that file claims. Both review sheets render one, so the guard is
+// written once rather than twice over two column layouts.
+type confirmerLine struct{ ID, URL, ConfirmedBy string }
+
+// confirmerMismatch is one row the substrate and a review sheet do not agree a
+// confirmer on. Both sides are carried verbatim: "the two files differ" is a finding
+// nobody can act on, and which file claims what is the whole diagnosis.
+type confirmerMismatch struct {
+	ID  string
+	URL string
+	// InSubstrate and InSheet report whether the row exists in that file at all. A row
+	// one file carries and the other does not is a disagreement in its own right: a
+	// confirmation that vanished with its line is exactly the fault this guard is for.
+	InSubstrate, InSheet bool
+	SubstrateConfirmer   string
+	SheetConfirmer       string
+}
+
+func (m confirmerMismatch) String() string {
+	switch {
+	case !m.InSheet:
+		return fmt.Sprintf("%s %s: the substrate carries it (confirmer %q), the sheet has no such row", m.ID, m.URL, m.SubstrateConfirmer)
+	case !m.InSubstrate:
+		return fmt.Sprintf("%s %s: the sheet carries it (confirmer %q), the substrate has no such row", m.ID, m.URL, m.SheetConfirmer)
+	default:
+		return fmt.Sprintf("%s %s: the substrate says confirmer %q, the sheet says %q", m.ID, m.URL, m.SubstrateConfirmer, m.SheetConfirmer)
+	}
+}
+
+// confirmerDisagreements pairs a substrate against a rendered review sheet by row id
+// and returns every row the two do not agree a confirmer on -- a name in one file and
+// not the other, two different names, or a row only one of them carries -- in id
+// order, so a failure reads the same way twice.
+//
+// Both sides are compared through flattenField because renderSheet collapses tabs and
+// newlines on write: a confirmer the sheet can only hold flattened is a faithful
+// render, not a disagreement. The raw values are what the mismatch reports.
+func confirmerDisagreements(substrate, sheet []confirmerLine) []confirmerMismatch {
+	bySubstrate := map[string]confirmerLine{}
+	for _, l := range substrate {
+		bySubstrate[l.ID] = l
+	}
+	bySheet := map[string]confirmerLine{}
+	for _, l := range sheet {
+		bySheet[l.ID] = l
+	}
+
+	ids := make([]string, 0, len(bySubstrate)+len(bySheet))
+	for id := range bySubstrate {
+		ids = append(ids, id)
+	}
+	for id := range bySheet {
+		if _, dup := bySubstrate[id]; !dup {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+
+	out := []confirmerMismatch{}
+	for _, id := range ids {
+		sub, inSubstrate := bySubstrate[id]
+		sh, inSheet := bySheet[id]
+		if inSubstrate && inSheet && flattenField(sub.ConfirmedBy) == flattenField(sh.ConfirmedBy) {
+			continue
+		}
+		url := sub.URL
+		if !inSubstrate {
+			url = sh.URL
+		}
+		out = append(out, confirmerMismatch{
+			ID: id, URL: url,
+			InSubstrate: inSubstrate, InSheet: inSheet,
+			SubstrateConfirmer: sub.ConfirmedBy, SheetConfirmer: sh.ConfirmedBy,
+		})
+	}
+	return out
+}
+
+// TestCommittedRecordAgreesOnWhoConfirmedWhat is the tripwire that replaces the
+// direction ADR-0048 took off the confirmation ratchets. A total that moved was only
+// ever a proxy for the fault that matters: a signature present in one file and absent
+// from the other. This asserts that directly, row by row, and NAMES the rows.
+//
+// `goldset-apply` writes the substrate and both sheets from one merged slice, so they
+// can only disagree if something outside it touched one of them: a half-applied write,
+// a bad rebase, or a hand edit. TestCommittedLabelsSheetMatchesTheGoldSet already
+// catches that as a byte difference; this says WHICH rows and WHICH confirmers, which
+// is what a person needs in order to fix it.
+func TestCommittedRecordAgreesOnWhoConfirmedWhat(t *testing.T) {
+	rows := loadCommittedGoldSet(t)
+
+	t.Run("labels.tsv", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("extract-goldset", labelsFile))
+		if err != nil {
+			t.Fatalf("read committed sheet: %v", err)
+		}
+		parsed, err := parseSheet(data)
+		if err != nil {
+			t.Fatalf("parse committed sheet: %v", err)
+		}
+
+		substrate := make([]confirmerLine, 0, len(rows))
+		confirmed := 0
+		for _, row := range rows {
+			substrate = append(substrate, confirmerLine{ID: rowID(row.URL), URL: row.URL, ConfirmedBy: row.LabelProvenance.ConfirmedBy})
+			if row.LabelProvenance.ConfirmedBy != "" {
+				confirmed++
+			}
+		}
+		sheet := make([]confirmerLine, 0, len(parsed))
+		for _, line := range parsed {
+			sheet = append(sheet, confirmerLine{ID: line.ID, URL: line.URL, ConfirmedBy: line.ConfirmedBy})
+		}
+
+		for _, m := range confirmerDisagreements(substrate, sheet) {
+			t.Errorf("CONFIRMER DISAGREEMENT %s -- goldset.jsonl and labels.tsv are written from one merged slice, "+
+				"so a difference means something outside `goldset-apply` touched one of them. Re-run the verb and read the diff.", m)
+		}
+		t.Logf("%d of %d rows carry a label confirmer, agreed across both files", confirmed, len(substrate))
+	})
+
+	t.Run("expected.tsv", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("extract-goldset", expectedFile))
+		if err != nil {
+			t.Fatalf("read committed expected sheet: %v", err)
+		}
+		parsed, err := parseExpectedSheet(data)
+		if err != nil {
+			t.Fatalf("parse committed expected sheet: %v", err)
+		}
+
+		substrate := []confirmerLine{}
+		confirmed := 0
+		for _, row := range rows {
+			if row.Expected == nil {
+				continue
+			}
+			substrate = append(substrate, confirmerLine{ID: rowID(row.URL), URL: row.URL, ConfirmedBy: row.Expected.ConfirmedBy})
+			if row.Expected.ConfirmedBy != "" {
+				confirmed++
+			}
+		}
+		sheet := make([]confirmerLine, 0, len(parsed))
+		for _, line := range parsed {
+			sheet = append(sheet, confirmerLine{ID: line.ID, URL: line.URL, ConfirmedBy: line.ConfirmedBy})
+		}
+
+		for _, m := range confirmerDisagreements(substrate, sheet) {
+			t.Errorf("CONFIRMER DISAGREEMENT %s -- goldset.jsonl and expected.tsv are written from one merged slice, "+
+				"so a difference means something outside `goldset-apply` touched one of them. Re-run the verb and read the diff.", m)
+		}
+		t.Logf("%d of %d rows carrying an expected extraction carry a confirmer, agreed across both files", confirmed, len(substrate))
+	})
+}
+
+// TestConfirmerDisagreementsNamesEveryDivergence is the demonstration that the
+// committed guard above actually fires: a confirmation removed from EITHER file alone
+// is a named disagreement, and so is a renamed confirmer or a row only one file
+// carries. It also pins the one shape that is NOT a disagreement -- a confirmer the
+// sheet can only render flattened.
+func TestConfirmerDisagreementsNamesEveryDivergence(t *testing.T) {
+	line := func(id, confirmer string) confirmerLine {
+		return confirmerLine{ID: id, URL: "https://" + id + ".test/row", ConfirmedBy: confirmer}
+	}
+
+	for _, tc := range []struct {
+		name              string
+		substrate, sheet  []confirmerLine
+		want              []string
+		wantInSubstrate   bool
+		wantInSheet       bool
+		assertMembership  bool
+		wantSubstrateName string
+		wantSheetName     string
+	}{
+		{
+			name:      "both files agree on a confirmer",
+			substrate: []confirmerLine{line("aaa", "Nicholas Braun")},
+			sheet:     []confirmerLine{line("aaa", "Nicholas Braun")},
+			want:      []string{},
+		},
+		{
+			name:      "both files agree the row is unconfirmed",
+			substrate: []confirmerLine{line("aaa", "")},
+			sheet:     []confirmerLine{line("aaa", "")},
+			want:      []string{},
+		},
+		{
+			name:              "a confirmation removed from the sheet alone",
+			substrate:         []confirmerLine{line("aaa", "Nicholas Braun")},
+			sheet:             []confirmerLine{line("aaa", "")},
+			want:              []string{"aaa"},
+			assertMembership:  true,
+			wantInSubstrate:   true,
+			wantInSheet:       true,
+			wantSubstrateName: "Nicholas Braun",
+			wantSheetName:     "",
+		},
+		{
+			name:              "a confirmation removed from the substrate alone",
+			substrate:         []confirmerLine{line("aaa", "")},
+			sheet:             []confirmerLine{line("aaa", "Nicholas Braun")},
+			want:              []string{"aaa"},
+			assertMembership:  true,
+			wantInSubstrate:   true,
+			wantInSheet:       true,
+			wantSubstrateName: "",
+			wantSheetName:     "Nicholas Braun",
+		},
+		{
+			name:              "the two files name different confirmers",
+			substrate:         []confirmerLine{line("aaa", "Nicholas Braun")},
+			sheet:             []confirmerLine{line("aaa", "Someone Else")},
+			want:              []string{"aaa"},
+			assertMembership:  true,
+			wantInSubstrate:   true,
+			wantInSheet:       true,
+			wantSubstrateName: "Nicholas Braun",
+			wantSheetName:     "Someone Else",
+		},
+		{
+			name:              "a row the sheet does not carry",
+			substrate:         []confirmerLine{line("aaa", "Nicholas Braun")},
+			sheet:             []confirmerLine{},
+			want:              []string{"aaa"},
+			assertMembership:  true,
+			wantInSubstrate:   true,
+			wantInSheet:       false,
+			wantSubstrateName: "Nicholas Braun",
+		},
+		{
+			name:             "a row the substrate does not carry",
+			substrate:        []confirmerLine{},
+			sheet:            []confirmerLine{line("aaa", "Nicholas Braun")},
+			want:             []string{"aaa"},
+			assertMembership: true,
+			wantInSubstrate:  false,
+			wantInSheet:      true,
+			wantSheetName:    "Nicholas Braun",
+		},
+		{
+			name:      "a confirmer the sheet can only render flattened",
+			substrate: []confirmerLine{line("aaa", "Nicholas\tBraun")},
+			sheet:     []confirmerLine{line("aaa", "Nicholas Braun")},
+			want:      []string{},
+		},
+		{
+			name: "every divergence is named, in id order",
+			substrate: []confirmerLine{
+				line("ccc", "Nicholas Braun"),
+				line("aaa", ""),
+				line("bbb", "Nicholas Braun"),
+			},
+			sheet: []confirmerLine{
+				line("ccc", ""),
+				line("aaa", "Nicholas Braun"),
+				line("bbb", "Someone Else"),
+			},
+			want: []string{"aaa", "bbb", "ccc"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := confirmerDisagreements(tc.substrate, tc.sheet)
+			ids := []string{}
+			for _, m := range got {
+				ids = append(ids, m.ID)
+			}
+			if !reflect.DeepEqual(ids, tc.want) {
+				t.Fatalf("disagreements %v, want %v (%v)", ids, tc.want, got)
+			}
+			if !tc.assertMembership {
+				return
+			}
+			m := got[0]
+			if m.InSubstrate != tc.wantInSubstrate || m.InSheet != tc.wantInSheet {
+				t.Errorf("row presence: in substrate %v, in sheet %v; want %v/%v", m.InSubstrate, m.InSheet, tc.wantInSubstrate, tc.wantInSheet)
+			}
+			if m.SubstrateConfirmer != tc.wantSubstrateName || m.SheetConfirmer != tc.wantSheetName {
+				t.Errorf("confirmers: substrate %q, sheet %q; want %q/%q", m.SubstrateConfirmer, m.SheetConfirmer, tc.wantSubstrateName, tc.wantSheetName)
+			}
+			if !strings.Contains(m.String(), m.URL) {
+				t.Errorf("the mismatch %q does not name the row's url %q", m, m.URL)
+			}
+		})
+	}
+}
+
 // TestCommittedLabelsSheetMatchesTheGoldSet keeps the human review surface from
 // drifting from the substrate: labels.tsv is what a reviewer reads in a diff and
 // edits to correct a label, so a sheet that no longer renders from goldset.jsonl
@@ -1875,10 +2400,12 @@ func TestCommittedBoundaryRecoveryLedger(t *testing.T) {
 
 // TestCommittedBoundaryStratumConfirmation is the ratchet ADR-0043 requires on this
 // stratum: EVERY row must carry a human confirmation, because these are the rows a
-// hard-zero false-drop guard is decided on. It asserts in BOTH directions, so
-// neither a confirmation that quietly vanished nor one that landed without the
-// constant moving can pass unseen, and it refuses a machine confirmer outright so
-// the gap can never be closed by the tooling that opened it.
+// hard-zero false-drop guard is decided on. The count is a one-directional ratchet
+// (confirmationFloor, ADR-0048) -- a rise fails, a fall is logged -- so a confirmation
+// pass never turns the build red; a confirmation that vanished is caught by that
+// direction and, row by row, by TestCommittedRecordAgreesOnWhoConfirmedWhat. It
+// refuses a machine confirmer outright so the gap can never be closed by the tooling
+// that opened it.
 func TestCommittedBoundaryStratumConfirmation(t *testing.T) {
 	pending := []string{}
 	for _, row := range loadCommittedGoldSet(t) {
@@ -1895,13 +2422,11 @@ func TestCommittedBoundaryStratumConfirmation(t *testing.T) {
 			pending = append(pending, row.URL)
 		}
 	}
-	if len(pending) != pendingBoundaryConfirmations {
-		t.Errorf("%d boundary rows await human confirmation but pendingBoundaryConfirmations is %d; set it to %d",
-			len(pending), pendingBoundaryConfirmations, len(pending))
-	}
-	if len(pending) > 0 {
-		t.Logf("awaiting human confirmation on %d boundary rows (see extract-goldset/README.md)", len(pending))
-	}
+	confirmationFloor{
+		constant: "pendingBoundaryConfirmations",
+		counts:   "boundary rows await human confirmation (see extract-goldset/README.md)",
+		current:  len(pending), recorded: pendingBoundaryConfirmations,
+	}.assert(t)
 }
 
 // TestCommittedGoldSetAmbiguityIsRecorded pins the pages a reading could not settle.
@@ -1969,7 +2494,8 @@ func TestBoundaryStratumNeverEntersTheStreamEstimate(t *testing.T) {
 // It is pinned in both directions as a TRIPWIRE on drift, NOT as the guard. These
 // labels are LLM-proposed; until pendingBoundaryConfirmations is 0 the count is one
 // model's opinion of another's, and the hard zero #264 must argue with is not this
-// assertion.
+// assertion. The unconfirmed count is the one figure here that is a ratchet rather
+// than a pin (ADR-0048); the label censuses stay pinned as drift tripwires.
 func TestCommittedBoundaryFalseDropsUnderTheCandidateRule(t *testing.T) {
 	rows, _, err := replayCaptured(filepath.Join("extract-goldset", goldSetFile), boundaryCandidateConfig())
 	if err != nil {
@@ -1994,9 +2520,14 @@ func TestCommittedBoundaryFalseDropsUnderTheCandidateRule(t *testing.T) {
 	if sc.AmbiguousSkipped != boundaryAmbiguousSkipped {
 		t.Errorf("%d skipped boundary rows are ambiguous, want %d; an undecidable page is neither a false-drop nor forgiven", sc.AmbiguousSkipped, boundaryAmbiguousSkipped)
 	}
-	if sc.Unconfirmed != pendingBoundaryConfirmations {
-		t.Errorf("the scorecard reports %d unconfirmed rows, the ratchet says %d", sc.Unconfirmed, pendingBoundaryConfirmations)
-	}
+	// The scorecard's own view of the same ratchet: it reads label_provenance through
+	// replayCaptured rather than readGoldSet, so a fold that lost a confirmation shows
+	// up here too. A ceiling for the same reason as everywhere else (ADR-0048).
+	confirmationFloor{
+		constant: "pendingBoundaryConfirmations",
+		counts:   "boundary rows the scorecard reports unconfirmed",
+		current:  sc.Unconfirmed, recorded: pendingBoundaryConfirmations,
+	}.assert(t)
 	t.Logf("boundary under the Positive Evidence rule: %d rows, %d false-drops, %d ambiguous-skipped, %d confirmed",
 		sc.Rows, len(sc.FalseDrops), sc.AmbiguousSkipped, sc.Confirmed)
 }
@@ -2224,7 +2755,10 @@ func TestApplyRefusesAMachineConfirmerOnTheExpectedSheet(t *testing.T) {
 // path to the sheet path's rule. A human confirmed the OLD label; a proposer that
 // replaces it must not inherit that signature, or the ledger's arming condition --
 // "this label was read by a person" -- becomes a statement about a label nobody
-// read. A proposal that re-states the SAME label changes nothing and keeps it.
+// read. The row's empty Proposed Label stays empty through it: proposed_by is
+// first-writer-wins, so filling it from the new label would pair the original
+// proposer with an answer they never gave. A proposal that re-states the SAME label
+// changes nothing and keeps the confirmation.
 func TestApplyRetractsAConfirmationWhenAProposalChangesTheLabel(t *testing.T) {
 	const stamp = "2026-08-08T12:00:00Z"
 	base := func() []goldRow {
@@ -2251,6 +2785,17 @@ func TestApplyRetractsAConfirmationWhenAProposalChangesTheLabel(t *testing.T) {
 	if got := changed[0].LabelProvenance.ConfirmedAt; got != "" {
 		t.Errorf("confirmed_at = %q after a retraction, want empty", got)
 	}
+	// The Proposed Label is retracted with the confirmation. proposed_by still names
+	// the ORIGINAL proposer -- it is first-writer-wins -- and that proposer never said
+	// anything about the label the proposal has just put on the row, so any value here
+	// would be a pairing that never happened (ADR-0048).
+	if got := changed[0].LabelProvenance.ProposedLabel; got != "" {
+		t.Errorf("proposed_label = %q after a retraction, want empty: %q proposed detail, not that",
+			got, changed[0].LabelProvenance.ProposedBy)
+	}
+	if got := changed[0].LabelProvenance.ProposedBy; got != "llm:test" {
+		t.Errorf("proposed_by = %q, want the original proposer untouched by a retraction", got)
+	}
 
 	same, err := applyLabels(base(), nil, []sheetRow{{ID: id, Label: bench.ExtractDetail}}, "", "", "", nil, stamp)
 	if err != nil {
@@ -2258,6 +2803,63 @@ func TestApplyRetractsAConfirmationWhenAProposalChangesTheLabel(t *testing.T) {
 	}
 	if same[0].LabelProvenance.ConfirmedBy != "A Human" || same[0].LabelProvenance.ConfirmedAt != "2026-08-02T00:00:00Z" {
 		t.Errorf("provenance = %+v; a proposal re-stating the same label retracts nothing", same[0].LabelProvenance)
+	}
+	// The confirmation stands, so the row stays one the set cannot say what was
+	// proposed on: a confirmed row's empty Proposed Label is never filled in.
+	if got := same[0].LabelProvenance.ProposedLabel; got != "" {
+		t.Errorf("proposed_label = %q on a row whose confirmation still stands, want empty", got)
+	}
+}
+
+// TestApplySummaryReportsAgreementWithTheProposer pins the by-product a blind
+// confirmation pass exists to produce (ADR-0048): how often an independent human
+// reached the label the proposer proposed. Only rows where BOTH are known are
+// comparable -- a confirmation given before the Proposed Label existed says nothing
+// about agreement, and counting it as agreement would inflate the very number the
+// still-unconfirmed rows are trusted on.
+func TestApplySummaryReportsAgreementWithTheProposer(t *testing.T) {
+	row := func(url string, label, proposed bench.ExtractLabel, confirmer string) goldRow {
+		return goldRow{
+			URL: url, Verdict: true, Stratum: stratumLonePosting, Weight: 1, Label: label,
+			LabelProvenance: goldProvenance{
+				ProposedBy: "llm:test", ProposedAt: "2026-08-01T00:00:00Z",
+				ProposedLabel: proposed, ConfirmedBy: confirmer,
+			},
+		}
+	}
+
+	rows := []goldRow{
+		row("https://a.test/1", bench.ExtractDetail, bench.ExtractDetail, "A Human"),
+		row("https://a.test/2", bench.ExtractResidue, bench.ExtractResidue, "A Human"),
+		row("https://a.test/3", bench.ExtractDetail, bench.ExtractHubIndex, "A Human"),
+		// Confirmed before the Proposed Label existed: not comparable either way.
+		row("https://a.test/4", bench.ExtractDetail, "", "A Human"),
+		// Proposed but never confirmed: there is no independent reading to compare to.
+		row("https://a.test/5", bench.ExtractDetail, bench.ExtractDetail, ""),
+	}
+	if agreed, comparable := labelAgreement(rows); agreed != 2 || comparable != 3 {
+		t.Errorf("labelAgreement = %d/%d, want 2/3 (the pre-field and unconfirmed rows count in neither)", agreed, comparable)
+	}
+
+	var buf bytes.Buffer
+	printApplySummary(&buf, rows)
+	if want := "agreement         2/3 (66.7%)"; !strings.Contains(buf.String(), want) {
+		t.Errorf("summary does not report %q:\n%s", want, buf.String())
+	}
+
+	// A set whose confirmations all predate the field has an empty denominator, which
+	// must read as "nothing to compare" rather than as a NaN percentage.
+	none := []goldRow{
+		row("https://b.test/1", bench.ExtractDetail, "", "A Human"),
+		row("https://b.test/2", bench.ExtractDetail, bench.ExtractDetail, ""),
+	}
+	buf.Reset()
+	printApplySummary(&buf, none)
+	if !strings.Contains(buf.String(), "agreement         0/0") {
+		t.Errorf("summary does not report an empty agreement:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "NaN") {
+		t.Errorf("summary divided by zero:\n%s", buf.String())
 	}
 }
 
@@ -2389,4 +2991,278 @@ func TestCommittedGoldSetIsByteStableThroughTheDecoder(t *testing.T) {
 			"a round trip through readGoldSet/writeGoldSet must be the identity, or every goldset-* verb rewrites the whole substrate",
 			len(rows), len(got), len(committed), offset)
 	}
+}
+
+// TestWriteGoldSetLeavesTheSubstrateIntactWhenARowFailsToEncode is the interrupted
+// write driven through the real production function, with no test-only seam: the
+// encoder writes the first rows into the staging file and then refuses the last one,
+// which is exactly the state a killed process or a full disk leaves behind. The
+// committed 6.4 MB of ground truth must still be there, complete and readable (#283).
+//
+// A NaN weight is the fault used because it is the only one a goldRow can carry that
+// the JSON encoder rejects, and it is a fault the substrate can never legitimately
+// hold -- every weight is finite by construction -- so the test cannot mask a real
+// defect. The failing row sorts LAST so the rows before it are already written when
+// it fails.
+func TestWriteGoldSetLeavesTheSubstrateIntactWhenARowFailsToEncode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, goldSetFile)
+
+	good := []goldRow{
+		{
+			URL: "https://a.test/1", Verdict: true, TS: "2026-08-20T10:00:00Z",
+			Stratum: stratumLonePosting, Weight: 1, Label: bench.ExtractDetail,
+			LabelProvenance: goldProvenance{ProposedBy: "llm:test", ProposedAt: "2026-08-20T10:00:00Z", ConfirmedBy: "A Human", ConfirmedAt: "2026-08-20T10:00:00Z"},
+			Content:         crawler.Content{Title: "Senior Go Engineer", MainContent: "your tasks"},
+		},
+		{
+			URL: "https://b.test/2", Verdict: false, TS: "2026-08-20T10:00:01Z",
+			Stratum: stratumNoPosting, Weight: 1, Label: bench.ExtractResidue,
+			LabelProvenance: goldProvenance{ProposedBy: "llm:test", ProposedAt: "2026-08-20T10:00:01Z"},
+			Content:         crawler.Content{Title: "About us"},
+		},
+	}
+	if err := writeGoldSet(path, good); err != nil {
+		t.Fatalf("writeGoldSet: %v", err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the committed substrate: %v", err)
+	}
+
+	doomed := append(append([]goldRow{}, good...), goldRow{
+		URL: "https://z.test/3", Stratum: stratumRandom, Weight: math.NaN(),
+		Content: crawler.Content{Title: "the row the encoder refuses"},
+	})
+	err = writeGoldSet(path, doomed)
+	if err == nil {
+		t.Fatal("writeGoldSet returned nil for a row the encoder cannot serialize")
+	}
+	if !strings.Contains(err.Error(), "https://z.test/3") {
+		t.Errorf("error %q does not name the row it failed on", err)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the substrate after the failed write: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("the failed write changed the substrate: %d bytes now, %d before -- an interrupted write must leave the committed file exactly as it was", len(after), len(before))
+	}
+	rows, err := readGoldSet(path)
+	if err != nil {
+		t.Fatalf("readGoldSet after the failed write: %v", err)
+	}
+	if len(rows) != len(good) {
+		t.Fatalf("read %d rows back, want the %d that were committed before the failed write", len(rows), len(good))
+	}
+	if rows[0].URL != good[0].URL || rows[1].URL != good[1].URL {
+		t.Errorf("read back %q and %q, want %q and %q", rows[0].URL, rows[1].URL, good[0].URL, good[1].URL)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != goldSetFile {
+		t.Errorf("directory holds %d entries after the failed write, want only %s -- nothing half-written may survive", len(entries), goldSetFile)
+	}
+}
+
+// TestWriteGoldSetFilesReplacesEveryCommittedFile pins the seam the goldset-* verbs
+// write through: the substrate and BOTH review sheets land together, each rendered
+// from the same rows, each 0644 (#283). It is the drift the two committed-sheet
+// tests assert on the real files, checked here at the writer instead.
+func TestWriteGoldSetFilesReplacesEveryCommittedFile(t *testing.T) {
+	dir := t.TempDir()
+	rows := []goldRow{
+		{
+			URL: "https://a.test/jobs/1", Verdict: true, TS: "2026-08-20T10:00:00Z",
+			Stratum: stratumLonePosting, Weight: 1, Label: bench.ExtractDetail,
+			LabelProvenance: goldProvenance{ProposedBy: "llm:test", ProposedAt: "2026-08-20T10:00:00Z", ConfirmedBy: "A Human", ConfirmedAt: "2026-08-20T10:00:00Z"},
+			Expected:        &goldExpected{Title: "Senior Go Engineer", Location: "Berlin, DE", WorkArrangement: "unspecified", ProposedBy: "script:test"},
+			Content:         crawler.Content{Title: "Senior Go Engineer", MainContent: "your tasks"},
+		},
+		{
+			URL: "https://b.test/about", Verdict: false, TS: "2026-08-20T10:00:01Z",
+			Stratum: stratumNoPosting, Weight: 1, Label: bench.ExtractResidue,
+			LabelProvenance: goldProvenance{ProposedBy: "llm:test", ProposedAt: "2026-08-20T10:00:01Z"},
+			Content:         crawler.Content{Title: "About us"},
+		},
+	}
+
+	substrate, sheet := goldSetPaths(dir)
+	expected := expectedSheetPath(dir)
+	for _, path := range []string{substrate, sheet, expected} {
+		if err := os.WriteFile(path, []byte("stale\n"), 0o644); err != nil {
+			t.Fatalf("seed %q: %v", path, err)
+		}
+	}
+
+	if err := writeGoldSetFiles(dir, rows); err != nil {
+		t.Fatalf("writeGoldSetFiles: %v", err)
+	}
+
+	got, err := readGoldSet(substrate)
+	if err != nil {
+		t.Fatalf("readGoldSet: %v", err)
+	}
+	if len(got) != len(rows) {
+		t.Fatalf("substrate holds %d rows, want %d", len(got), len(rows))
+	}
+	if !reflect.DeepEqual(got, rows) {
+		t.Errorf("the substrate did not round-trip the rows it was written from")
+	}
+	if data, err := os.ReadFile(sheet); err != nil {
+		t.Fatalf("read %q: %v", sheet, err)
+	} else if !bytes.Equal(data, renderSheet(rows)) {
+		t.Errorf("%s is not the sheet rendered from the rows it was written with", labelsFile)
+	}
+	if data, err := os.ReadFile(expected); err != nil {
+		t.Fatalf("read %q: %v", expected, err)
+	} else if !bytes.Equal(data, renderExpectedSheet(rows)) {
+		t.Errorf("%s is not the sheet rendered from the rows it was written with", expectedFile)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Errorf("directory holds %d entries, want exactly the three committed files with no staging leftovers", len(entries))
+	}
+	for _, path := range []string{substrate, sheet, expected} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %q: %v", path, err)
+		}
+		if perm := info.Mode().Perm(); perm != goldSetPerm {
+			t.Errorf("%s mode = %v, want %v", filepath.Base(path), perm, goldSetPerm)
+		}
+	}
+}
+
+// TestConfirmSheetStatesTheSharedRubric pins the rubric extraction (#286). The
+// confirmation sheet and goldset-ui must put ONE question and ONE set of definitions
+// to the same human, so both render extractLabelRubric -- and the sheet's bytes are
+// still the ones it has always printed. The literal below is that wording, kept here
+// on purpose: a change to the shared value then has to be made deliberately rather
+// than drifting out of the confirmation sheet unnoticed.
+func TestConfirmSheetStatesTheSharedRubric(t *testing.T) {
+	const want = "One question per row: **is this page ONE Job Listing?**\n\n" +
+		"- `detail` -- the page IS one Job Listing: one role's responsibilities or requirements, and an apply action.\n" +
+		"- `hub-index` -- the page LISTS openings (a board root, a search result, a location or department facet). A page listing exactly one opening is still `hub-index`.\n" +
+		"- `residue` -- neither: culture, about, benefits, blog, press, contact, a cookie or login wall, a JS shell, a 404, a salary guide, a \"post a job\" form, or a withdrawn posting with no role body.\n" +
+		"- `ambiguous` -- the page genuinely does not resolve. Say what the tension is in the note.\n\n"
+
+	rows := []goldRow{{
+		URL: "https://acme.test/jobs/1", Verdict: true, Stratum: stratumBoundary, Weight: 1,
+		Label: bench.ExtractResidue, Content: crawler.Content{Title: "t", MainContent: "body"},
+	}}
+	chunks := renderConfirmSheet(rows, 20)
+	if len(chunks) != 1 {
+		t.Fatalf("rendered %d chunks over 1 row, want 1", len(chunks))
+	}
+	body := string(chunks[0].Body)
+	if !strings.Contains(body, want) {
+		t.Errorf("the confirmation sheet no longer prints the rubric byte for byte:\n%s", body)
+	}
+	if !strings.Contains(body, extractLabelQuestion) {
+		t.Errorf("the sheet asks a different question than goldset-ui does")
+	}
+	for _, e := range extractLabelRubric {
+		if !strings.Contains(body, e.Text) {
+			t.Errorf("the sheet omits the definition of %q, which goldset-ui states", e.Label)
+		}
+	}
+}
+
+// TestApplyRetractionNeverInventsAProposedLabel walks the two ways goldset-apply can
+// overturn a label a human already signed, on a row that records no Proposed Label --
+// the shape of every row confirmed before the field existed. proposed_by is
+// first-writer-wins, so it still names the proposer of the label that was just
+// replaced; filling the empty field from the REPLACEMENT would assert that proposer
+// gave an answer they were never asked for, and labelAgreement would then score the
+// row as an independent human reaching the proposer's conclusion -- inflating the
+// exact number a blind pass exists to produce (ADR-0048), on a row nobody
+// independently agreed on.
+func TestApplyRetractionNeverInventsAProposedLabel(t *testing.T) {
+	const stamp = "2026-08-20T12:00:00Z"
+	const url = "https://a.test/jobs/1"
+	id := rowID(url)
+
+	// The shape of the 78 rows a human confirmed before the Proposed Label existed:
+	// a proposer, no proposed_label, a human's signature on the label they read.
+	preField := func() []goldRow {
+		return []goldRow{{
+			URL: url, Verdict: true, Stratum: stratumLonePosting, Weight: 1, Label: bench.ExtractDetail,
+			LabelProvenance: goldProvenance{
+				ProposedBy: "llm:claude-opus-5", ProposedAt: "2026-08-01T00:00:00Z",
+				ConfirmedBy: "Nicholas Braun", ConfirmedAt: "2026-08-02T00:00:00Z",
+			},
+		}}
+	}
+
+	t.Run("a proposal that overturns a confirmation, re-confirmed in the same run", func(t *testing.T) {
+		proposals := []sheetRow{{ID: id, Label: bench.ExtractResidue, Note: "an index of roles"}}
+		got, err := applyLabels(preField(), nil, proposals, "", "Nicholas Braun", "", map[string]struct{}{id: {}}, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		prov := got[0].LabelProvenance
+		if got[0].Label != bench.ExtractResidue {
+			t.Errorf("label = %q, want residue", got[0].Label)
+		}
+		if prov.ProposedLabel != "" {
+			t.Errorf("proposed_label = %q, want empty: %q proposed detail and was never asked about residue",
+				prov.ProposedLabel, prov.ProposedBy)
+		}
+		if prov.ConfirmedBy != "Nicholas Braun" || prov.ConfirmedAt != stamp {
+			t.Errorf("provenance = %+v, want the fresh signature on the new label", prov)
+		}
+		if agreed, comparable := labelAgreement(got); agreed != 0 || comparable != 0 {
+			t.Errorf("labelAgreement = %d/%d, want 0/0: nobody independently reached this label", agreed, comparable)
+		}
+	})
+
+	t.Run("a sheet that overturns a confirmation, re-confirmed in the same run", func(t *testing.T) {
+		sheet := []sheetRow{{
+			ID: id, URL: url, Stratum: stratumLonePosting, Verdict: true,
+			Label: bench.ExtractResidue, Note: "an index of roles",
+		}}
+		got, err := applyLabels(preField(), sheet, nil, "", "Nicholas Braun", "", map[string]struct{}{id: {}}, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		prov := got[0].LabelProvenance
+		if got[0].Label != bench.ExtractResidue {
+			t.Errorf("label = %q, want residue", got[0].Label)
+		}
+		if prov.ProposedLabel != "" {
+			t.Errorf("proposed_label = %q, want empty: %q proposed detail and was never asked about residue",
+				prov.ProposedLabel, prov.ProposedBy)
+		}
+		if agreed, comparable := labelAgreement(got); agreed != 0 || comparable != 0 {
+			t.Errorf("labelAgreement = %d/%d, want 0/0: nobody independently reached this label", agreed, comparable)
+		}
+	})
+
+	// The other half of the rule: a Proposed Label that is ALREADY on the record is a
+	// true statement about the proposer, so a retraction leaves it exactly where it is.
+	// The relabel is then a disagreement the set can count -- which is what the UI's
+	// undo-and-relabel does on every row it has already written.
+	t.Run("a retraction keeps a Proposed Label that was truthfully recorded", func(t *testing.T) {
+		rows := preField()
+		rows[0].LabelProvenance.ProposedLabel = bench.ExtractDetail
+		proposals := []sheetRow{{ID: id, Label: bench.ExtractResidue, Note: "an index of roles"}}
+		got, err := applyLabels(rows, nil, proposals, "", "Nicholas Braun", "", map[string]struct{}{id: {}}, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		if prov := got[0].LabelProvenance; prov.ProposedLabel != bench.ExtractDetail {
+			t.Errorf("proposed_label = %q, want the detail the proposer really did propose", prov.ProposedLabel)
+		}
+		if agreed, comparable := labelAgreement(got); agreed != 0 || comparable != 1 {
+			t.Errorf("labelAgreement = %d/%d, want 0/1: a human read the page and reached the other answer", agreed, comparable)
+		}
+	})
 }

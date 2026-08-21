@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -75,6 +76,19 @@ type goldProvenance struct {
 	// ProposedBy names the proposer, prefixed "llm:" for a model-authored label.
 	ProposedBy string `json:"proposed_by"`
 	ProposedAt string `json:"proposed_at"` // RFC3339 UTC
+	// ProposedLabel is the label ProposedBy actually proposed, kept when a human
+	// overrides it (ADR-0048). It is what makes a confirmation pass measurable: how
+	// often an independent human and the proposer reach the same answer is the direct
+	// evidence for what the still-unconfirmed rows are worth. It is
+	// first-writer-wins exactly as ProposedBy is, so the two always name one
+	// proposer and the label that proposer gave.
+	//
+	// omitempty because it is ABSENT on the rows a human confirmed before it
+	// existed: the set does not record which of those were relabelled during the pass
+	// that confirmed them, and an empty-but-present field would be a claim that none
+	// were. Re-serializing such a row must leave it byte for byte as it is
+	// (TestCommittedGoldSetIsByteStableThroughTheDecoder).
+	ProposedLabel bench.ExtractLabel `json:"proposed_label,omitempty"`
 	// ConfirmedBy names the human who confirmed the label. A confirmation is only
 	// meaningful from a person, so goldset-apply rejects an "llm:" name here.
 	ConfirmedBy string `json:"confirmed_by"`
@@ -282,6 +296,10 @@ const (
 	// change parseSheet's column contract. This one focuses the #256 review on its
 	// own 70 rows.
 	expectedFile = "expected.tsv"
+	// goldSetPerm is the mode every COMMITTED gold-set file lands with. It is named
+	// because the write path stages through os.CreateTemp, which creates 0600: a
+	// committed file must not silently become owner-only on the next apply (#283).
+	goldSetPerm os.FileMode = 0o644
 	// defaultSeed keys the deterministic within-cell selection. Changing it is a
 	// deliberate resample, which is why it is a flag rather than a constant use.
 	defaultSeed = "extract-goldset-v1"
@@ -845,31 +863,37 @@ func readGoldSet(path string) ([]goldRow, error) {
 	return rows, nil
 }
 
-// writeGoldSet writes rows to path as JSONL sorted by URL, one row per line with a
-// trailing newline. HTML escaping is off, matching the tap, so a captured URL's
-// "&" stays literal and the file diffs as the operator reads it.
-func writeGoldSet(path string, rows []goldRow) error {
+// goldSetWrite returns the staged write that lays the substrate down at path: rows
+// sorted by URL, one JSON object per line with a trailing newline, HTML escaping off
+// to match the tap so a captured URL's "&" stays literal and the file diffs as the
+// operator reads it. Encoding streams straight into the staging file, so a row the
+// encoder refuses aborts the write before anything is renamed.
+//
+// The sort happens here rather than inside the closure: the closure runs after the
+// group's other files are staged, and a caller mutating rows in between would
+// otherwise reorder this file and not the review sheets rendered from the same rows.
+func goldSetWrite(path string, rows []goldRow) fileWrite {
 	ordered := make([]goldRow, len(rows))
 	copy(ordered, rows)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].URL < ordered[j].URL })
 
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("create %q: %w", path, err)
-	}
-	enc := json.NewEncoder(f)
-	enc.SetEscapeHTML(false)
-	for _, row := range ordered {
-		if err := enc.Encode(row); err != nil {
-			_ = f.Close()
-			return fmt.Errorf("encode %q: %w", row.URL, err)
+	return fileWrite{Path: path, Perm: goldSetPerm, Write: func(w io.Writer) error {
+		enc := json.NewEncoder(w)
+		enc.SetEscapeHTML(false)
+		for _, row := range ordered {
+			if err := enc.Encode(row); err != nil {
+				return fmt.Errorf("encode %q: %w", row.URL, err)
+			}
 		}
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("close %q: %w", path, err)
-	}
-	return nil
+		return nil
+	}}
 }
+
+// writeGoldSet writes rows to path as the substrate, atomically: the content is
+// staged beside path and renamed over it, so a crash, a full disk or a row the
+// encoder refuses leaves the committed file exactly as it was rather than truncated
+// (#283).
+func writeGoldSet(path string, rows []goldRow) error { return atomicWrite(goldSetWrite(path, rows)) }
 
 // sheetHeader names the review sheet's columns. It is written as a leading
 // comment line so the file is self-describing in a diff.
@@ -1170,6 +1194,31 @@ func worksheetFor(row goldRow) worksheetRow {
 	return out
 }
 
+// extractLabelQuestion is the ONE question every Extract Gold Set label answers. It
+// is shared by the confirmation sheet and the labelling tool so the two surfaces can
+// never put different questions to the same human (#286).
+const extractLabelQuestion = "is this page ONE Job Listing?"
+
+// labelRubricEntry is one label as a labeller reads it: the label itself, the
+// keystroke goldset-ui binds to it, and the definition both review surfaces state.
+// Key is ignored by the Markdown sheet; it lives here so "d is detail" is written
+// down once.
+type labelRubricEntry struct {
+	Label bench.ExtractLabel `json:"label"`
+	Key   string             `json:"key"`
+	Text  string             `json:"text"`
+}
+
+// extractLabelRubric is the labelling rubric, in the fixed order both surfaces show
+// it. It is the wording renderConfirmSheet has always printed, lifted out of that
+// function so goldset-ui cannot state a definition the sheet does not (#286).
+var extractLabelRubric = []labelRubricEntry{
+	{bench.ExtractDetail, "d", "the page IS one Job Listing: one role's responsibilities or requirements, and an apply action."},
+	{bench.ExtractHubIndex, "h", "the page LISTS openings (a board root, a search result, a location or department facet). A page listing exactly one opening is still `hub-index`."},
+	{bench.ExtractResidue, "r", "neither: culture, about, benefits, blog, press, contact, a cookie or login wall, a JS shell, a 404, a salary guide, a \"post a job\" form, or a withdrawn posting with no role body."},
+	{bench.ExtractAmbiguous, "a", "the page genuinely does not resolve. Say what the tension is in the note."},
+}
+
 // goldSetPaths returns the substrate and review-sheet paths under dir.
 func goldSetPaths(dir string) (substrate, sheet string) {
 	return filepath.Join(dir, goldSetFile), filepath.Join(dir, labelsFile)
@@ -1177,3 +1226,29 @@ func goldSetPaths(dir string) (substrate, sheet string) {
 
 // expectedSheetPath returns the expected-extraction review sheet's path under dir.
 func expectedSheetPath(dir string) string { return filepath.Join(dir, expectedFile) }
+
+// sheetWrite returns the staged write for the labels review sheet rendered from rows.
+func sheetWrite(path string, rows []goldRow) fileWrite {
+	return fileWrite{Path: path, Perm: goldSetPerm, Write: writeBytes(renderSheet(rows))}
+}
+
+// expectedWrite returns the staged write for the expected-extraction review sheet
+// rendered from rows.
+func expectedWrite(path string, rows []goldRow) fileWrite {
+	return fileWrite{Path: path, Perm: goldSetPerm, Write: writeBytes(renderExpectedSheet(rows))}
+}
+
+// writeGoldSetFiles writes the substrate and BOTH review sheets under dir from one
+// merged slice, staging all three before any of them is renamed into place. The three
+// are rendered from the same rows and a reader is entitled to assume they agree --
+// ADR-0048's guard asserts the substrate and labels.tsv name the same confirmers -- so
+// a failure must leave all three on their previous version rather than two on the new
+// one (#283).
+func writeGoldSetFiles(dir string, rows []goldRow) error {
+	substrate, sheet := goldSetPaths(dir)
+	return atomicWriteAll(
+		goldSetWrite(substrate, rows),
+		sheetWrite(sheet, rows),
+		expectedWrite(expectedSheetPath(dir), rows),
+	)
+}

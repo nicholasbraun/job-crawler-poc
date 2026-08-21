@@ -263,6 +263,19 @@ flattening and once with it rendering structure, at one shared prompt budget, an
 prints each arm's extract-call rate and false-drop count beside the delta between
 them. It exits non-zero when the two arms disagree, never on their level.
 
+Its `goldset-ui` verb is the confirmation surface for that set: a page on loopback
+that serves the rows still owed a human confirmer one at a time, takes the label as
+a single keystroke **before** revealing what the proposer said, and writes the batch
+through `goldset-apply` and nothing else. The by-product is the number the set needs
+— how often an independent human and the proposer reach the same answer (ADR-0048).
+Each row's **Capture Fidelity** is measured against a fresh fetch of its URL and shown
+beside it, so a live view is admitted or refused per row rather than assumed (ADR-0047).
+Where fidelity admits it, the page itself is rendered beside the captured text — the same
+Structural Rendering the pipeline produces, with link targets kept, served by the tool from
+loopback in a sandboxed, script-free frame rather than framed from the site (ADR-0047). A
+*drifted* page is shown behind a warning and a *gone* one is not shown at all; the captured
+content is the authority in every case, and the screen says so.
+
 ## Project Structure
 
 ```

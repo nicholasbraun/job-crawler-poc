@@ -159,6 +159,13 @@ var (
 	// a bullet -- deleting the page's own character and the boundary behind it.
 	linePrefixPattern = regexp.MustCompile(`(?m)^(?:#{1,6}|-|\|)\v`)
 
+	// scanLinePrefixPattern is linePrefixPattern anchored to ONE line and with the
+	// prefix CAPTURED, for ScanRendering: the same rule read forwards instead of
+	// deleted. TestLinePrefixPatternsAgree pins the two together, because a grammar
+	// change that moved one and not the other would be a scanner reading a rendering
+	// the strip does not.
+	scanLinePrefixPattern = regexp.MustCompile(`\A(#{1,6}|-|\|)\v`)
+
 	// controlMarkerPattern matches an image or a form control -- everything built
 	// only from attributes, which today's flattened output carries none of. The ":"
 	// or " " after the tag name keeps page text like "[inputs are welcome]" out of
@@ -170,11 +177,13 @@ var (
 	// is NOT this shape -- its caption is an attribute and must vanish.
 	buttonMarkerPattern = regexp.MustCompile(`\[button: (` + markedText + `)\]`)
 
-	// linkMarkerPattern keeps a link's text and drops its target. It has two
-	// readers with two replacements: FlattenedText keeps the text alone, and
-	// WithoutLinkTargets keeps it still bracketed (see structural_rendering.go).
-	// One grammar, so the two readings can never disagree about what a link is.
-	linkMarkerPattern = regexp.MustCompile(`\[(` + markedText + `)\]\([^)]*\)`)
+	// linkMarkerPattern keeps a link's text and captures its target. It has three
+	// readers with three readings: FlattenedText keeps the text alone ("$1"),
+	// WithoutLinkTargets keeps it still bracketed, and ScanRendering reads group 2 --
+	// the target -- which is what a human labeller reads a rendering FOR (ADR-0046).
+	// Both live in structural_rendering.go. One grammar, so the three readings can
+	// never disagree about what a link is.
+	linkMarkerPattern = regexp.MustCompile(`\[(` + markedText + `)\]\(([^)]*)\)`)
 
 	// wholeMarkedText is markedText anchored over an entire string, which is what
 	// WrappableMarkerText needs: not "does a marker appear somewhere" but "is all

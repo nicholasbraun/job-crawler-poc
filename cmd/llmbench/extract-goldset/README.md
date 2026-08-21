@@ -29,6 +29,13 @@ survive as cheap regression cases for the reject rungs and nothing more.
 | `labels.tsv` | The review surface rendered from the substrate: one line per row, 457 lines. This is the file a reviewer reads in a diff and edits to correct a label. A test asserts the two never drift. |
 | `expected.tsv` | The second review surface (#256): one line per row the Free Extraction fires on — its expected title, location and working mode, plus any accepted fire. 51 lines. Also rendered from the substrate, also drift-tested. |
 
+All three files are written **atomically**: each is staged in a temporary file beside it
+and renamed over it, and the whole group is staged before any of it is renamed, so a
+crash or a full disk mid-write leaves the previous versions intact rather than a
+truncated 6.3 MB substrate (#283). A `.goldset.jsonl.tmp-…` left in this directory is the
+debris of a process killed mid-write — it is gitignored, it is never the record, and
+deleting it is safe.
+
 `goldRow` is the extract-capture record (`internal/extractcapture`: `url`, `verdict`,
 `ts`, `renderer`, `content`) **extended in place**, not a new format. All 457 committed
 rows predate the renderer stamp (#281) and therefore carry no `renderer` at all: they
@@ -37,6 +44,22 @@ were drawn from a capture written before the field existed, so their renderer is
 a labelled gold-set row therefore read through the same decoder, `score-capture` scores
 this file unchanged, and a later spec can add a random stratum or the `expected`
 field-fidelity block with no migration.
+
+### The Proposed Label
+
+`label_provenance.proposed_label` is the label the row's proposer actually proposed
+(ADR-0048, #284). It is written once, beside `proposed_by`, and **survives a human
+override**, so a row can say "the model proposed `residue`, a human made it `detail` and
+signed for it". That is what makes a confirmation pass measurable: `goldset-apply` prints
+the agreement rate between human confirmers and proposers at the end of every run, and
+that rate is the evidence for what the still-unconfirmed rows are worth.
+
+It is additive and omitted when absent, so a row that never carried one re-serializes
+unchanged. Backfill filled it on the **379 rows carrying no confirmer**, where it is
+truthful because nobody had overridden the proposer's label; the **78 rows a human had
+already confirmed carry none**, because the set does not record which of those were
+relabelled during the pass that confirmed them. It is deliberately **not** a column on
+`labels.tsv`: it records what a proposer said, and is not a field a reviewer edits.
 
 ## Provenance
 
@@ -56,10 +79,17 @@ field-fidelity block with no migration.
   the plan in `../goldset.go`. Same capture + same seed → byte-identical file.
 - **Labels** were **proposed by an LLM** (the #254 delivery agent) from each page's own
   title, text and outbound-link counts, with the structured data *deliberately
-  withheld* — see "The labeling protocol" below. **No human has confirmed any row yet**;
-  `label_provenance.confirmed_by` is empty everywhere and
-  `pendingHumanConfirmations` in `../goldset_test.go` is the machine-visible count of
-  the gap.
+  withheld* — see "The labeling protocol" below. **194 of the 457 rows now carry a human
+  confirmer** (69 `lone-posting`, 5 `no-posting`, 120 `random`); the other 263 carry a
+  **Proposed Label** and no confirmer, and the four confirmation counts in
+  `../goldset_test.go` are the machine-visible measure of that gap.
+- **The random stratum is fully confirmed.** Its 116 outstanding rows were read one at a
+  time through `llmbench goldset-ui` (#274) under **Blind Confirmation**: the labeller
+  saw the page and answered before the **Proposed Label** was revealed. The human and the
+  proposer agreed on **109 of 116 rows (94.0%)**; the 7 disagreements each carry a note
+  saying why, and each preserves what the proposer actually proposed. That agreement rate
+  is the direct measurement of what the *remaining* unconfirmed rows are worth — it is
+  evidence about the proposer, not a licence to skip reading them (ADR-0048).
 
 ## Why parsed Content and not re-fetchable HTML
 
@@ -898,9 +928,24 @@ go run ./cmd/llmbench score-free
 
 To **correct a label**, edit the `label` column of `labels.tsv` and run
 `goldset-apply`; it rewrites both files canonically and refuses a sheet whose stratum or
-verdict disagrees with the substrate.
+verdict disagrees with the substrate. A correction keeps `proposed_label`, so the record
+— and the agreement figure `goldset-apply` prints — still say what the proposer had
+proposed.
 
 ## Human confirmation — what is still owed
+
+**What the build asserts about confirmations.** The four confirmation counts —
+`pendingHumanConfirmations`, `pendingExpectedConfirmations`,
+`pendingBoundaryConfirmations` and `randomSpotChecks` — are one-directional ratchets
+(ADR-0048): each fails only in the direction that means a human signature *vanished*,
+and merely logs the figure in the direction that means work landed, so a productive
+confirmation pass never leaves `main` red. Two things stay pinned in **both**
+directions: the three drawings' row counts, because a drawing is a fixed act of
+sampling, and `ambiguousRows`, because marking a page unresolvable is a rare,
+deliberate keystroke that changes what every confusion number is computed over. The
+direction the ratchets gave up is asserted more sharply instead — the build requires
+that `goldset.jsonl`, `labels.tsv` and `expected.tsv` name the **same confirmer on
+every row**, and names the rows where they do not.
 
 ADR-0043 requires a human confirmation on every row carrying a lone structured posting:
 those are the rows a later false-drop guard is decided on, and where a labeler is most
@@ -915,16 +960,68 @@ awk -F'\t' '$3=="lone-posting"' cmd/llmbench/extract-goldset/labels.tsv | column
 # fix any wrong label in the `label` column, then:
 go run ./cmd/llmbench goldset-apply -confirmed-by "<your name>" -confirm-stratum lone-posting
 
-# then set pendingHumanConfirmations to 0 in cmd/llmbench/goldset_test.go and commit.
+# then set pendingHumanConfirmations to 0 in cmd/llmbench/goldset_test.go and commit
+# — the build no longer forces the edit, it logs the figure (ADR-0048), so do it in
+# the same commit.
 ```
+
+### Confirming row by row with the labelling tool (#286)
+
+```bash
+go run ./cmd/llmbench goldset-ui -by "<your name>" -stratum random
+# open the printed URL — it carries this session's token; the tool binds loopback,
+# refuses a foreign origin, and refuses to run under CI.
+```
+
+One row at a time in row-id order, restricted to `-stratum` and skipping every row that
+already carries a confirmer, so a pass resumes across sittings. `d`/`h`/`r`/`a` label the
+page; the **Proposed Label is revealed only after you answer** (ADR-0048), together with
+whether you agreed. A note is required when you disagree and on `ambiguous`, and it
+replaces the proposer's; on agreement it is left empty so the proposer's own survives.
+`u` undoes the last unwritten decision, `w` writes the buffer now, and every decision is
+journalled to a file under the OS temp dir the moment it is taken, so a crash costs a
+rewrite and not your reading.
+
+The tool is **not a second writer**: it synthesizes a `-proposals` file and a
+`-confirm-ids` file and calls `goldset-apply` in process, once per batch, so that verb's
+total validation, its refusal to overwrite a proposer, and its retraction of a
+confirmation whose label changed all still apply. The batch files are left in the
+session's scratch directory as the account of what was applied. After a session, ratchet
+the confirmation floors in `../goldset_test.go` to the figures the apply summary just
+printed, in the same commit.
+
+Rows are shown as their **captured text** — the parsed page the live extract stage
+decided on, which is what the label is a statement about (ADR-0043). Beside it, each row
+states its **Capture Fidelity** (ADR-0047, #287): the tool fetches the row's URL again
+through the crawler's own downloader, under the crawler's user agent and the refetch
+lane's politeness, re-parses it and reports *same* (the live page still carries the
+captured text), *drifted* (it has changed, so weigh it), *gone* (it is not the captured
+page), or "not measured" (robots.txt refused, or the fetch had not finished). A *gone*
+row is never offered a live view — a closed posting's withdrawal page is `residue` in the
+rubric and argues confidently for the wrong label. The re-fetched bytes are cached under
+the OS user cache directory, never inside the repository and never written back onto a
+row; `-refetch=false` turns the whole path off and labels from the captured content
+alone.
+
+Where fidelity admits it, the page is **rendered beside the captured text** (#288): the same
+Structural Rendering the parser produces, with link targets kept, so an openings index and one
+Job Listing are distinguishable at a glance. The tool serves it from loopback in a frame with
+scripts disabled and referrers suppressed — the site is never framed, and what is on screen is
+the crawler's own parse, which is what the Extract Gate read. A *drifted* page carries a
+warning; a *gone* one is refused outright. A row that carries its own Structural Rendering is
+shown it directly, with no re-fetch. `o` opens the live URL in a browser tab for any row,
+including one the tool will not render.
 
 ### The boundary stratum must be FULLY confirmed (#263)
 
 This is the stratum ADR-0043 actually requires a human on. Its 188 rows are the rows a
 **hard-zero false-drop guard is decided on**, and they are exactly where an LLM labeller
 is least reliable — that is what "boundary" means. **0 of 188 are confirmed**, so
-`pendingBoundaryConfirmations` in `../goldset_test.go` is 188 and the build asserts it in
-both directions.
+`pendingBoundaryConfirmations` in `../goldset_test.go` is 188, and the build asserts it in
+**one** direction (ADR-0048): a pending count that rises fails, one that falls is only
+logged, with the number to lower it to. A confirmation that vanished is caught either way —
+the build also asserts that `goldset.jsonl` and `labels.tsv` name the same confirmer on
+every row, and names the rows where they do not.
 
 The review is chunked so a partial pass is legitimate, resumable and visible in the diff:
 
@@ -947,7 +1044,8 @@ go run ./cmd/llmbench goldset-apply
 go run ./cmd/llmbench goldset-apply -confirmed-by "<your name>" -confirm-ids /tmp/263/confirmed-01.txt
 
 # lower pendingBoundaryConfirmations in cmd/llmbench/goldset_test.go by what you confirmed,
-# in the same commit. Update ambiguousRows, boundaryDetailRows and the recovery-ledger
+# in the same commit. The number is printed by the apply summary (boundary pending) and
+# logged by go test -v. Update ambiguousRows, boundaryDetailRows and the recovery-ledger
 # constants if your reading moved them.
 ```
 
@@ -973,9 +1071,10 @@ ADR-0043 asks less of this stratum, and for a reason: it is 120 rows of ordinary
 traffic, no later guard is decided on any single one of them, and its numbers are
 weighted estimates rather than pass/fail conditions. What it needs is evidence that the
 labeling process is *sound*, which a sample answers. **`randomSpotChecks` in
-`../goldset_test.go` is 0: no random row has been read by a human yet.** It is a ratchet
-that RISES, and it is asserted in both directions, so a confirmation that lands without
-the constant moving fails the build just as one that vanishes does.
+`../goldset_test.go` is 4: four random rows have been read by a human.** It is a ratchet
+that RISES and it is asserted as a **floor** (ADR-0048): falling below it fails the build,
+because a spot-check that vanished means a lost signature; landing above it only logs the
+figure to raise it to, so a productive session never leaves `main` red.
 
 ```bash
 # the spot-check surface: 20 rows in deterministic order, not the 3.9 MB substrate
@@ -985,7 +1084,8 @@ go run ./cmd/llmbench goldset-worksheet -stratum random -n 20 -out /tmp/spotchec
 # labels.tsv, put your name in the `confirmed_by` column of EXACTLY the rows you read:
 go run ./cmd/llmbench goldset-apply
 
-# then raise randomSpotChecks in cmd/llmbench/goldset_test.go to the number you confirmed.
+# then raise randomSpotChecks in cmd/llmbench/goldset_test.go to the "spot-checked"
+# figure the apply summary just printed (the build logs it too, under go test -v).
 ```
 
 Read the 40 `verdict=true` rows first if you only have time for some: 31 of them are the
@@ -995,6 +1095,12 @@ weighted number.
 **Do not use `-confirm-stratum random`.** It would stamp all 120 rows at once from one
 command — a full confirmation of 120 pages nobody read, which is exactly the thing the
 provenance record exists to prevent. A spot check is 20 rows a human actually opened.
+
+`goldset-ui -stratum random` is what turned that warning into work, and the stratum is
+now **fully confirmed**: the 116 rows still owed a confirmer were read one at a time for
+a keystroke each, which is what the warning was always asking for — the objection is to
+stamping 120 rows nobody read, not to reading them. The warning still stands for any
+future drawing: `-confirm-stratum` remains the wrong instrument, whatever the stratum.
 
 ### Second pass — the 51 expected extractions (#256)
 
@@ -1023,6 +1129,8 @@ read `remote`, 43 `unspecified`.
 # edit any wrong value or drop any free_ok you refuse, then:
 go run ./cmd/llmbench goldset-apply -expected-confirmed-by "<your name>"
 # then set pendingExpectedConfirmations to 0 in cmd/llmbench/goldset_test.go
+# — the build no longer forces the edit, it logs the figure (ADR-0048), so do it in
+# the same commit.
 ```
 
 These acceptances rest on the labels underneath them, so confirming (a) without confirming

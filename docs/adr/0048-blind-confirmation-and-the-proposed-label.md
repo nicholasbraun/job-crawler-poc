@@ -33,6 +33,16 @@ proposer's label, so its Proposed Label is its current label. The already-confir
 it empty — the set genuinely does not record which of them were relabelled during the pass
 that confirmed them.
 
+Those rows stay empty even when a later relabel retracts their confirmation. `proposed_by` is
+first-writer-wins, so after a retraction it still names the proposer of the label that was just
+replaced; filling the empty field from the *replacement* would put that proposer's name beside
+an answer they were never asked for, and the next confirmation of the row would then be counted
+as an independent human reaching the proposer's conclusion — inflating the very number the blind
+pass exists to produce, on a row nobody independently agreed on. A Proposed Label that is
+already recorded is a different thing: it is a true statement about the proposer whatever
+happens to the label afterwards, so a retraction leaves it exactly where it is, and the relabel
+that follows is counted as the disagreement it is.
+
 ## A ratchet asserted in both directions is a pin
 
 `randomSpotChecks` asserts equality: a confirmation that vanishes fails the build, and so does
@@ -59,9 +69,11 @@ should stop the build until it is acknowledged.
   from one merged slice, so they can only disagree if something outside it — a bad rebase, a
   half-applied write, a hand edit — touched one of them.
 - A note is required whenever the human disagrees with the Proposed Label, not only on
-  `ambiguous`. Those rows are where the proposer is actually wrong, and the note is the record
-  of why, which is what a prompt fix is built from. On agreement the note is left empty so the
-  proposer's own survives.
+  `ambiguous`, and whenever the decision CHANGES the label already on the record — including an
+  answer that agrees with the proposer and so overrules a label some earlier pass wrote. Those
+  rows are where a label is actually being moved, and the note is the record of why, which is
+  what a prompt fix is built from. On an agreement that changes nothing the note is left empty
+  so the proposer's own survives.
 - The human's note replaces the proposer's on an override: the old note argues for a label
   that has been overruled, and leaving it makes the row read as if it argues for the new one.
 - `goldset-apply` remains the only writer. A labelling tool collects decisions and runs them

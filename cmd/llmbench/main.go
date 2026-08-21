@@ -31,6 +31,18 @@
 // page that is not a posting or reads a field that diverges from its confirmed
 // expected value.
 //
+// goldset-ui (ADR-0048, #286) is the confirmation surface itself: a single embedded
+// page on loopback that serves the rows still owed a human confirmer one at a time,
+// in row-id order, takes a Blind Confirmation on each -- the labeller answers before
+// the Proposed Label is revealed -- and writes the batch through goldset-apply and
+// nothing else. It binds loopback, requires a session token and refuses to run under
+// CI, because a confirmation is a person's deliberate act. It also measures each row's
+// Capture Fidelity against a fresh fetch of its URL (ADR-0047, #287) and shows it on
+// the row, refusing a live view where the captured page is gone. Where it admits one,
+// the page is rendered beside the captured text (#288) -- the pipeline's own Structural
+// Rendering, served from the tool in a sandboxed, script-free frame, never framed from
+// the site.
+//
 // score-rendering (ADR-0046, #282) is the A/B that closes spec #275: it replays the
 // extract path over the committed pages twice -- once with the parser flattening and
 // once with it rendering structure -- at one shared prompt budget applied identically
@@ -82,6 +94,8 @@ func main() {
 		os.Exit(runGoldSetWorksheet(rest))
 	case "goldset-confirm-sheet":
 		os.Exit(runGoldSetConfirmSheet(rest))
+	case "goldset-ui":
+		os.Exit(runGoldSetUI(rest))
 	case "goldset-apply":
 		os.Exit(runGoldSetApply(rest))
 	case "diff":
