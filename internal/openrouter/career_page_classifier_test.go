@@ -171,3 +171,65 @@ func TestConfirmPromptRequestsCompanyName(t *testing.T) {
 		t.Errorf("classifier request should instruct a null-biased name, got:\n%s", captured)
 	}
 }
+
+// TestConfirmPromptReadsTheStructuralRendering asserts the classifier's user message
+// carries the page's Structural Rendering with link targets omitted (ADR-0046, #280):
+// an openings list reaches the model as headings and list items rather than one run of
+// words, while the hrefs stay out of the prompt window.
+//
+// It decodes the captured body rather than matching it raw: a rendering's tabs and
+// newlines reach the wire as JSON escapes, so a raw match would be asserting about the
+// encoding instead of about the prompt.
+func TestConfirmPromptReadsTheStructuralRendering(t *testing.T) {
+	var captured string
+	srv := newCapturingServer(t, `{"is_career_page":true,"company_name":null}`, &captured)
+
+	classifier := openrouter.NewCareerPageClassifier(openrouter.Config{BaseURL: srv.URL, APIKey: "test"})
+	content := &crawler.Content{Title: "x", MainContent: "#\vOpen positions\n" +
+		"-\v[Backend Engineer](/jobs/backend)\n" +
+		"[input checkbox: role]\tSales Manager (m/w/d)\n" +
+		"[button: Jetzt bewerben]"}
+
+	if _, err := classifier.Confirm(t.Context(), "https://careers.acme.com/jobs", content); err != nil {
+		t.Fatalf("Confirm returned error: %v", err)
+	}
+
+	userMessage := promptMessage(t, captured, "user")
+	for _, want := range []string{
+		"#\vOpen positions",
+		"-\v[Backend Engineer]",
+		"[input checkbox: role]",
+		"[button: Jetzt bewerben]",
+	} {
+		if !strings.Contains(userMessage, want) {
+			t.Errorf("user message should carry the page's structure %q, got:\n%s", want, userMessage)
+		}
+	}
+	for _, unwanted := range []string{"/jobs/backend", "]("} {
+		if strings.Contains(userMessage, unwanted) {
+			t.Errorf("user message should carry no link targets, but contains %q:\n%s", unwanted, userMessage)
+		}
+	}
+}
+
+// TestConfirmPromptIsUnchangedByFlattenedText asserts #280's kill-switch criterion at
+// this seam: with PARSE_STRUCTURAL_RENDERING off the parser hands over Flattened Text,
+// which carries no markers, so the narrowing is the identity and the prompt is
+// byte-identical to the one that shipped before the rendering existed. The scale version
+// runs over all 90 committed fixtures in internal/parser/prompt_variant_test.go.
+func TestConfirmPromptIsUnchangedByFlattenedText(t *testing.T) {
+	var captured string
+	srv := newCapturingServer(t, `{"is_career_page":true,"company_name":null}`, &captured)
+
+	classifier := openrouter.NewCareerPageClassifier(openrouter.Config{BaseURL: srv.URL, APIKey: "test"})
+	const flattened = "Open roles Backend Engineer Apply now"
+	content := &crawler.Content{Title: "x", MainContent: flattened}
+
+	if _, err := classifier.Confirm(t.Context(), "https://careers.acme.com/jobs", content); err != nil {
+		t.Fatalf("Confirm returned error: %v", err)
+	}
+
+	if userMessage := promptMessage(t, captured, "user"); !strings.Contains(userMessage, flattened) {
+		t.Errorf("with the rendering off the user message should carry the page text unchanged (%q), got:\n%s", flattened, userMessage)
+	}
+}

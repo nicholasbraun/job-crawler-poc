@@ -89,7 +89,10 @@ func (w *CareerPageProcessor) Process(ctx context.Context, raw *crawler.RawCaree
 	if raw.Certain {
 		w.recorder.Gated(ctx, llmobs.KindClassify, llmobs.ReasonCertain)
 	} else {
-		w.recorder.Content(ctx, llmobs.KindClassify, raw.Content.MainContent)
+		// The dedup probe hashes the page's Flattened Text (ADR-0046) so it counts
+		// duplicate PAGES, not duplicate renderings: its recurrence numbers must not move
+		// when the parser starts rendering structure.
+		w.recorder.Content(ctx, llmobs.KindClassify, crawler.FlattenedText(raw.Content.MainContent))
 		start := time.Now()
 		verdict, err := w.confirmer.Confirm(ctx, raw.URL.RawURL, &raw.Content)
 		w.recorder.Call(ctx, llmobs.KindClassify, llmobs.Classify(err), time.Since(start))

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/nicholasbraun/job-crawler-poc/cmd/llmbench/bench"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
+	"github.com/nicholasbraun/job-crawler-poc/internal/extractcapture"
 	"github.com/nicholasbraun/job-crawler-poc/internal/pagegate"
 )
 
@@ -2256,5 +2258,135 @@ func TestApplyRetractsAConfirmationWhenAProposalChangesTheLabel(t *testing.T) {
 	}
 	if same[0].LabelProvenance.ConfirmedBy != "A Human" || same[0].LabelProvenance.ConfirmedAt != "2026-08-02T00:00:00Z" {
 		t.Errorf("provenance = %+v; a proposal re-stating the same label retracts nothing", same[0].LabelProvenance)
+	}
+}
+
+// TestCapturedRendererReachesTheGoldSetRow drives the ticket's round trip through
+// the capture file itself (#281): the live tap writes a record, the gold-set
+// decoder reads it, and the renderer survives into a written substrate row. The
+// capture is produced by internal/extractcapture rather than a hand-built line, so
+// this fails if the two formats ever drift apart.
+func TestCapturedRendererReachesTheGoldSetRow(t *testing.T) {
+	const (
+		renderer    = "structural-v1"
+		url         = "https://acme.test/jobs/go-dev"
+		mainContent = "#\tOpen positions\n-\t[Go Developer](/jobs/go-dev)"
+	)
+
+	capturePath := filepath.Join(t.TempDir(), "capture.jsonl")
+	hook, closer, err := extractcapture.New(capturePath, 0, renderer)
+	if err != nil {
+		t.Fatalf("extractcapture.New: %v", err)
+	}
+	hook(t.Context(), url, true, &crawler.Content{Title: "Go Developer", MainContent: mainContent, JSONLD: []string{lonePostingLD}})
+	if err := closer.Close(); err != nil {
+		t.Fatalf("close capture: %v", err)
+	}
+
+	line, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read capture: %v", err)
+	}
+	var row goldRow
+	if err := json.Unmarshal(line, &row); err != nil {
+		t.Fatalf("decode capture line %s as a goldRow: %v", line, err)
+	}
+	if row.Renderer != renderer {
+		t.Errorf("renderer = %q, want %q -- the tap's stamp must reach the gold-set decoder", row.Renderer, renderer)
+	}
+	if row.URL != url || !row.Verdict || row.Content.MainContent != mainContent {
+		t.Errorf("the stamp disturbed the record beside it: url=%q verdict=%v main content=%q", row.URL, row.Verdict, row.Content.MainContent)
+	}
+
+	out := filepath.Join(t.TempDir(), goldSetFile)
+	if err := writeGoldSet(out, []goldRow{row}); err != nil {
+		t.Fatalf("writeGoldSet: %v", err)
+	}
+	written, err := readGoldSet(out)
+	if err != nil {
+		t.Fatalf("readGoldSet: %v", err)
+	}
+	if len(written) != 1 {
+		t.Fatalf("wrote 1 row, read back %d", len(written))
+	}
+	if written[0].Renderer != renderer {
+		t.Errorf("renderer = %q after a substrate round trip, want %q", written[0].Renderer, renderer)
+	}
+	if written[0].Content.MainContent != mainContent {
+		t.Errorf("main content = %q after a substrate round trip, want %q", written[0].Content.MainContent, mainContent)
+	}
+}
+
+// TestPreStampCaptureRowCarriesNoRenderer verifies a capture record written before
+// the renderer stamp existed still decodes, and re-serializes with no renderer at
+// all (#281). An empty-but-present renderer would be a claim the row cannot
+// support: those rows carry an UNKNOWN renderer and are ADR-0047's population.
+func TestPreStampCaptureRowCarriesNoRenderer(t *testing.T) {
+	line := capturedPage(t, "https://acme.test/jobs/old", true, "2026-08-01T10:00:00Z", []string{lonePostingLD}, "apply now")
+
+	var row goldRow
+	if err := json.Unmarshal([]byte(line), &row); err != nil {
+		t.Fatalf("decode a pre-stamp capture line: %v", err)
+	}
+	if row.Renderer != "" {
+		t.Errorf("renderer = %q on a row that never carried one, want empty", row.Renderer)
+	}
+	if row.URL == "" || row.Content.MainContent == "" {
+		t.Fatalf("the pre-stamp line did not decode: %+v", row)
+	}
+
+	out := filepath.Join(t.TempDir(), goldSetFile)
+	if err := writeGoldSet(out, []goldRow{row}); err != nil {
+		t.Fatalf("writeGoldSet: %v", err)
+	}
+	written, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read re-written row: %v", err)
+	}
+	if strings.Contains(string(written), `"renderer"`) {
+		t.Errorf("re-serializing a pre-stamp row emitted a renderer key: %s", written)
+	}
+}
+
+// TestCommittedGoldSetIsByteStableThroughTheDecoder reads the committed substrate
+// and writes it straight back, asserting the bytes are identical. Every goldset-*
+// verb rewrites the whole file, so a row-format change that decodes-and-re-encodes
+// differently rewrites all 457 rows the next time anyone applies a label -- a 6.3 MB
+// diff nobody reviews, hiding whatever real change came with it.
+//
+// It is also what fails if the "renderer" field ever loses its omitempty (#281): the
+// rows drawn before the stamp existed carry an UNKNOWN renderer, not an empty one,
+// and re-serializing must leave them exactly as they are.
+func TestCommittedGoldSetIsByteStableThroughTheDecoder(t *testing.T) {
+	path := filepath.Join("extract-goldset", goldSetFile)
+	committed, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read committed gold set: %v", err)
+	}
+
+	rows, err := readGoldSet(path)
+	if err != nil {
+		t.Fatalf("readGoldSet: %v", err)
+	}
+	out := filepath.Join(t.TempDir(), goldSetFile)
+	if err := writeGoldSet(out, rows); err != nil {
+		t.Fatalf("writeGoldSet: %v", err)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read re-written gold set: %v", err)
+	}
+
+	if !bytes.Equal(got, committed) {
+		offset := len(got)
+		for i := range got {
+			if i >= len(committed) || got[i] != committed[i] {
+				offset = i
+				break
+			}
+		}
+		t.Fatalf("re-serializing the committed gold set changed it: %d rows, %d bytes written against %d committed, first difference at byte %d\n"+
+			"a round trip through readGoldSet/writeGoldSet must be the identity, or every goldset-* verb rewrites the whole substrate",
+			len(rows), len(got), len(committed), offset)
 	}
 }

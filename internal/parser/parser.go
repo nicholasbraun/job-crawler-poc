@@ -18,7 +18,28 @@ type Parser interface {
 
 var _ Parser = &HTMLParser{}
 
-type HTMLParser struct{}
+// DefaultStructuralRendering is the parser's shipped behavior: the Flattened Text
+// it has always produced (ADR-0046). Owned here, so cmd/server's knob and the code
+// it configures cannot drift apart (ADR-0045).
+const DefaultStructuralRendering = false
+
+type HTMLParser struct {
+	// structuralRendering makes MainContent a Structural Rendering instead of one
+	// flat run of words. Off by default: rendering walks the DOM a second time on
+	// every page the Discovery Crawl fetches, and every consumer reads the same
+	// bytes either way (crawler.FlattenedText), so nothing downstream moves.
+	structuralRendering bool
+}
+
+// HTMLParserOption configures an HTMLParser.
+type HTMLParserOption func(*HTMLParser)
+
+// WithStructuralRendering turns the Structural Rendering on or off (ADR-0046).
+// RendererID (structural_rendering.go) names the renderer this switch selects, so
+// a captured page can say which one produced it (#281).
+func WithStructuralRendering(on bool) HTMLParserOption {
+	return func(p *HTMLParser) { p.structuralRendering = on }
+}
 
 func (p *HTMLParser) Parse(b []byte) (*crawler.Content, error) {
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(b))
@@ -28,7 +49,7 @@ func (p *HTMLParser) Parse(b []byte) (*crawler.Content, error) {
 
 	content := &crawler.Content{
 		Title:       getTitle(doc),
-		MainContent: getMainContent(doc),
+		MainContent: p.mainContent(doc),
 		URLs:        getUrls(doc),
 		JSONLD:      getJSONLD(doc),
 		SiteName:    getSiteName(doc),
@@ -38,11 +59,36 @@ func (p *HTMLParser) Parse(b []byte) (*crawler.Content, error) {
 	return content, nil
 }
 
-func NewHTMLParser() *HTMLParser {
-	return &HTMLParser{}
+func NewHTMLParser(opts ...HTMLParserOption) *HTMLParser {
+	p := &HTMLParser{structuralRendering: DefaultStructuralRendering}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
-func getMainContent(doc *goquery.Document) string {
+// mainContent renders the page's main region. Both modes take the SAME region from
+// mainRegion and differ only in how it is written down, so turning the Structural
+// Rendering on can never change which part of a page becomes content (ADR-0046).
+// With it off there is no second walk and no rendering built and thrown away: the
+// parser costs exactly what it cost before.
+func (p *HTMLParser) mainContent(doc *goquery.Document) string {
+	sel := mainRegion(doc)
+	if sel == nil {
+		return ""
+	}
+	if p.structuralRendering {
+		return renderStructural(sel)
+	}
+	return normalizeWS(sel.Text())
+}
+
+// mainRegion returns the cloned, script-stripped region the parser has always
+// picked, or nil for a document with no body. The chrome decision is taken on the
+// region's plain text in BOTH modes: deciding "did stripping chrome empty this
+// page?" on a rendering would let a page of images and form controls keep furniture
+// that today it drops.
+func mainRegion(doc *goquery.Document) *goquery.Selection {
 	// A page that declares a semantic container has already told us where its content
 	// is, so that region is taken as-is. Chrome INSIDE it is left alone deliberately:
 	// on a compact career page the surrounding nav often carries the load-bearing
@@ -59,26 +105,31 @@ func getMainContent(doc *goquery.Document) string {
 		if selection.Length() == 1 {
 			// Clone before stripping: Remove detaches nodes from the shared doc,
 			// which would delete the ld+json <script> blocks getJSONLD reads next.
-			clone := selection.Clone()
-			clone.Find("script, style, noscript, svg, template").Remove()
-			return normalizeWS(clone.Text())
+			return stripNonContent(selection.Clone())
 		}
 	}
 
 	// No semantic container: everything, chrome included, would otherwise become
 	// content. This is the only case where site furniture is dropped (#270).
 	if body := doc.FindMatcher(goquery.Single("body")); body.Length() == 1 {
-		clone := body.Clone()
-		clone.Find("script, style, noscript, svg, template").Remove()
-		return withoutChrome(clone)
+		return withoutChrome(body)
 	}
 
-	return ""
+	return nil
 }
 
-// withoutChrome drops site furniture — nav, header, footer, aside — from an already
-// script-stripped <body> selection (#270). Callers with a semantic container must not
-// use it; see getMainContent for why.
+// stripNonContent removes the elements whose text is never page content — scripts,
+// styles, noscript fallbacks, inline SVG and inert templates — from a CLONE, and
+// returns it. Callers must clone first: Remove detaches nodes from the shared
+// document, which would delete the ld+json blocks getJSONLD reads next.
+func stripNonContent(clone *goquery.Selection) *goquery.Selection {
+	clone.Find("script, style, noscript, svg, template").Remove()
+	return clone
+}
+
+// withoutChrome returns the page's <body> as a stripped clone with the site
+// furniture — nav, header, footer, aside — dropped (#270). Callers with a semantic
+// container must not use it; see mainRegion for why.
 //
 // A page with no semantic container otherwise contributes its whole navigation menu as
 // content. A site that lists its openings in a global nav then puts a job-openings list
@@ -91,17 +142,19 @@ func getMainContent(doc *goquery.Document) string {
 // to nothing: dropping to empty would lose the page entirely at the Extract Gate, which is
 // a worse failure than a noisy body. So this never returns less than the unstripped text
 // would have.
-func withoutChrome(sel *goquery.Selection) string {
-	chrome := sel.Find("nav, header, footer, aside")
+func withoutChrome(body *goquery.Selection) *goquery.Selection {
+	clone := stripNonContent(body.Clone())
+	chrome := clone.Find("nav, header, footer, aside")
 	if chrome.Length() == 0 {
-		return normalizeWS(sel.Text())
+		return clone
 	}
-	withChrome := normalizeWS(sel.Text())
 	chrome.Remove()
-	if body := normalizeWS(sel.Text()); body != "" {
-		return body
+	if normalizeWS(clone.Text()) != "" {
+		return clone
 	}
-	return withChrome
+	// Rare: the page's only text lives in its furniture, so the unstripped clone is
+	// rebuilt here rather than kept alongside the stripped one on every page.
+	return stripNonContent(body.Clone())
 }
 
 // normalizeWS collapses every run of whitespace (including the newlines and tabs

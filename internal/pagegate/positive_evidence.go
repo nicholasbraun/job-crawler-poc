@@ -427,10 +427,11 @@ func vocabularyGroupCount(body string) int {
 	return groups
 }
 
-// foldedBody returns content's main text case-folded and whitespace-collapsed, so
-// a phrase split across a line break still matches. The parser already collapses
-// whitespace; this repeats it so a captured or hand-written Content is read the
-// same way.
+// foldedBody returns the page's Flattened Text (ADR-0046), case-folded, so a phrase
+// split across a line break — or across a heading or list item once the parser renders
+// structure — still matches. Deriving it here rather than reading the field raw is what
+// keeps every mark scoring exactly the text it scores today, whether the parser is
+// rendering structure or not.
 //
 // It lowercases here rather than leaving it to containsAny even though containsAny
 // would fold it anyway: the body marks call containsAny up to six times per page,
@@ -440,5 +441,5 @@ func vocabularyGroupCount(body string) int {
 // re-fold inside a mark. Idempotent, so the second fold inside containsAny is a
 // no-op.
 func foldedBody(content *crawler.Content) string {
-	return strings.ToLower(strings.Join(strings.Fields(content.MainContent), " "))
+	return strings.ToLower(crawler.FlattenedText(content.MainContent))
 }

@@ -384,6 +384,17 @@ func TestWithdrawalNotice(t *testing.T) {
 			want: true,
 		},
 		{
+			// The phrases carry literal spaces, so a banner broken across the lines a
+			// Structural Rendering introduces would go unseen if the guard read the
+			// content field raw. It reads the page's Flattened Text instead (ADR-0046),
+			// and a missed banner puts a job that does not exist into the Corpus with no
+			// model in the loop and no way back out.
+			name:        "a banner broken across a rendering's line structure",
+			description: declared,
+			mainContent: "Data Operations Specialist\n\nThis job is no longer\naccepting applications\n\n" + declared,
+			want:        true,
+		},
+		{
 			name:        "a removal banner naming the time it happened",
 			description: declared,
 			mainContent: "Product Training Specialist Sorry, this job was removed at 04:14 p.m. (MST) on Saturday. " + declared,

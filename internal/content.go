@@ -5,7 +5,15 @@ package crawler
 // pointer; the Raw* candidate structs (RawJobListing, RawCareerPage) embed it by
 // value.
 type Content struct {
-	Title       string
+	Title string
+	// MainContent is the page's content as the parser produced it: a Structural
+	// Rendering when PARSE_STRUCTURAL_RENDERING is on, today's Flattened Text when it
+	// is off. A consumer that wants the plain run of words derives it with FlattenedText
+	// rather than reading this field raw (ADR-0046), which is what keeps the Posting
+	// Body, the extraction-cache key and the Gate's phrase marks reading exactly what
+	// they read today; the two LLM prompts derive their own variant with
+	// WithoutLinkTargets. Only the extract-capture tap stores it verbatim, because a
+	// captured row is meant to record what the parser produced.
 	MainContent string
 	URLs        []string
 	// JSONLD holds the raw contents of each <script type="application/ld+json">

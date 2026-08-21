@@ -16,6 +16,12 @@ import (
 //
 // Its value is PERSISTED (job_listing.source_hash) and must never change: a
 // different value here silently re-extracts the whole Corpus.
+//
+// Callers therefore pass FLATTENED TEXT, never a Structural Rendering (ADR-0046): a
+// rendering reaching this hash re-keys ~46k rows in one wave. The flatten stays at the
+// two call sites — the save processor and the refetch lane — rather than being hidden
+// in here, because both stub this function in their tests, and a derivation applied
+// behind a stubbed seam is a production behaviour no test exercises.
 func SourceHash(content string, maxChars int) string {
 	sum := sha256.Sum256([]byte(capChars(content, maxChars)))
 	return hex.EncodeToString(sum[:])

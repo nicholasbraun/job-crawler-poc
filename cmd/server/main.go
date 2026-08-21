@@ -197,6 +197,35 @@ func main() {
 	// see it; this is the switch to pull if it does.
 	requirePositiveEvidence := ld.Bool("EXTRACT_REQUIRE_POSITIVE_EVIDENCE", true)
 
+	// PARSE_STRUCTURAL_RENDERING makes the parser keep a page's structure instead of
+	// flattening it (ADR-0046), default false: the Flattened Text it has always
+	// produced. Set true and the parser renders headings, list items, table rows,
+	// link targets and form controls -- the difference between one application form
+	// offering three roles and an index of three roles. Every NON-MODEL consumer still
+	// reads crawler.FlattenedText -- the Posting Body, the extraction-cache key, the
+	// Gate's phrase marks, the duplication probe -- so nothing persisted moves, and the
+	// round-trip is asserted byte for byte over the 90 committed fixtures. What the
+	// switch really changes for a running crawl is the two LLM prompts: the classifier
+	// and the extractor read the rendering with link targets omitted (#280). Setting it
+	// back to false restores today's parser exactly, with no second DOM walk on any page
+	// the Discovery Crawl fetches.
+	//
+	// Which way to set it DEPENDS ON THE MODEL (#289). Scored online over re-fetched real
+	// postings, the rendering left a 9B's recall unchanged at 92% -- it has no headroom --
+	// but on the pages that actually REACH the model (Free Extraction takes the rest with
+	// no call at all) it nearly doubled a 3B instruct model's recall, 28.0%->50.6%. What
+	// falls through carries no usable JSON-LD, so the DOM is the only signal left, and
+	// discarding it costs most exactly where the model is weakest. Whoever changes
+	// LLM_MODEL owns re-deciding this, with cmd/extractbench -fixtures ... -structural.
+	//
+	// One thing the switch does NOT gate: crawler.FlattenedText now sits in front of the
+	// persisted paths unconditionally, so page text that itself contains marker syntax
+	// ("[select all]", a literal "](") is rewritten whether this is on or off. Measured
+	// zero across the 90 committed fixtures and all 457 Extract Gold Set rows, and
+	// asserted by TestFlattenedTextIsIdentityOnTodaysOutput -- but "off is byte-identical
+	// to before the renderer existed" is true of the parser, not of the derivation.
+	structuralRendering := ld.Bool("PARSE_STRUCTURAL_RENDERING", parser.DefaultStructuralRendering)
+
 	// CRAWL_MAX_WORKERS sizes the per-run discovery worker pool — how many pages
 	// are downloaded and processed in parallel per run. Crawl workers are
 	// I/O-bound (blocked on network downloads), so this
@@ -278,7 +307,7 @@ func main() {
 	savedSearchRepository := postgres.NewSavedSearchRepository(pgPool)
 
 	factory := newFactory(crawlMaxWorkers, visitedCap, robotsCacheTTL, robotsCacheSize, llmMaxWorkers, llmConfig,
-		descriptionMaxChars, extractFromJSONLD, shadowExtractRate, requirePositiveEvidence,
+		descriptionMaxChars, extractFromJSONLD, shadowExtractRate, requirePositiveEvidence, structuralRendering,
 		redisClient, companyRepository, careerPageRepository, corpusRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory,
 		// One cleaner sweeps all of a run's transient Redis state on a terminal
@@ -413,6 +442,7 @@ func newFactory(
 	extractFromJSONLD bool,
 	shadowExtractRate float64,
 	requirePositiveEvidence bool,
+	structuralRendering bool,
 	redisClient *redis.Client,
 	companyRepository crawler.CompanyRepository,
 	careerPageRepository crawler.CareerPageRepository,
@@ -424,7 +454,7 @@ func newFactory(
 	sharedTransport := downloader.NewCachingTransport()
 	httpClient := downloader.NewClient(userAgent, downloader.WithTransport(sharedTransport))
 	retryHTTPClient := downloader.NewRetryClient(httpClient)
-	htmlParser := parser.NewHTMLParser()
+	htmlParser := parser.NewHTMLParser(parser.WithStructuralRendering(structuralRendering))
 
 	robotsTxtParser := temoto.NewRobotsTxtParser(userAgent)
 	robotsTxtDownloader := robotstxt.NewRobotsTxtDownloader(userAgent, sharedTransport)
@@ -446,6 +476,10 @@ func newFactory(
 	}
 	slog.Info("free extraction (ADR-0042)", "enabled", extractFromJSONLD)
 	slog.Info("shadow extraction (ADR-0044)", "rate", shadowExtractRate)
+	// The renderer is stamped on every extract-capture record and decides what the
+	// two prompts read, so which one is running has to be legible from the log
+	// rather than inferred from the environment (ADR-0046).
+	slog.Info("structural rendering (ADR-0046)", "enabled", structuralRendering, "renderer", htmlParser.RendererID())
 
 	// The extraction-cache key (ADR-0035): ONE closure over the extractor's prompt
 	// window, handed to both the save processor that stamps it and the refetch lane
@@ -698,10 +732,14 @@ func newFactory(
 							collectionMetrics.Found(ctx)
 						},
 						// Extract Gold Set harvest tap (#116, ADR-0043): off unless
-						// EXTRACT_CAPTURE_PATH is set. Emits {url, verdict, ts, content} per
-						// extraction; `llmbench goldset-sample` commits a stratified,
-						// weighted sample of it as the gold set.
-						CaptureDecision: extractcapture.FromEnv(),
+						// EXTRACT_CAPTURE_PATH is set. Emits
+						// {url, verdict, ts, renderer, content} per extraction; `llmbench
+						// goldset-sample` commits a stratified, weighted sample of it as the
+						// gold set. The renderer is taken from the parser that actually
+						// produces the captured content rather than re-derived from the kill
+						// switch here, so a harvest run with PARSE_STRUCTURAL_RENDERING on is
+						// distinguishable row by row from one with it off (ADR-0046, #281).
+						CaptureDecision: extractcapture.FromEnv(htmlParser.RendererID()),
 					})
 				},
 				llmstream.WithWorkers[crawler.RawJobListing](llmMaxWorkers),

@@ -201,12 +201,13 @@ COLLECTION_INTERVAL: must be a positive Go duration (e.g. 90s, 5m, 24h), got "da
 | `LLM_MODEL`          | `openai/gpt-5.4-nano`                       | Model name to request (locally, a non-reasoning instruct model, e.g. `qwen2.5:3b`) |
 | `LLM_TIMEOUT`        | `5m`                                        | Per-request timeout (Go duration); covers time queued on the server |
 | `LLM_MAX_WORKERS`    | `2`                                         | Consumers draining each per-run LLM stream; keep low for a serial local model, raise for a parallel cloud API |
-| `LLM_CLASSIFY_MAX_CHARS` | `1500`                                  | Cap (runes) on page text sent to the career-page classifier; the signal is near the top of the page |
-| `LLM_EXTRACT_MAX_CHARS`  | `8000`                                  | Cap (runes) on page text sent to the job-listing extractor |
+| `LLM_CLASSIFY_MAX_CHARS` | `1500`                                  | Cap (runes) on page text sent to the career-page classifier; the signal is near the top of the page. Applied to the Structural Rendering when `PARSE_STRUCTURAL_RENDERING` is on (~1.1x the Flattened Text, so the same cap shows ~10% less page) |
+| `LLM_EXTRACT_MAX_CHARS`  | `8000`                                  | Cap (runes) on page text sent to the job-listing extractor; likewise applied to the Structural Rendering when `PARSE_STRUCTURAL_RENDERING` is on |
 | `DESCRIPTION_MAX_CHARS`  | `16000`                                 | Cap (runes) on the stored Posting Body; its own knob, independent of the extractor's prompt window |
 | `EXTRACT_FROM_JSONLD`    | `true`                                  | Free Extraction kill switch (ADR-0042): read a lone structured-data posting with no model call |
 | `EXTRACT_REQUIRE_POSITIVE_EVIDENCE` | `true`                       | Extract Gate must see positive evidence a page *is* one posting, not just that nothing rejected it (ADR-0044) |
 | `SHADOW_EXTRACT_RATE`    | `0.01`                                  | Fraction of Extract-Gate-rejected pages extracted anyway to measure false-drops; `0` disables |
+| `PARSE_STRUCTURAL_RENDERING` | `false`                             | Parser keeps page structure — headings, list items, table rows, link targets, form controls (ADR-0046); non-model consumers still read the Flattened Text derived from it, while the classifier and extractor prompts read the rendering with link targets omitted. `false` restores today's flattened output and skips the second DOM walk. Measured by `llmbench score-rendering`: the Extract Gate decides identically under both renderings (0 flips over 116 committed pages), and at the 8000-rune budget the rendering costs 1.80% of the page words the extractor sees. **The right setting depends on the model you serve** (#289): scored online over re-fetched real postings, it left a Qwen3.5-9B's recall unchanged at 92%, but on the 83 pages that actually reach the model (i.e. excluding those Free Extraction handles with no model call) it nearly doubled a Qwen2.5-3B-Instruct's recall, 28.0%→50.6%, for ~+68% wall time — turn it on for a small local model, leave it off for a large one, and re-decide it with `extractbench` whenever `LLM_MODEL` changes |
 | `CRAWL_MAX_WORKERS`  | `50`                                        | Per-run crawl worker pool size (I/O-bound; raise for throughput) |
 | `CRAWL_VISITED_CAP`  | `5000000`                                   | Per-run ceiling on the visited set before FIFO eviction (ADR-0027) |
 | `ROBOTS_CACHE_SIZE`  | `16384`                                     | Hosts held in the shared robots.txt rules cache (ADR-0032) |
@@ -216,7 +217,7 @@ COLLECTION_INTERVAL: must be a positive Go duration (e.g. 90s, 5m, 24h), got "da
 | `DATABASE_URL`       | `postgres://crawler:crawler@localhost:5432/crawler?sslmode=disable` | Postgres DSN |
 | `REDIS_ADDR`         | `localhost:6379`                            | Redis `host:port`                    |
 | `LOG_LEVEL`          | `INFO`                                      | slog level (DEBUG/INFO/WARN/ERROR)   |
-| `EXTRACT_CAPTURE_PATH` | —                                         | When set, taps every extract decision to a JSONL file for gold-set harvesting (ADR-0043) |
+| `EXTRACT_CAPTURE_PATH` | —                                         | When set, taps every extract decision to a JSONL file for gold-set harvesting (ADR-0043). Each record names the renderer that produced its content, so a harvest under `PARSE_STRUCTURAL_RENDERING` is distinguishable from one without it (ADR-0046) |
 
 Crawl tuning defaults (max depth, the baseline Discovery seed list, and the
 URL-filter lists that steer crawls toward career pages) live in Go —
@@ -255,6 +256,12 @@ against curated fixtures — the **Gold Set** for the career-page Gate and the
 **Extract Gold Set** (real pages the live extract stage decided on) for the
 Extract Gate — so a gate change is measured before it ships, with no network and
 no model in the loop.
+
+Its `score-rendering` verb is the same discipline applied to the parser: it
+replays the extract path over the committed pages twice, once with the parser
+flattening and once with it rendering structure, at one shared prompt budget, and
+prints each arm's extract-call rate and false-drop count beside the delta between
+them. It exits non-zero when the two arms disagree, never on their level.
 
 ## Project Structure
 

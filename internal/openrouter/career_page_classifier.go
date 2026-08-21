@@ -89,12 +89,19 @@ func NewCareerPageClassifier(cfg Config) *CareerPageClassifier {
 // seed), and page content is sealed as untrusted DATA so an injected name can at
 // most set a display-only label, never Company identity.
 func (c *CareerPageClassifier) Confirm(ctx context.Context, url string, content *crawler.Content) (careerpageprocessor.Verdict, error) {
+	// The prompt reads the page's Structural Rendering with link targets omitted
+	// (ADR-0046): an openings list reaches the model as list items and headings rather
+	// than one run of words, while the hrefs stay out because carrying them would cost
+	// about a quarter of the prompt window at an unchanged cap. With
+	// PARSE_STRUCTURAL_RENDERING off the parser hands over Flattened Text, which carries
+	// no markers, so the narrowing is the identity and the prompt is byte-identical to
+	// today's. PromptForm owns the narrow-then-cap order and why it is load-bearing.
 	userContent := fmt.Sprintf(
 		"%s\nURL: %s\nTitle: %s\n\n%s\n%s",
 		untrustedOpen,
 		sealUntrusted(url),
 		sealUntrusted(content.Title),
-		sealUntrusted(capChars(content.MainContent, c.classifyMaxChars)),
+		sealUntrusted(PromptForm(content.MainContent, c.classifyMaxChars)),
 		untrustedClose,
 	)
 	reqBody := chatRequest{

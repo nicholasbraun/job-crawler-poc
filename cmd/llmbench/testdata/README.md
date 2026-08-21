@@ -82,3 +82,9 @@ green:
 `llmbench capture <url>` appends a fixture + stub; label it and set `verified: true`
 to fold new pages in. Keep every stratum populated
 (`TestLoadManifest_CommittedSet` guards this).
+
+Adding or removing a page here also changes what `internal/parser`'s Flattened Text
+golden artefact covers, so regenerate it in the same commit with `go test
+./internal/parser/ -run TestFlattenedTextGolden -update` — see
+[`internal/parser/testdata/README.md`](../../../internal/parser/testdata/README.md) for
+when that is legitimate.

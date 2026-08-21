@@ -30,7 +30,10 @@ survive as cheap regression cases for the reject rungs and nothing more.
 | `expected.tsv` | The second review surface (#256): one line per row the Free Extraction fires on — its expected title, location and working mode, plus any accepted fire. 51 lines. Also rendered from the substrate, also drift-tested. |
 
 `goldRow` is the extract-capture record (`internal/extractcapture`: `url`, `verdict`,
-`ts`, `content`) **extended in place**, not a new format. An unlabeled capture file and
+`ts`, `renderer`, `content`) **extended in place**, not a new format. All 457 committed
+rows predate the renderer stamp (#281) and therefore carry no `renderer` at all: they
+were drawn from a capture written before the field existed, so their renderer is
+*unknown* rather than empty (ADR-0046, ADR-0047). An unlabeled capture file and
 a labelled gold-set row therefore read through the same decoder, `score-capture` scores
 this file unchanged, and a later spec can add a random stratum or the `expected`
 field-fidelity block with no migration.

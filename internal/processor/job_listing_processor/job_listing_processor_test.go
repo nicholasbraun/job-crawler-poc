@@ -56,6 +56,10 @@ type spyRecorder struct {
 	calls   []recordedCall
 	gates   []recordedGate
 	content int
+	// contentTexts holds what the duplication probe was actually handed, so a test can
+	// assert the FORM as well as the count: the probe counts duplicate pages, so it
+	// must digest Flattened Text on both sides of the rendering kill switch (ADR-0046).
+	contentTexts []string
 }
 
 func (s *spyRecorder) Call(_ context.Context, k llmobs.Kind, o llmobs.Outcome, _ time.Duration) {
@@ -66,9 +70,12 @@ func (s *spyRecorder) Gated(_ context.Context, k llmobs.Kind, r llmobs.Reason) {
 }
 func (s *spyRecorder) Shadow(context.Context, llmobs.ShadowVerdict, string) {}
 func (s *spyRecorder) ShadowDropped(context.Context, string)                {}
-func (s *spyRecorder) Content(_ context.Context, _ llmobs.Kind, _ string)   { s.content++ }
-func (s *spyRecorder) Retry(context.Context, llmobs.Kind)                   {}
-func (s *spyRecorder) DeadLetter(context.Context, llmobs.Kind)              {}
+func (s *spyRecorder) Content(_ context.Context, _ llmobs.Kind, text string) {
+	s.content++
+	s.contentTexts = append(s.contentTexts, text)
+}
+func (s *spyRecorder) Retry(context.Context, llmobs.Kind)      {}
+func (s *spyRecorder) DeadLetter(context.Context, llmobs.Kind) {}
 func (s *spyRecorder) QueueDepth(context.Context, llmobs.Kind, int64, int64) {
 }
 
@@ -454,6 +461,54 @@ func TestJobListingProcessorStampsSourceHash(t *testing.T) {
 	if want := testSourceHash(raw.Content.MainContent); repo.saved[0].SourceHash != want {
 		t.Errorf("SourceHash = %q, want %q (keyed on the page's main content at save)",
 			repo.saved[0].SourceHash, want)
+	}
+}
+
+// TestJobListingProcessorKeysOnFlattenedText asserts the save side stamps the
+// extraction-cache key over the page's Flattened Text (ADR-0046), not over the content
+// field raw. It is one half of a pair: the refetch lane recomputes the key the same way
+// (internal/collection, TestRefetchComparesTheKeyOverFlattenedText), and if only one of
+// the two flattens, every stored listing reads as changed and the whole Corpus
+// re-extracts in one wave the moment the parser starts rendering structure.
+//
+// It also pins the duplication probe's input, which must be the same form for the same
+// reason: it counts duplicate PAGES, so its recurrence numbers would jump when the
+// rendering kill switch flips.
+func TestJobListingProcessorKeysOnFlattenedText(t *testing.T) {
+	repo := &spyJobListingRepo{}
+	rec := &spyRecorder{}
+	proc := joblistingprocessor.NewProcessor(&joblistingprocessor.Config{
+		Corpus: repo,
+		JobListingExtractor: &stubExtractor{
+			result:    crawler.JobListing{Title: "Engineer"},
+			isPosting: true,
+		},
+		Recorder:   rec,
+		SourceHash: testSourceHash,
+	})
+
+	raw := &crawler.RawJobListing{
+		URL:     newURL(t, "https://careers.acme.com/jobs/1"),
+		Content: crawler.Content{MainContent: "we are hiring\n\n- Go"},
+	}
+	if err := proc.Process(t.Context(), raw); err != nil {
+		t.Fatalf("Process returned error: %v", err)
+	}
+
+	if len(repo.saved) != 1 {
+		t.Fatalf("want 1 listing saved, got %d", len(repo.saved))
+	}
+	if want := testSourceHash("we are hiring - Go"); repo.saved[0].SourceHash != want {
+		t.Errorf("SourceHash = %q, want %q (keyed on the page's Flattened Text at save)",
+			repo.saved[0].SourceHash, want)
+	}
+
+	if len(rec.contentTexts) != 1 {
+		t.Fatalf("want 1 duplication-probe record, got %d", len(rec.contentTexts))
+	}
+	if want := "we are hiring - Go"; rec.contentTexts[0] != want {
+		t.Errorf("duplication probe saw %q, want %q (the page's Flattened Text)",
+			rec.contentTexts[0], want)
 	}
 }
 
