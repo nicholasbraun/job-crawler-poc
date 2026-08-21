@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -80,7 +81,9 @@ import (
 // random stratum is SPOT-CHECKED instead (randomSpotChecks), which is what ADR-0043
 // asks of it; the boundary stratum must be FULLY confirmed
 // (pendingBoundaryConfirmations), because it is the stratum a hard-zero false-drop
-// guard is decided on.
+// guard is decided on. Every one of those counts is a one-directional ratchet rather
+// than a pin (ADR-0048); which rows carry a confirmer is pinned instead, across both
+// files, by TestCommittedRecordAgreesOnWhoConfirmedWhat.
 
 // pendingHumanConfirmations is how many lone-posting rows still carry an
 // LLM-proposed label no human has confirmed. #254 requires 0.
@@ -90,8 +93,12 @@ import (
 // refuses them by that banner, so their labels are confirmed and they no longer fire.
 // What remains is one open-application page labelled detail where the same shape is
 // labelled residue elsewhere in the set -- a labelling inconsistency the set should
-// answer the same way twice, written up in the Extract Gold Set README. RATCHET:
-// lower it as confirmations land, never raise it.
+// answer the same way twice, written up in the Extract Gold Set README.
+//
+// RATCHET, asserted in ONE direction only (confirmationFloor, ADR-0048): a pending
+// count that RISES fails the build, because that means a signature vanished; one that
+// falls is logged with the number to set this to, never fatal. Lower it in the same
+// commit as the confirmations -- `goldset-apply` prints the new figure.
 const pendingHumanConfirmations = 1
 
 // pendingExpectedConfirmations is how many rows carry an agent-proposed expected
@@ -99,8 +106,9 @@ const pendingHumanConfirmations = 1
 // each page's own JSON-LD by scripts/propose-expected.sh and a human confirms them
 // at the review gate. It is 1, the same row pendingHumanConfirmations holds back: an
 // expected extraction cannot be confirmed while the label it is scored under is in
-// question. Like pendingHumanConfirmations it is a RATCHET -- lower it as
-// confirmations land, never raise it.
+// question. Like pendingHumanConfirmations it is a one-directional RATCHET
+// (confirmationFloor, ADR-0048): a rise fails the build, a fall is logged with the
+// number to lower it to.
 const pendingExpectedConfirmations = 1
 
 const (
@@ -109,6 +117,10 @@ const (
 	// drawing is a fixed act of sampling: a row appearing or vanishing changes what
 	// every weighted number estimates, and must be seen in a diff. The boundary count
 	// is not even a sample size -- it is the size of the disagreement itself.
+	//
+	// Unlike the confirmation counts below they are NOT floors: ADR-0048 relaxed those
+	// because confirmations landing is progress, and a row appearing or vanishing never
+	// is.
 	structuralStratumRows = 149
 	randomStratumRows     = 120
 	boundaryStratumRows   = 188
@@ -122,10 +134,17 @@ const (
 
 // randomSpotChecks is how many random-stratum rows a human has actually read and
 // confirmed. ADR-0043 asks this stratum to be SPOT-CHECKED rather than fully
-// confirmed, so unlike pendingHumanConfirmations this is a ratchet that RISES: it is
-// the machine-visible record of what has been checked, and what is therefore still
-// owed. It is 4 of 120 -- the rest ship LLM-proposed, and extract-goldset/README.md
-// tells the reviewer exactly which 20 rows to read and how to raise it.
+// confirmed, so unlike the pending counts this figure RISES as work lands: it is the
+// machine-visible record of what has been checked, and what is therefore still owed.
+//
+// It is a FLOOR (confirmationFloor, ADR-0048), not a pin: falling below it fails the
+// build, because a spot-check that vanished means a signature was lost; rising above
+// it only logs the figure to raise it to. It was asserted in both directions until
+// nine confirmations that LANDED (52a8c15) turned `main` red, and it stayed red until
+// the constant was hand-edited (ead832e).
+//
+// It is 4 of 120 -- the rest ship LLM-proposed, and extract-goldset/README.md tells
+// the reviewer exactly which rows to read and how to raise it.
 const randomSpotChecks = 4
 
 const (
@@ -137,13 +156,16 @@ const (
 	// It ships at the full stratum count: the labels were proposed in twelve 16-row
 	// batches and nobody has read them yet. Until it reaches 0, the false-drop count
 	// this stratum produces is one model's opinion of another model's opinion and no
-	// guard may act on it. RATCHET: lower it as confirmations land, never raise it.
+	// guard may act on it. RATCHET in ONE direction (confirmationFloor, ADR-0048): a
+	// rise fails the build, a fall is logged with the number to lower it to.
 	// extract-goldset/README.md says exactly how.
 	pendingBoundaryConfirmations = 188
 	// ambiguousRows is how many rows carry the ambiguous label -- pages a reading
 	// could not settle, recorded rather than forced into a class. Pinned in BOTH
 	// directions: an ambiguity that appears, or one that quietly resolves, changes
-	// what the confusion counts are computed over and must be seen in a diff.
+	// what the confusion counts are computed over and must be seen in a diff. It is
+	// deliberately NOT one of ADR-0048's floors: marking a page unresolvable is a rare,
+	// deliberate keystroke, and it should stop the build until it is acknowledged.
 	ambiguousRows = 10
 	// boundaryDetailRows is how many Boundary Stratum rows are labelled detail. Until
 	// #257 that was also how many Job Listings the Positive Evidence rule dropped
@@ -206,6 +228,63 @@ const (
 	// applyPhrases overlap put them back together.
 	boundaryAmbiguousSkipped = 10
 )
+
+// confirmationFloor is the shape every confirmation guard takes since ADR-0048: a
+// recorded standard that fails the build only in the direction that means a human
+// signature VANISHED, and logs the current figure in the direction that means work
+// landed.
+//
+// THE SECOND DIRECTION WAS DROPPED DELIBERATELY. Do not restore it as a fix.
+// Asserted as an equality, a confirmation that LANDED failed the build until somebody
+// hand-edited a constant -- nine of them did exactly that (52a8c15, green again only
+// in ead832e) -- and a tool that makes confirmation cheap makes that worse in
+// proportion to how well it works. It was never the safety property it looked like: a
+// confirmation cannot land unseen, because it arrives inside a commit that diffs both
+// goldset.jsonl and labels.tsv, and `goldset-apply` prints the new counts at the end
+// of every run. What the equality was standing in for is asserted directly and more
+// sharply by TestCommittedRecordAgreesOnWhoConfirmedWhat, which names the rows the two
+// files disagree on instead of reporting that a total moved.
+//
+// Row counts and ambiguousRows are NOT floors and stay pinned in both directions
+// (TestCommittedGoldSetIsWellFormed, TestCommittedGoldSetAmbiguityIsRecorded): a
+// drawing is a fixed act of sampling, and an ambiguity that appears or resolves
+// changes what every confusion number is computed over.
+type confirmationFloor struct {
+	// constant names the identifier to edit, so a log line says what to change rather
+	// than merely that something changed.
+	constant string
+	// counts describes what the figure is, in the words the failure should read in.
+	counts string
+	// current is the figure read off the committed record; recorded is the constant.
+	current, recorded int
+	// rises reports which direction confirmations move the figure in: true for a
+	// CONFIRMED count, false for a PENDING count. A pending count is the complement of
+	// a confirmation count over a row count pinned in both directions, so a ceiling on
+	// pending is exactly a floor on confirmations -- which is why both live here.
+	rises bool
+}
+
+// assert fails when the figure moved in the direction that means a signature was lost,
+// and ALWAYS logs the figure: the number a ratchet is set to must never have to be
+// computed by hand (ADR-0048).
+func (f confirmationFloor) assert(t *testing.T) {
+	t.Helper()
+	switch {
+	case f.rises && f.current < f.recorded:
+		t.Errorf("%d %s, BELOW the recorded floor of %d (%s): a human confirmation has vanished from the record. "+
+			"Find it in the diff -- a confirmation is a signature, and the floor may only be lowered by the person who withdraws one.",
+			f.current, f.counts, f.recorded, f.constant)
+	case !f.rises && f.current > f.recorded:
+		t.Errorf("%d %s, ABOVE the recorded ratchet of %d (%s): a human confirmation has vanished from the record. "+
+			"Find it in the diff -- a confirmation is a signature, and the ratchet may only be raised by the person who withdraws one.",
+			f.current, f.counts, f.recorded, f.constant)
+	case f.current != f.recorded:
+		t.Logf("%d %s; set %s to %d in the same commit as the confirmations (it is %d)",
+			f.current, f.counts, f.constant, f.current, f.recorded)
+	default:
+		t.Logf("%d %s (%s)", f.current, f.counts, f.constant)
+	}
+}
 
 // loadCommittedGoldSet reads the committed Extract Gold Set. The working directory
 // under `go test` is the package directory, so the relative path resolves without
@@ -1312,8 +1391,10 @@ func TestCommittedGoldSetIsWellFormed(t *testing.T) {
 // confirmation rule: every lone-posting row -- the stratum a later false-drop
 // guard is decided on -- must carry a HUMAN confirmation. Labels land
 // LLM-proposed, so this starts at the full stratum count and is driven to zero by
-// the human's review commit. It also refuses a machine confirmation outright, so
-// the gap can never be closed by the tooling that opened it.
+// the human's review commit; it is asserted as a one-directional ratchet
+// (confirmationFloor, ADR-0048) so that driving it down never turns the build red. It
+// also refuses a machine confirmation outright, so the gap can never be closed by the
+// tooling that opened it.
 func TestCommittedGoldSetHumanConfirmation(t *testing.T) {
 	rows := loadCommittedGoldSet(t)
 
@@ -1331,15 +1412,11 @@ func TestCommittedGoldSetHumanConfirmation(t *testing.T) {
 		}
 	}
 
-	if len(pending) > pendingHumanConfirmations {
-		t.Errorf("%d lone-posting rows await human confirmation, above the ratchet of %d", len(pending), pendingHumanConfirmations)
-	}
-	if len(pending) < pendingHumanConfirmations {
-		t.Errorf("only %d lone-posting rows await confirmation but the ratchet is %d; lower pendingHumanConfirmations to %d", len(pending), pendingHumanConfirmations, len(pending))
-	}
-	if len(pending) > 0 {
-		t.Logf("awaiting human confirmation on %d lone-posting rows (see extract-goldset/README.md)", len(pending))
-	}
+	confirmationFloor{
+		constant: "pendingHumanConfirmations",
+		counts:   "lone-posting rows await human confirmation (see extract-goldset/README.md)",
+		current:  len(pending), recorded: pendingHumanConfirmations,
+	}.assert(t)
 }
 
 // TestCommittedRandomStratumIsWeightedToTheStream is the guard on what the #262
@@ -1395,9 +1472,10 @@ func TestCommittedRandomStratumIsWeightedToTheStream(t *testing.T) {
 
 // TestCommittedGoldSetSpotCheck is the random stratum's honest confirmation record.
 // ADR-0043 asks this stratum to be SPOT-CHECKED rather than fully confirmed, so
-// unlike the lone-posting ratchet this one rises: it asserts in BOTH directions, so
-// neither a confirmation that quietly vanished nor one that landed without the
-// constant moving can pass unseen.
+// unlike the lone-posting ratchet this one rises as work lands. It is a FLOOR
+// (ADR-0048): a spot-check that vanished fails the build, one that landed logs the
+// number to raise the constant to. The direction it lost is asserted more sharply by
+// TestCommittedRecordAgreesOnWhoConfirmedWhat.
 func TestCommittedGoldSetSpotCheck(t *testing.T) {
 	checked := []string{}
 	for _, row := range loadCommittedGoldSet(t) {
@@ -1407,14 +1485,13 @@ func TestCommittedGoldSetSpotCheck(t *testing.T) {
 		checked = append(checked, row.URL)
 	}
 
-	if len(checked) != randomSpotChecks {
-		t.Errorf("%d random rows carry a human confirmation but randomSpotChecks is %d; set it to %d", len(checked), randomSpotChecks, len(checked))
-	}
+	confirmationFloor{
+		constant: "randomSpotChecks",
+		counts:   "random rows carry a human confirmation",
+		current:  len(checked), recorded: randomSpotChecks, rises: true,
+	}.assert(t)
 	for _, url := range checked {
 		t.Logf("spot-checked: %s", url)
-	}
-	if len(checked) == 0 {
-		t.Logf("no random row has been spot-checked yet (see extract-goldset/README.md for the 20 rows to read)")
 	}
 }
 
@@ -1498,15 +1575,11 @@ func TestCommittedGoldSetExpectedConfirmation(t *testing.T) {
 		}
 	}
 
-	if len(pending) > pendingExpectedConfirmations {
-		t.Errorf("%d expected extractions await human confirmation, above the ratchet of %d", len(pending), pendingExpectedConfirmations)
-	}
-	if len(pending) < pendingExpectedConfirmations {
-		t.Errorf("only %d expected extractions await confirmation but the ratchet is %d; lower pendingExpectedConfirmations to %d", len(pending), pendingExpectedConfirmations, len(pending))
-	}
-	if len(pending) > 0 {
-		t.Logf("awaiting human confirmation on %d expected extractions (see extract-goldset/README.md)", len(pending))
-	}
+	confirmationFloor{
+		constant: "pendingExpectedConfirmations",
+		counts:   "expected extractions await human confirmation (see extract-goldset/README.md)",
+		current:  len(pending), recorded: pendingExpectedConfirmations,
+	}.assert(t)
 }
 
 // TestExpectedSheetRoundTrip proves the #256 review surface is lossless for the
@@ -1780,6 +1853,295 @@ func TestCommittedExpectedSheetMatchesTheGoldSet(t *testing.T) {
 	}
 }
 
+// confirmerLine is one row reduced to what the cross-file confirmation guard
+// compares: the id that keys it in both files, the url that names it in a failure,
+// and the confirmer that file claims. Both review sheets render one, so the guard is
+// written once rather than twice over two column layouts.
+type confirmerLine struct{ ID, URL, ConfirmedBy string }
+
+// confirmerMismatch is one row the substrate and a review sheet do not agree a
+// confirmer on. Both sides are carried verbatim: "the two files differ" is a finding
+// nobody can act on, and which file claims what is the whole diagnosis.
+type confirmerMismatch struct {
+	ID  string
+	URL string
+	// InSubstrate and InSheet report whether the row exists in that file at all. A row
+	// one file carries and the other does not is a disagreement in its own right: a
+	// confirmation that vanished with its line is exactly the fault this guard is for.
+	InSubstrate, InSheet bool
+	SubstrateConfirmer   string
+	SheetConfirmer       string
+}
+
+func (m confirmerMismatch) String() string {
+	switch {
+	case !m.InSheet:
+		return fmt.Sprintf("%s %s: the substrate carries it (confirmer %q), the sheet has no such row", m.ID, m.URL, m.SubstrateConfirmer)
+	case !m.InSubstrate:
+		return fmt.Sprintf("%s %s: the sheet carries it (confirmer %q), the substrate has no such row", m.ID, m.URL, m.SheetConfirmer)
+	default:
+		return fmt.Sprintf("%s %s: the substrate says confirmer %q, the sheet says %q", m.ID, m.URL, m.SubstrateConfirmer, m.SheetConfirmer)
+	}
+}
+
+// confirmerDisagreements pairs a substrate against a rendered review sheet by row id
+// and returns every row the two do not agree a confirmer on -- a name in one file and
+// not the other, two different names, or a row only one of them carries -- in id
+// order, so a failure reads the same way twice.
+//
+// Both sides are compared through flattenField because renderSheet collapses tabs and
+// newlines on write: a confirmer the sheet can only hold flattened is a faithful
+// render, not a disagreement. The raw values are what the mismatch reports.
+func confirmerDisagreements(substrate, sheet []confirmerLine) []confirmerMismatch {
+	bySubstrate := map[string]confirmerLine{}
+	for _, l := range substrate {
+		bySubstrate[l.ID] = l
+	}
+	bySheet := map[string]confirmerLine{}
+	for _, l := range sheet {
+		bySheet[l.ID] = l
+	}
+
+	ids := make([]string, 0, len(bySubstrate)+len(bySheet))
+	for id := range bySubstrate {
+		ids = append(ids, id)
+	}
+	for id := range bySheet {
+		if _, dup := bySubstrate[id]; !dup {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+
+	out := []confirmerMismatch{}
+	for _, id := range ids {
+		sub, inSubstrate := bySubstrate[id]
+		sh, inSheet := bySheet[id]
+		if inSubstrate && inSheet && flattenField(sub.ConfirmedBy) == flattenField(sh.ConfirmedBy) {
+			continue
+		}
+		url := sub.URL
+		if !inSubstrate {
+			url = sh.URL
+		}
+		out = append(out, confirmerMismatch{
+			ID: id, URL: url,
+			InSubstrate: inSubstrate, InSheet: inSheet,
+			SubstrateConfirmer: sub.ConfirmedBy, SheetConfirmer: sh.ConfirmedBy,
+		})
+	}
+	return out
+}
+
+// TestCommittedRecordAgreesOnWhoConfirmedWhat is the tripwire that replaces the
+// direction ADR-0048 took off the confirmation ratchets. A total that moved was only
+// ever a proxy for the fault that matters: a signature present in one file and absent
+// from the other. This asserts that directly, row by row, and NAMES the rows.
+//
+// `goldset-apply` writes the substrate and both sheets from one merged slice, so they
+// can only disagree if something outside it touched one of them: a half-applied write,
+// a bad rebase, or a hand edit. TestCommittedLabelsSheetMatchesTheGoldSet already
+// catches that as a byte difference; this says WHICH rows and WHICH confirmers, which
+// is what a person needs in order to fix it.
+func TestCommittedRecordAgreesOnWhoConfirmedWhat(t *testing.T) {
+	rows := loadCommittedGoldSet(t)
+
+	t.Run("labels.tsv", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("extract-goldset", labelsFile))
+		if err != nil {
+			t.Fatalf("read committed sheet: %v", err)
+		}
+		parsed, err := parseSheet(data)
+		if err != nil {
+			t.Fatalf("parse committed sheet: %v", err)
+		}
+
+		substrate := make([]confirmerLine, 0, len(rows))
+		confirmed := 0
+		for _, row := range rows {
+			substrate = append(substrate, confirmerLine{ID: rowID(row.URL), URL: row.URL, ConfirmedBy: row.LabelProvenance.ConfirmedBy})
+			if row.LabelProvenance.ConfirmedBy != "" {
+				confirmed++
+			}
+		}
+		sheet := make([]confirmerLine, 0, len(parsed))
+		for _, line := range parsed {
+			sheet = append(sheet, confirmerLine{ID: line.ID, URL: line.URL, ConfirmedBy: line.ConfirmedBy})
+		}
+
+		for _, m := range confirmerDisagreements(substrate, sheet) {
+			t.Errorf("CONFIRMER DISAGREEMENT %s -- goldset.jsonl and labels.tsv are written from one merged slice, "+
+				"so a difference means something outside `goldset-apply` touched one of them. Re-run the verb and read the diff.", m)
+		}
+		t.Logf("%d of %d rows carry a label confirmer, agreed across both files", confirmed, len(substrate))
+	})
+
+	t.Run("expected.tsv", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("extract-goldset", expectedFile))
+		if err != nil {
+			t.Fatalf("read committed expected sheet: %v", err)
+		}
+		parsed, err := parseExpectedSheet(data)
+		if err != nil {
+			t.Fatalf("parse committed expected sheet: %v", err)
+		}
+
+		substrate := []confirmerLine{}
+		confirmed := 0
+		for _, row := range rows {
+			if row.Expected == nil {
+				continue
+			}
+			substrate = append(substrate, confirmerLine{ID: rowID(row.URL), URL: row.URL, ConfirmedBy: row.Expected.ConfirmedBy})
+			if row.Expected.ConfirmedBy != "" {
+				confirmed++
+			}
+		}
+		sheet := make([]confirmerLine, 0, len(parsed))
+		for _, line := range parsed {
+			sheet = append(sheet, confirmerLine{ID: line.ID, URL: line.URL, ConfirmedBy: line.ConfirmedBy})
+		}
+
+		for _, m := range confirmerDisagreements(substrate, sheet) {
+			t.Errorf("CONFIRMER DISAGREEMENT %s -- goldset.jsonl and expected.tsv are written from one merged slice, "+
+				"so a difference means something outside `goldset-apply` touched one of them. Re-run the verb and read the diff.", m)
+		}
+		t.Logf("%d of %d rows carrying an expected extraction carry a confirmer, agreed across both files", confirmed, len(substrate))
+	})
+}
+
+// TestConfirmerDisagreementsNamesEveryDivergence is the demonstration that the
+// committed guard above actually fires: a confirmation removed from EITHER file alone
+// is a named disagreement, and so is a renamed confirmer or a row only one file
+// carries. It also pins the one shape that is NOT a disagreement -- a confirmer the
+// sheet can only render flattened.
+func TestConfirmerDisagreementsNamesEveryDivergence(t *testing.T) {
+	line := func(id, confirmer string) confirmerLine {
+		return confirmerLine{ID: id, URL: "https://" + id + ".test/row", ConfirmedBy: confirmer}
+	}
+
+	for _, tc := range []struct {
+		name              string
+		substrate, sheet  []confirmerLine
+		want              []string
+		wantInSubstrate   bool
+		wantInSheet       bool
+		assertMembership  bool
+		wantSubstrateName string
+		wantSheetName     string
+	}{
+		{
+			name:      "both files agree on a confirmer",
+			substrate: []confirmerLine{line("aaa", "Nicholas Braun")},
+			sheet:     []confirmerLine{line("aaa", "Nicholas Braun")},
+			want:      []string{},
+		},
+		{
+			name:      "both files agree the row is unconfirmed",
+			substrate: []confirmerLine{line("aaa", "")},
+			sheet:     []confirmerLine{line("aaa", "")},
+			want:      []string{},
+		},
+		{
+			name:              "a confirmation removed from the sheet alone",
+			substrate:         []confirmerLine{line("aaa", "Nicholas Braun")},
+			sheet:             []confirmerLine{line("aaa", "")},
+			want:              []string{"aaa"},
+			assertMembership:  true,
+			wantInSubstrate:   true,
+			wantInSheet:       true,
+			wantSubstrateName: "Nicholas Braun",
+			wantSheetName:     "",
+		},
+		{
+			name:              "a confirmation removed from the substrate alone",
+			substrate:         []confirmerLine{line("aaa", "")},
+			sheet:             []confirmerLine{line("aaa", "Nicholas Braun")},
+			want:              []string{"aaa"},
+			assertMembership:  true,
+			wantInSubstrate:   true,
+			wantInSheet:       true,
+			wantSubstrateName: "",
+			wantSheetName:     "Nicholas Braun",
+		},
+		{
+			name:              "the two files name different confirmers",
+			substrate:         []confirmerLine{line("aaa", "Nicholas Braun")},
+			sheet:             []confirmerLine{line("aaa", "Someone Else")},
+			want:              []string{"aaa"},
+			assertMembership:  true,
+			wantInSubstrate:   true,
+			wantInSheet:       true,
+			wantSubstrateName: "Nicholas Braun",
+			wantSheetName:     "Someone Else",
+		},
+		{
+			name:              "a row the sheet does not carry",
+			substrate:         []confirmerLine{line("aaa", "Nicholas Braun")},
+			sheet:             []confirmerLine{},
+			want:              []string{"aaa"},
+			assertMembership:  true,
+			wantInSubstrate:   true,
+			wantInSheet:       false,
+			wantSubstrateName: "Nicholas Braun",
+		},
+		{
+			name:             "a row the substrate does not carry",
+			substrate:        []confirmerLine{},
+			sheet:            []confirmerLine{line("aaa", "Nicholas Braun")},
+			want:             []string{"aaa"},
+			assertMembership: true,
+			wantInSubstrate:  false,
+			wantInSheet:      true,
+			wantSheetName:    "Nicholas Braun",
+		},
+		{
+			name:      "a confirmer the sheet can only render flattened",
+			substrate: []confirmerLine{line("aaa", "Nicholas\tBraun")},
+			sheet:     []confirmerLine{line("aaa", "Nicholas Braun")},
+			want:      []string{},
+		},
+		{
+			name: "every divergence is named, in id order",
+			substrate: []confirmerLine{
+				line("ccc", "Nicholas Braun"),
+				line("aaa", ""),
+				line("bbb", "Nicholas Braun"),
+			},
+			sheet: []confirmerLine{
+				line("ccc", ""),
+				line("aaa", "Nicholas Braun"),
+				line("bbb", "Someone Else"),
+			},
+			want: []string{"aaa", "bbb", "ccc"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := confirmerDisagreements(tc.substrate, tc.sheet)
+			ids := []string{}
+			for _, m := range got {
+				ids = append(ids, m.ID)
+			}
+			if !reflect.DeepEqual(ids, tc.want) {
+				t.Fatalf("disagreements %v, want %v (%v)", ids, tc.want, got)
+			}
+			if !tc.assertMembership {
+				return
+			}
+			m := got[0]
+			if m.InSubstrate != tc.wantInSubstrate || m.InSheet != tc.wantInSheet {
+				t.Errorf("row presence: in substrate %v, in sheet %v; want %v/%v", m.InSubstrate, m.InSheet, tc.wantInSubstrate, tc.wantInSheet)
+			}
+			if m.SubstrateConfirmer != tc.wantSubstrateName || m.SheetConfirmer != tc.wantSheetName {
+				t.Errorf("confirmers: substrate %q, sheet %q; want %q/%q", m.SubstrateConfirmer, m.SheetConfirmer, tc.wantSubstrateName, tc.wantSheetName)
+			}
+			if !strings.Contains(m.String(), m.URL) {
+				t.Errorf("the mismatch %q does not name the row's url %q", m, m.URL)
+			}
+		})
+	}
+}
+
 // TestCommittedLabelsSheetMatchesTheGoldSet keeps the human review surface from
 // drifting from the substrate: labels.tsv is what a reviewer reads in a diff and
 // edits to correct a label, so a sheet that no longer renders from goldset.jsonl
@@ -2029,10 +2391,12 @@ func TestCommittedBoundaryRecoveryLedger(t *testing.T) {
 
 // TestCommittedBoundaryStratumConfirmation is the ratchet ADR-0043 requires on this
 // stratum: EVERY row must carry a human confirmation, because these are the rows a
-// hard-zero false-drop guard is decided on. It asserts in BOTH directions, so
-// neither a confirmation that quietly vanished nor one that landed without the
-// constant moving can pass unseen, and it refuses a machine confirmer outright so
-// the gap can never be closed by the tooling that opened it.
+// hard-zero false-drop guard is decided on. The count is a one-directional ratchet
+// (confirmationFloor, ADR-0048) -- a rise fails, a fall is logged -- so a confirmation
+// pass never turns the build red; a confirmation that vanished is caught by that
+// direction and, row by row, by TestCommittedRecordAgreesOnWhoConfirmedWhat. It
+// refuses a machine confirmer outright so the gap can never be closed by the tooling
+// that opened it.
 func TestCommittedBoundaryStratumConfirmation(t *testing.T) {
 	pending := []string{}
 	for _, row := range loadCommittedGoldSet(t) {
@@ -2049,13 +2413,11 @@ func TestCommittedBoundaryStratumConfirmation(t *testing.T) {
 			pending = append(pending, row.URL)
 		}
 	}
-	if len(pending) != pendingBoundaryConfirmations {
-		t.Errorf("%d boundary rows await human confirmation but pendingBoundaryConfirmations is %d; set it to %d",
-			len(pending), pendingBoundaryConfirmations, len(pending))
-	}
-	if len(pending) > 0 {
-		t.Logf("awaiting human confirmation on %d boundary rows (see extract-goldset/README.md)", len(pending))
-	}
+	confirmationFloor{
+		constant: "pendingBoundaryConfirmations",
+		counts:   "boundary rows await human confirmation (see extract-goldset/README.md)",
+		current:  len(pending), recorded: pendingBoundaryConfirmations,
+	}.assert(t)
 }
 
 // TestCommittedGoldSetAmbiguityIsRecorded pins the pages a reading could not settle.
@@ -2123,7 +2485,8 @@ func TestBoundaryStratumNeverEntersTheStreamEstimate(t *testing.T) {
 // It is pinned in both directions as a TRIPWIRE on drift, NOT as the guard. These
 // labels are LLM-proposed; until pendingBoundaryConfirmations is 0 the count is one
 // model's opinion of another's, and the hard zero #264 must argue with is not this
-// assertion.
+// assertion. The unconfirmed count is the one figure here that is a ratchet rather
+// than a pin (ADR-0048); the label censuses stay pinned as drift tripwires.
 func TestCommittedBoundaryFalseDropsUnderTheCandidateRule(t *testing.T) {
 	rows, _, err := replayCaptured(filepath.Join("extract-goldset", goldSetFile), boundaryCandidateConfig())
 	if err != nil {
@@ -2148,9 +2511,14 @@ func TestCommittedBoundaryFalseDropsUnderTheCandidateRule(t *testing.T) {
 	if sc.AmbiguousSkipped != boundaryAmbiguousSkipped {
 		t.Errorf("%d skipped boundary rows are ambiguous, want %d; an undecidable page is neither a false-drop nor forgiven", sc.AmbiguousSkipped, boundaryAmbiguousSkipped)
 	}
-	if sc.Unconfirmed != pendingBoundaryConfirmations {
-		t.Errorf("the scorecard reports %d unconfirmed rows, the ratchet says %d", sc.Unconfirmed, pendingBoundaryConfirmations)
-	}
+	// The scorecard's own view of the same ratchet: it reads label_provenance through
+	// replayCaptured rather than readGoldSet, so a fold that lost a confirmation shows
+	// up here too. A ceiling for the same reason as everywhere else (ADR-0048).
+	confirmationFloor{
+		constant: "pendingBoundaryConfirmations",
+		counts:   "boundary rows the scorecard reports unconfirmed",
+		current:  sc.Unconfirmed, recorded: pendingBoundaryConfirmations,
+	}.assert(t)
 	t.Logf("boundary under the Positive Evidence rule: %d rows, %d false-drops, %d ambiguous-skipped, %d confirmed",
 		sc.Rows, len(sc.FalseDrops), sc.AmbiguousSkipped, sc.Confirmed)
 }

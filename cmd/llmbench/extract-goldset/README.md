@@ -927,6 +927,19 @@ proposed.
 
 ## Human confirmation — what is still owed
 
+**What the build asserts about confirmations.** The four confirmation counts —
+`pendingHumanConfirmations`, `pendingExpectedConfirmations`,
+`pendingBoundaryConfirmations` and `randomSpotChecks` — are one-directional ratchets
+(ADR-0048): each fails only in the direction that means a human signature *vanished*,
+and merely logs the figure in the direction that means work landed, so a productive
+confirmation pass never leaves `main` red. Two things stay pinned in **both**
+directions: the three drawings' row counts, because a drawing is a fixed act of
+sampling, and `ambiguousRows`, because marking a page unresolvable is a rare,
+deliberate keystroke that changes what every confusion number is computed over. The
+direction the ratchets gave up is asserted more sharply instead — the build requires
+that `goldset.jsonl`, `labels.tsv` and `expected.tsv` name the **same confirmer on
+every row**, and names the rows where they do not.
+
 ADR-0043 requires a human confirmation on every row carrying a lone structured posting:
 those are the rows a later false-drop guard is decided on, and where a labeler is most
 likely to be wrong. **69 of the 70 `lone-posting` rows are confirmed**; the one that is
@@ -940,7 +953,9 @@ awk -F'\t' '$3=="lone-posting"' cmd/llmbench/extract-goldset/labels.tsv | column
 # fix any wrong label in the `label` column, then:
 go run ./cmd/llmbench goldset-apply -confirmed-by "<your name>" -confirm-stratum lone-posting
 
-# then set pendingHumanConfirmations to 0 in cmd/llmbench/goldset_test.go and commit.
+# then set pendingHumanConfirmations to 0 in cmd/llmbench/goldset_test.go and commit
+# — the build no longer forces the edit, it logs the figure (ADR-0048), so do it in
+# the same commit.
 ```
 
 ### The boundary stratum must be FULLY confirmed (#263)
@@ -948,8 +963,11 @@ go run ./cmd/llmbench goldset-apply -confirmed-by "<your name>" -confirm-stratum
 This is the stratum ADR-0043 actually requires a human on. Its 188 rows are the rows a
 **hard-zero false-drop guard is decided on**, and they are exactly where an LLM labeller
 is least reliable — that is what "boundary" means. **0 of 188 are confirmed**, so
-`pendingBoundaryConfirmations` in `../goldset_test.go` is 188 and the build asserts it in
-both directions.
+`pendingBoundaryConfirmations` in `../goldset_test.go` is 188, and the build asserts it in
+**one** direction (ADR-0048): a pending count that rises fails, one that falls is only
+logged, with the number to lower it to. A confirmation that vanished is caught either way —
+the build also asserts that `goldset.jsonl` and `labels.tsv` name the same confirmer on
+every row, and names the rows where they do not.
 
 The review is chunked so a partial pass is legitimate, resumable and visible in the diff:
 
@@ -972,7 +990,8 @@ go run ./cmd/llmbench goldset-apply
 go run ./cmd/llmbench goldset-apply -confirmed-by "<your name>" -confirm-ids /tmp/263/confirmed-01.txt
 
 # lower pendingBoundaryConfirmations in cmd/llmbench/goldset_test.go by what you confirmed,
-# in the same commit. Update ambiguousRows, boundaryDetailRows and the recovery-ledger
+# in the same commit. The number is printed by the apply summary (boundary pending) and
+# logged by go test -v. Update ambiguousRows, boundaryDetailRows and the recovery-ledger
 # constants if your reading moved them.
 ```
 
@@ -998,9 +1017,10 @@ ADR-0043 asks less of this stratum, and for a reason: it is 120 rows of ordinary
 traffic, no later guard is decided on any single one of them, and its numbers are
 weighted estimates rather than pass/fail conditions. What it needs is evidence that the
 labeling process is *sound*, which a sample answers. **`randomSpotChecks` in
-`../goldset_test.go` is 0: no random row has been read by a human yet.** It is a ratchet
-that RISES, and it is asserted in both directions, so a confirmation that lands without
-the constant moving fails the build just as one that vanishes does.
+`../goldset_test.go` is 4: four random rows have been read by a human.** It is a ratchet
+that RISES and it is asserted as a **floor** (ADR-0048): falling below it fails the build,
+because a spot-check that vanished means a lost signature; landing above it only logs the
+figure to raise it to, so a productive session never leaves `main` red.
 
 ```bash
 # the spot-check surface: 20 rows in deterministic order, not the 3.9 MB substrate
@@ -1010,7 +1030,8 @@ go run ./cmd/llmbench goldset-worksheet -stratum random -n 20 -out /tmp/spotchec
 # labels.tsv, put your name in the `confirmed_by` column of EXACTLY the rows you read:
 go run ./cmd/llmbench goldset-apply
 
-# then raise randomSpotChecks in cmd/llmbench/goldset_test.go to the number you confirmed.
+# then raise randomSpotChecks in cmd/llmbench/goldset_test.go to the "spot-checked"
+# figure the apply summary just printed (the build logs it too, under go test -v).
 ```
 
 Read the 40 `verdict=true` rows first if you only have time for some: 31 of them are the
@@ -1048,6 +1069,8 @@ read `remote`, 43 `unspecified`.
 # edit any wrong value or drop any free_ok you refuse, then:
 go run ./cmd/llmbench goldset-apply -expected-confirmed-by "<your name>"
 # then set pendingExpectedConfirmations to 0 in cmd/llmbench/goldset_test.go
+# — the build no longer forces the edit, it logs the figure (ADR-0048), so do it in
+# the same commit.
 ```
 
 These acceptances rest on the labels underneath them, so confirming (a) without confirming
