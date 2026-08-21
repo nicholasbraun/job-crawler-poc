@@ -755,6 +755,22 @@ func parseProposals(data []byte) ([]sheetRow, error) {
 	return rows, nil
 }
 
+// retractConfirmation withdraws a human's signature from a row whose label has just
+// been replaced: the human confirmed the OLD label, and leaving their name on the new
+// one is the single thing the confirmation record must never say.
+//
+// It deliberately leaves ProposedLabel alone. That field is a statement about the
+// PROPOSER, not about the confirmation, and a value already there is true whatever
+// happens to the label afterwards -- the proposer really did propose it. A retraction
+// followed by a fresh confirmation of the new label is then scored by labelAgreement
+// as the disagreement it is. What must NOT happen is the empty field being filled in
+// afterwards from the replacement label, which would pair the proposer -- ProposedBy
+// is first-writer-wins, so it still names the original one -- with an answer they
+// never gave; applyLabels' confirmedAtEntry guard is what prevents that (ADR-0048).
+func retractConfirmation(prov *goldProvenance) {
+	prov.ConfirmedBy, prov.ConfirmedAt = "", ""
+}
+
 // applyLabels is the pure merge behind goldset-apply: it validates the sheet
 // against the substrate, folds in the sheet's and the proposals' labels and notes,
 // and stamps the provenance the caller authorized. It returns a new slice and
@@ -775,13 +791,20 @@ func parseProposals(data []byte) ([]sheetRow, error) {
 // It also backfills the Proposed Label onto every labelled row that carries a
 // proposer and no confirmer, BEFORE the merge (ADR-0048), so a human overriding a
 // label preserves what the proposer proposed rather than overwriting it. Like
-// ProposedBy it is first-writer-wins and is never filled on an already-confirmed
-// row: the set does not record which of those were relabelled during the pass that
-// confirmed them.
+// ProposedBy it is first-writer-wins and is never filled on a row that arrived
+// already confirmed -- not even after a relabel retracts that confirmation: the set
+// does not record which of those were relabelled during the pass that confirmed them,
+// and what it does not know it must not invent from the replacement label.
 func applyLabels(rows []goldRow, sheet, proposed []sheetRow, proposedBy, confirmedBy string, confirmStratum goldStratum, confirmIDs map[string]struct{}, stamp string) ([]goldRow, error) {
 	byID := map[string]int{}
+	// confirmedAtEntry remembers which rows arrived carrying a human's signature. A
+	// retraction below clears that signature, so ConfirmedBy alone can no longer tell
+	// "never confirmed" from "confirmed, then overturned in this very run" -- and only
+	// the first of those may gain a Proposed Label (ADR-0048).
+	confirmedAtEntry := make([]bool, len(rows))
 	for i, row := range rows {
 		byID[rowID(row.URL)] = i
+		confirmedAtEntry[i] = row.LabelProvenance.ConfirmedBy != ""
 	}
 
 	merged := make([]goldRow, len(rows))
@@ -796,7 +819,7 @@ func applyLabels(rows []goldRow, sheet, proposed []sheetRow, proposedBy, confirm
 	// makes an override preserve the OLD label rather than the human's new one.
 	for i := range merged {
 		prov := &merged[i].LabelProvenance
-		if prov.ProposedLabel == "" && prov.ConfirmedBy == "" && prov.ProposedBy != "" && merged[i].Label.Valid() {
+		if prov.ProposedLabel == "" && !confirmedAtEntry[i] && prov.ProposedBy != "" && merged[i].Label.Valid() {
 			prov.ProposedLabel = merged[i].Label
 		}
 	}
@@ -829,7 +852,7 @@ func applyLabels(rows []goldRow, sheet, proposed []sheetRow, proposedBy, confirm
 		// reason applyExpected retracts one whose values changed: the human confirmed
 		// the old label, not this one.
 		if merged[i].LabelProvenance.ConfirmedBy != "" && merged[i].Label != s.Label {
-			merged[i].LabelProvenance.ConfirmedBy, merged[i].LabelProvenance.ConfirmedAt = "", ""
+			retractConfirmation(&merged[i].LabelProvenance)
 		}
 		merged[i].Label = s.Label
 		if s.Note != "" {
@@ -863,7 +886,7 @@ func applyLabels(rows []goldRow, sheet, proposed []sheetRow, proposedBy, confirm
 		// name on a label a proposer has since replaced is the one thing the
 		// confirmation record must never say.
 		if merged[i].LabelProvenance.ConfirmedBy != "" && merged[i].Label != p.Label {
-			merged[i].LabelProvenance.ConfirmedBy, merged[i].LabelProvenance.ConfirmedAt = "", ""
+			retractConfirmation(&merged[i].LabelProvenance)
 		}
 		merged[i].Label = p.Label
 		if p.Note != "" {
@@ -900,12 +923,14 @@ func applyLabels(rows []goldRow, sheet, proposed []sheetRow, proposedBy, confirm
 		}
 		// A label that first lands in THIS run has no earlier label to preserve, so the
 		// proposal itself is the Proposed Label -- including on a row whose proposer was
-		// stamped a few lines above. Guarded on the confirmer like the backfill: a row a
-		// human had already signed keeps an empty Proposed Label, and a row being
-		// confirmed in this run still reads empty here, which is exactly the moment its
-		// label is still the proposer's own. A retraction (above) clears the confirmer, so
-		// a proposal that overturns a confirmed label is recorded as the proposal it is.
-		if prov.ProposedLabel == "" && prov.ConfirmedBy == "" && prov.ProposedBy != "" {
+		// stamped a few lines above. Guarded on the confirmer like the backfill, and on
+		// the confirmer the row ARRIVED with: a row a human had already signed keeps an
+		// empty Proposed Label even after a relabel retracts that signature, because
+		// ProposedBy still names the proposer of the label that was just replaced, and
+		// the set has no idea what THEY would have said about the replacement. A row
+		// being confirmed in this run still reads empty here, which is exactly the moment
+		// its label is still the proposer's own.
+		if prov.ProposedLabel == "" && prov.ConfirmedBy == "" && !confirmedAtEntry[i] && prov.ProposedBy != "" {
 			prov.ProposedLabel = merged[i].Label
 		}
 		if confirmedBy == "" || prov.ConfirmedBy != "" {

@@ -33,6 +33,16 @@ proposer's label, so its Proposed Label is its current label. The already-confir
 it empty — the set genuinely does not record which of them were relabelled during the pass
 that confirmed them.
 
+Those rows stay empty even when a later relabel retracts their confirmation. `proposed_by` is
+first-writer-wins, so after a retraction it still names the proposer of the label that was just
+replaced; filling the empty field from the *replacement* would put that proposer's name beside
+an answer they were never asked for, and the next confirmation of the row would then be counted
+as an independent human reaching the proposer's conclusion — inflating the very number the blind
+pass exists to produce, on a row nobody independently agreed on. A Proposed Label that is
+already recorded is a different thing: it is a true statement about the proposer whatever
+happens to the label afterwards, so a retraction leaves it exactly where it is, and the relabel
+that follows is counted as the disagreement it is.
+
 ## A ratchet asserted in both directions is a pin
 
 `randomSpotChecks` asserts equality: a confirmation that vanishes fails the build, and so does

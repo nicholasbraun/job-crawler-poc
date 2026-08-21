@@ -2746,7 +2746,10 @@ func TestApplyRefusesAMachineConfirmerOnTheExpectedSheet(t *testing.T) {
 // path to the sheet path's rule. A human confirmed the OLD label; a proposer that
 // replaces it must not inherit that signature, or the ledger's arming condition --
 // "this label was read by a person" -- becomes a statement about a label nobody
-// read. A proposal that re-states the SAME label changes nothing and keeps it.
+// read. The row's empty Proposed Label stays empty through it: proposed_by is
+// first-writer-wins, so filling it from the new label would pair the original
+// proposer with an answer they never gave. A proposal that re-states the SAME label
+// changes nothing and keeps the confirmation.
 func TestApplyRetractsAConfirmationWhenAProposalChangesTheLabel(t *testing.T) {
 	const stamp = "2026-08-08T12:00:00Z"
 	base := func() []goldRow {
@@ -2773,11 +2776,16 @@ func TestApplyRetractsAConfirmationWhenAProposalChangesTheLabel(t *testing.T) {
 	if got := changed[0].LabelProvenance.ConfirmedAt; got != "" {
 		t.Errorf("confirmed_at = %q after a retraction, want empty", got)
 	}
-	// A retraction clears the confirmer, so the row is once again one whose label is
-	// its proposer's own -- and the proposal that overturned it is what the record
-	// must name as proposed (ADR-0048).
-	if got := changed[0].LabelProvenance.ProposedLabel; got != bench.ExtractResidue {
-		t.Errorf("proposed_label = %q after a retraction, want the label the proposal put on the row", got)
+	// The Proposed Label is retracted with the confirmation. proposed_by still names
+	// the ORIGINAL proposer -- it is first-writer-wins -- and that proposer never said
+	// anything about the label the proposal has just put on the row, so any value here
+	// would be a pairing that never happened (ADR-0048).
+	if got := changed[0].LabelProvenance.ProposedLabel; got != "" {
+		t.Errorf("proposed_label = %q after a retraction, want empty: %q proposed detail, not that",
+			got, changed[0].LabelProvenance.ProposedBy)
+	}
+	if got := changed[0].LabelProvenance.ProposedBy; got != "llm:test" {
+		t.Errorf("proposed_by = %q, want the original proposer untouched by a retraction", got)
 	}
 
 	same, err := applyLabels(base(), nil, []sheetRow{{ID: id, Label: bench.ExtractDetail}}, "", "", "", nil, stamp)
@@ -3157,4 +3165,95 @@ func TestConfirmSheetStatesTheSharedRubric(t *testing.T) {
 			t.Errorf("the sheet omits the definition of %q, which goldset-ui states", e.Label)
 		}
 	}
+}
+
+// TestApplyRetractionNeverInventsAProposedLabel walks the two ways goldset-apply can
+// overturn a label a human already signed, on a row that records no Proposed Label --
+// the shape of every row confirmed before the field existed. proposed_by is
+// first-writer-wins, so it still names the proposer of the label that was just
+// replaced; filling the empty field from the REPLACEMENT would assert that proposer
+// gave an answer they were never asked for, and labelAgreement would then score the
+// row as an independent human reaching the proposer's conclusion -- inflating the
+// exact number a blind pass exists to produce (ADR-0048), on a row nobody
+// independently agreed on.
+func TestApplyRetractionNeverInventsAProposedLabel(t *testing.T) {
+	const stamp = "2026-08-20T12:00:00Z"
+	const url = "https://a.test/jobs/1"
+	id := rowID(url)
+
+	// The shape of the 78 rows a human confirmed before the Proposed Label existed:
+	// a proposer, no proposed_label, a human's signature on the label they read.
+	preField := func() []goldRow {
+		return []goldRow{{
+			URL: url, Verdict: true, Stratum: stratumLonePosting, Weight: 1, Label: bench.ExtractDetail,
+			LabelProvenance: goldProvenance{
+				ProposedBy: "llm:claude-opus-5", ProposedAt: "2026-08-01T00:00:00Z",
+				ConfirmedBy: "Nicholas Braun", ConfirmedAt: "2026-08-02T00:00:00Z",
+			},
+		}}
+	}
+
+	t.Run("a proposal that overturns a confirmation, re-confirmed in the same run", func(t *testing.T) {
+		proposals := []sheetRow{{ID: id, Label: bench.ExtractResidue, Note: "an index of roles"}}
+		got, err := applyLabels(preField(), nil, proposals, "", "Nicholas Braun", "", map[string]struct{}{id: {}}, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		prov := got[0].LabelProvenance
+		if got[0].Label != bench.ExtractResidue {
+			t.Errorf("label = %q, want residue", got[0].Label)
+		}
+		if prov.ProposedLabel != "" {
+			t.Errorf("proposed_label = %q, want empty: %q proposed detail and was never asked about residue",
+				prov.ProposedLabel, prov.ProposedBy)
+		}
+		if prov.ConfirmedBy != "Nicholas Braun" || prov.ConfirmedAt != stamp {
+			t.Errorf("provenance = %+v, want the fresh signature on the new label", prov)
+		}
+		if agreed, comparable := labelAgreement(got); agreed != 0 || comparable != 0 {
+			t.Errorf("labelAgreement = %d/%d, want 0/0: nobody independently reached this label", agreed, comparable)
+		}
+	})
+
+	t.Run("a sheet that overturns a confirmation, re-confirmed in the same run", func(t *testing.T) {
+		sheet := []sheetRow{{
+			ID: id, URL: url, Stratum: stratumLonePosting, Verdict: true,
+			Label: bench.ExtractResidue, Note: "an index of roles",
+		}}
+		got, err := applyLabels(preField(), sheet, nil, "", "Nicholas Braun", "", map[string]struct{}{id: {}}, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		prov := got[0].LabelProvenance
+		if got[0].Label != bench.ExtractResidue {
+			t.Errorf("label = %q, want residue", got[0].Label)
+		}
+		if prov.ProposedLabel != "" {
+			t.Errorf("proposed_label = %q, want empty: %q proposed detail and was never asked about residue",
+				prov.ProposedLabel, prov.ProposedBy)
+		}
+		if agreed, comparable := labelAgreement(got); agreed != 0 || comparable != 0 {
+			t.Errorf("labelAgreement = %d/%d, want 0/0: nobody independently reached this label", agreed, comparable)
+		}
+	})
+
+	// The other half of the rule: a Proposed Label that is ALREADY on the record is a
+	// true statement about the proposer, so a retraction leaves it exactly where it is.
+	// The relabel is then a disagreement the set can count -- which is what the UI's
+	// undo-and-relabel does on every row it has already written.
+	t.Run("a retraction keeps a Proposed Label that was truthfully recorded", func(t *testing.T) {
+		rows := preField()
+		rows[0].LabelProvenance.ProposedLabel = bench.ExtractDetail
+		proposals := []sheetRow{{ID: id, Label: bench.ExtractResidue, Note: "an index of roles"}}
+		got, err := applyLabels(rows, nil, proposals, "", "Nicholas Braun", "", map[string]struct{}{id: {}}, stamp)
+		if err != nil {
+			t.Fatalf("applyLabels: %v", err)
+		}
+		if prov := got[0].LabelProvenance; prov.ProposedLabel != bench.ExtractDetail {
+			t.Errorf("proposed_label = %q, want the detail the proposer really did propose", prov.ProposedLabel)
+		}
+		if agreed, comparable := labelAgreement(got); agreed != 0 || comparable != 1 {
+			t.Errorf("labelAgreement = %d/%d, want 0/1: a human read the page and reached the other answer", agreed, comparable)
+		}
+	})
 }
