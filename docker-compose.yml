@@ -54,6 +54,15 @@ services:
     dns:
       - 1.1.1.1
       - 8.8.8.8
+    # Restore host.docker.internal, which the dns: override above breaks. Docker
+    # Desktop serves that name from the embedded resolver, and replacing the
+    # nameserver list drops it -- so an LLM_BASE_URL pointing at a model server on
+    # the host (a local Ollama/unsloth on :8888) fails every classify/extract call
+    # with "no such host", and the llmstream leaves the tasks pending. Pinning the
+    # name to host-gateway brings it back without giving up the fast external
+    # resolvers the discovery crawl needs.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       # Soft heap ceiling Go's GC respects (~83% of mem_limit above). See the
       # memory-seatbelt comment on mem_limit for rationale and re-derivation.
