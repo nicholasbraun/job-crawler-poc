@@ -90,6 +90,14 @@ rendering does not have.
 warning with the captured text restated as the authority; *gone* is refused **at the wire**,
 with a 409 and no bytes of the live page in the response, not merely hidden in the page's CSS.
 
+The aid is never allowed to outlive the row it belongs to. A frame goes on showing its previous
+document until the next one paints, and dropping its `src` does not blank it synchronously, so
+the tool replaces the frame element on every row and keeps the new one covered until it reports
+*this* row's document loaded — a cover only that row's own load may lift. The failure this
+forecloses is not cosmetic: a page read against the wrong question corrupts a label rather than
+merely weakening it, and the labeller has no way to notice, because both halves of the screen
+look like they belong together.
+
 A row that carries its own Structural Rendering is shown it directly, with no fetch at all —
 fidelity `same` by construction, and no live view offered because none is needed. That is the
 path that outlives this ADR: once a fresh drawing carries its own rendering, the re-fetch half

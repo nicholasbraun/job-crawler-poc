@@ -67,11 +67,26 @@
   .views { display: grid; gap: 1rem; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
   .views.solo { grid-template-columns: minmax(0, 1fr); }
   @media (max-width: 1100px) { .views { grid-template-columns: minmax(0, 1fr); } }
+  .framewrap { position: relative; }
   #renderframe {
-    width: 100%; height: 60vh; min-height: 22rem; border: 1px solid var(--edge);
-    border-radius: 4px; background: var(--bg);
+    display: block; width: 100%; height: 60vh; min-height: 22rem;
+    border: 1px solid var(--edge); border-radius: 4px; background: var(--bg);
   }
   #rendering.drifted #renderframe { border-color: var(--disagree); }
+  /* The cover over the frame. A frame keeps showing its previous document until the
+     next one paints, so it is covered the moment the row changes and uncovered only
+     once THIS row's rendering has loaded -- one row's page is never on screen under
+     another row's question (ADR-0043). The compound selector is deliberate: .hidden is
+     one class too, and being declared earlier it would otherwise lose to .frameveil. */
+  .frameveil {
+    position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; background: var(--bg); border: 1px solid var(--edge);
+    border-radius: 4px; color: var(--dim); font-size: .85rem;
+  }
+  .frameveil.hidden { display: none; }
+  /* A refusal the labeller can fix belongs where they are looking -- beside the field
+     it is about -- and not only in the corner of the screen. */
+  .noteerror { color: var(--warn); font-size: .85rem; margin-top: .35rem; }
   .warn {
     border-left: 3px solid var(--disagree); color: var(--disagree); font-weight: 600;
     padding: .35rem .6rem; margin-bottom: .5rem; font-size: .88rem;
@@ -100,9 +115,12 @@
         <div class="warn hidden" id="renderwarn">
           THIS PAGE CHANGED SINCE CAPTURE -- read it as a hint. The captured text beside it is the authority.
         </div>
-        <iframe id="renderframe" title="the page rendering"
-                sandbox="allow-popups allow-popups-to-escape-sandbox"
-                referrerpolicy="no-referrer"></iframe>
+        <div class="framewrap">
+          <iframe id="renderframe" title="the page rendering"
+                  sandbox="allow-popups allow-popups-to-escape-sandbox"
+                  referrerpolicy="no-referrer"></iframe>
+          <div class="frameveil" id="frameveil">loading this row's rendering...</div>
+        </div>
         <div class="footnote" id="renderfoot"></div>
       </section>
 
@@ -143,6 +161,9 @@
         <div id="notewrap" class="hidden" style="margin-top:.7rem">
           <h2>your note (required)</h2>
           <input id="note" autocomplete="off" spellcheck="false">
+          <!-- The refusal sits between the field and its counter, because that is where
+               the labeller is looking when the tool refuses their note. -->
+          <div class="noteerror hidden" id="noteerror"></div>
           <div id="notecount"></div>
         </div>
         <div id="advance" class="hidden" style="margin-top:.7rem;color:var(--dim);font-size:.88rem">
@@ -214,7 +235,11 @@ async function call(path, body) {
   try { payload = await res.json(); } catch (_) { payload = null; }
   if (!res.ok) {
     const msg = (payload && payload.error) || (res.status + " " + res.statusText);
-    throw new Error(msg);
+    // The status rides along so a caller can tell a refusal it should put beside the
+    // field the labeller is typing in (400) from a fault that has to shout (5xx).
+    const err = new Error(msg);
+    err.status = res.status;
+    throw err;
   }
   return payload;
 }
@@ -295,17 +320,45 @@ function renderFidelity(q) {
   el.textContent = text;
 }
 
+// renderSeq counts the rows this page has drawn. It is what a load event is measured
+// against: a rendering that arrives after the labeller has moved on belongs to a
+// question that is no longer on screen.
+let renderSeq = 0;
+
 // renderRendering puts the page beside the captured text, and says which of the two the
-// label is a statement about. The frame's src is cleared FIRST on every row: the
-// previous row's page sitting under the next row's question is the one failure mode of
-// this feature that would corrupt a label rather than merely weaken it.
+// label is a statement about.
+//
+// The previous row's page sitting under the next row's question is the one failure mode
+// of this feature that would corrupt a label rather than merely weaken it -- the label
+// is a statement about the row on screen (ADR-0043) -- so this does three things on
+// every row, and none of them is "clear the src":
+//
+//   * it REPLACES the frame element. Dropping the src attribute does not blank a frame
+//     synchronously (the navigation it queues lands whenever it lands), and a load
+//     event already queued for the previous row would be delivered to whatever handler
+//     sits on the element by then. A fresh element holds no document and takes the old
+//     element's queued events away with it.
+//   * it COVERS the frame until the new document reports itself loaded, so the moment
+//     the header, the row id and the captured text switch rows, the page beside them is
+//     never the page the labeller was just reading.
+//   * it uncovers only for the row still on screen, so a slow rendering that lands two
+//     rows later stays covered.
 function renderRendering(q) {
   const sec = $("rendering");
-  const frame = $("renderframe");
+  const veil = $("frameveil");
   const r = (q && q.rendering) || null;
+  const seq = ++renderSeq;
+
+  const stale = $("renderframe");
+  const frame = stale.cloneNode(false);
+  // The clone carries the old row's src; it must not be attached still pointing there.
   frame.removeAttribute("src");
+  stale.replaceWith(frame);
+  veil.classList.remove("hidden");
   sec.classList.remove("drifted");
   if (!r || !r.available) {
+    // Explicitly blank rather than attribute-less: there is no row behind this frame.
+    frame.src = "about:blank";
     sec.classList.add("hidden");
     $("views").classList.add("solo");
     return;
@@ -322,7 +375,22 @@ function renderRendering(q) {
     : "your label is a statement about this, which is what was captured (ADR-0043). ")
     + "Link targets are shown as the rendering recorded them (capped at 80 characters, so a long one clicks short -- use the row URL above). "
     + "The link counts beside the captured text are the row's own.";
+  frame.onload = () => {
+    // Uncover for this row only. A load belonging to a row the labeller has already
+    // answered must never lift the cover off the row that replaced it.
+    if (seq !== renderSeq) return;
+    veil.classList.add("hidden");
+  };
   frame.src = "/render/" + encodeURIComponent(q.id) + "?t=" + encodeURIComponent(TOKEN);
+}
+
+// noteRefusal states -- beside the note field, where the labeller is typing -- why the
+// note was not taken. An empty message clears it, which every render does: a refusal
+// belongs to one decision, and must not outlive it on screen (undo, or the next row).
+function noteRefusal(msg) {
+  const el = $("noteerror");
+  el.textContent = msg || "";
+  el.classList.toggle("hidden", !msg);
 }
 
 function renderProgress(p) {
@@ -336,6 +404,8 @@ function renderProgress(p) {
 function render(v) {
   view = v;
   renderProgress(v.progress);
+  // Whatever the last refusal was about, it was about the screen being replaced here.
+  noteRefusal("");
 
   $("done").classList.toggle("hidden", !v.done);
   $("row").classList.toggle("hidden", !v.question);
@@ -414,6 +484,7 @@ function updateNoteCount() {
 async function next() {
   // The frame goes FIRST, before the request that will replace the row: a rendering
   // that outlived its question is a page the labeller could read against the wrong row.
+  // renderRendering(null) replaces the element outright, so nothing survives the wait.
   renderRendering(null);
   // Serving a row can block on its measurement, so say so rather than looking hung.
   if (info && info.refetch) {
@@ -430,12 +501,25 @@ async function answer(label) {
 }
 
 async function submitNote() {
+  noteRefusal("");
   const note = $("note").value;
   if (runes(note) > noteRunes) {
-    toast("the note is " + runes(note) + " characters; the ceiling is " + noteRunes);
+    noteRefusal("the note is " + runes(note) + " characters; the ceiling is " + noteRunes);
     return;
   }
-  render(await call("/api/note", { id: view.question.id, note: note }));
+  let res;
+  try {
+    res = await call("/api/note", { id: view.question.id, note: note });
+  } catch (err) {
+    noteRefusal(err.message);
+    $("note").focus();
+    // A refusal is the labeller's to fix and the field says so. Anything else is a
+    // fault -- a journal that will not sync, an apply the verb refused -- and still
+    // gets the sticky toast on top of it.
+    if (err.status !== 400) throw err;
+    return;
+  }
+  render(res);
 }
 
 async function undo() {

@@ -293,7 +293,35 @@ func (s *goldSetUISession) Handler() http.Handler {
 	mux.HandleFunc("POST /api/note", s.handleNote)
 	mux.HandleFunc("POST /api/undo", s.handleUndo)
 	mux.HandleFunc("POST /api/flush", s.handleFlush)
-	return s.guard(mux)
+
+	// The favicon is the one request the browser makes on its own, and it carries no
+	// token, so behind the guard it is a 401 and a console error in every session. It
+	// is answered in FRONT of the guard instead: a fixed image that reads no row, holds
+	// no session state and tells a caller nothing the guard was keeping from them. No
+	// other path moves -- the guard is what stops a page in the labeller's browser
+	// driving this tool.
+	front := http.NewServeMux()
+	front.HandleFunc("GET /favicon.ico", goldUIFavicon)
+	front.Handle("/", s.guard(mux))
+	return front
+}
+
+// goldUIFaviconSVG is the tab icon, inline: this tool serves one embedded page and
+// never reaches the network for an asset. It is static markup with no script in it,
+// and the response says so at the wire as well.
+const goldUIFaviconSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">` +
+	`<rect width="16" height="16" rx="3" fill="#14161a"/>` +
+	`<path d="M4 8.3l2.7 2.7L12 5.6" fill="none" stroke="#7aa2f7" stroke-width="2" ` +
+	`stroke-linecap="round" stroke-linejoin="round"/></svg>`
+
+// goldUIFavicon answers the browser's own request for a tab icon.
+func goldUIFavicon(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "image/svg+xml")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	_, _ = w.Write([]byte(goldUIFaviconSVG))
 }
 
 // guard is the session's front door: a loopback Host, a same-origin request, and the
