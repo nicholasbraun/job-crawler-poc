@@ -262,13 +262,30 @@ func (s *goldSetUISession) journalLocked(entry goldUIJournalEntry) error {
 // goldUINoteRequired reports whether a decision must carry a note. ADR-0048: a note
 // is required whenever the human disagrees with the Proposed Label -- those rows are
 // where the proposer is actually wrong, and the note is what a prompt fix is built
-// from -- and on ambiguous, where it records what the tension was. A row carrying no
-// Proposed Label is treated as disagreement: there is no proposer's argument for the
-// record to fall back on. On agreement the note stays EMPTY so the proposer's own note
+// from -- on ambiguous, where it records what the tension was, and whenever the
+// decision CHANGES the label on the record. A row carrying no Proposed Label is treated
+// as disagreement: there is no proposer's argument for the record to fall back on. On
+// an agreement that changes nothing the note stays EMPTY so the proposer's own note
 // survives.
+//
+// The relabel arm is what stops a note outliving the label it argues for. A row that
+// was already relabelled once carries the note written to overrule its old label;
+// answering it again -- after an undo, or over an override an earlier pass never
+// confirmed -- can agree with the proposer and STILL change the record, and the
+// standing note would then read as if it argued for the label that replaced it, which
+// is exactly what ADR-0048 says must never stand.
 func goldUINoteRequired(row goldRow, chosen bench.ExtractLabel) bool {
 	agreed, comparable := goldUIAgreed(row, chosen)
-	return !comparable || !agreed || chosen == bench.ExtractAmbiguous
+	return !comparable || !agreed || goldUIRelabels(row, chosen) || chosen == bench.ExtractAmbiguous
+}
+
+// goldUIRelabels reports that chosen would CHANGE the label on the record, which is
+// what sends a decision down goldset-apply's proposals path. The note rule and
+// goldUIDecision.Relabel ask it through this one function so the note a relabel
+// requires and the proposal line the batch emits can never disagree about what a
+// relabel is.
+func goldUIRelabels(row goldRow, chosen bench.ExtractLabel) bool {
+	return chosen != row.Label
 }
 
 // goldUIAgreed reports whether chosen agrees with the row's Proposed Label, and
@@ -432,22 +449,43 @@ func goldRowCarriesRendering(row goldRow) bool {
 }
 
 // goldUIQuestionOf builds a row's blind view from confirmViewOf, so the labelling
-// tool and the confirmation sheet can never disagree about what a page says, and then
-// copies field by field. The copy is deliberate: embedding confirmView would let a
+// tool and the confirmation sheet can never disagree about WHICH row they describe, and
+// then copies field by field. The copy is deliberate: embedding confirmView would let a
 // field added to that struct -- it already carries the proposed label and its proposer
 // -- leak into the blind view unnoticed.
+//
+// The two page-text windows are RE-DERIVED rather than copied. confirmViewOf flattens
+// with flattenField, which leaves a Structural Rendering's markers in and reads them as
+// page words; the panel that calls itself the authority would then show the labeller
+// marker syntax and link targets no gate ever read, and its Capture Fidelity -- measured
+// over crawler.FlattenedText in goldRefetchTargetOf -- would be computed against a
+// different string than the one on screen (ADR-0046, ADR-0047). The WINDOWS stay
+// confirmViewOf's own, so both surfaces still show the same two stretches of the page.
 func goldUIQuestionOf(row goldRow) goldUIQuestion {
 	c := confirmViewOf(row)
+	flat := crawler.FlattenedText(row.Content.MainContent)
 	return goldUIQuestion{
 		ID:           c.ID,
 		URL:          c.URL,
 		Title:        c.Title,
-		Head:         c.Head,
-		Mid:          c.Mid,
+		Head:         truncateRunes(flat, confirmHeadRunes),
+		Mid:          goldUIMidWindow(flat),
 		URLsTotal:    c.URLsTotal,
 		URLsSameHost: c.URLsSameHost,
 		URLsJoblike:  c.URLsJoblike,
 	}
+}
+
+// goldUIMidWindow is confirmViewOf's second page-text window over already-flattened
+// text: a stretch of confirmMidRunes runes from a third of the way in, and EMPTY when
+// the page is short enough that the head window already covered that far.
+func goldUIMidWindow(flat string) string {
+	runes := []rune(flat)
+	start := len(runes) / 3
+	if start <= confirmHeadRunes {
+		return ""
+	}
+	return string(runes[start:min(start+confirmMidRunes, len(runes))])
 }
 
 // goldUIReveal is what the labeller is shown only AFTER answering: what the proposer
@@ -806,7 +844,7 @@ func (s *goldSetUISession) Answer(id string, label bench.ExtractLabel) (goldUIRe
 	agreed, comparable := goldUIAgreed(row, label)
 	decision := goldUIDecision{
 		ID: id, URL: row.URL, Label: label,
-		Relabel:    label != row.Label,
+		Relabel:    goldUIRelabels(row, label),
 		Agreed:     agreed,
 		Comparable: comparable,
 		At:         goldUINow(),

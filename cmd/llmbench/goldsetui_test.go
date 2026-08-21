@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -559,9 +560,14 @@ func TestGoldSetUIApplyArgsAreTheApplyVerbsOwn(t *testing.T) {
 // TestGoldUINoteRule pins ADR-0048's note rule, which is the whole reason an answer
 // and its note are two steps.
 func TestGoldUINoteRule(t *testing.T) {
-	row := func(proposed bench.ExtractLabel) goldRow {
-		return goldRow{URL: "https://acme.test/x", LabelProvenance: goldProvenance{ProposedLabel: proposed}}
+	// standing is a row as the record holds it: the label written on it, and the label
+	// its proposer put forward. The two differ only on a row somebody already overruled.
+	standing := func(current, proposed bench.ExtractLabel) goldRow {
+		return goldRow{URL: "https://acme.test/x", Label: current, LabelProvenance: goldProvenance{ProposedLabel: proposed}}
 	}
+	// row is the ordinary case: a row nobody has overruled carries its Proposed Label as
+	// its own, which is what newGoldSetUISession backfills before the queue is drawn.
+	row := func(proposed bench.ExtractLabel) goldRow { return standing(proposed, proposed) }
 	tests := []struct {
 		name     string
 		row      goldRow
@@ -572,6 +578,13 @@ func TestGoldUINoteRule(t *testing.T) {
 		{"disagreement is where the proposer is wrong, so it is argued", row(bench.ExtractDetail), bench.ExtractHubIndex, true},
 		{"an agreeing ambiguous still records what the tension was", row(bench.ExtractAmbiguous), bench.ExtractAmbiguous, true},
 		{"no Proposed Label leaves no proposer's argument to fall back on", row(""), bench.ExtractDetail, true},
+		// The row this ticket's relabel path lands on: it agrees with the proposer and
+		// still changes the record, so the note that argued for the label being overruled
+		// must not be left standing under the new one (ADR-0048).
+		{"relabelling back to the Proposed Label still replaces the note that overruled it",
+			standing(bench.ExtractResidue, bench.ExtractDetail), bench.ExtractDetail, true},
+		{"keeping an override is still a disagreement with the proposer, so it is argued",
+			standing(bench.ExtractResidue, bench.ExtractDetail), bench.ExtractResidue, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -579,6 +592,71 @@ func TestGoldUINoteRule(t *testing.T) {
 				t.Errorf("goldUINoteRequired = %v, want %v", got, tt.wantNote)
 			}
 		})
+	}
+}
+
+// TestGoldSetUIRelabelBackToTheProposedLabelReplacesTheNote walks the sequence
+// ADR-0048 forbids the end of: a disagreement writes a note arguing for the label it
+// chose, the confirmation is written, and the row is then relabelled BACK to the
+// Proposed Label. The second answer agrees with the proposer and still changes the
+// record, so it owes a note of its own -- otherwise the row lands carrying the note that
+// argued for the label just overruled, and "leaving it makes the row read as if it
+// argues for the new one".
+func TestGoldSetUIRelabelBackToTheProposedLabelReplacesTheNote(t *testing.T) {
+	session, cfg, ids := newTestSession(t, 1)
+	client := newUIClient(t, session)
+	// The first row served: label detail, Proposed Label detail, carrying the
+	// proposer's own note.
+	id := ids["agree"]
+
+	// -- the disagreement: residue, argued, and written to the record.
+	answered := client.ok(http.MethodPost, "/api/answer", map[string]string{"id": id, "label": "residue"})
+	if answered.Reveal == nil || !answered.Reveal.NoteRequired {
+		t.Fatalf("disagreeing revealed %+v, want a required note", answered.Reveal)
+	}
+	if noted := client.ok(http.MethodPost, "/api/note", map[string]string{"id": id, "note": "no role body"}); noted.Flushed != 1 {
+		t.Fatalf("the disagreement wrote %d decisions, want 1", noted.Flushed)
+	}
+	written := recordOf(t, cfg.Dir)[id]
+	if written.Label != bench.ExtractResidue || written.LabelProvenance.Note != "no role body" {
+		t.Fatalf("the record reads label %q note %q, want residue / %q", written.Label, written.LabelProvenance.Note, "no role body")
+	}
+
+	// -- the undo: a written decision is a signature, so the row comes back for
+	// relabelling rather than being erased.
+	if got := client.ok(http.MethodPost, "/api/undo", struct{}{}).Outcome; got != "relabel" {
+		t.Fatalf("undoing a written decision = %q, want %q", got, "relabel")
+	}
+
+	// -- the relabel back: agreement with the proposer, and still a change to the
+	// record, so the note is owed and the decision is not yet one.
+	answered = client.ok(http.MethodPost, "/api/answer", map[string]string{"id": id, "label": "detail"})
+	if answered.Reveal == nil || !answered.Reveal.Agreed {
+		t.Fatalf("re-answering revealed %+v, want agreement with the Proposed Label", answered.Reveal)
+	}
+	if !answered.Reveal.NoteRequired || answered.Recorded {
+		t.Fatalf("relabelling back to the Proposed Label asked for no note (required=%v, recorded=%v); the note arguing for residue would then stand on a detail row (ADR-0048)",
+			answered.Reveal.NoteRequired, answered.Recorded)
+	}
+	if noted := client.ok(http.MethodPost, "/api/note", map[string]string{"id": id, "note": "the role body is a full posting after all"}); noted.Flushed != 1 {
+		t.Fatalf("the relabel wrote %d decisions, want 1", noted.Flushed)
+	}
+
+	final := recordOf(t, cfg.Dir)[id]
+	if final.Label != bench.ExtractDetail {
+		t.Errorf("the relabelled row reads label %q, want detail", final.Label)
+	}
+	if final.LabelProvenance.Note == "no role body" {
+		t.Error("the row reads detail while carrying the note that argued for residue; ADR-0048 forbids exactly this")
+	}
+	if final.LabelProvenance.Note != "the role body is a full posting after all" {
+		t.Errorf("the relabelled row's note is %q, want the note written for the label that stands", final.LabelProvenance.Note)
+	}
+	if final.LabelProvenance.ProposedLabel != bench.ExtractDetail {
+		t.Errorf("the relabelled row's proposed label is %q, want the proposer's detail preserved", final.LabelProvenance.ProposedLabel)
+	}
+	if final.LabelProvenance.ConfirmedBy != goldUITestConfirmer {
+		t.Errorf("the relabelled row is confirmed by %q, want %q re-stamped in the same invocation that retracted it", final.LabelProvenance.ConfirmedBy, goldUITestConfirmer)
 	}
 }
 
@@ -634,6 +712,59 @@ func TestGoldUIProposalLinesOmitAnAgreement(t *testing.T) {
 	if len(parsedIDs) != 3 {
 		t.Errorf("the confirmation list names %d rows, want the 3 distinct rows the batch decided", len(parsedIDs))
 	}
+}
+
+// TestGoldUIQuestionShowsTheFlattenedText pins what the panel headed "the captured
+// content -- your label is a statement about THIS" actually puts on screen for a row
+// captured as a Structural Rendering (#288): the Flattened Text the Extract Gate keyed
+// on, and never the renderer's grammar. A panel showing marker syntax and link targets
+// shows the labeller words no gate ever read, and it would be measured for Capture
+// Fidelity against a different string than the one they are reading (ADR-0046,
+// ADR-0047).
+func TestGoldUIQuestionShowsTheFlattenedText(t *testing.T) {
+	// The row shape #288 introduced: a company directory, whose link targets are what
+	// tell the renderer's reader it is not an index of Job Listings.
+	rendering := "#\vUnternehmen\n-\v[Firma Alpha](/organization/1)\n-\v[Firma Beta](/organization/2)"
+	row := goldRow{
+		URL: "https://acme.test/unternehmen", Verdict: true, Renderer: parser.RendererStructural,
+		Content: crawler.Content{Title: "Unternehmen", MainContent: rendering},
+	}
+
+	t.Run("the head window is the text the gate read", func(t *testing.T) {
+		q := goldUIQuestionOf(row)
+		const want = "Unternehmen Firma Alpha Firma Beta"
+		if q.Head != want {
+			t.Errorf("the authority panel reads %q, want the Flattened Text %q", q.Head, want)
+		}
+		// The same string this row's Capture Fidelity is measured over: the panel and
+		// the measurement must never be reading two different pages.
+		if captured := goldRefetchTargetOf(row).CapturedText; q.Head != captured {
+			t.Errorf("the panel shows %q while Capture Fidelity is measured over %q", q.Head, captured)
+		}
+	})
+
+	t.Run("the mid window is flattened too", func(t *testing.T) {
+		// Long enough that the second window opens at all: it starts a third of the way
+		// in, and only once that is past the head window.
+		long := "#\vUnternehmen\n" + strings.Repeat("-\v[Firma Alpha](/organization/1)\n", 800)
+		deep := row
+		deep.Content.MainContent = long
+		q := goldUIQuestionOf(deep)
+		if q.Mid == "" {
+			t.Fatalf("no second window over %d runes of flattened text", len([]rune(crawler.FlattenedText(long))))
+		}
+		// The window is 1200 runes wide, so a failure quotes its opening rather than
+		// burying the reason under the whole of it.
+		opening := truncateRunes(q.Mid, 80)
+		if !strings.Contains(crawler.FlattenedText(long), q.Mid) {
+			t.Errorf("the second window is not a stretch of the Flattened Text; it opens %q", opening)
+		}
+		for _, marker := range []string{"](", "/organization/", "\v", "#"} {
+			if strings.Contains(q.Mid, marker) {
+				t.Errorf("the second window carries the renderer's %q, which is grammar and not a page word (ADR-0046); it opens %q", marker, opening)
+			}
+		}
+	})
 }
 
 // TestGoldSetUIQueueOrderIsIndependentOfTheLabel is the property that keeps a pass
@@ -818,13 +949,113 @@ func TestGoldSetUIRefusesAForeignCaller(t *testing.T) {
 	}
 }
 
-// TestGoldSetUIIsUnrunnableInCI pins the environment check. It is safe to call the
-// verb here only because that check precedes flag parsing and anything that could
-// listen -- there is no path in an automated environment that reaches net.Listen.
+// newConfirmedTestGoldSet writes the fixture rows with every row already carrying a
+// confirmer, so a session drawn over it has an EMPTY queue. That is the one argument
+// list that carries the verb all the way to exit 0 without listening on anything: the
+// "nothing to confirm" path closes the session and returns before net.Listen.
+func newConfirmedTestGoldSet(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	rows := goldUITestRows()
+	for i := range rows {
+		rows[i].LabelProvenance.ConfirmedBy = "An Earlier Human"
+		rows[i].LabelProvenance.ConfirmedAt = "2026-08-02T09:00:00Z"
+	}
+	if err := writeGoldSetFiles(dir, rows); err != nil {
+		t.Fatalf("writeGoldSetFiles: %v", err)
+	}
+	return dir
+}
+
+// captureStdio runs fn with the process's stdout and stderr replaced by pipes and hands
+// back what it printed to each. runGoldSetUI is a CLI verb: what it refuses and why is
+// on stderr, and a test that drives it has to read that rather than let it land in the
+// suite's own output.
+func captureStdio(t *testing.T, fn func()) (stdout, stderr string) {
+	t.Helper()
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	// Both pipes are drained WHILE fn runs: a verb printing more than a pipe buffer
+	// holds would otherwise block forever on its own output.
+	var wg sync.WaitGroup
+	var out, errs bytes.Buffer
+	wg.Add(2)
+	go func() { defer wg.Done(); _, _ = out.ReadFrom(outR) }()
+	go func() { defer wg.Done(); _, _ = errs.ReadFrom(errR) }()
+
+	origOut, origErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = outW, errW
+	fn()
+	os.Stdout, os.Stderr = origOut, origErr
+
+	_ = outW.Close()
+	_ = errW.Close()
+	wg.Wait()
+	_ = outR.Close()
+	_ = errR.Close()
+	return out.String(), errs.String()
+}
+
+// TestGoldSetUIIsUnrunnableInCI pins the environment check, and pins it by DIFFERENCE:
+// the same argument list that carries the verb to exit 0 with a person at the terminal
+// must exit 2 under CI. Asserting only the refusal would prove nothing -- almost every
+// way the verb can refuse exits 2, so a guard deleted or moved below flag parsing would
+// leave such a test green while a CI step could stamp confirmations (ADR-0043).
+//
+// It is safe to call the verb here only because the gold set is a t.TempDir() whose
+// rows all carry a confirmer: the queue is empty, so the run ends on the "nothing to
+// confirm" path and no test ever binds a port.
 func TestGoldSetUIIsUnrunnableInCI(t *testing.T) {
-	t.Setenv("CI", "1")
-	if code := runGoldSetUI(nil); code != 2 {
-		t.Errorf("goldset-ui exited %d under CI, want 2: ground truth is written by a person who chose to write it (ADR-0043)", code)
+	dir := newConfirmedTestGoldSet(t)
+	args := []string{
+		"-by", goldUITestConfirmer, "-dir", dir, "-refetch=false",
+		"-journal", filepath.Join(t.TempDir(), "journal.jsonl"),
+	}
+	// The verb mints its own scratch directory under the system temp dir; pointing that
+	// at a t.TempDir() keeps a test run from leaving one behind.
+	t.Setenv("TMPDIR", t.TempDir())
+
+	t.Run("a person at a terminal reaches the end of the queue", func(t *testing.T) {
+		t.Setenv("CI", "")
+		out, refusal := captureStdio(t, func() {
+			if code := runGoldSetUI(args); code != 0 {
+				t.Errorf("goldset-ui exited %d with every row already confirmed, want 0: nothing to confirm is a finished job", code)
+			}
+		})
+		if refusal != "" {
+			t.Errorf("the verb refused a run it should have completed: %s", refusal)
+		}
+		if !strings.Contains(out, "nothing to confirm") {
+			t.Errorf("the run printed %q, want the finished-queue account: without it, exit 0 could be any other early return", out)
+		}
+	})
+
+	t.Run("an automated environment is refused before the verb does anything", func(t *testing.T) {
+		t.Setenv("CI", "1")
+		out, refusal := captureStdio(t, func() {
+			if code := runGoldSetUI(args); code != 2 {
+				t.Errorf("goldset-ui exited %d under CI on arguments that otherwise exit 0, want 2: ground truth is written by a person who chose to write it (ADR-0043)", code)
+			}
+		})
+		if !strings.Contains(refusal, "refusing to run under CI") {
+			t.Errorf("the refusal reads %q, want it to name the environment it refused for", refusal)
+		}
+		if out != "" {
+			t.Errorf("a refused run still printed %q; the guard must precede everything the verb does, not sit past the work", out)
+		}
+	})
+
+	// The record is untouched either way: a queue with nothing owed writes nothing.
+	for id, row := range recordOf(t, dir) {
+		if got := row.LabelProvenance.ConfirmedBy; got != "An Earlier Human" {
+			t.Errorf("row %s is confirmed by %q, want the earlier human left alone", id, got)
+		}
 	}
 }
 
