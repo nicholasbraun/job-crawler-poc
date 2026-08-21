@@ -512,3 +512,216 @@ func firstBytes(b []byte) string {
 	}
 	return string(b)
 }
+
+// goldRefetchWriteSidecar writes a cache sidecar the refetcher did not produce, which is
+// the only way to state what a cached entry SAYS rather than what a fetch happened to
+// leave behind.
+func goldRefetchWriteSidecar(t *testing.T, cacheDir string, entry goldRefetchCacheEntry) {
+	t.Helper()
+	raw, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("encode the sidecar: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, entry.ID+".json"), raw, 0o644); err != nil {
+		t.Fatalf("write the sidecar: %v", err)
+	}
+}
+
+// TestGoldRefetcherDoesNotTrustTheCacheSidecar pins that a cached measurement is READ,
+// never obeyed. LiveView is re-derived from State on the way out of the cache, so a
+// sidecar cannot hand out a live view the rule would refuse -- the case ADR-0047 says
+// corrupts a label rather than merely weakening an aid, because a withdrawn posting's
+// page is `residue` in the rubric. The renderer and the bytes name are checked for the
+// same reason: an entry this build did not write describes a parse it does not take, and
+// a sidecar may only ever name its own file.
+func TestGoldRefetcherDoesNotTrustTheCacheSidecar(t *testing.T) {
+	tests := []struct {
+		name string
+		// entry is the sidecar as written, taking the row it describes.
+		entry func(target goldRefetchTarget) goldRefetchCacheEntry
+		// wantFetched says the sidecar was refused and the row measured again.
+		wantFetched  bool
+		wantState    goldFidelity
+		wantLiveView bool
+	}{
+		{
+			name: "a gone row claiming a live view is re-sealed, never trusted",
+			entry: func(target goldRefetchTarget) goldRefetchCacheEntry {
+				return goldRefetchCacheEntry{
+					ID: target.ID, URL: target.URL, Bytes: target.ID + ".html",
+					Renderer: parser.RendererStructural,
+					Report: goldFidelityReport{
+						State: fidelityGone, Retention: 0.2, LiveView: true,
+						Reason: "written by a build with a different gone threshold",
+					},
+				}
+			},
+			wantFetched: false, wantState: fidelityGone, wantLiveView: false,
+		},
+		{
+			name: "a sidecar from another renderer is not this parser's measurement",
+			entry: func(target goldRefetchTarget) goldRefetchCacheEntry {
+				return goldRefetchCacheEntry{
+					ID: target.ID, URL: target.URL, Bytes: target.ID + ".html",
+					Renderer: parser.RendererFlattened,
+					Report:   goldFidelityReport{State: fidelityGone, Reason: "measured off a flattened parse"},
+				}
+			},
+			wantFetched: true, wantState: fidelitySame, wantLiveView: true,
+		},
+		{
+			name: "a sidecar may only ever name its own bytes",
+			entry: func(target goldRefetchTarget) goldRefetchCacheEntry {
+				return goldRefetchCacheEntry{
+					ID: target.ID, URL: target.URL, Bytes: filepath.Join("..", "elsewhere.html"),
+					Renderer: parser.RendererStructural,
+					Report:   goldFidelityReport{State: fidelityDrifted, LiveView: true, Reason: "pointed at a file outside the cache"},
+				}
+			},
+			wantFetched: true, wantState: fidelitySame, wantLiveView: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newGoldRefetchTestServer(t, "")
+			cacheDir := t.TempDir()
+			target := server.target("/same")
+
+			entry := tt.entry(target)
+			entry.FetchedAt = time.Now().UTC().Format(time.RFC3339)
+			goldRefetchWriteSidecar(t, cacheDir, entry)
+
+			refetcher := newGoldRefetchTestRefetcher(t, server.URL, cacheDir, goldRefetchMaxAge)
+			rep, ok := refetcher.Measure(t.Context(), target)
+			if !ok {
+				t.Fatal("the measurement did not complete")
+			}
+			if fetched := server.asked("/same") > 0; fetched != tt.wantFetched {
+				t.Errorf("the row was fetched again = %v, want %v", fetched, tt.wantFetched)
+			}
+			if rep.State != tt.wantState {
+				t.Errorf("the row reads as %q, want %q -- %s", rep.State, tt.wantState, rep.Reason)
+			}
+			if rep.LiveView != tt.wantLiveView {
+				t.Errorf("live_view = %v, want %v: a live view is derived from the measured state and never read out of a cache file (ADR-0047)",
+					rep.LiveView, tt.wantLiveView)
+			}
+		})
+	}
+}
+
+// TestGoldRefetcherLeavesARowUnmeasuredWhenTheCacheWriteFails pins the honest answer to
+// a cache that will not hold the re-fetch: the row is UNMEASURED, whichever half of the
+// entry failed to land. Advertising the fidelity anyway would un-hide the frame for a
+// rendering GET /render/{id} cannot serve, and its advice to reload never re-measures --
+// Measure single-flights the row for the whole session. Nothing is recorded either, so
+// the next session takes the measurement again.
+func TestGoldRefetcherLeavesARowUnmeasuredWhenTheCacheWriteFails(t *testing.T) {
+	tests := []struct {
+		name string
+		// blocked is the cache file a directory is put in the way of: os.WriteFile fails
+		// on a directory whatever the process's privileges, so these pin the behaviour
+		// rather than a umask.
+		blocked func(target goldRefetchTarget) string
+	}{
+		{name: "the re-fetched bytes", blocked: func(target goldRefetchTarget) string { return target.ID + ".html" }},
+		{name: "the sidecar that finds them", blocked: func(target goldRefetchTarget) string { return target.ID + ".json" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newGoldRefetchTestServer(t, "")
+			cacheDir := t.TempDir()
+			target := server.target("/same")
+			if err := os.MkdirAll(filepath.Join(cacheDir, tt.blocked(target)), 0o755); err != nil {
+				t.Fatalf("block the cache write: %v", err)
+			}
+
+			refetcher := newGoldRefetchTestRefetcher(t, server.URL, cacheDir, goldRefetchMaxAge)
+			rep, ok := refetcher.Measure(t.Context(), target)
+			if !ok {
+				t.Fatal("the measurement did not complete")
+			}
+			if rep.State != "" {
+				t.Errorf("the row reads as %q, want no state at all: the re-fetch a rendering is served from never landed", rep.State)
+			}
+			if rep.LiveView {
+				t.Error("a row whose re-fetch was never cached was offered a live view the tool cannot serve")
+			}
+			if !strings.Contains(rep.Reason, "cached") {
+				t.Errorf("the reason is %q, want it to say the re-fetch was not cached so the labeller knows why there is no aid", rep.Reason)
+			}
+			if _, ok := refetcher.Rendering(target); ok {
+				t.Error("a rendering was served out of a cache the re-fetch never reached")
+			}
+
+			// Nothing was recorded, so the next session measures the row rather than
+			// inheriting an unmeasured one for the whole MaxAge window.
+			second := newGoldRefetchTestRefetcher(t, server.URL, cacheDir, goldRefetchMaxAge)
+			if _, ok := second.Measure(t.Context(), target); !ok {
+				t.Fatal("the second measurement did not complete")
+			}
+			if n := server.asked("/same"); n != 2 {
+				t.Errorf("a second session over the same cache cost %d fetches in total, want 2: a re-fetch that was never cached is not a measurement to reuse", n)
+			}
+		})
+	}
+}
+
+// TestGoldRefetchCacheIsJudgedByTheCachePathNotTheGoldSetDir pins WHERE the repository is
+// resolved from. A labeller pointing -dir at a copy of the gold set outside every
+// checkout is being cautious, and it must not be what lets re-fetched HTML land in the
+// working tree beside the committed gold set (ADR-0047).
+func TestGoldRefetchCacheIsJudgedByTheCachePathNotTheGoldSetDir(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatalf("create the fake repository: %v", err)
+	}
+	goldInside := filepath.Join(repo, "cmd", "llmbench", "extract-goldset")
+	if err := os.MkdirAll(goldInside, 0o755); err != nil {
+		t.Fatalf("create the gold-set directory: %v", err)
+	}
+	// The copy a cautious labeller works from: a gold set under no repository at all.
+	goldOutside := filepath.Join(t.TempDir(), "goldset-copy")
+	if err := os.MkdirAll(goldOutside, 0o755); err != nil {
+		t.Fatalf("create the gold-set copy: %v", err)
+	}
+	cache := filepath.Join(goldInside, "cache")
+
+	for _, goldDir := range []struct {
+		name string
+		dir  string
+	}{
+		{"-dir inside the repository", goldInside},
+		{"-dir on a copy outside every repository", goldOutside},
+	} {
+		t.Run(goldDir.name, func(t *testing.T) {
+			got, err := goldRefetchCacheDir(cache, goldDir.dir)
+			if err == nil {
+				t.Fatalf("goldRefetchCacheDir(%q, %q) = %q, want it refused: it sits inside the repository at %q, and re-fetched bytes are never committed (ADR-0047)",
+					cache, goldDir.dir, got, repo)
+			}
+			if !strings.Contains(err.Error(), "ADR-0047") {
+				t.Errorf("the refusal is %q, want it to name the rule it enforces", err)
+			}
+		})
+	}
+}
+
+// TestGoldRefetchCacheMustBeOutsideTheGoldSetDirectory pins the second half of the same
+// rule for a gold set that is in no repository: nothing the live page said may land under
+// the directory holding the record (ADR-0047).
+func TestGoldRefetchCacheMustBeOutsideTheGoldSetDirectory(t *testing.T) {
+	goldDir := filepath.Join(t.TempDir(), "goldset-copy")
+	if err := os.MkdirAll(goldDir, 0o755); err != nil {
+		t.Fatalf("create the gold-set copy: %v", err)
+	}
+	cache := filepath.Join(goldDir, "refetch")
+
+	got, err := goldRefetchCacheDir(cache, goldDir)
+	if err == nil {
+		t.Fatalf("goldRefetchCacheDir(%q, %q) = %q, want it refused: the re-fetched bytes would land beside the record (ADR-0047)", cache, goldDir, got)
+	}
+	if !strings.Contains(err.Error(), "ADR-0047") {
+		t.Errorf("the refusal is %q, want it to name the rule it enforces", err)
+	}
+}

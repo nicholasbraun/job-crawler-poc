@@ -230,9 +230,9 @@ func (r *goldRefetcher) reportForError(err error) goldFidelityReport {
 	}.sealed()
 }
 
-// record stamps the report with the instant it was taken and writes the cache. A
-// cache write that fails is reported to stderr and swallowed: the measurement stands,
-// and the cache is a convenience, never the record.
+// record stamps the report with the instant it was taken and writes the cache. A cache
+// write that fails leaves the row UNMEASURED (goldRefetchUnrecorded): the cache is what
+// a report stands on, so a measurement it did not land in is not one the tool can honour.
 func (r *goldRefetcher) record(t goldRefetchTarget, body []byte, rep goldFidelityReport) goldFidelityReport {
 	rep.At = goldUINow()
 
@@ -244,35 +244,69 @@ func (r *goldRefetcher) record(t goldRefetchTarget, body []byte, rep goldFidelit
 		entry.Bytes = t.ID + ".html"
 		if err := os.WriteFile(filepath.Join(r.cfg.CacheDir, entry.Bytes), body, 0o644); err != nil {
 			fmt.Fprintf(os.Stderr, "goldset-ui: cache the re-fetched bytes for %s: %v\n", t.ID, err)
-			entry.Bytes = ""
+			return goldRefetchUnrecorded(rep.At, err)
 		}
 	}
 	raw, err := json.Marshal(entry)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "goldset-ui: encode the re-fetch cache entry for %s: %v\n", t.ID, err)
-		return rep
+		return goldRefetchUnrecorded(rep.At, err)
 	}
 	if err := os.WriteFile(filepath.Join(r.cfg.CacheDir, t.ID+".json"), raw, 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "goldset-ui: cache the re-fetch entry for %s: %v\n", t.ID, err)
+		return goldRefetchUnrecorded(rep.At, err)
 	}
 	return rep
 }
 
+// goldRefetchUnrecorded is the report for a re-fetch the cache refused to hold, and it
+// is deliberately UNMEASURED -- no state, and therefore no live view.
+//
+// The cached bytes are what a rendering is re-parsed from (#288) and the sidecar is what
+// finds them, so a `same` or `drifted` report no cache entry stands behind advertises a
+// page the tool cannot serve: the screen un-hides the frame, GET /render/{id} finds
+// nothing, and its advice to reload never re-measures -- Measure single-flights the row
+// for the whole session and the warm loop skips a row that already carries a fidelity.
+// "Not measured" is the honest answer, it offers no live view, and because nothing was
+// cached the next session takes the measurement again. A full disk or a read-only cache
+// directory is what gets here.
+func goldRefetchUnrecorded(at string, err error) goldFidelityReport {
+	return goldFidelityReport{
+		At:     at,
+		Reason: "the re-fetch could not be cached, so this row is left unmeasured and no page is shown beside its captured text: " + err.Error(),
+	}.sealed()
+}
+
 // readCache returns a cached measurement for t when one is present, describes the
 // SAME url, and is younger than MaxAge.
+//
+// The report is re-SEALED on the way out, so LiveView is derived from State here exactly
+// as it is on a fresh measurement and is never trusted from JSON. A sidecar decoding to
+// `{"state":"gone","live_view":true}` -- what a build carrying a different
+// goldFidelityGoneBelow writes while the rule itself is being iterated on, and what a
+// hand-edited file can say -- would otherwise be honoured for the whole MaxAge window and
+// put a withdrawal page in front of the labeller, which is ADR-0047's case that corrupts a
+// label rather than merely weakening an aid. sealed only ever withholds, so it is safe on
+// every cached shape, the robots refusal that carries no state included.
 func (r *goldRefetcher) readCache(t goldRefetchTarget) (goldFidelityReport, bool) {
 	entry, ok := r.readCacheEntry(t)
 	if !ok {
 		return goldFidelityReport{}, false
 	}
-	return entry.Report, true
+	return entry.Report.sealed(), true
 }
 
-// readCacheEntry reads t's sidecar and applies the two guards every reader of the
-// cache owes: it must describe the SAME url, and it must be younger than MaxAge. They
-// live here once so a rendering can never describe a different page -- or a staler one
-// -- than the report shown beside it. The URL equality check is also the defence
-// against a hand-edited or colliding cache file measuring the wrong page.
+// readCacheEntry reads t's sidecar and applies the guards every reader of the cache
+// owes: it must describe the SAME url, it must come from the SAME renderer, it may name
+// no bytes but its own, and it must be younger than MaxAge. They live here once so a
+// rendering can never describe a different page -- or a staler one -- than the report
+// shown beside it.
+//
+// Every one of them is a defence against a sidecar the refetcher did not write. The URL
+// check catches a hand-edited or colliding file measuring the wrong page; the renderer
+// check refuses an entry whose text came from a parse this build no longer takes
+// (ADR-0046); and pinning Bytes to t.ID+".html" means a sidecar can only ever name its
+// own file, so no entry can point Rendering at a path outside the cache.
 func (r *goldRefetcher) readCacheEntry(t goldRefetchTarget) (goldRefetchCacheEntry, bool) {
 	raw, err := os.ReadFile(filepath.Join(r.cfg.CacheDir, t.ID+".json"))
 	if err != nil {
@@ -283,6 +317,12 @@ func (r *goldRefetcher) readCacheEntry(t goldRefetchTarget) (goldRefetchCacheEnt
 		return goldRefetchCacheEntry{}, false
 	}
 	if entry.URL != t.URL {
+		return goldRefetchCacheEntry{}, false
+	}
+	if entry.Renderer != r.cfg.Parser.RendererID() {
+		return goldRefetchCacheEntry{}, false
+	}
+	if entry.Bytes != "" && entry.Bytes != t.ID+".html" {
 		return goldRefetchCacheEntry{}, false
 	}
 	fetchedAt, err := time.Parse(time.RFC3339, entry.FetchedAt)
@@ -335,11 +375,17 @@ type goldRefetchCacheEntry struct {
 	Report   goldFidelityReport `json:"fidelity"`
 }
 
-// goldRefetchCacheDir resolves the cache directory and REFUSES one inside the
-// repository holding goldDir. Re-fetched bytes are a working artefact: a cache under
-// the tree is a cache somebody commits (ADR-0047). An empty want takes
-// <user cache dir>/llmbench/goldset-refetch, falling back to the OS temp dir when the
-// OS has no user cache directory.
+// goldRefetchCacheDir resolves the cache directory and REFUSES one inside any
+// repository, or inside the gold-set directory itself. Re-fetched bytes are a working
+// artefact: a cache under a tracked tree is a cache somebody commits, and a cache beside
+// the record is live text under the directory that holds ground truth (ADR-0047).
+//
+// The repository is resolved by walking up from the CACHE path, never from goldDir.
+// Pointing -dir at a copy of the gold set outside every checkout is the cautious thing a
+// labeller does, and it must not be what disarms the guard: judged from goldDir, that
+// session finds no repository at all and then accepts a cache path inside this one.
+// An empty want takes <user cache dir>/llmbench/goldset-refetch, falling back to the OS
+// temp dir when the OS has no user cache directory.
 func goldRefetchCacheDir(want, goldDir string) (string, error) {
 	cache := want
 	if strings.TrimSpace(cache) == "" {
@@ -355,12 +401,21 @@ func goldRefetchCacheDir(want, goldDir string) (string, error) {
 	}
 	cache = filepath.Clean(cache)
 
+	// repoRootOf walks lexically, so a cache directory that does not exist yet is judged
+	// by the ancestors it would be created under.
+	if root := repoRootOf(cache); root != "" {
+		return "", fmt.Errorf("%s is inside the repository at %s; re-fetched bytes are a working artefact and are never committed (ADR-0047)", cache, root)
+	}
+
 	gold, err := filepath.Abs(goldDir)
 	if err != nil {
 		return "", fmt.Errorf("resolve the gold-set directory %q: %w", goldDir, err)
 	}
-	if root := repoRootOf(filepath.Clean(gold)); root != "" && withinDir(root, cache) {
-		return "", fmt.Errorf("%s is inside the repository at %s; re-fetched bytes are a working artefact and are never committed (ADR-0047)", cache, root)
+	gold = filepath.Clean(gold)
+	// A gold set outside every repository is still a gold set: nothing the live page said
+	// may land under the directory holding the record (ADR-0047).
+	if withinDir(gold, cache) {
+		return "", fmt.Errorf("%s is inside the gold-set directory at %s; re-fetched bytes are a working artefact and never land beside the record (ADR-0047)", cache, gold)
 	}
 	return cache, nil
 }
