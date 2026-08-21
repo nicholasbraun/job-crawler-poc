@@ -263,6 +263,12 @@ flattening and once with it rendering structure, at one shared prompt budget, an
 prints each arm's extract-call rate and false-drop count beside the delta between
 them. It exits non-zero when the two arms disagree, never on their level.
 
+Its `goldset-ui` verb is the confirmation surface for that set: a page on loopback
+that serves the rows still owed a human confirmer one at a time, takes the label as
+a single keystroke **before** revealing what the proposer said, and writes the batch
+through `goldset-apply` and nothing else. The by-product is the number the set needs
+— how often an independent human and the proposer reach the same answer (ADR-0048).
+
 ## Project Structure
 
 ```

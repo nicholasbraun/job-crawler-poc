@@ -79,10 +79,10 @@ relabelled during the pass that confirmed them. It is deliberately **not** a col
   the plan in `../goldset.go`. Same capture + same seed → byte-identical file.
 - **Labels** were **proposed by an LLM** (the #254 delivery agent) from each page's own
   title, text and outbound-link counts, with the structured data *deliberately
-  withheld* — see "The labeling protocol" below. **No human has confirmed any row yet**;
-  `label_provenance.confirmed_by` is empty everywhere and
-  `pendingHumanConfirmations` in `../goldset_test.go` is the machine-visible count of
-  the gap.
+  withheld* — see "The labeling protocol" below. **78 of the 457 rows now carry a human
+  confirmer** (69 `lone-posting`, 5 `no-posting`, 4 `random`); the other 379 carry a
+  **Proposed Label** and no confirmer, and the four confirmation counts in
+  `../goldset_test.go` are the machine-visible measure of that gap.
 
 ## Why parsed Content and not re-fetchable HTML
 
@@ -958,6 +958,36 @@ go run ./cmd/llmbench goldset-apply -confirmed-by "<your name>" -confirm-stratum
 # the same commit.
 ```
 
+### Confirming row by row with the labelling tool (#286)
+
+```bash
+go run ./cmd/llmbench goldset-ui -by "<your name>" -stratum random
+# open the printed URL — it carries this session's token; the tool binds loopback,
+# refuses a foreign origin, and refuses to run under CI.
+```
+
+One row at a time in row-id order, restricted to `-stratum` and skipping every row that
+already carries a confirmer, so a pass resumes across sittings. `d`/`h`/`r`/`a` label the
+page; the **Proposed Label is revealed only after you answer** (ADR-0048), together with
+whether you agreed. A note is required when you disagree and on `ambiguous`, and it
+replaces the proposer's; on agreement it is left empty so the proposer's own survives.
+`u` undoes the last unwritten decision, `w` writes the buffer now, and every decision is
+journalled to a file under the OS temp dir the moment it is taken, so a crash costs a
+rewrite and not your reading.
+
+The tool is **not a second writer**: it synthesizes a `-proposals` file and a
+`-confirm-ids` file and calls `goldset-apply` in process, once per batch, so that verb's
+total validation, its refusal to overwrite a proposer, and its retraction of a
+confirmation whose label changed all still apply. The batch files are left in the
+session's scratch directory as the account of what was applied. After a session, ratchet
+the confirmation floors in `../goldset_test.go` to the figures the apply summary just
+printed, in the same commit.
+
+Rows are shown as their **captured text** — the parsed page the live extract stage
+decided on, which is what the label is a statement about (ADR-0043). Rendering a
+re-fetch of the page beside it, and the **Capture Fidelity** that decides whether a
+re-fetch may be shown at all, are #287 and #288.
+
 ### The boundary stratum must be FULLY confirmed (#263)
 
 This is the stratum ADR-0043 actually requires a human on. Its 188 rows are the rows a
@@ -1041,6 +1071,11 @@ weighted number.
 **Do not use `-confirm-stratum random`.** It would stamp all 120 rows at once from one
 command — a full confirmation of 120 pages nobody read, which is exactly the thing the
 provenance record exists to prevent. A spot check is 20 rows a human actually opened.
+
+`goldset-ui -stratum random` is the way to turn that warning into work: it is the 116
+rows still owed a confirmer, read one at a time for a keystroke each, which is what the
+warning was always asking for — the objection is to stamping 120 rows nobody read, not
+to reading them.
 
 ### Second pass — the 51 expected extractions (#256)
 

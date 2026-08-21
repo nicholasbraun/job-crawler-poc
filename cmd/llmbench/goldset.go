@@ -1194,6 +1194,31 @@ func worksheetFor(row goldRow) worksheetRow {
 	return out
 }
 
+// extractLabelQuestion is the ONE question every Extract Gold Set label answers. It
+// is shared by the confirmation sheet and the labelling tool so the two surfaces can
+// never put different questions to the same human (#286).
+const extractLabelQuestion = "is this page ONE Job Listing?"
+
+// labelRubricEntry is one label as a labeller reads it: the label itself, the
+// keystroke goldset-ui binds to it, and the definition both review surfaces state.
+// Key is ignored by the Markdown sheet; it lives here so "d is detail" is written
+// down once.
+type labelRubricEntry struct {
+	Label bench.ExtractLabel `json:"label"`
+	Key   string             `json:"key"`
+	Text  string             `json:"text"`
+}
+
+// extractLabelRubric is the labelling rubric, in the fixed order both surfaces show
+// it. It is the wording renderConfirmSheet has always printed, lifted out of that
+// function so goldset-ui cannot state a definition the sheet does not (#286).
+var extractLabelRubric = []labelRubricEntry{
+	{bench.ExtractDetail, "d", "the page IS one Job Listing: one role's responsibilities or requirements, and an apply action."},
+	{bench.ExtractHubIndex, "h", "the page LISTS openings (a board root, a search result, a location or department facet). A page listing exactly one opening is still `hub-index`."},
+	{bench.ExtractResidue, "r", "neither: culture, about, benefits, blog, press, contact, a cookie or login wall, a JS shell, a 404, a salary guide, a \"post a job\" form, or a withdrawn posting with no role body."},
+	{bench.ExtractAmbiguous, "a", "the page genuinely does not resolve. Say what the tension is in the note."},
+}
+
 // goldSetPaths returns the substrate and review-sheet paths under dir.
 func goldSetPaths(dir string) (substrate, sheet string) {
 	return filepath.Join(dir, goldSetFile), filepath.Join(dir, labelsFile)

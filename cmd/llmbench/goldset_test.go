@@ -3123,3 +3123,38 @@ func TestWriteGoldSetFilesReplacesEveryCommittedFile(t *testing.T) {
 		}
 	}
 }
+
+// TestConfirmSheetStatesTheSharedRubric pins the rubric extraction (#286). The
+// confirmation sheet and goldset-ui must put ONE question and ONE set of definitions
+// to the same human, so both render extractLabelRubric -- and the sheet's bytes are
+// still the ones it has always printed. The literal below is that wording, kept here
+// on purpose: a change to the shared value then has to be made deliberately rather
+// than drifting out of the confirmation sheet unnoticed.
+func TestConfirmSheetStatesTheSharedRubric(t *testing.T) {
+	const want = "One question per row: **is this page ONE Job Listing?**\n\n" +
+		"- `detail` -- the page IS one Job Listing: one role's responsibilities or requirements, and an apply action.\n" +
+		"- `hub-index` -- the page LISTS openings (a board root, a search result, a location or department facet). A page listing exactly one opening is still `hub-index`.\n" +
+		"- `residue` -- neither: culture, about, benefits, blog, press, contact, a cookie or login wall, a JS shell, a 404, a salary guide, a \"post a job\" form, or a withdrawn posting with no role body.\n" +
+		"- `ambiguous` -- the page genuinely does not resolve. Say what the tension is in the note.\n\n"
+
+	rows := []goldRow{{
+		URL: "https://acme.test/jobs/1", Verdict: true, Stratum: stratumBoundary, Weight: 1,
+		Label: bench.ExtractResidue, Content: crawler.Content{Title: "t", MainContent: "body"},
+	}}
+	chunks := renderConfirmSheet(rows, 20)
+	if len(chunks) != 1 {
+		t.Fatalf("rendered %d chunks over 1 row, want 1", len(chunks))
+	}
+	body := string(chunks[0].Body)
+	if !strings.Contains(body, want) {
+		t.Errorf("the confirmation sheet no longer prints the rubric byte for byte:\n%s", body)
+	}
+	if !strings.Contains(body, extractLabelQuestion) {
+		t.Errorf("the sheet asks a different question than goldset-ui does")
+	}
+	for _, e := range extractLabelRubric {
+		if !strings.Contains(body, e.Text) {
+			t.Errorf("the sheet omits the definition of %q, which goldset-ui states", e.Label)
+		}
+	}
+}

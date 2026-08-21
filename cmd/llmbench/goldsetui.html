@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>goldset-ui</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --edge: #2b303b; --ink: #e6e8ee; --dim: #9aa3b2;
+    --agree: #4ea36b; --disagree: #d08a3a; --warn: #d0553a; --key: #7aa2f7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  header {
+    display: flex; flex-wrap: wrap; gap: .25rem 1.25rem; align-items: baseline;
+    padding: .6rem 1rem; border-bottom: 1px solid var(--edge); background: var(--panel);
+    position: sticky; top: 0; z-index: 2;
+  }
+  header .pos { font-size: 1.15rem; font-weight: 600; }
+  header .dim { color: var(--dim); font-size: .85rem; }
+  main { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 1rem; padding: 1rem; }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+  section { background: var(--panel); border: 1px solid var(--edge); border-radius: 6px; padding: .85rem 1rem; margin-bottom: 1rem; }
+  h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 0 0 .5rem; }
+  pre { white-space: pre-wrap; word-break: break-word; margin: 0 0 .75rem; font-size: .85rem; color: #cfd4de; max-height: 22rem; overflow-y: auto; }
+  a { color: var(--key); }
+  .rowid { color: var(--dim); font-size: .8rem; }
+  .title { font-size: 1.1rem; font-weight: 600; margin: .25rem 0; }
+  .counts { color: var(--dim); font-size: .85rem; }
+  kbd {
+    display: inline-block; min-width: 1.4rem; text-align: center; padding: .05rem .35rem;
+    border: 1px solid var(--edge); border-bottom-width: 2px; border-radius: 4px;
+    background: #262b34; color: var(--key); font-family: ui-monospace, monospace; font-size: .85rem;
+  }
+  ul.rubric { list-style: none; margin: 0; padding: 0; }
+  ul.rubric li { margin-bottom: .55rem; font-size: .88rem; }
+  .authority { border-left: 3px solid var(--key); padding-left: .7rem; font-size: .9rem; color: #cfd4de; }
+  .banner { font-weight: 700; letter-spacing: .05em; }
+  .banner.agree { color: var(--agree); }
+  .banner.disagree { color: var(--disagree); }
+  .banner.none { color: var(--dim); }
+  .kv { margin: .35rem 0; font-size: .9rem; }
+  .kv .k { color: var(--dim); display: inline-block; min-width: 7.5rem; }
+  #note { width: 100%; padding: .5rem; background: #10131a; color: var(--ink); border: 1px solid var(--key); border-radius: 4px; font: inherit; }
+  #notecount { color: var(--dim); font-size: .8rem; }
+  #notecount.over { color: var(--warn); }
+  #toast { position: fixed; right: 1rem; bottom: 1rem; max-width: 32rem; z-index: 3; }
+  #toast div { background: #2a1c19; border: 1px solid var(--warn); color: #f0d6cf; padding: .6rem .8rem; border-radius: 6px; margin-top: .5rem; font-size: .88rem; }
+  .hidden { display: none; }
+  .spent { color: var(--disagree); font-size: .85rem; }
+</style>
+</head>
+<body>
+<header>
+  <span class="pos" id="position">-</span>
+  <span class="dim" id="tally"></span>
+  <span class="dim" id="agreement"></span>
+  <span class="dim" id="who"></span>
+  <span class="dim mono" id="dir"></span>
+</header>
+
+<main>
+  <div>
+    <!-- #288 renders the page beside its captured text; the rendering lands here and
+         the captured text below stays exactly where it is. -->
+    <section id="rendering" class="hidden"></section>
+
+    <section id="row">
+      <div class="rowid mono" id="rowid"></div>
+      <div class="title" id="rowtitle"></div>
+      <div><a id="rowurl" target="_blank" rel="noopener noreferrer"></a></div>
+      <div class="counts" id="rowcounts"></div>
+      <h2 style="margin-top:.9rem">captured text (head)</h2>
+      <pre id="head"></pre>
+      <div id="midwrap">
+        <h2>captured text (mid)</h2>
+        <pre id="mid"></pre>
+      </div>
+    </section>
+
+    <section id="decide">
+      <div id="ask">
+        <h2>the question</h2>
+        <div id="question" style="font-size:1.05rem;margin-bottom:.6rem"></div>
+        <div id="askkeys"></div>
+        <div class="spent hidden" id="spent">you have already seen this row's proposed label -- its blindness is spent</div>
+      </div>
+
+      <div id="reveal" class="hidden">
+        <div class="banner" id="revealbanner"></div>
+        <div class="kv"><span class="k">you</span><span class="mono" id="revealchosen"></span></div>
+        <div class="kv"><span class="k">proposed</span><span class="mono" id="revealproposed"></span></div>
+        <div class="kv"><span class="k">proposer note</span><span id="revealnote"></span></div>
+        <div class="kv"><span class="k">on the record</span><span class="mono" id="revealcurrent"></span></div>
+        <div class="kv"><span class="k">stratum</span><span class="mono" id="revealstratum"></span></div>
+        <div class="kv"><span class="k">live verdict</span><span class="mono" id="revealverdict"></span></div>
+        <div id="notewrap" class="hidden" style="margin-top:.7rem">
+          <h2>your note (required)</h2>
+          <input id="note" autocomplete="off" spellcheck="false">
+          <div id="notecount"></div>
+        </div>
+        <div id="advance" class="hidden" style="margin-top:.7rem;color:var(--dim);font-size:.88rem">
+          recorded. <kbd>enter</kbd> for the next row.
+        </div>
+      </div>
+
+      <div id="done" class="hidden">
+        <h2>queue exhausted</h2>
+        <div>Every row this session drew has a decision. Press <kbd>w</kbd> to write what is still buffered, then stop the tool with ctrl-c.</div>
+      </div>
+    </section>
+  </div>
+
+  <div>
+    <section>
+      <h2>what you are reading</h2>
+      <div class="authority" id="authority"></div>
+    </section>
+    <section>
+      <h2>the rubric</h2>
+      <ul class="rubric" id="rubric"></ul>
+    </section>
+    <section>
+      <h2>keys</h2>
+      <div class="kv"><kbd>d</kbd> <kbd>h</kbd> <kbd>r</kbd> <kbd>a</kbd> answer</div>
+      <div class="kv"><kbd>enter</kbd> next row (and submit a note)</div>
+      <div class="kv"><kbd>u</kbd> undo the last decision</div>
+      <div class="kv"><kbd>w</kbd> write the buffer now</div>
+      <div class="kv"><kbd>o</kbd> open the live page in a tab</div>
+    </section>
+  </div>
+</main>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+// The token rides in the page URL and is NEVER stripped from the address bar: a
+// reload has to keep working. Every request carries it as a header instead of a query
+// parameter, so it stays out of the paths the server logs.
+const TOKEN = new URLSearchParams(location.search).get("t") || "";
+
+let info = null;      // /api/session
+let view = null;      // the last view the server returned
+let mode = "question"; // question | note | reveal | done
+let noteRunes = 120;
+
+const $ = (id) => document.getElementById(id);
+
+async function call(path, body) {
+  const opts = {
+    method: body === undefined ? "GET" : "POST",
+    headers: { "X-Goldset-Token": TOKEN },
+  };
+  if (body !== undefined) {
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
+  let payload = null;
+  try { payload = await res.json(); } catch (_) { payload = null; }
+  if (!res.ok) {
+    const msg = (payload && payload.error) || (res.status + " " + res.statusText);
+    throw new Error(msg);
+  }
+  return payload;
+}
+
+function toast(msg, sticky) {
+  const box = document.createElement("div");
+  box.textContent = msg;
+  $("toast").appendChild(box);
+  if (!sticky) setTimeout(() => box.remove(), 6000);
+}
+
+function runes(s) { return Array.from(s).length; }
+
+// The row URL is a string off a crawled page. It is rendered as text unconditionally,
+// and only ever turned into a link when it is one of the two schemes a crawled page URL
+// can be -- a "javascript:" href in the record must not become a click target.
+function safeURL(url) {
+  return /^https?:\/\//i.test(url) ? url : null;
+}
+
+function renderSession(s) {
+  info = s;
+  noteRunes = s.note_runes;
+  $("who").textContent = "signing as " + s.by;
+  $("dir").textContent = s.dir + (s.stratum ? "  ·  stratum " + s.stratum : "");
+  $("authority").textContent = s.authority;
+  $("question").textContent = s.question;
+  const keys = $("askkeys");
+  keys.textContent = "";
+  const list = $("rubric");
+  list.textContent = "";
+  s.rubric.forEach((e) => {
+    const li = document.createElement("li");
+    const k = document.createElement("kbd");
+    k.textContent = e.key;
+    const label = document.createElement("code");
+    label.textContent = " " + e.label + " ";
+    li.appendChild(k);
+    li.appendChild(label);
+    li.appendChild(document.createTextNode("-- " + e.text));
+    list.appendChild(li);
+
+    const chip = document.createElement("span");
+    chip.style.marginRight = "1rem";
+    const ck = document.createElement("kbd");
+    ck.textContent = e.key;
+    chip.appendChild(ck);
+    chip.appendChild(document.createTextNode(" " + e.label));
+    keys.appendChild(chip);
+  });
+}
+
+function renderProgress(p) {
+  $("position").textContent = (p.position || p.total) + " / " + p.total;
+  $("tally").textContent = "decided " + p.decided + " · buffered " + p.buffered + " · written " + p.flushed;
+  $("agreement").textContent = p.comparable > 0
+    ? "agreement " + p.agreed + "/" + p.comparable
+    : "agreement 0/0";
+}
+
+function render(v) {
+  view = v;
+  renderProgress(v.progress);
+
+  $("done").classList.toggle("hidden", !v.done);
+  $("row").classList.toggle("hidden", !v.question);
+  $("ask").classList.toggle("hidden", !v.question);
+
+  if (v.question) {
+    const q = v.question;
+    $("rowid").textContent = q.id;
+    $("rowtitle").textContent = q.title || "(the page carried no title)";
+    const a = $("rowurl");
+    a.textContent = q.url;
+    const href = safeURL(q.url);
+    if (href) { a.href = href; } else { a.removeAttribute("href"); }
+    $("rowcounts").textContent = q.urls_total + " links · " + q.urls_same_host + " same-host · " + q.urls_joblike + " job-like";
+    $("head").textContent = q.head || "(the page carried no text)";
+    $("midwrap").classList.toggle("hidden", !q.mid);
+    $("mid").textContent = q.mid || "";
+  }
+
+  const r = v.reveal;
+  $("reveal").classList.toggle("hidden", !r || !r.chosen);
+  $("spent").classList.toggle("hidden", !(r && !r.chosen));
+
+  if (r && r.chosen) {
+    const banner = $("revealbanner");
+    if (!r.comparable) {
+      banner.textContent = "NO PROPOSED LABEL";
+      banner.className = "banner none";
+    } else if (r.agreed) {
+      banner.textContent = "AGREED";
+      banner.className = "banner agree";
+    } else {
+      banner.textContent = "DISAGREED";
+      banner.className = "banner disagree";
+    }
+    $("revealchosen").textContent = r.chosen;
+    $("revealproposed").textContent = (r.proposed_label || "(none)") + (r.proposed_by ? " (" + r.proposed_by + ")" : "");
+    $("revealnote").textContent = r.proposer_note || "(none)";
+    $("revealcurrent").textContent = r.current_label || "(unlabelled)";
+    $("revealstratum").textContent = r.stratum;
+    $("revealverdict").textContent = String(r.verdict);
+  }
+
+  const awaitingNote = !!(v.pending && r && r.note_required);
+  $("notewrap").classList.toggle("hidden", !awaitingNote);
+  $("advance").classList.toggle("hidden", awaitingNote || !(r && r.chosen));
+
+  if (v.done) {
+    mode = "done";
+  } else if (awaitingNote) {
+    mode = "note";
+    const note = $("note");
+    note.value = "";
+    updateNoteCount();
+    note.focus();
+  } else if (r && r.chosen) {
+    mode = "reveal";
+  } else {
+    mode = "question";
+  }
+}
+
+function updateNoteCount() {
+  const n = runes($("note").value);
+  const el = $("notecount");
+  el.textContent = n + "/80 characters (the convention; the hard ceiling is " + noteRunes + ")";
+  el.classList.toggle("over", n > 80);
+}
+
+async function next() {
+  render(await call("/api/next"));
+}
+
+async function answer(label) {
+  if (mode !== "question" || !view || !view.question) return;
+  render(await call("/api/answer", { id: view.question.id, label: label }));
+}
+
+async function submitNote() {
+  const note = $("note").value;
+  if (runes(note) > noteRunes) {
+    toast("the note is " + runes(note) + " characters; the ceiling is " + noteRunes);
+    return;
+  }
+  render(await call("/api/note", { id: view.question.id, note: note }));
+}
+
+async function undo() {
+  const res = await call("/api/undo", {});
+  if (res.outcome === "nothing") toast("nothing to undo");
+  if (res.outcome === "relabel") toast("that decision is already written; answer the row again to relabel it -- the confirmation is retracted and re-stamped");
+  render(res);
+}
+
+async function flush() {
+  const res = await call("/api/flush", {});
+  render(res);
+  toast(res.flushed + " decisions written to the record");
+}
+
+function guarded(fn) {
+  return (...args) => fn(...args).catch((err) => toast(err.message, true));
+}
+
+const doNext = guarded(next);
+const doAnswer = guarded(answer);
+const doNote = guarded(submitNote);
+const doUndo = guarded(undo);
+const doFlush = guarded(flush);
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  const inNote = document.activeElement === $("note");
+  if (inNote) {
+    if (ev.key === "Enter") { ev.preventDefault(); doNote(); }
+    if (ev.key === "Escape") { ev.preventDefault(); $("note").blur(); }
+    return;
+  }
+  const key = ev.key.toLowerCase();
+  const entry = info && info.rubric.find((e) => e.key === key);
+  if (entry && mode === "question") { ev.preventDefault(); doAnswer(entry.label); return; }
+  if (key === "enter" || key === " ") {
+    if (mode === "reveal" || mode === "question") { ev.preventDefault(); doNext(); }
+    return;
+  }
+  if (key === "u") { ev.preventDefault(); doUndo(); return; }
+  if (key === "w") { ev.preventDefault(); doFlush(); return; }
+  if (key === "o") {
+    const href = view && view.question && safeURL(view.question.url);
+    if (href) { ev.preventDefault(); window.open(href, "_blank", "noopener,noreferrer"); }
+    return;
+  }
+});
+
+$("note").addEventListener("input", updateNoteCount);
+
+(async () => {
+  try {
+    renderSession(await call("/api/session"));
+    await next();
+  } catch (err) {
+    toast(err.message, true);
+  }
+})();
+</script>
+</body>
+</html>
