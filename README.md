@@ -270,6 +270,11 @@ through `goldset-apply` and nothing else. The by-product is the number the set n
 — how often an independent human and the proposer reach the same answer (ADR-0048).
 Each row's **Capture Fidelity** is measured against a fresh fetch of its URL and shown
 beside it, so a live view is admitted or refused per row rather than assumed (ADR-0047).
+Where fidelity admits it, the page itself is rendered beside the captured text — the same
+Structural Rendering the pipeline produces, with link targets kept, served by the tool from
+loopback in a sandboxed, script-free frame rather than framed from the site (ADR-0047). A
+*drifted* page is shown behind a warning and a *gone* one is not shown at all; the captured
+content is the authority in every case, and the screen says so.
 
 ## Project Structure
 

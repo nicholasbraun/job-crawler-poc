@@ -174,7 +174,15 @@ func newGoldSetUISession(cfg goldUIConfig) (*goldSetUISession, error) {
 		if prov.ProposedLabel == "" && prov.ProposedBy != "" && row.Label.Valid() {
 			prov.ProposedLabel = row.Label
 		}
-		queue = append(queue, goldUIQueueRow{row: row})
+		qr := goldUIQueueRow{row: row}
+		// A row carrying its own Structural Rendering is measured HERE and never again.
+		// Attaching the report at draw time is also what keeps currentTarget and
+		// warmTargets -- both of which skip a measured row -- from ever fetching it.
+		if goldRowCarriesRendering(row) {
+			rep := goldFidelitySameByConstruction()
+			qr.fidelity = &rep
+		}
+		queue = append(queue, qr)
 	}
 	// Row-id order for the reason renderConfirmSheet already gives: a sha256 of the
 	// URL is stable, quotable and INDEPENDENT of the label, so the order can never
@@ -382,6 +390,45 @@ type goldUIQuestion struct {
 	// hidden -- a closed `detail` posting goes `gone` more often than a hub does, so the
 	// state is a weak correlate of the answer.
 	Fidelity *goldFidelityReport `json:"fidelity,omitempty"`
+
+	// Rendering is the standing of the page rendering beside this row's captured text
+	// (#288). It is attached by the session exactly as Fidelity is, and for the same
+	// reason: it is session state and not row content, so goldUIQuestionOf's
+	// field-by-field copy discipline stays intact.
+	Rendering goldUIRenderingView `json:"rendering"`
+}
+
+// goldUIRenderingView is what the page needs in order to decide what to put beside the
+// captured text: whether a rendering exists for this row, where it came from, and
+// whether it has to be read behind a warning.
+//
+// FLAGS ONLY, and the wording lives in the page. Two reasons: the sentence differs per
+// row -- a live re-fetch is an aid, while a row's own rendering IS the captured page --
+// and the blind view is asserted not to carry the words a label could be read off:
+// "label", "proposed", "stratum", "verdict", "renderer" (ADR-0048). The frame's path is
+// derived from the row id by the page, for the same reason.
+type goldUIRenderingView struct {
+	// Available reports that GET /render/{id} will serve a rendering for this row.
+	Available bool `json:"available"`
+	// Live reports that it comes from a re-fetch rather than from the row itself, so
+	// the screen can say which of the two views the label is a statement about.
+	Live bool `json:"live"`
+	// Warn reports drifted: the page has changed since capture (ADR-0047).
+	Warn bool `json:"warn"`
+}
+
+// goldStructuralRendererPrefix is what a Structural Rendering's stamp starts with
+// (parser.RendererStructural is "structural-vN", bumped per ADR-0046 whenever the
+// grammar moves). Matching the PREFIX rather than one version is what keeps a v3 row
+// renderable the day the grammar changes; TestGoldStructuralRendererPrefix fails if the
+// stamp is ever renamed out from under it.
+const goldStructuralRendererPrefix = "structural-"
+
+// goldRowCarriesRendering reports that a row's captured content IS a Structural
+// Rendering, so the page a labeller reads is the captured page itself: nothing is
+// re-fetched, and its Capture Fidelity is `same` by construction (ADR-0046, ADR-0047).
+func goldRowCarriesRendering(row goldRow) bool {
+	return strings.HasPrefix(row.Renderer, goldStructuralRendererPrefix)
 }
 
 // goldUIQuestionOf builds a row's blind view from confirmViewOf, so the labelling
@@ -495,6 +542,7 @@ func (s *goldSetUISession) viewLocked(i int) goldUIView {
 	// derived in goldUIQuestionOf -- whose field-by-field copy discipline is what keeps
 	// a field added to confirmView from leaking into the blind view (ADR-0048).
 	question.Fidelity = q.fidelity
+	question.Rendering = s.renderingViewLocked(i)
 	view := goldUIView{Progress: s.progressLocked(), Question: &question}
 	if !q.revealed {
 		return view
@@ -538,6 +586,85 @@ func (s *goldSetUISession) progressLocked() goldUIProgress {
 		}
 	}
 	return p
+}
+
+// renderingViewLocked decides what may be shown beside row i's captured text. A row
+// that carries its own Structural Rendering is shown it directly; every other row is
+// shown its re-fetch, and only while Capture Fidelity admits one -- a `gone` row gets
+// nothing at all, because a closed posting's withdrawal page is `residue` in the rubric
+// and argues confidently for the wrong label (ADR-0047).
+func (s *goldSetUISession) renderingViewLocked(i int) goldUIRenderingView {
+	q := s.queue[i]
+	if goldRowCarriesRendering(q.row) {
+		return goldUIRenderingView{Available: true}
+	}
+	if s.refetch == nil || q.fidelity == nil || !q.fidelity.LiveView {
+		return goldUIRenderingView{}
+	}
+	return goldUIRenderingView{Available: true, Live: true, Warn: q.fidelity.State == fidelityDrifted}
+}
+
+// goldUIRenderPlan is one row's rendering, gathered UNDER the session lock and acted on
+// outside it: reading the cache and parsing a page are file work, and file work is never
+// taken under s.mu.
+type goldUIRenderPlan struct {
+	url string
+	// rendering is the row's OWN Structural Rendering, when it carries one.
+	rendering string
+	// target is the live side, when the rendering has to come from the re-fetch.
+	target goldRefetchTarget
+	live   bool
+}
+
+// renderPlan authorises a rendering for id. It is the wire-level enforcement of
+// ADR-0047: a row the measurement did not admit is refused HERE, not hidden in the
+// page's CSS, so no byte of a `gone` page ever reaches the labeller. Any row still in
+// this sitting's queue may be asked for -- a frame left open must not 409 merely because
+// the cursor moved on -- but nothing outside it can.
+func (s *goldSetUISession) renderPlan(id string) (goldUIRenderPlan, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.queue {
+		q := s.queue[i]
+		if rowID(q.row.URL) != id {
+			continue
+		}
+		if goldRowCarriesRendering(q.row) {
+			return goldUIRenderPlan{url: q.row.URL, rendering: q.row.Content.MainContent}, nil
+		}
+		switch {
+		case s.refetch == nil:
+			return goldUIRenderPlan{}, goldUIConflict("this session takes no re-fetch (-refetch=false), so there is no page to render beside the captured text")
+		case q.fidelity == nil:
+			return goldUIRenderPlan{}, goldUIConflict("this row has not been measured yet; a rendering is only shown once Capture Fidelity admits it (ADR-0047)")
+		case !q.fidelity.LiveView:
+			return goldUIRenderPlan{}, goldUIConflict("the live page is no longer the page that was captured, so it is not shown: a closed posting argues confidently for the wrong label (ADR-0047)")
+		}
+		return goldUIRenderPlan{url: q.row.URL, target: goldRefetchTargetOf(q.row), live: true}, nil
+	}
+	return goldUIRenderPlan{}, goldUINotFound("no such row in this session")
+}
+
+// RenderingDocument is the page the labeller reads beside the captured text: the
+// crawler's own Structural Rendering drawn as HTML, served by this tool rather than
+// framed from the site (#288).
+func (s *goldSetUISession) RenderingDocument(id string) ([]byte, error) {
+	plan, err := s.renderPlan(id)
+	if err != nil {
+		return nil, err
+	}
+	rendering := plan.rendering
+	if plan.live {
+		// s.refetch is fixed at construction, so no lock is owed here -- and the parse
+		// behind this must not be taken under s.mu.
+		got, ok := s.refetch.Rendering(plan.target)
+		if !ok {
+			return nil, goldUIConflict("the re-fetched bytes for this row are no longer in the cache; reload the page to measure it again")
+		}
+		rendering = got
+	}
+	return goldRenderDocument(rendering, plan.url), nil
 }
 
 // goldRefetchTargetOf builds a row's re-fetch target. The captured text is derived

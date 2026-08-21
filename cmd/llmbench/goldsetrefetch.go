@@ -74,6 +74,12 @@ type goldUIRefetcher interface {
 	// ended. Everything else -- a dead host, a 404, a non-HTML body, a robots.txt that
 	// refuses -- IS a measurement, not a failure.
 	Measure(ctx context.Context, t goldRefetchTarget) (goldFidelityReport, bool)
+
+	// Rendering returns the live page's Structural Rendering, re-parsed from the bytes
+	// the measurement already cached (#288). It NEVER fetches: a row whose bytes are not
+	// in the cache has no rendering, and the caller says so rather than taking a second,
+	// unmeasured fetch behind a report that describes the first one.
+	Rendering(t goldRefetchTarget) (string, bool)
 }
 
 // goldRefetchConfig groups the refetcher's dependencies and settings.
@@ -253,30 +259,69 @@ func (r *goldRefetcher) record(t goldRefetchTarget, body []byte, rep goldFidelit
 }
 
 // readCache returns a cached measurement for t when one is present, describes the
-// SAME url, and is younger than MaxAge. The URL equality check is the defence against
-// a hand-edited or colliding cache file measuring the wrong page.
+// SAME url, and is younger than MaxAge.
 func (r *goldRefetcher) readCache(t goldRefetchTarget) (goldFidelityReport, bool) {
-	raw, err := os.ReadFile(filepath.Join(r.cfg.CacheDir, t.ID+".json"))
-	if err != nil {
-		return goldFidelityReport{}, false
-	}
-	var entry goldRefetchCacheEntry
-	if err := json.Unmarshal(raw, &entry); err != nil {
-		return goldFidelityReport{}, false
-	}
-	if entry.URL != t.URL {
-		return goldFidelityReport{}, false
-	}
-	fetchedAt, err := time.Parse(time.RFC3339, entry.FetchedAt)
-	if err != nil || time.Since(fetchedAt) >= r.cfg.MaxAge {
+	entry, ok := r.readCacheEntry(t)
+	if !ok {
 		return goldFidelityReport{}, false
 	}
 	return entry.Report, true
 }
 
+// readCacheEntry reads t's sidecar and applies the two guards every reader of the
+// cache owes: it must describe the SAME url, and it must be younger than MaxAge. They
+// live here once so a rendering can never describe a different page -- or a staler one
+// -- than the report shown beside it. The URL equality check is also the defence
+// against a hand-edited or colliding cache file measuring the wrong page.
+func (r *goldRefetcher) readCacheEntry(t goldRefetchTarget) (goldRefetchCacheEntry, bool) {
+	raw, err := os.ReadFile(filepath.Join(r.cfg.CacheDir, t.ID+".json"))
+	if err != nil {
+		return goldRefetchCacheEntry{}, false
+	}
+	var entry goldRefetchCacheEntry
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return goldRefetchCacheEntry{}, false
+	}
+	if entry.URL != t.URL {
+		return goldRefetchCacheEntry{}, false
+	}
+	fetchedAt, err := time.Parse(time.RFC3339, entry.FetchedAt)
+	if err != nil || time.Since(fetchedAt) >= r.cfg.MaxAge {
+		return goldRefetchCacheEntry{}, false
+	}
+	return entry, true
+}
+
+// Rendering re-parses the cached bytes with the SAME structural parser the measurement
+// used, so what the labeller reads and what Capture Fidelity was computed from are one
+// parse of one document (ADR-0046). Re-parsing on demand rather than holding every
+// measured page in memory is what bounds the cost: a sitting that confirms 380 rows
+// keeps one document, not 380.
+//
+// ok is false whenever there is nothing to render -- no cache entry, a fetch that
+// produced no bytes (a 404, a dead host, a robots.txt refusal), or a parse that failed
+// -- and the caller says so rather than fetching again behind the labeller's back.
+func (r *goldRefetcher) Rendering(t goldRefetchTarget) (string, bool) {
+	entry, ok := r.readCacheEntry(t)
+	if !ok || entry.Bytes == "" {
+		return "", false
+	}
+	body, err := os.ReadFile(filepath.Join(r.cfg.CacheDir, entry.Bytes))
+	if err != nil {
+		return "", false
+	}
+	content, err := r.cfg.Parser.Parse(body)
+	if err != nil {
+		return "", false
+	}
+	return content.MainContent, true
+}
+
 // goldRefetchCacheEntry is the sidecar beside the re-fetched bytes. A WORKING
 // ARTEFACT (ADR-0047): it lives outside the repository, it is never committed, and
-// nothing in it is ever written back onto a gold-set row. #288 reads Bytes to render.
+// nothing in it is ever written back onto a gold-set row. Rendering re-parses Bytes to
+// put the page on screen (#288); they are still a working artefact and still never
+// written back onto a row.
 type goldRefetchCacheEntry struct {
 	ID        string `json:"id"`
 	URL       string `json:"url"`

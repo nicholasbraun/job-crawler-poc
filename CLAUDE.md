@@ -106,7 +106,8 @@ go run ./cmd/llmbench extract                   # Extract Gate over the reject-r
 go run ./cmd/llmbench score-capture -in <labeled.jsonl>   # Extract Gate over the Extract Gold Set
 go run ./cmd/llmbench score-rendering            # A/B: Flattened Text vs Structural Rendering at one prompt budget
 go run ./cmd/llmbench goldset-ui -by "<your name>" -stratum random   # blind, one-keystroke confirmation pass (loopback only;
-                                                                    #    measures Capture Fidelity; -refetch=false for none)
+                                                                    #    measures Capture Fidelity and renders the page;
+                                                                    #    -refetch=false for neither)
 ```
 
 The server reads configuration from the environment (a `.env` file is loaded via

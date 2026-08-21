@@ -73,6 +73,9 @@ func goldUIBadRequest(msg string) error { return goldUIError{http.StatusBadReque
 // stale tab must never answer a different page than the one it is showing.
 func goldUIConflict(msg string) error { return goldUIError{http.StatusConflict, msg} }
 
+// goldUINotFound refuses a request for a row this sitting never drew.
+func goldUINotFound(msg string) error { return goldUIError{http.StatusNotFound, msg} }
+
 // goldUIStatus maps an error to its status; anything unclassified is a server fault
 // (a journal that will not sync, an apply the verb refused).
 func goldUIStatus(err error) int {
@@ -189,6 +192,7 @@ func runGoldSetUI(args []string) int {
 	fmt.Printf("  scratch     %s\n", scratch)
 	if refetcher != nil {
 		fmt.Printf("  re-fetch    %s   (a working artefact; never committed, never written back onto a row)\n", cacheDir)
+		fmt.Printf("  rendering   served from this tool, sandboxed and script-free; the site is never framed\n")
 	} else {
 		fmt.Printf("  re-fetch    off (-refetch=false); rows are labelled from the captured content alone\n")
 	}
@@ -280,6 +284,9 @@ func loopbackAddr(addr string) error {
 func (s *goldSetUISession) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.handlePage)
+	// More specific than "GET /", so the page handler's 404 still covers "/render/"
+	// with no id after it.
+	mux.HandleFunc("GET /render/{id}", s.handleRender)
 	mux.HandleFunc("GET /api/session", s.handleSession)
 	mux.HandleFunc("GET /api/next", s.handleNext)
 	mux.HandleFunc("POST /api/answer", s.handleAnswer)
@@ -296,7 +303,8 @@ func (s *goldSetUISession) Handler() http.Handler {
 func (s *goldSetUISession) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The token rides in the page URL, so nothing may carry it outward -- and #288
-		// will serve third-party bytes from this same origin.
+		// serves a rendering of a third-party page from this same origin, which is why
+		// the frame gets no scripts and no same-origin.
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 
@@ -347,6 +355,30 @@ func (s *goldSetUISession) handlePage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(goldSetUIPage)
+}
+
+// goldUIRenderCSP is the rendering document's own belt and braces. The iframe's
+// sandbox is what disables scripts; this says the same thing at the wire, and it also
+// stops the document reaching the network at all -- what is on screen is the crawler's
+// parse and nothing a page could add to it. base-uri is deliberately left unset: the
+// injected <base> is what resolves a link target the page wrote relative (#288).
+const goldUIRenderCSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; frame-ancestors 'self'"
+
+// handleRender serves one row's rendering into the labelling page's frame.
+func (s *goldSetUISession) handleRender(w http.ResponseWriter, r *http.Request) {
+	// HTML in every outcome, refusals included: the consumer is an iframe, and a JSON
+	// body in a frame is a download prompt rather than a sentence.
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", goldUIRenderCSP)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	doc, err := s.RenderingDocument(r.PathValue("id"))
+	if err != nil {
+		w.WriteHeader(goldUIStatus(err))
+		_, _ = w.Write(goldRenderRefusal(err.Error()))
+		return
+	}
+	_, _ = w.Write(doc)
 }
 
 // goldUISessionInfo is what the page needs to describe the sitting: who is signing,

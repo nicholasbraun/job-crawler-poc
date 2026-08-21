@@ -38,7 +38,10 @@
 // nothing else. It binds loopback, requires a session token and refuses to run under
 // CI, because a confirmation is a person's deliberate act. It also measures each row's
 // Capture Fidelity against a fresh fetch of its URL (ADR-0047, #287) and shows it on
-// the row, refusing a live view where the captured page is gone.
+// the row, refusing a live view where the captured page is gone. Where it admits one,
+// the page is rendered beside the captured text (#288) -- the pipeline's own Structural
+// Rendering, served from the tool in a sandboxed, script-free frame, never framed from
+// the site.
 //
 // score-rendering (ADR-0046, #282) is the A/B that closes spec #275: it replays the
 // extract path over the committed pages twice -- once with the parser flattening and

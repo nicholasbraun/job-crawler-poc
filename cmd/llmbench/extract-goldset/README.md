@@ -994,7 +994,16 @@ row is never offered a live view — a closed posting's withdrawal page is `resi
 rubric and argues confidently for the wrong label. The re-fetched bytes are cached under
 the OS user cache directory, never inside the repository and never written back onto a
 row; `-refetch=false` turns the whole path off and labels from the captured content
-alone. Rendering the page beside the captured text is #288.
+alone.
+
+Where fidelity admits it, the page is **rendered beside the captured text** (#288): the same
+Structural Rendering the parser produces, with link targets kept, so an openings index and one
+Job Listing are distinguishable at a glance. The tool serves it from loopback in a frame with
+scripts disabled and referrers suppressed — the site is never framed, and what is on screen is
+the crawler's own parse, which is what the Extract Gate read. A *drifted* page carries a
+warning; a *gone* one is refused outright. A row that carries its own Structural Rendering is
+shown it directly, with no re-fetch. `o` opens the live URL in a browser tab for any row,
+including one the tool will not render.
 
 ### The boundary stratum must be FULLY confirmed (#263)
 

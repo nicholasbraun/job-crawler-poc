@@ -66,6 +66,35 @@ shown alongside it, and the screen states which is which. This is not a formalit
 the tool quietly redefines what a gold-set label means, and the whole set's value rests on
 that meaning being fixed.
 
+## What #288 built: the rendering is served, never framed
+
+The page a labeller reads is the row's **Structural Rendering**, drawn as HTML by the tool
+and served from its own loopback origin. Framing the site directly was the obvious thing and
+is wrong twice: a site's `X-Frame-Options` refuses it, and a browser running the site's own
+CSS and scripts would show a *richer* page than the crawler ever saw — the crawler executes
+no JavaScript, so what the Extract Gate read is the parse, not the painted page. Serving the
+parse has neither problem, and it is the same rendering the extractor reads, with the link
+targets kept (ADR-0046: `/organization/…` against `/jobs/…` is what settles an employer
+directory).
+
+The frame is `sandbox`ed with no `allow-scripts` and no `allow-same-origin`, and the document
+is served under `default-src 'none'`, so the third-party text on screen cannot reach the
+network and cannot see the session that writes committed ground truth. A `<base>` reference
+is injected so a target the page wrote relative resolves to the site it came from; a click
+opens a real tab. Link targets are shown as the renderer recorded them — sanitized and capped
+at 80 runes — so a long target displays and clicks short. That is stated on screen rather than
+papered over: the rendering is what is being judged, and the tool does not invent a target the
+rendering does not have.
+
+*same* is rendered as the primary view beside the captured text; *drifted* behind a visible
+warning with the captured text restated as the authority; *gone* is refused **at the wire**,
+with a 409 and no bytes of the live page in the response, not merely hidden in the page's CSS.
+
+A row that carries its own Structural Rendering is shown it directly, with no fetch at all —
+fidelity `same` by construction, and no live view offered because none is needed. That is the
+path that outlives this ADR: once a fresh drawing carries its own rendering, the re-fetch half
+is dead weight and the display half is all that is left.
+
 ## Consequences
 
 - The crawler's downloader does not execute JavaScript, so a re-fetch rendered without scripts

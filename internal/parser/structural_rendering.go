@@ -21,6 +21,11 @@ import (
 // on ~46k job_listing rows, so a derivation that is merely close re-extracts the
 // whole Corpus in one wave.
 //
+// Two further readers read the SAME grammar rather than a copy of it, and a change
+// here reaches them in the same commit: crawler.WithoutLinkTargets narrows it for the
+// two LLM prompts, and crawler.ScanRendering reads it back as lines and pieces for the
+// labelling UI (#288). Both live beside FlattenedText's patterns for that reason.
+//
 // Two properties keep that invariant provable rather than lucky:
 //
 //   - Duplicating whitespace is harmless (Fields collapses it); creating or

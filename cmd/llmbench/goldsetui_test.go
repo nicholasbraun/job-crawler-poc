@@ -17,6 +17,7 @@ import (
 
 	"github.com/nicholasbraun/job-crawler-poc/cmd/llmbench/bench"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
+	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
 )
 
 // goldUITestConfirmer is the human whose signature the tests drive the tool with. It
@@ -122,6 +123,11 @@ type uiResp struct {
 			Reason    string  `json:"reason"`
 			At        string  `json:"at"`
 		} `json:"fidelity"`
+		Rendering struct {
+			Available bool `json:"available"`
+			Live      bool `json:"live"`
+			Warn      bool `json:"warn"`
+		} `json:"rendering"`
 	} `json:"question"`
 	Reveal *struct {
 		ProposedLabel string `json:"proposed_label"`
@@ -203,6 +209,29 @@ func (c *uiClient) ok(method, path string, body any) uiResp {
 		c.t.Fatalf("decode %s %s: %v (%s)", method, path, err, raw)
 	}
 	return out
+}
+
+// raw performs a GET the page's frame would make and hands back the whole response --
+// headers included, body read and closed -- because the rendering route is asserted on
+// its status, its content type and the headers that make the frame safe.
+func (c *uiClient) raw(path string) (*http.Response, string) {
+	c.t.Helper()
+	req, err := http.NewRequestWithContext(c.t.Context(), http.MethodGet, c.base+path, nil)
+	if err != nil {
+		c.t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("X-Goldset-Token", c.token)
+	req.Header.Set("Origin", c.base)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		c.t.Fatalf("GET %s: %v", path, err)
+	}
+	defer res.Body.Close()
+	body := new(bytes.Buffer)
+	if _, err := body.ReadFrom(res.Body); err != nil {
+		c.t.Fatalf("read %s: %v", path, err)
+	}
+	return res, body.String()
 }
 
 // recordOf reads the committed record back keyed by row id, through the same reader
@@ -719,12 +748,24 @@ func TestGoldSetUIBindsLoopbackOnly(t *testing.T) {
 
 // TestGoldSetUIRefusesAForeignCaller drives the guard over the real handler, which is
 // what a browser reaches: a page the labeller happens to have open must not be able to
-// drive the tool that writes the record.
+// drive the tool that writes the record. The rendering route sits behind the SAME front
+// door, token included -- it serves a rendering of a third-party page from the origin
+// that writes the record, so it is the last route that may be reachable around it.
 func TestGoldSetUIRefusesAForeignCaller(t *testing.T) {
-	session, _, _ := newTestSession(t, 10)
+	session, _, ids := newTestSession(t, 10)
 	srv := httptest.NewServer(session.Handler())
 	t.Cleanup(srv.Close)
 
+	routes := []struct {
+		path string
+		// allowed is the status a legitimate caller gets. The fixture session takes no
+		// re-fetch, so its rendering route answers 409 rather than 200 -- what matters
+		// here is that it is not the guard's own refusal.
+		allowed int
+	}{
+		{"/api/next", http.StatusOK},
+		{"/render/" + ids["agree"], http.StatusConflict},
+	}
 	tests := []struct {
 		name   string
 		token  string
@@ -736,38 +777,44 @@ func TestGoldSetUIRefusesAForeignCaller(t *testing.T) {
 		{name: "a guessed token", token: "0000", want: http.StatusUnauthorized},
 		{name: "another origin", token: session.Token(), origin: "http://evil.test", want: http.StatusForbidden},
 		{name: "another host", token: session.Token(), host: "evil.test", want: http.StatusForbidden},
-		{name: "the session's own page", token: session.Token(), origin: srv.URL, want: http.StatusOK},
+		{name: "the session's own page", token: session.Token(), origin: srv.URL},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/api/next", nil)
-			if err != nil {
-				t.Fatalf("build request: %v", err)
-			}
-			if tt.token != "" {
-				req.Header.Set("X-Goldset-Token", tt.token)
-			}
-			if tt.origin != "" {
-				req.Header.Set("Origin", tt.origin)
-			}
-			if tt.host != "" {
-				req.Host = tt.host
-			}
-			res, err := http.DefaultClient.Do(req)
-			if err != nil {
-				t.Fatalf("request: %v", err)
-			}
-			defer res.Body.Close()
-			if res.StatusCode != tt.want {
-				t.Errorf("status = %d, want %d", res.StatusCode, tt.want)
-			}
-			if got := res.Header.Get("Cache-Control"); got != "no-store" {
-				t.Errorf("Cache-Control = %q, want no-store: the token rides in the page URL", got)
-			}
-			if got := res.Header.Get("Referrer-Policy"); got != "no-referrer" {
-				t.Errorf("Referrer-Policy = %q, want no-referrer", got)
-			}
-		})
+	for _, route := range routes {
+		for _, tt := range tests {
+			t.Run(route.path+" "+tt.name, func(t *testing.T) {
+				want := tt.want
+				if want == 0 {
+					want = route.allowed
+				}
+				req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+route.path, nil)
+				if err != nil {
+					t.Fatalf("build request: %v", err)
+				}
+				if tt.token != "" {
+					req.Header.Set("X-Goldset-Token", tt.token)
+				}
+				if tt.origin != "" {
+					req.Header.Set("Origin", tt.origin)
+				}
+				if tt.host != "" {
+					req.Host = tt.host
+				}
+				res, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatalf("request: %v", err)
+				}
+				defer res.Body.Close()
+				if res.StatusCode != want {
+					t.Errorf("status = %d, want %d", res.StatusCode, want)
+				}
+				if got := res.Header.Get("Cache-Control"); got != "no-store" {
+					t.Errorf("Cache-Control = %q, want no-store: the token rides in the page URL", got)
+				}
+				if got := res.Header.Get("Referrer-Policy"); got != "no-referrer" {
+					t.Errorf("Referrer-Policy = %q, want no-referrer", got)
+				}
+			})
+		}
 	}
 }
 
@@ -1083,5 +1130,250 @@ func TestGoldSetUIWarmsAheadOfTheLabeller(t *testing.T) {
 	if got := measuredRows(session); got != goldUIWarmAhead+1 {
 		t.Errorf("one decision left %d rows measured, want %d: the window is positional, so advancing one row admits one more",
 			got, goldUIWarmAhead+1)
+	}
+}
+
+// newRenderTestGoldSet writes a gold set whose rows point at a local server, each
+// carrying the captured content that page's own bytes produce under the FLATTENING
+// parser -- which is exactly what the 457 committed rows carry (ADR-0043). Deriving it
+// rather than writing it by hand is what makes a served row measure `same`.
+func newRenderTestGoldSet(t *testing.T, base string, pages map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	paths := make([]string, 0, len(pages))
+	for path := range pages {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	rows := make([]goldRow, 0, len(paths))
+	for i, path := range paths {
+		rows = append(rows, goldRow{
+			URL: base + path, Verdict: true, TS: fmt.Sprintf("2026-08-01T09:00:%02dZ", i),
+			Stratum: stratumRandom, Weight: 1, Label: bench.ExtractDetail,
+			LabelProvenance: goldProvenance{
+				ProposedBy: "llm:SENTINEL-PROPOSER", ProposedAt: "2026-08-01T09:00:00Z",
+				ProposedLabel: bench.ExtractDetail, Note: "SENTINEL-PROPOSER-NOTE",
+			},
+			Content: goldRenderTestCaptured(t, pages[path]),
+		})
+	}
+	if err := writeGoldSetFiles(dir, rows); err != nil {
+		t.Fatalf("writeGoldSetFiles: %v", err)
+	}
+	return dir
+}
+
+// TestGoldSetUIRendersThePageBesideTheCapturedText is the seam #288 names, driven
+// against a local server across all three fidelity states: `same` is the primary view,
+// `drifted` carries a warning, and `gone` is refused AT THE WIRE with none of the live
+// page's own words in the response (ADR-0047).
+func TestGoldSetUIRendersThePageBesideTheCapturedText(t *testing.T) {
+	server := newGoldRefetchTestServer(t, "")
+	pages := map[string]string{
+		"/directory": goldRenderTestDirectoryPage,
+		"/same":      goldRefetchTestPage(goldRefetchTestTitle, goldRefetchTestCaptured()),
+		"/drifted":   goldRefetchTestPage(goldRefetchTestTitle, goldRefetchTestCaptured()),
+		"/withdrawn": goldRefetchTestPage(goldRefetchTestTitle, goldRefetchTestCaptured()),
+	}
+	dir := newRenderTestGoldSet(t, server.URL, pages)
+	session := newLiveTestSession(t, dir, server.URL, t.TempDir())
+	client := newUIClient(t, session)
+
+	want := map[string]struct {
+		path      string
+		state     string
+		available bool
+		warn      bool
+		status    int
+	}{
+		rowID(server.URL + "/directory"): {"/directory", "same", true, false, http.StatusOK},
+		rowID(server.URL + "/same"):      {"/same", "same", true, false, http.StatusOK},
+		rowID(server.URL + "/drifted"):   {"/drifted", "drifted", true, true, http.StatusOK},
+		rowID(server.URL + "/withdrawn"): {"/withdrawn", "gone", false, false, http.StatusConflict},
+	}
+
+	for range len(want) {
+		view := client.ok(http.MethodGet, "/api/next", nil)
+		if view.Question == nil {
+			t.Fatalf("the queue ran out early: %+v", view)
+		}
+		q := view.Question
+		expect, ok := want[q.ID]
+		if !ok {
+			t.Fatalf("the tool served an unexpected row %s", q.ID)
+		}
+		delete(want, q.ID)
+
+		t.Run(expect.path, func(t *testing.T) {
+			if q.Fidelity == nil || q.Fidelity.State != expect.state {
+				t.Fatalf("row measured %+v, want state %q", q.Fidelity, expect.state)
+			}
+			if q.Rendering.Available != expect.available {
+				t.Errorf("rendering.available = %v, want %v (fidelity %q)", q.Rendering.Available, expect.available, expect.state)
+			}
+			if expect.available && !q.Rendering.Live {
+				t.Error("rendering.live = false on a row rendered from its re-fetch; the screen has to say which of the two views the label is about")
+			}
+			if q.Rendering.Warn != expect.warn {
+				t.Errorf("rendering.warn = %v, want %v: a drifted page is read behind a visible warning (ADR-0047)", q.Rendering.Warn, expect.warn)
+			}
+			// The open-in-a-browser-tab affordance exists for EVERY row, including the
+			// one the tool will not render.
+			if q.URL != server.URL+expect.path {
+				t.Errorf("question.url = %q, want %q", q.URL, server.URL+expect.path)
+			}
+			// The outbound link counts stay the ROW's own, off the captured content.
+			captured := goldRenderTestCaptured(t, pages[expect.path])
+			if q.URLsTotal != len(captured.URLs) {
+				t.Errorf("urls_total = %d, want the captured row's %d", q.URLsTotal, len(captured.URLs))
+			}
+
+			res, body := client.raw("/render/" + q.ID)
+			if res.StatusCode != expect.status {
+				t.Fatalf("GET /render/%s = %d, want %d: %s", q.ID, res.StatusCode, expect.status, body)
+			}
+			if got := res.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+				t.Errorf("Content-Type = %q, want text/html: the consumer is an iframe", got)
+			}
+			if got := res.Header.Get("Content-Security-Policy"); !strings.Contains(got, "default-src 'none'") {
+				t.Errorf("Content-Security-Policy = %q, want it to forbid every fetch the document could make", got)
+			}
+			if got := res.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+			}
+			if strings.Contains(strings.ToLower(body), "<script") {
+				t.Errorf("the rendering carries a script tag:\n%s", body)
+			}
+
+			if expect.status != http.StatusOK {
+				// ADR-0047's dangerous case: a closed posting's withdrawal page argues
+				// confidently for `residue`, so not one of its words may reach the labeller.
+				for _, leak := range []string{"This position has been filled", "Applications are closed"} {
+					if strings.Contains(body, leak) {
+						t.Errorf("the refusal carries %q from the live page:\n%s", leak, body)
+					}
+				}
+				return
+			}
+			if !strings.Contains(body, `<base href="`+server.URL+expect.path+`"`) {
+				t.Errorf("the rendering carries no base reference for %s:\n%s", expect.path, body)
+			}
+		})
+
+		client.ok(http.MethodPost, "/api/answer", map[string]string{"id": q.ID, "label": "detail"})
+	}
+	if len(want) != 0 {
+		t.Errorf("%d rows were never served: %v", len(want), want)
+	}
+
+	// The directory page is the whole reason the rendering keeps link targets: flattened
+	// it is a run of company names, and "/organization/..." is what says it is not an
+	// index of Job Listings (ADR-0046).
+	_, body := client.raw("/render/" + rowID(server.URL+"/directory"))
+	for _, want := range []string{"<h1>Unternehmen</h1>", "<ul><li>", "Firma Alpha", `href="/organization/1"`, "(/organization/1)"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the directory rendering does not carry %q:\n%s", want, body)
+		}
+	}
+}
+
+// TestGoldSetUIShowsARowsOwnRenderingWithoutARefetch pins ADR-0047's endgame: once a
+// row carries its own Structural Rendering the re-fetch half is dead weight. The row is
+// `same` by construction, the page shown IS the captured page, and the host is never
+// asked for anything -- not even its robots.txt.
+func TestGoldSetUIShowsARowsOwnRenderingWithoutARefetch(t *testing.T) {
+	server := newGoldRefetchTestServer(t, "")
+	dir := t.TempDir()
+	url := server.URL + "/same"
+	rendering := "#\vUnternehmen\n-\v[Firma Alpha](/organization/1)\n-\v[Firma Beta](/organization/2)"
+	rows := []goldRow{{
+		URL: url, Verdict: true, TS: "2026-08-01T09:00:00Z",
+		Renderer: parser.RendererStructural,
+		Stratum:  stratumRandom, Weight: 1, Label: bench.ExtractDetail,
+		LabelProvenance: goldProvenance{
+			ProposedBy: "llm:SENTINEL-PROPOSER", ProposedAt: "2026-08-01T09:00:00Z",
+			ProposedLabel: bench.ExtractDetail, Note: "SENTINEL-PROPOSER-NOTE",
+		},
+		Content: crawler.Content{Title: "Unternehmen", MainContent: rendering},
+	}}
+	if err := writeGoldSetFiles(dir, rows); err != nil {
+		t.Fatalf("writeGoldSetFiles: %v", err)
+	}
+
+	session := newLiveTestSession(t, dir, server.URL, t.TempDir())
+	client := newUIClient(t, session)
+
+	// The blind view stays blind: the rendering's wire shape is three booleans exactly
+	// so that putting a page beside the captured text cannot leak the answer (ADR-0048).
+	_, raw := client.do(http.MethodGet, "/api/next", nil)
+	for _, leak := range []string{"SENTINEL-PROPOSER", "proposed", "stratum", "verdict", "label", "weight", "renderer", "expected"} {
+		if bytes.Contains(bytes.ToLower(raw), []byte(strings.ToLower(leak))) {
+			t.Errorf("a rendered blind view carries %q: %s", leak, raw)
+		}
+	}
+
+	view := client.ok(http.MethodGet, "/api/next", nil)
+	if view.Question == nil {
+		t.Fatalf("no row was served: %+v", view)
+	}
+	q := view.Question
+	if q.Fidelity == nil || q.Fidelity.State != "same" {
+		t.Fatalf("the row measured %+v, want `same` by construction (ADR-0047)", q.Fidelity)
+	}
+	if q.Fidelity.At != "" {
+		t.Errorf("the report is stamped at %q, but no fetch stands behind it", q.Fidelity.At)
+	}
+	if q.Fidelity.LiveView {
+		t.Error("a row shown its own rendering was also offered a live view; there is nothing live to offer")
+	}
+	if !q.Rendering.Available || q.Rendering.Live || q.Rendering.Warn {
+		t.Errorf("rendering = %+v, want it available, not live and unwarned", q.Rendering)
+	}
+
+	res, body := client.raw("/render/" + q.ID)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /render/%s = %d: %s", q.ID, res.StatusCode, body)
+	}
+	for _, want := range []string{"<h1>Unternehmen</h1>", `href="/organization/1"`, "(/organization/2)"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the row's own rendering does not carry %q:\n%s", want, body)
+		}
+	}
+
+	if n := server.asked("/same"); n != 0 {
+		t.Errorf("the page was fetched %d times for a row that carries its own rendering, want 0", n)
+	}
+	if n := server.asked("/robots.txt"); n != 0 {
+		t.Errorf("robots.txt was fetched %d times for a row nothing was ever going to fetch, want 0", n)
+	}
+}
+
+// TestGoldSetUIWithoutARefetcherOffersNoRendering pins -refetch=false all the way to
+// the frame: no fetch, no fidelity, no rendering, and the refusal says which flag put
+// the labeller there.
+func TestGoldSetUIWithoutARefetcherOffersNoRendering(t *testing.T) {
+	session, _, _ := newTestSession(t, 10)
+	client := newUIClient(t, session)
+
+	view := client.ok(http.MethodGet, "/api/next", nil)
+	if view.Question == nil {
+		t.Fatalf("no row was served: %+v", view)
+	}
+	if view.Question.Rendering.Available {
+		t.Error("a session with no refetcher offered a rendering; there is no page to render")
+	}
+	res, body := client.raw("/render/" + view.Question.ID)
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("GET /render/%s = %d, want 409: %s", view.Question.ID, res.StatusCode, body)
+	}
+	if !strings.Contains(body, "-refetch=false") {
+		t.Errorf("the refusal does not name the flag that caused it:\n%s", body)
+	}
+
+	// A row this sitting never drew is not a row this tool renders.
+	res, body = client.raw("/render/deadbeef0000")
+	if res.StatusCode != http.StatusNotFound {
+		t.Errorf("GET /render/deadbeef0000 = %d, want 404: %s", res.StatusCode, body)
 	}
 }

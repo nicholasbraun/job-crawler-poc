@@ -61,6 +61,22 @@
   .fid.drifted { border-color: var(--disagree); color: var(--disagree); }
   .fid.gone { border-color: var(--warn); color: var(--warn); }
   .fid.none { color: var(--dim); }
+  /* The two views side by side: the rendering is the primary one where there is one,
+     and the captured text -- which the label is a statement about -- is never below the
+     fold because of it. One column when there is no rendering, or on a narrow screen. */
+  .views { display: grid; gap: 1rem; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+  .views.solo { grid-template-columns: minmax(0, 1fr); }
+  @media (max-width: 1100px) { .views { grid-template-columns: minmax(0, 1fr); } }
+  #renderframe {
+    width: 100%; height: 60vh; min-height: 22rem; border: 1px solid var(--edge);
+    border-radius: 4px; background: var(--bg);
+  }
+  #rendering.drifted #renderframe { border-color: var(--disagree); }
+  .warn {
+    border-left: 3px solid var(--disagree); color: var(--disagree); font-weight: 600;
+    padding: .35rem .6rem; margin-bottom: .5rem; font-size: .88rem;
+  }
+  .footnote { color: var(--dim); font-size: .8rem; margin-top: .4rem; }
 </style>
 </head>
 <body>
@@ -74,25 +90,39 @@
 
 <main>
   <div>
-    <!-- #288 renders the page beside its captured text; the rendering lands here and
-         the captured text below stays exactly where it is. -->
-    <section id="rendering" class="hidden"></section>
+    <div class="views solo" id="views">
+      <!-- The rendering (#288): the primary view when there is one, and BESIDE -- never
+           instead of -- the captured text the label is a statement about. It is served
+           by this tool from loopback, sandboxed and script-free; the site is never
+           framed (ADR-0047). -->
+      <section id="rendering" class="hidden">
+        <h2 id="renderhead"></h2>
+        <div class="warn hidden" id="renderwarn">
+          THIS PAGE CHANGED SINCE CAPTURE -- read it as a hint. The captured text beside it is the authority.
+        </div>
+        <iframe id="renderframe" title="the page rendering"
+                sandbox="allow-popups allow-popups-to-escape-sandbox"
+                referrerpolicy="no-referrer"></iframe>
+        <div class="footnote" id="renderfoot"></div>
+      </section>
 
-    <section id="row">
-      <div class="rowid mono" id="rowid"></div>
-      <div class="title" id="rowtitle"></div>
-      <div><a id="rowurl" target="_blank" rel="noopener noreferrer"></a></div>
-      <div class="counts" id="rowcounts"></div>
-      <!-- The standing of the aid is read BEFORE the aid: #288 lands its rendering in
-           #rendering above this section, and this chip says whether it may be shown. -->
-      <div class="fid none" id="fidelity"></div>
-      <h2 style="margin-top:.9rem">captured text (head)</h2>
-      <pre id="head"></pre>
-      <div id="midwrap">
-        <h2>captured text (mid)</h2>
-        <pre id="mid"></pre>
-      </div>
-    </section>
+      <section id="row">
+        <div class="authority" style="margin-bottom:.6rem">the captured content -- your label is a statement about THIS (ADR-0043)</div>
+        <div class="rowid mono" id="rowid"></div>
+        <div class="title" id="rowtitle"></div>
+        <div><a id="rowurl" target="_blank" rel="noopener noreferrer"></a></div>
+        <div class="counts" id="rowcounts"></div>
+        <!-- The standing of the aid is read BEFORE the aid: the rendering sits in
+             #rendering beside this section, and this chip says whether it may be shown. -->
+        <div class="fid none" id="fidelity"></div>
+        <h2 style="margin-top:.9rem">captured text (head)</h2>
+        <pre id="head"></pre>
+        <div id="midwrap">
+          <h2>captured text (mid)</h2>
+          <pre id="mid"></pre>
+        </div>
+      </section>
+    </div>
 
     <section id="decide">
       <div id="ask">
@@ -149,7 +179,7 @@
       <div class="kv"><kbd>enter</kbd> next row (and submit a note)</div>
       <div class="kv"><kbd>u</kbd> undo the last decision</div>
       <div class="kv"><kbd>w</kbd> write the buffer now</div>
-      <div class="kv"><kbd>o</kbd> open the live page in a tab</div>
+      <div class="kv"><kbd>o</kbd> open the live page in a browser tab (any row, rendered or not)</div>
     </section>
   </div>
 </main>
@@ -240,23 +270,59 @@ function renderSession(s) {
 // renderFidelity states, on every row, what the aid beside it is worth -- and says so
 // even when there is no aid, because "not measured" and "no re-fetch is taken" are
 // different things the labeller has to be able to tell apart (ADR-0047).
-function renderFidelity(f) {
+//
+// It takes the whole question rather than the report alone: a row carrying its own
+// Structural Rendering is measured `same` by construction with no fetch behind it, so
+// "measured" and "a rendering is shown" are two separate facts now (#288).
+function renderFidelity(q) {
   const el = $("fidelity");
+  const f = q.fidelity;
+  const r = q.rendering || {};
   let cls = "none";
   let text;
-  if (info && !info.refetch) {
-    text = "capture fidelity: not measured (-refetch=false); this row is labelled from the captured content alone";
-  } else if (!f) {
-    text = "capture fidelity: measuring...";
-  } else if (!f.state) {
-    text = "capture fidelity: not measured -- " + f.reason;
-  } else {
+  if (f && f.state) {
     cls = f.state;
     text = f.state.toUpperCase() + " -- " + f.reason;
-    if (!f.live_view) text += " -- no live view is offered for this row";
+    if (!r.available) text += " -- no rendering is shown for this row";
+  } else if (f) {
+    text = "capture fidelity: not measured -- " + f.reason;
+  } else if (info && !info.refetch) {
+    text = "capture fidelity: not measured (-refetch=false); this row is labelled from the captured content alone";
+  } else {
+    text = "capture fidelity: measuring...";
   }
   el.className = "fid " + cls;
   el.textContent = text;
+}
+
+// renderRendering puts the page beside the captured text, and says which of the two the
+// label is a statement about. The frame's src is cleared FIRST on every row: the
+// previous row's page sitting under the next row's question is the one failure mode of
+// this feature that would corrupt a label rather than merely weaken it.
+function renderRendering(q) {
+  const sec = $("rendering");
+  const frame = $("renderframe");
+  const r = (q && q.rendering) || null;
+  frame.removeAttribute("src");
+  sec.classList.remove("drifted");
+  if (!r || !r.available) {
+    sec.classList.add("hidden");
+    $("views").classList.add("solo");
+    return;
+  }
+  sec.classList.remove("hidden");
+  $("views").classList.remove("solo");
+  $("renderwarn").classList.toggle("hidden", !r.warn);
+  if (r.warn) sec.classList.add("drifted");
+  $("renderhead").textContent = r.live
+    ? "the live page, re-fetched and rendered -- an aid"
+    : "this row's own Structural Rendering -- this IS the captured page";
+  $("renderfoot").textContent = (r.live
+    ? "your label is a statement about the captured content beside this, never about this rendering (ADR-0043). "
+    : "your label is a statement about this, which is what was captured (ADR-0043). ")
+    + "Link targets are shown as the rendering recorded them (capped at 80 characters, so a long one clicks short -- use the row URL above). "
+    + "The link counts beside the captured text are the row's own.";
+  frame.src = "/render/" + encodeURIComponent(q.id) + "?t=" + encodeURIComponent(TOKEN);
 }
 
 function renderProgress(p) {
@@ -284,10 +350,15 @@ function render(v) {
     const href = safeURL(q.url);
     if (href) { a.href = href; } else { a.removeAttribute("href"); }
     $("rowcounts").textContent = q.urls_total + " links · " + q.urls_same_host + " same-host · " + q.urls_joblike + " job-like";
-    renderFidelity(q.fidelity);
+    renderFidelity(q);
+    renderRendering(q);
     $("head").textContent = q.head || "(the page carried no text)";
     $("midwrap").classList.toggle("hidden", !q.mid);
     $("mid").textContent = q.mid || "";
+  } else {
+    // The done screen: no row, so no page. Clearing the frame here is what keeps the
+    // last row's rendering from outliving the question it belonged to.
+    renderRendering(null);
   }
 
   const r = v.reveal;
@@ -341,6 +412,9 @@ function updateNoteCount() {
 }
 
 async function next() {
+  // The frame goes FIRST, before the request that will replace the row: a rendering
+  // that outlived its question is a page the labeller could read against the wrong row.
+  renderRendering(null);
   // Serving a row can block on its measurement, so say so rather than looking hung.
   if (info && info.refetch) {
     const el = $("fidelity");

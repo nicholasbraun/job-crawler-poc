@@ -115,6 +115,21 @@ func (r goldFidelityReport) sealed() goldFidelityReport {
 	return r
 }
 
+// goldFidelitySameByConstruction is the report for a row that carries its own
+// Structural Rendering. No re-fetch is taken, so there is no live view to admit: the
+// page shown IS the captured page, which is the strongest `same` there is (ADR-0046).
+// At stays empty, because no fetch stands behind it.
+//
+// It is deliberately built without sealed(): sealed may only ever WITHHOLD a live
+// view, and false here is the truth rather than a refusal -- the rendering on screen is
+// the captured content, not a live one.
+func goldFidelitySameByConstruction() goldFidelityReport {
+	return goldFidelityReport{
+		State: fidelitySame, Retention: 1, LiveView: false,
+		Reason: "this row carries its own Structural Rendering, so the page on screen IS the page that was captured; nothing is re-fetched (ADR-0046)",
+	}
+}
+
 // goldFidelityOf measures one row's Capture Fidelity (ADR-0047). It is total: every
 // input produces a state, and a caller never has to interpret a failure.
 func goldFidelityOf(in goldFidelityInput) goldFidelityReport {

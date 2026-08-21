@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/atsingest"
 	"github.com/nicholasbraun/job-crawler-poc/internal/collection"
 	"github.com/nicholasbraun/job-crawler-poc/internal/downloader"
@@ -76,10 +77,42 @@ func newGoldRefetchTestServer(t *testing.T, robots string) *goldRefetchTestServe
 		s.record(r)
 		http.Error(w, "not found", http.StatusNotFound)
 	})
+	// The employer-directory shape, served raw rather than through page(): its whole
+	// point is the markup, which page() would flatten into one paragraph.
+	mux.HandleFunc("/directory", func(w http.ResponseWriter, r *http.Request) {
+		s.record(r)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(goldRenderTestDirectoryPage))
+	})
 
 	s.Server = httptest.NewServer(mux)
 	t.Cleanup(s.Close)
 	return s
+}
+
+// goldRenderTestDirectoryPage is the employer-directory shape ADR-0046 names: a
+// heading over a list of links whose TARGETS are the whole answer. Flattened it is a
+// run of company names -- which is exactly the page that reads like an index of Job
+// Listings and is not one.
+const goldRenderTestDirectoryTitle = "Unternehmen -- neckarfilsjobs"
+
+const goldRenderTestDirectoryPage = `<!doctype html><html><head><title>` + goldRenderTestDirectoryTitle +
+	`</title></head><body><main>` +
+	`<h1>Unternehmen</h1><ul>` +
+	`<li><a href="/organization/1">Firma Alpha</a> Musterstrasse 1</li>` +
+	`<li><a href="/organization/2">Firma Beta</a> Musterstrasse 2</li>` +
+	`</ul></main></body></html>`
+
+// goldRenderTestCaptured returns a page's captured side exactly as the pipeline stored
+// it before ADR-0046: the FLATTENING parser's own output over the same bytes. Deriving
+// it rather than writing it by hand is what makes the row measure `same`.
+func goldRenderTestCaptured(t *testing.T, page string) crawler.Content {
+	t.Helper()
+	content, err := parser.NewHTMLParser().Parse([]byte(page))
+	if err != nil {
+		t.Fatalf("parse the captured page: %v", err)
+	}
+	return *content
 }
 
 func (s *goldRefetchTestServer) record(r *http.Request) {
