@@ -38,6 +38,25 @@ var goldSetUIPage []byte
 // statement about THAT (ADR-0043) -- a re-fetch months later is a different page.
 const goldUIAuthority = "You are reading the captured content -- the parsed page the live extract stage decided on. Your label is a statement about it (ADR-0043)."
 
+// goldUIAuthorityAid is what a measuring session adds to it. The captured content is
+// the authority in BOTH sessions; when a re-fetch may be shown, the screen must also
+// say that the live page is an aid and never the thing being labelled (ADR-0047).
+const goldUIAuthorityAid = " A live re-fetch may be measured and shown beside it as an aid, and only while its Capture Fidelity admits it; it is never what your label is about (ADR-0047)."
+
+// goldUIAuthorityFor is the standing statement for a session that does or does not
+// admit a re-fetch, so what the labeller reads matches what the tool will show them.
+func goldUIAuthorityFor(refetch bool) string {
+	if !refetch {
+		return goldUIAuthority
+	}
+	return goldUIAuthority + goldUIAuthorityAid
+}
+
+// goldUIMeasureWait bounds how long serving a row waits on its Capture Fidelity. Past
+// it the row is served UNMEASURED and the screen says so: a slow host must not wedge
+// the labelling pass (ADR-0047).
+const goldUIMeasureWait = 25 * time.Second
+
 // goldUIError is a session refusal that knows the HTTP status it means, so the
 // handlers stay a thin translation of the session's own rules.
 type goldUIError struct {
@@ -83,6 +102,8 @@ func runGoldSetUI(args []string) int {
 	addr := fs.String("addr", goldUIDefaultAddr, "loopback address to serve on; a non-loopback address is refused")
 	flushEvery := fs.Int("flush-every", goldUIDefaultFlushEvery, "write the buffered decisions to the record every N decisions")
 	journal := fs.String("journal", "", "path for the session journal; empty writes it under the OS temp dir. A working artifact, never committed.")
+	refetch := fs.Bool("refetch", true, "measure each row's Capture Fidelity by fetching its URL again, so a live view is admitted or refused per row (ADR-0047); -refetch=false labels from the captured content alone and offers no live view")
+	refetchCache := fs.String("refetch-cache", "", "directory for the re-fetched bytes; empty uses <user cache dir>/"+goldRefetchCacheName+". A working artefact -- it must sit OUTSIDE the repository and is never committed (ADR-0047).")
 	_ = fs.Parse(args)
 
 	if strings.TrimSpace(*by) == "" {
@@ -116,9 +137,27 @@ func runGoldSetUI(args []string) int {
 		return 1
 	}
 
+	// The re-fetch path is built before the session so a cache directory inside the
+	// repository is refused before anything is read, listened on or journalled.
+	var refetcher goldUIRefetcher
+	cacheDir := ""
+	if *refetch {
+		resolved, err := goldRefetchCacheDir(*refetchCache, *dir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "llmbench goldset-ui: -refetch-cache: %v\n", err)
+			return 2
+		}
+		live, err := newLiveGoldRefetcher(resolved)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "llmbench goldset-ui: %v\n", err)
+			return 1
+		}
+		refetcher, cacheDir = live, resolved
+	}
+
 	session, err := newGoldSetUISession(goldUIConfig{
 		Dir: *dir, By: *by, Stratum: goldStratum(*stratum), FlushEvery: *flushEvery,
-		JournalPath: journalPath, ScratchDir: scratch,
+		JournalPath: journalPath, ScratchDir: scratch, Refetch: refetcher,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench goldset-ui: %v\n", err)
@@ -148,11 +187,22 @@ func runGoldSetUI(args []string) int {
 	fmt.Printf("  flush every %d decisions\n", *flushEvery)
 	fmt.Printf("  journal     %s\n", journalPath)
 	fmt.Printf("  scratch     %s\n", scratch)
+	if refetcher != nil {
+		fmt.Printf("  re-fetch    %s   (a working artefact; never committed, never written back onto a row)\n", cacheDir)
+	} else {
+		fmt.Printf("  re-fetch    off (-refetch=false); rows are labelled from the captured content alone\n")
+	}
 	fmt.Printf("  open        http://%s/?t=%s   (the token is this session's key -- do not paste it anywhere)\n", *addr, session.Token())
 
 	srv := &http.Server{Handler: session.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// The warm loop measures the rows ahead of the labeller, so a keystroke never waits
+	// on a network fetch. It is started only after the listener is up, and stopped
+	// before the final write, so no measurement lands while the buffer is flushed.
+	warmCtx, stopWarm := context.WithCancel(context.Background())
+	defer stopWarm()
+	go session.WarmLoop(warmCtx)
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
 
@@ -160,6 +210,7 @@ func runGoldSetUI(args []string) int {
 	case err := <-serveErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Fprintf(os.Stderr, "llmbench goldset-ui: serve: %v\n", err)
+			stopWarm()
 			if _, cerr := session.Close(); cerr != nil {
 				fmt.Fprintf(os.Stderr, "llmbench goldset-ui: %v\n", cerr)
 			}
@@ -175,6 +226,7 @@ func runGoldSetUI(args []string) int {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench goldset-ui: shutdown: %v\n", err)
 	}
+	stopWarm()
 	written, err := session.Close()
 	summary := session.Summary()
 	fmt.Printf("\ngoldset-ui: %d decisions taken, %d written to the record (%d in the final batch)\n", summary.Decided, summary.Flushed, written)
@@ -308,17 +360,26 @@ type goldUISessionInfo struct {
 	Question   string             `json:"question"`
 	Rubric     []labelRubricEntry `json:"rubric"`
 	Authority  string             `json:"authority"`
+	// Refetch reports that this session measures Capture Fidelity, so the page can
+	// tell "not measured yet" from "no re-fetch is taken at all" (ADR-0047).
+	Refetch bool `json:"refetch"`
 }
 
 func (s *goldSetUISession) handleSession(w http.ResponseWriter, r *http.Request) {
 	goldUIJSON(w, http.StatusOK, goldUISessionInfo{
 		By: s.cfg.By, Dir: s.cfg.Dir, Stratum: s.cfg.Stratum, FlushEvery: s.cfg.FlushEvery,
 		NoteRunes: goldUINoteRunes, Question: extractLabelQuestion, Rubric: extractLabelRubric,
-		Authority: goldUIAuthority,
+		Authority: goldUIAuthorityFor(s.refetch != nil), Refetch: s.refetch != nil,
 	})
 }
 
 func (s *goldSetUISession) handleNext(w http.ResponseWriter, r *http.Request) {
+	// The row on screen is measured before it is served, joining whatever fetch the
+	// warm loop already has in flight. Bounded: past goldUIMeasureWait the row goes out
+	// unmeasured, and the screen says so rather than the tab hanging.
+	ctx, cancel := context.WithTimeout(r.Context(), goldUIMeasureWait)
+	defer cancel()
+	s.measureCurrent(ctx)
 	goldUIJSON(w, http.StatusOK, goldUIResult{goldUIView: s.Current()})
 }
 

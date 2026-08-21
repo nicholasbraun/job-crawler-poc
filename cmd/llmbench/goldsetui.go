@@ -8,6 +8,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/nicholasbraun/job-crawler-poc/cmd/llmbench/bench"
+	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 )
 
 const (
@@ -38,6 +40,11 @@ const (
 	// goldUITokenBytes is the session token's entropy. It is the only thing standing
 	// between a page the labeller happens to have open and the committed record.
 	goldUITokenBytes = 32
+	// goldUIWarmAhead is the WINDOW of queue positions, starting at the cursor, that is
+	// measured in the background (ADR-0047). Far enough ahead of a human reading a page
+	// that a keystroke never waits on a network fetch, small enough that a session
+	// stopped after ten rows has fetched fifteen pages and not a hundred.
+	goldUIWarmAhead = 5
 )
 
 // goldUIConfig groups a labelling session's dependencies and settings.
@@ -57,6 +64,9 @@ type goldUIConfig struct {
 	// ScratchDir is where the synthesized goldset-apply argument files are written.
 	// They are kept after a batch as the readable account of what it applied.
 	ScratchDir string
+	// Refetch measures each row's Capture Fidelity by fetching its URL again
+	// (ADR-0047). Nil turns the aid off entirely: no fetch, no fidelity, no live view.
+	Refetch goldUIRefetcher
 }
 
 // goldUIQueueRow is one row awaiting a decision, with the session's memory of what
@@ -67,6 +77,9 @@ type goldUIQueueRow struct {
 	// Label. It survives an undo: blindness, once spent, is spent, and the screen says
 	// so rather than pretending otherwise.
 	revealed bool
+	// fidelity is this row's Capture Fidelity, nil until the re-fetch behind it has
+	// been measured -- and nil for the whole session when the aid is off (ADR-0047).
+	fidelity *goldFidelityReport
 	// decision is the decision currently held for this row, nil until one is taken
 	// and nil again after an undo.
 	decision *goldUIDecision
@@ -102,8 +115,13 @@ type goldUIDecision struct {
 // goldSetUISession is one labelling sitting: the queue, the cursor over it, the
 // decisions buffered for the next write, and the journal behind them.
 type goldSetUISession struct {
-	cfg   goldUIConfig
-	token string
+	cfg     goldUIConfig
+	token   string
+	refetch goldUIRefetcher
+	// wake nudges the warm loop when the cursor moves, so the rows ahead of the
+	// labeller are measured in the order they will be read. Buffered 1: a poke that
+	// finds the loop already awake is redundant, never owed.
+	wake chan struct{}
 
 	mu      sync.Mutex
 	queue   []goldUIQueueRow
@@ -176,7 +194,10 @@ func newGoldSetUISession(cfg goldUIConfig) (*goldSetUISession, error) {
 		return nil, fmt.Errorf("open the journal: %w", err)
 	}
 
-	s := &goldSetUISession{cfg: cfg, token: hex.EncodeToString(raw), queue: queue, journal: journal}
+	s := &goldSetUISession{
+		cfg: cfg, token: hex.EncodeToString(raw), refetch: cfg.Refetch,
+		wake: make(chan struct{}, 1), queue: queue, journal: journal,
+	}
 	if err := s.journalLocked(goldUIJournalEntry{
 		Event: "session", At: goldUINow(), By: cfg.By, Dir: cfg.Dir, Stratum: cfg.Stratum, Queue: len(queue),
 	}); err != nil {
@@ -348,6 +369,19 @@ type goldUIQuestion struct {
 	URLsTotal    int `json:"urls_total"`
 	URLsSameHost int `json:"urls_same_host"`
 	URLsJoblike  int `json:"urls_joblike"`
+
+	// Fidelity is this row's Capture Fidelity, absent until the re-fetch behind it is
+	// measured and for the whole session when the aid is off. It is disclosed BEFORE
+	// the answer on purpose: the labeller cannot weigh an aid they are not told the
+	// standing of (ADR-0047, user story 4), and a rendering shown without its standing
+	// is worse than none.
+	//
+	// It is not the kind of leak ADR-0048 forbids: fidelity is an attribute of the
+	// RE-FETCH, not of the page's structured data, and it is measured from the status,
+	// the title and word 3-grams alone. The residual is accepted and stated rather than
+	// hidden -- a closed `detail` posting goes `gone` more often than a hub does, so the
+	// state is a weak correlate of the answer.
+	Fidelity *goldFidelityReport `json:"fidelity,omitempty"`
 }
 
 // goldUIQuestionOf builds a row's blind view from confirmViewOf, so the labelling
@@ -457,6 +491,10 @@ func (s *goldSetUISession) currentViewLocked() goldUIView {
 func (s *goldSetUISession) viewLocked(i int) goldUIView {
 	q := s.queue[i]
 	question := goldUIQuestionOf(q.row)
+	// Fidelity is session state, not row content, so it is attached here rather than
+	// derived in goldUIQuestionOf -- whose field-by-field copy discipline is what keeps
+	// a field added to confirmView from leaking into the blind view (ADR-0048).
+	question.Fidelity = q.fidelity
 	view := goldUIView{Progress: s.progressLocked(), Question: &question}
 	if !q.revealed {
 		return view
@@ -500,6 +538,118 @@ func (s *goldSetUISession) progressLocked() goldUIProgress {
 		}
 	}
 	return p
+}
+
+// goldRefetchTargetOf builds a row's re-fetch target. The captured text is derived
+// with crawler.FlattenedText and NOT flattenField: a row captured as a Structural
+// Rendering has to be compared as the Flattened Text it derives to (ADR-0046), and
+// flattenField would leave the renderer's markers in and read them as page words.
+func goldRefetchTargetOf(row goldRow) goldRefetchTarget {
+	return goldRefetchTarget{
+		ID:            rowID(row.URL),
+		URL:           row.URL,
+		CapturedTitle: row.Content.Title,
+		CapturedText:  crawler.FlattenedText(row.Content.MainContent),
+	}
+}
+
+// currentTarget returns the row on screen as a re-fetch target. ok is false when the
+// queue is exhausted or the row is already measured.
+func (s *goldSetUISession) currentTarget() (goldRefetchTarget, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pos >= len(s.queue) || s.queue[s.pos].fidelity != nil {
+		return goldRefetchTarget{}, false
+	}
+	return goldRefetchTargetOf(s.queue[s.pos].row), true
+}
+
+// warmTargets returns the unmeasured rows inside a WINDOW of goldUIWarmAhead queue
+// positions at or after the cursor, in the order the labeller will meet them.
+//
+// The window is positional and not a count of unmeasured rows, which is what bounds
+// the cost: advancing one row admits exactly one new row to measure. Topping up to
+// five UNMEASURED rows instead would fetch five fresh pages per decision, and a
+// session stopped after ten rows would have fetched fifty.
+func (s *goldSetUISession) warmTargets() []goldRefetchTarget {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	targets := []goldRefetchTarget{}
+	for i := s.pos; i < len(s.queue) && i < s.pos+goldUIWarmAhead; i++ {
+		if s.queue[i].fidelity != nil {
+			continue
+		}
+		targets = append(targets, goldRefetchTargetOf(s.queue[i].row))
+	}
+	return targets
+}
+
+// recordFidelity attaches a measurement to the row it describes. Keyed by row id
+// rather than by queue position, because the cursor moves while a fetch is in flight.
+func (s *goldSetUISession) recordFidelity(id string, rep goldFidelityReport) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.queue {
+		if rowID(s.queue[i].row.URL) != id {
+			continue
+		}
+		s.queue[i].fidelity = &rep
+		return
+	}
+}
+
+// measureCurrent makes sure the row on screen has been measured before it is served,
+// joining whatever fetch the warm loop already has in flight. It is called OUTSIDE the
+// session lock -- a network fetch is never taken under s.mu -- and a ctx that ends
+// first leaves the row unmeasured, which the screen says rather than pretending.
+func (s *goldSetUISession) measureCurrent(ctx context.Context) {
+	if s.refetch == nil {
+		return
+	}
+	target, ok := s.currentTarget()
+	if !ok {
+		return
+	}
+	rep, ok := s.refetch.Measure(ctx, target)
+	if !ok {
+		return
+	}
+	s.recordFidelity(target.ID, rep)
+}
+
+// WarmLoop keeps the next few rows measured ahead of the labeller, so a keystroke
+// never waits on a network fetch. It is SERIAL, so the politeness spacing is spent in
+// the order the rows will be read, and it returns when ctx ends.
+func (s *goldSetUISession) WarmLoop(ctx context.Context) {
+	if s.refetch == nil {
+		return
+	}
+	for {
+		for _, target := range s.warmTargets() {
+			if ctx.Err() != nil {
+				return
+			}
+			rep, ok := s.refetch.Measure(ctx, target)
+			if !ok {
+				return
+			}
+			s.recordFidelity(target.ID, rep)
+		}
+		select {
+		case <-s.wake:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// pokeLocked wakes the warm loop after the cursor moved. Non-blocking: a poke that
+// finds the loop already awake is redundant, never owed.
+func (s *goldSetUISession) pokeLocked() {
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
 }
 
 // Answer records the labeller's verdict on id and reveals the Proposed Label. When
@@ -597,6 +747,7 @@ func (s *goldSetUISession) completeLocked(i int, decision goldUIDecision) (int, 
 	s.queue[i].written = false
 	s.buffer = append(s.buffer, decision)
 	s.pos = i + 1
+	s.pokeLocked()
 	if len(s.buffer) < s.cfg.FlushEvery {
 		return 0, nil
 	}
@@ -638,6 +789,7 @@ func (s *goldSetUISession) Undo() (goldUIResult, error) {
 	s.queue[prev].decision = nil
 	s.queue[prev].written = false
 	s.pos = prev
+	s.pokeLocked()
 	if err := s.journalLocked(goldUIJournalEntry{Event: "undo", At: goldUINow(), ID: id, Outcome: outcome}); err != nil {
 		return goldUIResult{}, err
 	}

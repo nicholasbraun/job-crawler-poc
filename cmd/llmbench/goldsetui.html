@@ -53,6 +53,14 @@
   #toast div { background: #2a1c19; border: 1px solid var(--warn); color: #f0d6cf; padding: .6rem .8rem; border-radius: 6px; margin-top: .5rem; font-size: .88rem; }
   .hidden { display: none; }
   .spent { color: var(--disagree); font-size: .85rem; }
+  .fid {
+    font-size: .85rem; margin: .35rem 0; padding: .3rem .55rem;
+    border-radius: 4px; border-left: 3px solid var(--dim);
+  }
+  .fid.same { border-color: var(--agree); color: var(--agree); }
+  .fid.drifted { border-color: var(--disagree); color: var(--disagree); }
+  .fid.gone { border-color: var(--warn); color: var(--warn); }
+  .fid.none { color: var(--dim); }
 </style>
 </head>
 <body>
@@ -75,6 +83,9 @@
       <div class="title" id="rowtitle"></div>
       <div><a id="rowurl" target="_blank" rel="noopener noreferrer"></a></div>
       <div class="counts" id="rowcounts"></div>
+      <!-- The standing of the aid is read BEFORE the aid: #288 lands its rendering in
+           #rendering above this section, and this chip says whether it may be shown. -->
+      <div class="fid none" id="fidelity"></div>
       <h2 style="margin-top:.9rem">captured text (head)</h2>
       <pre id="head"></pre>
       <div id="midwrap">
@@ -120,6 +131,13 @@
     <section>
       <h2>what you are reading</h2>
       <div class="authority" id="authority"></div>
+      <div style="margin-top:.6rem;font-size:.85rem;color:var(--dim)">
+        <strong>Capture Fidelity</strong> (ADR-0047) --
+        <em>same</em>: the live page still carries the captured text.
+        <em>drifted</em>: it has changed since capture, so weigh it.
+        <em>gone</em>: it is not the captured page and is never shown -- a closed
+        posting argues confidently for the wrong label.
+      </div>
     </section>
     <section>
       <h2>the rubric</h2>
@@ -219,6 +237,28 @@ function renderSession(s) {
   });
 }
 
+// renderFidelity states, on every row, what the aid beside it is worth -- and says so
+// even when there is no aid, because "not measured" and "no re-fetch is taken" are
+// different things the labeller has to be able to tell apart (ADR-0047).
+function renderFidelity(f) {
+  const el = $("fidelity");
+  let cls = "none";
+  let text;
+  if (info && !info.refetch) {
+    text = "capture fidelity: not measured (-refetch=false); this row is labelled from the captured content alone";
+  } else if (!f) {
+    text = "capture fidelity: measuring...";
+  } else if (!f.state) {
+    text = "capture fidelity: not measured -- " + f.reason;
+  } else {
+    cls = f.state;
+    text = f.state.toUpperCase() + " -- " + f.reason;
+    if (!f.live_view) text += " -- no live view is offered for this row";
+  }
+  el.className = "fid " + cls;
+  el.textContent = text;
+}
+
 function renderProgress(p) {
   $("position").textContent = (p.position || p.total) + " / " + p.total;
   $("tally").textContent = "decided " + p.decided + " · buffered " + p.buffered + " · written " + p.flushed;
@@ -244,6 +284,7 @@ function render(v) {
     const href = safeURL(q.url);
     if (href) { a.href = href; } else { a.removeAttribute("href"); }
     $("rowcounts").textContent = q.urls_total + " links · " + q.urls_same_host + " same-host · " + q.urls_joblike + " job-like";
+    renderFidelity(q.fidelity);
     $("head").textContent = q.head || "(the page carried no text)";
     $("midwrap").classList.toggle("hidden", !q.mid);
     $("mid").textContent = q.mid || "";
@@ -300,6 +341,12 @@ function updateNoteCount() {
 }
 
 async function next() {
+  // Serving a row can block on its measurement, so say so rather than looking hung.
+  if (info && info.refetch) {
+    const el = $("fidelity");
+    el.className = "fid none";
+    el.textContent = "capture fidelity: measuring...";
+  }
   render(await call("/api/next"));
 }
 

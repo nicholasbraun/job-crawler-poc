@@ -32,6 +32,23 @@ is not:
   is `residue` in the labelling rubric, so the live page argues confidently for the wrong
   answer.
 
+The two thresholds are not symmetric, and deliberately so. `same` is retention >= 0.90; `gone`
+is retention < 0.30, with everything between them `drifted`. Calling a live page `gone` costs an
+aid — the row is still labellable from its captured text, and the URL is still one click away.
+Calling a `gone` page `drifted` costs a *label*. A page that has kept under a third of its
+captured 3-grams has lost its body; what survives is furniture, and furniture cannot support a
+label. The title is the third input and it only ever *withdraws* a claim: a page whose text is
+0.90 retained but whose title has changed is `drifted`, never `same`, because `same` promises
+the page on screen is the page the label is about and a changed title is the page itself saying
+otherwise. A title is read only when both the captured page and the live one carry one;
+otherwise retention decides alone.
+
+Two cases fall outside retention. A row whose captured text is under three words has no 3-grams
+and so no retention: it is `drifted` — a hint, never evidence — unless the live page is also
+textless and the titles agree, which is the JS-shell case below, where the aid agrees with the
+capture. And a host that refuses the re-fetch under robots.txt is *not measured at all*: `gone`
+is a statement about the page, and we did not look.
+
 Measured over 40 unconfirmed rows re-fetched on 2026-08-20: **25 same, 11 drifted, 4 gone**.
 So roughly 62% of the standing backlog is labellable this way, and the remainder is identified
 rather than guessed at.

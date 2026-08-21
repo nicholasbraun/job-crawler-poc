@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -112,6 +114,14 @@ type uiResp struct {
 		URLsTotal    int    `json:"urls_total"`
 		URLsSameHost int    `json:"urls_same_host"`
 		URLsJoblike  int    `json:"urls_joblike"`
+		Fidelity     *struct {
+			State     string  `json:"state"`
+			Status    int     `json:"status"`
+			Retention float64 `json:"retention"`
+			LiveView  bool    `json:"live_view"`
+			Reason    string  `json:"reason"`
+			At        string  `json:"at"`
+		} `json:"fidelity"`
 	} `json:"question"`
 	Reveal *struct {
 		ProposedLabel string `json:"proposed_label"`
@@ -768,5 +778,310 @@ func TestGoldSetUIIsUnrunnableInCI(t *testing.T) {
 	t.Setenv("CI", "1")
 	if code := runGoldSetUI(nil); code != 2 {
 		t.Errorf("goldset-ui exited %d under CI, want 2: ground truth is written by a person who chose to write it (ADR-0043)", code)
+	}
+}
+
+// uiSessionResp is /api/session's wire shape, decoded for the fields a re-fetching
+// session has to state on screen.
+type uiSessionResp struct {
+	Authority string `json:"authority"`
+	Refetch   bool   `json:"refetch"`
+}
+
+// session reads /api/session through the same front door the page does.
+func (c *uiClient) session() uiSessionResp {
+	c.t.Helper()
+	status, raw := c.do(http.MethodGet, "/api/session", nil)
+	if status != http.StatusOK {
+		c.t.Fatalf("GET /api/session = %d: %s", status, raw)
+	}
+	var out uiSessionResp
+	if err := json.Unmarshal(raw, &out); err != nil {
+		c.t.Fatalf("decode /api/session: %v (%s)", err, raw)
+	}
+	return out
+}
+
+// newLiveTestGoldSet writes a gold set whose rows point at a local server, each
+// carrying the same captured text the /same page serves back. Every row's Proposed
+// Label is detail, so one keystroke answers it and the cursor advances without a note.
+func newLiveTestGoldSet(t *testing.T, base string, paths ...string) (dir string, ids map[string]string) {
+	t.Helper()
+	dir = t.TempDir()
+	rows := make([]goldRow, 0, len(paths))
+	ids = map[string]string{}
+	for i, path := range paths {
+		url := base + path
+		rows = append(rows, goldRow{
+			URL: url, Verdict: true, TS: fmt.Sprintf("2026-08-01T09:00:%02dZ", i),
+			Stratum: stratumRandom, Weight: 1, Label: bench.ExtractDetail,
+			LabelProvenance: goldProvenance{
+				ProposedBy: "llm:SENTINEL-PROPOSER", ProposedAt: "2026-08-01T09:00:00Z",
+				ProposedLabel: bench.ExtractDetail, Note: "SENTINEL-PROPOSER-NOTE",
+			},
+			Content: crawler.Content{
+				Title:       goldRefetchTestTitle,
+				MainContent: goldRefetchTestCaptured(),
+				URLs:        []string{base + "/jobs/one"},
+			},
+		})
+		ids[path] = rowID(url)
+	}
+	if err := writeGoldSetFiles(dir, rows); err != nil {
+		t.Fatalf("writeGoldSetFiles: %v", err)
+	}
+	return dir, ids
+}
+
+// newLiveTestSession opens a session over a gold set whose rows point at a local
+// server, measuring Capture Fidelity through the real refetcher.
+func newLiveTestSession(t *testing.T, dir, base, cacheDir string) *goldSetUISession {
+	t.Helper()
+	session, err := newGoldSetUISession(goldUIConfig{
+		Dir: dir, By: goldUITestConfirmer, FlushEvery: 10,
+		JournalPath: filepath.Join(t.TempDir(), "journal.jsonl"),
+		ScratchDir:  t.TempDir(),
+		Refetch:     newGoldRefetchTestRefetcher(t, base, cacheDir, goldRefetchMaxAge),
+	})
+	if err != nil {
+		t.Fatalf("newGoldSetUISession: %v", err)
+	}
+	t.Cleanup(func() { _ = session.journal.Close() })
+	return session
+}
+
+// measuredRows counts the queue rows that carry a Capture Fidelity report, read under
+// the session lock exactly as the handlers read it.
+func measuredRows(s *goldSetUISession) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, q := range s.queue {
+		if q.fidelity != nil {
+			n++
+		}
+	}
+	return n
+}
+
+// TestGoldSetUIShowsFidelityOnEveryRow is the API seam this ticket adds: every row the
+// tool serves states its Capture Fidelity, and a `gone` row is refused a live view at
+// the wire, not merely in the page's CSS (ADR-0047).
+func TestGoldSetUIShowsFidelityOnEveryRow(t *testing.T) {
+	server := newGoldRefetchTestServer(t, "")
+	dir, _ := newLiveTestGoldSet(t, server.URL, "/same", "/drifted", "/withdrawn")
+	session := newLiveTestSession(t, dir, server.URL, t.TempDir())
+	client := newUIClient(t, session)
+
+	// Indexed by row id, never by queue position: the ids depend on the server's port,
+	// and the queue is served in row-id order.
+	want := map[string]struct {
+		state    string
+		liveView bool
+	}{
+		rowID(server.URL + "/same"):      {"same", true},
+		rowID(server.URL + "/drifted"):   {"drifted", true},
+		rowID(server.URL + "/withdrawn"): {"gone", false},
+	}
+
+	if info := client.session(); !info.Refetch {
+		t.Error("/api/session reports refetch=false on a measuring session")
+	} else if !strings.Contains(info.Authority, "captured content") || !strings.Contains(info.Authority, "aid") {
+		t.Errorf("the authority line is %q, want it to name the captured content as the authority AND the re-fetch as an aid (ADR-0047)", info.Authority)
+	}
+
+	// The loop count is taken before the map is drained: `want` is what is still owed.
+	for range len(want) {
+		// The blind view is still blind: the fidelity field is an attribute of the
+		// RE-FETCH, and it must not have made the wire carry anything that answers the
+		// question being asked (ADR-0048).
+		_, raw := client.do(http.MethodGet, "/api/next", nil)
+		for _, leak := range []string{"SENTINEL-PROPOSER", "proposed", "stratum", "verdict", "label", "weight", "renderer", "expected"} {
+			if bytes.Contains(bytes.ToLower(raw), []byte(strings.ToLower(leak))) {
+				t.Errorf("a measured blind view carries %q: %s", leak, raw)
+			}
+		}
+		view := client.ok(http.MethodGet, "/api/next", nil)
+		if view.Question == nil {
+			t.Fatalf("the queue ran out early: %+v", view)
+		}
+		expect, ok := want[view.Question.ID]
+		if !ok {
+			t.Fatalf("the tool served an unexpected row %s", view.Question.ID)
+		}
+		f := view.Question.Fidelity
+		if f == nil {
+			t.Fatalf("row %s carries no fidelity; every row states its Capture Fidelity (ADR-0047)", view.Question.ID)
+		}
+		if f.State != expect.state {
+			t.Errorf("row %s measured %q at retention %.2f, want %q -- %s", view.Question.ID, f.State, f.Retention, expect.state, f.Reason)
+		}
+		if f.LiveView != expect.liveView {
+			t.Errorf("row %s live_view = %v, want %v: a gone row is never offered a live view (ADR-0047)", view.Question.ID, f.LiveView, expect.liveView)
+		}
+		if f.Reason == "" || f.At == "" {
+			t.Errorf("row %s carries reason %q at %q, want both stated", view.Question.ID, f.Reason, f.At)
+		}
+		delete(want, view.Question.ID)
+		client.ok(http.MethodPost, "/api/answer", map[string]string{"id": view.Question.ID, "label": "detail"})
+	}
+	if len(want) != 0 {
+		t.Errorf("%d rows were never served: %v", len(want), want)
+	}
+}
+
+// TestGoldSetUINeverWritesTheRefetchOntoARow is ADR-0047's hardest rule as a test: the
+// re-fetched bytes are a working artefact. Nothing the live page says may reach the
+// record, and the row's captured content is what it always was.
+func TestGoldSetUINeverWritesTheRefetchOntoARow(t *testing.T) {
+	server := newGoldRefetchTestServer(t, "")
+	dir, ids := newLiveTestGoldSet(t, server.URL, "/withdrawn", "/drifted")
+	cacheDir := t.TempDir()
+	before := recordOf(t, dir)
+
+	session := newLiveTestSession(t, dir, server.URL, cacheDir)
+	client := newUIClient(t, session)
+	view := client.ok(http.MethodGet, "/api/next", nil)
+	if view.Question == nil || view.Question.Fidelity == nil {
+		t.Fatalf("the first row was served unmeasured: %+v", view.Question)
+	}
+	client.ok(http.MethodPost, "/api/answer", map[string]string{"id": view.Question.ID, "label": "detail"})
+	if flushed := client.ok(http.MethodPost, "/api/flush", struct{}{}).Flushed; flushed != 1 {
+		t.Fatalf("the flush wrote %d decisions, want 1", flushed)
+	}
+
+	after := recordOf(t, dir)
+	for id, was := range before {
+		now, ok := after[id]
+		if !ok {
+			t.Fatalf("row %s vanished from the record", id)
+		}
+		if now.URL != was.URL || now.Verdict != was.Verdict || now.TS != was.TS ||
+			now.Renderer != was.Renderer || now.Stratum != was.Stratum || now.Weight != was.Weight {
+			t.Errorf("row %s: the re-fetch moved fields it may never touch: %+v, was %+v", id, now, was)
+		}
+		if !reflect.DeepEqual(now.Content, was.Content) {
+			t.Errorf("row %s: the captured content changed; a row's stored content is what the tap captured, full stop (ADR-0047)\n got %+v\nwant %+v", id, now.Content, was.Content)
+		}
+		if now.LabelProvenance.ProposedBy != was.LabelProvenance.ProposedBy ||
+			now.LabelProvenance.ProposedAt != was.LabelProvenance.ProposedAt ||
+			now.LabelProvenance.ProposedLabel != was.LabelProvenance.ProposedLabel {
+			t.Errorf("row %s: the proposer's record moved: %+v, was %+v", id, now.LabelProvenance, was.LabelProvenance)
+		}
+	}
+	// The one legitimate change: the row the human decided now carries their signature.
+	if got := after[view.Question.ID].LabelProvenance.ConfirmedBy; got != goldUITestConfirmer {
+		t.Errorf("the decided row is confirmed by %q, want %q", got, goldUITestConfirmer)
+	}
+	for path, id := range ids {
+		if id == view.Question.ID {
+			continue
+		}
+		if got := after[id].LabelProvenance.ConfirmedBy; got != "" {
+			t.Errorf("row %s (%s) gained a confirmer nobody gave it: %q", id, path, got)
+		}
+	}
+
+	// Nothing the LIVE page said may appear anywhere under the gold-set directory.
+	sentinels := []string{"This position has been filled", "Position filled", "z000"}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read the gold-set directory: %v", err)
+	}
+	for _, entry := range entries {
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", entry.Name(), err)
+		}
+		for _, sentinel := range sentinels {
+			if bytes.Contains(data, []byte(sentinel)) {
+				t.Errorf("%s carries %q from the live page; the re-fetch is never written back onto a row (ADR-0047)", entry.Name(), sentinel)
+			}
+		}
+	}
+
+	// It did land where it belongs: outside the repository, in the cache.
+	cached, err := os.ReadDir(cacheDir)
+	if err != nil {
+		t.Fatalf("read the re-fetch cache: %v", err)
+	}
+	if len(cached) == 0 {
+		t.Error("the re-fetch cache is empty, so the assertion above proves nothing")
+	}
+}
+
+// TestGoldSetUIWithoutARefetcherMeasuresNothing pins -refetch=false: no fetch, no
+// fidelity, no live view -- and the screen still names the captured content as the
+// authority. It is also what keeps every other test in this file network-free.
+func TestGoldSetUIWithoutARefetcherMeasuresNothing(t *testing.T) {
+	session, _, _ := newTestSession(t, 10)
+	client := newUIClient(t, session)
+
+	view := client.ok(http.MethodGet, "/api/next", nil)
+	if view.Question == nil {
+		t.Fatalf("no row was served: %+v", view)
+	}
+	if view.Question.Fidelity != nil {
+		t.Errorf("a session with no refetcher measured %+v; it must fetch nothing at all", view.Question.Fidelity)
+	}
+	info := client.session()
+	if info.Refetch {
+		t.Error("/api/session reports refetch=true with no refetcher wired")
+	}
+	if info.Authority != goldUIAuthority {
+		t.Errorf("the authority line is %q, want the captured-content statement unchanged: %q", info.Authority, goldUIAuthority)
+	}
+}
+
+// TestGoldSetUIWarmsAheadOfTheLabeller pins the cost and the benefit of the warm loop:
+// the next goldUIWarmAhead rows are measured before the labeller reaches them, and NOT
+// one row more -- a session stopped after ten rows must not have fetched a hundred
+// pages.
+func TestGoldSetUIWarmsAheadOfTheLabeller(t *testing.T) {
+	server := newGoldRefetchTestServer(t, "")
+	paths := []string{}
+	for i := range goldUIWarmAhead + 3 {
+		paths = append(paths, fmt.Sprintf("/same?row=%d", i))
+	}
+	dir, _ := newLiveTestGoldSet(t, server.URL, paths...)
+	session := newLiveTestSession(t, dir, server.URL, t.TempDir())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	go session.WarmLoop(ctx)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for measuredRows(session) < goldUIWarmAhead && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := measuredRows(session); got != goldUIWarmAhead {
+		t.Fatalf("the warm loop measured %d rows, want exactly %d ahead of the labeller", got, goldUIWarmAhead)
+	}
+	// Give it a moment to run past its bound if it were going to.
+	time.Sleep(50 * time.Millisecond)
+	if got := measuredRows(session); got != goldUIWarmAhead {
+		t.Errorf("the warm loop measured %d rows with the cursor still on the first, want it bounded at %d", got, goldUIWarmAhead)
+	}
+	if got := server.distinctPages(); got != goldUIWarmAhead {
+		t.Errorf("the warm loop fetched %d distinct pages, want %d", got, goldUIWarmAhead)
+	}
+
+	// The window is positional: one decision admits exactly ONE further row, so the
+	// aid costs one fetch per row read plus a fixed lookahead -- not five per row.
+	client := newUIClient(t, session)
+	view := client.ok(http.MethodGet, "/api/next", nil)
+	if view.Question == nil {
+		t.Fatalf("no row was served: %+v", view)
+	}
+	client.ok(http.MethodPost, "/api/answer", map[string]string{"id": view.Question.ID, "label": "detail"})
+
+	deadline = time.Now().Add(10 * time.Second)
+	for measuredRows(session) < goldUIWarmAhead+1 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := measuredRows(session); got != goldUIWarmAhead+1 {
+		t.Errorf("one decision left %d rows measured, want %d: the window is positional, so advancing one row admits one more",
+			got, goldUIWarmAhead+1)
 	}
 }

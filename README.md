@@ -268,6 +268,8 @@ that serves the rows still owed a human confirmer one at a time, takes the label
 a single keystroke **before** revealing what the proposer said, and writes the batch
 through `goldset-apply` and nothing else. The by-product is the number the set needs
 — how often an independent human and the proposer reach the same answer (ADR-0048).
+Each row's **Capture Fidelity** is measured against a fresh fetch of its URL and shown
+beside it, so a live view is admitted or refused per row rather than assumed (ADR-0047).
 
 ## Project Structure
 

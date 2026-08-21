@@ -36,7 +36,9 @@
 // in row-id order, takes a Blind Confirmation on each -- the labeller answers before
 // the Proposed Label is revealed -- and writes the batch through goldset-apply and
 // nothing else. It binds loopback, requires a session token and refuses to run under
-// CI, because a confirmation is a person's deliberate act.
+// CI, because a confirmation is a person's deliberate act. It also measures each row's
+// Capture Fidelity against a fresh fetch of its URL (ADR-0047, #287) and shows it on
+// the row, refusing a live view where the captured page is gone.
 //
 // score-rendering (ADR-0046, #282) is the A/B that closes spec #275: it replays the
 // extract path over the committed pages twice -- once with the parser flattening and

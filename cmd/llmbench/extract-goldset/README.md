@@ -984,9 +984,17 @@ the confirmation floors in `../goldset_test.go` to the figures the apply summary
 printed, in the same commit.
 
 Rows are shown as their **captured text** — the parsed page the live extract stage
-decided on, which is what the label is a statement about (ADR-0043). Rendering a
-re-fetch of the page beside it, and the **Capture Fidelity** that decides whether a
-re-fetch may be shown at all, are #287 and #288.
+decided on, which is what the label is a statement about (ADR-0043). Beside it, each row
+states its **Capture Fidelity** (ADR-0047, #287): the tool fetches the row's URL again
+through the crawler's own downloader, under the crawler's user agent and the refetch
+lane's politeness, re-parses it and reports *same* (the live page still carries the
+captured text), *drifted* (it has changed, so weigh it), *gone* (it is not the captured
+page), or "not measured" (robots.txt refused, or the fetch had not finished). A *gone*
+row is never offered a live view — a closed posting's withdrawal page is `residue` in the
+rubric and argues confidently for the wrong label. The re-fetched bytes are cached under
+the OS user cache directory, never inside the repository and never written back onto a
+row; `-refetch=false` turns the whole path off and labels from the captured content
+alone. Rendering the page beside the captured text is #288.
 
 ### The boundary stratum must be FULLY confirmed (#263)
 
