@@ -106,8 +106,12 @@ unexported detectors, so `extractscore` would import `pagegate` while `pagegate`
 `extractscore` for the score — an import cycle. Both ways out are worse. Moving ADR-0044's argued
 word lists into a third leaf package relocates the disjointness invariant `positive_evidence.go`'s
 comment holds, and duplicating the detectors is the exact drift a shared `Signals()` exists to
-prevent. Same-package is also *less* API widening: three exported symbols (`Signals`, `Score`,
-`VetoThreshold`) rather than four exported detectors plus a new package's own surface.
+prevent. Same-package is also *less* API widening: five exported symbols (`Signals`, `Score`,
+`VetoThreshold`, plus `ExtractGate` and its `ExtractVerdict`) rather than four exported detectors
+plus a new package's own surface. The last two are not the score's API but the ladder's: the walk
+needs the verdict, the rejecting rung and the score from ONE evaluation, and `RungNone` covers
+three different accepts of which only one was scored — so `Scored` is not derivable from `Rung`,
+and a caller re-deriving either would be describing a sequence that did not run.
 
 Two deviations from the repo's one precedent for generated data, `internal/geo` (ADR-0031), each
 deliberate:
@@ -124,7 +128,36 @@ deliberate:
 
 Two guards hold the artifact: retraining from the committed Gold Set must reproduce the committed
 weights bit for bit (so a weight can only move by a Gold Set change or a trainer change, both
-visible in the same diff), and no vocabulary entry may be a word of any host in the Gold Set.
+visible in the same diff), and no vocabulary entry may be a word of any host the fit population
+sits on.
+
+## The rung runs on the walk only, and not on the Collection refetch lane
+
+Two lanes call `ShouldExtract`, and `cmd/server` hands them one `LLMGateConfig` on purpose, so
+that no gate tightening can reach one and miss the other. The Learned Veto is the one rung
+excluded from that arrangement: `collection.NewRefetchProcessor` clears it from its own copy,
+whatever the caller passes.
+
+They are asking different questions. Every other rung asks *is this page still one posting* —
+which is exactly what a re-gate of a stored Job Listing needs, and why the refetch lane consults
+the gate at all (ADR-0044). The Learned Veto asks *is this call worth paying for*, and the whole
+argument above is about the walk's bill: 100% of the extract spend on the measured population is
+rung 8's, over pages the walk has just discovered. A Job Listing already in the Corpus is not new
+spend; refreshing it is the cheapest thing the Collection Cycle does.
+
+Leaving it armed there would have cost three things. `collection.refetch.regate_rejected` is
+documented — in its own field, in `internal/collection/metrics.go`, and on the collection
+dashboard — as the number of Open listings a full content re-gate would Close, and it is what
+sizes the deliberate bulk Corpus-Close of #208; a fitted score ranking a page low is not a
+structural false positive, and pooling the two would inflate that number by roughly the veto's
+depth and invite a destructive decision on it. The refetch lane also records no
+`Gated(learned_veto)`, no Posting Score and no Shadow Extraction sample, so a false-drop there
+would be unobservable by construction. And a changed page below the cut would keep a stale
+Posting Body and a stale `source_hash` while staying Open, re-downloaded and re-rejected every
+Cycle with nothing to notice it by.
+
+The divergence is declared in the lane that owns it rather than by omission at the wiring site,
+and `TestRefetchLaneNeverArmsTheLearnedVeto` pins it with a page the walk's gate does veto.
 
 ## Attribution, and why the score is not a label
 
@@ -233,11 +266,20 @@ already seen the held-out rows. Neither the L2 term nor the iteration count is a
 out-of-fold read is flat across L2 from 1e-4 to 1e-2, and every longer run only overfits (at 1000
 iterations the out-of-fold precision falls).
 
-**The Score Vocabulary.** 37,320 candidate words; **583 removed as a word of a Gold Set host**
-and 32,321 as too rare (document frequency below 5), leaving 4,416 admissible. The artifact ships
-**500** of them plus the 17 structural Score Signals. The host exclusion is a real cost paid
-deliberately — it removes `jobs`, `career`, `karriere`, `berlin` and 579 others — and it is the
-price of the hazard this ADR names: 457 rows on 357 hosts.
+**The Score Vocabulary.** 37,320 candidate *entries*; **583 removed as a word of a Gold Set
+host** and 32,321 as too rare (document frequency below 5), leaving 4,416 admissible. The
+artifact ships **500** of them plus the 17 structural Score Signals. Entries, not words: a word
+in a Title and the same word in a body are two signals the fit weighs separately, so the 583
+removed entries are the **490 distinct host words** the leakage guard logs, struck from whichever
+namespaces carried them. The host exclusion is a real cost paid deliberately — it removes `jobs`,
+`career`, `karriere`, `berlin` and 486 others — and it is the price of the hazard this ADR names:
+442 scorable rows on 357 hosts.
+
+The ban list is built from the **fit population**, the 442 scorable rows, and not from all 457.
+That is the hazard's own scope rather than a convenience: a host carried only by `ambiguous` rows
+— eleven of them today — is in neither the training half nor the held-out half of any fold, so
+there is nothing of it to learn and nothing to reward. Settling such a label moves its rows into
+the fit and its words into the ban list in the same regeneration.
 
 Out-of-fold precision over the surviving accepts at a 10% veto depth, against vocabulary size:
 
@@ -252,6 +294,11 @@ row out of fold.
 
 **The gap to a full hashed representation is 0.0000** — the untruncated 2^14 hashed bag scores
 exactly what the 500-word explicit list scores, on the same rows, out of the same folds. The
+hashed arm is the more generous of the two by construction: a bucket name is not a `title:`/`body:`
+signal, so it escapes the min-df floor as well as the truncation, and the arm is fitted over every
+non-host-word candidate — the 32,321 too-rare ones included — rather than over the 4,416 the
+explicit ladder may draw from. A zero gap against a reference that saw strictly more is a
+conservative reading, not a flattering one. The
 ~0.02 line this ADR names as the point where the readable list is revisited is not approached, so
 the explicit list stands and costs nothing. It also earns its keep on the day it was written: the
 heaviest entries read `bewerben`, `apply`, `arbeiten`, `bieten`, `interesse`, `vergütung`,

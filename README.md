@@ -284,11 +284,14 @@ exactly, and off the **Posting Score** is never computed at all, so a crawl that
 turned the rung on pays nothing for it. Turning it on is a separate act, and this is its
 runbook.
 
-The offline evidence already stands: over the committed Extract Gold Set the Learned Veto
-withholds **50 of 177** of the calls the Positive Evidence rung accepts — **28.2%** — and
-loses **none** of that rung's 127 `detail` rows, taking precision from 0.7175 to 1.0000.
-`TestExtractGoldSetFalseDropGuardUnderTheLearnedVeto` holds that page for page under a
-plain `go test ./...`. Reproduce the scorecard any time:
+The offline evidence already stands, and it is **in-sample**: over the committed Extract Gold
+Set — the same 442 rows the shipped weights were fitted on — the Learned Veto withholds
+**50 of 177** of the calls the Positive Evidence rung accepts (**28.2%**) and loses **none** of
+that rung's 127 `detail` rows, taking precision from 0.7175 to 1.0000. That 1.0000 is a
+memorisation ceiling, not a forecast; ADR-0049's out-of-fold ladder is the generalisation read
+and it costs 16 `detail` rows at a comparable depth.
+`TestExtractGoldSetFalseDropGuardUnderTheLearnedVeto` holds the in-sample figure page for page
+under a plain `go test ./...`. Reproduce the scorecard any time:
 
 ```bash
 echo '{"LearnedVeto": true}' > /tmp/veto.json     # -gate-config takes a PATH, not inline JSON
@@ -371,13 +374,20 @@ so `TestTrainScorerReproducesTheCommittedWeights` goes red until you regenerate:
 
 ```bash
 go generate ./internal/pagegate     # re-runs llmbench train-scorer over the Gold Set
-go test ./cmd/llmbench/... ./internal/pagegate/...
+go test ./...                       # not just the two packages you changed — see below
 ```
 
 A refit re-chooses `VetoThreshold` under the same zero-`detail`-loss constraint, so the
 operating point moves with the labels rather than away from them. If a newly confirmed
 `detail` row sits in the drop set, the guard names it: re-run the trainer, never edit a label
 and never move `VetoThreshold` by hand.
+
+Run the **whole** suite, not `./cmd/llmbench/... ./internal/pagegate/...`: a refit can move a
+hand-picked fixture page across `VetoThreshold`, and the fixtures live in two places —
+`internal/pagegate/learned_veto_test.go` and `internal/processor/url_processor/url_processor_test.go`,
+which carries its own copies because an external test package cannot import them. Both fail
+with "pick a weaker fixture" when that happens, and both want a different page rather than a
+moved threshold.
 
 **5. Re-read the numbers on the artifact you are actually about to ship** — the refitted one,
 not the one step 2 measured — with the scorecard command at the top of this section, and check
@@ -400,6 +410,11 @@ extract gate learned veto (ADR-0049) enabled=true threshold=0.605395
 ```
 
 #### After the flip — what to read
+
+All four readings are the **walk's**, and so is the rung: the Collection Cycle's refetch
+re-gate clears the Learned Veto from its own copy of the gate config (ADR-0049), so
+`collection_refetch_regate_rejected_total` stays a purely structural census of the Corpus's
+existing false positives and can still be read as #208's sizing number after the flip.
 
 The **Learned Veto (ADR-0049)** row of the LLM telemetry dashboard
 (`grafana/dashboards/llm-telemetry.json`) carries all of it:

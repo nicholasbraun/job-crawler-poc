@@ -737,6 +737,13 @@ withheld calls and the 28.2% cut ADR-0049's amendment records. (The `hub-index` 
 was pasted before later confirmations moved labels; compare the two scorecards by
 re-running both, not against that block.)
 
+**That 1.0000 is in-sample and is not the veto's precision.** The shipped weights were
+fitted on these very 442 rows, converging to a mean log-loss of 0.0247, so a perfect
+score with zero leaks here is the memorisation ceiling of the fit rather than a forecast
+about anything. The generalisation read is ADR-0049's out-of-fold, host-grouped ladder,
+which at a comparable depth reads **0.8952 and loses 16 `detail` rows**. Read this block
+as "the cut is where the trainer said it is", never as "the veto is perfect".
+
 **Read the drop side of this scorecard with the same suspicion as the one above.** The
 capture tap sits downstream of the Extract Gate, so this file cannot measure what the
 veto would drop out of pages the gate never admitted — it has none. The number this
