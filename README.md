@@ -387,43 +387,58 @@ and the captured content is the authority in every case. These confirmed rows ou
 decision, which is the point: label quality, not volume, is the binding constraint on
 everything in this line of work.
 
-**4. Commit the confirmed rows — and refit.** They join the Extract Gold Set through
-`goldset-apply`, with the drawing's row count and confirmation counts updated in
-`cmd/llmbench/goldset_test.go` in the same commit — `vetoBoundaryStratumRows` (0 until the
-drawing runs) and `drawnStrata` (which does not yet list `veto-boundary`) are the two the draw
-moves. Paste the draw's summary into the drawings table of
-`cmd/llmbench/extract-goldset/README.md` in the same commit too: the frame, the row count, and
-**the `VetoThreshold` the cut was taken at** — because the threshold moves with the refit in
-this very step, and that table is where the other three drawings record theirs.
-`cmd/llmbench/extract-goldset/README.md` carries the whole maintenance sequence. Then remember
-what ADR-0049 makes true: **the Gold Set now produces part of the gate as well as scoring it.**
-Adding rows changes the fitted weights, so `TestTrainScorerReproducesTheCommittedWeights` goes
-red until you regenerate:
+**4. Commit the confirmed rows — and refit, in one command.**
 
 ```bash
-go generate ./internal/pagegate     # re-runs llmbench train-scorer over the Gold Set
-go test ./...                       # not just the two packages you changed — see below
+go run ./cmd/llmbench goldset-refit
 ```
 
-A refit re-chooses `VetoThreshold` under the same zero-`detail`-loss constraint, so the
-operating point moves with the labels rather than away from them. If a newly confirmed
-`detail` row sits in the drop set, the guard names it: re-run the trainer, never edit a label
-and never move `VetoThreshold` by hand.
+`goldset-refit` is the whole of what this step used to be. It folds the confirmed rows into
+the Extract Gold Set through `goldset-apply`, recomputes and rewrites the sixteen counts the
+record determines in `cmd/llmbench/goldset_test.go`, re-runs the trainer that
+`go generate ./internal/pagegate` runs, and then runs `go test -count=1 ./...` over the
+regenerated tree — the only step that sees the new weights *compiled*, which is why it is a
+real build and not something this tool can do in its own process. It ends on the verdict, and
+**exits non-zero when the result is not shippable**: a `detail` row the Positive Evidence rung
+accepts lost to the cut, the pre-registered condition no longer met, or the guard suite red.
+Reading that condition a second time — on the artifact you are actually about to ship rather
+than the one step 2 measured — is the step a human skips, so the verb does it and turns it
+into an exit code.
 
-Run the **whole** suite, not `./cmd/llmbench/... ./internal/pagegate/...`: a refit can move a
-hand-picked fixture page across `VetoThreshold`, and the fixtures live in three places —
-`internal/pagegate/learned_veto_test.go`, `internal/processor/url_processor/url_processor_test.go`,
-which carries its own copies because an external test package cannot import them, and
-`cmd/llmbench/goldsetvetoboundary_test.go`, whose capture fixtures have to land on a named side
-of the cut for the drawing's own cases to mean anything. All three fail with "pick a weaker
-fixture" when that happens, and all three want a different page rather than a moved threshold.
+Remember what ADR-0049 makes true, because it is why this step is one command now: **the Gold
+Set produces part of the gate as well as scoring it.** Adding rows changes the fitted weights
+and re-chooses `VetoThreshold` under the same zero-`detail`-loss constraint, so the operating
+point moves with the labels rather than away from them. Never edit a label and never move
+`VetoThreshold` by hand.
 
-**5. Re-read the numbers on the artifact you are actually about to ship** — the refitted one,
-not the one step 2 measured — with the scorecard command at the top of this section, and check
-the pre-registered condition against the trainer's own report (`go generate` prints it) a
-second time.
+The verb rewrites the counts, and that is deliberate — but it never makes the change
+invisible: every one of the sixteen is printed, changed or not, and each rewrite lands in your
+diff. It **refuses** to move a confirmation ratchet in the direction that means a signature
+vanished (ADR-0048), and it stamps no provenance of its own: a confirmation is `goldset-ui`'s
+act and a human's. Two things it does not own and you still do, in the same commit:
+`drawnStrata` (which does not yet list `veto-boundary`) and the drawings table of
+`cmd/llmbench/extract-goldset/README.md` — paste the draw's summary there, the frame, the row
+count and **the `VetoThreshold` the cut was taken at**, because the threshold moves with the
+refit in this very step and that table is where the other three drawings record theirs.
+`cmd/llmbench/extract-goldset/README.md` carries the whole maintenance sequence.
 
-**6. Flip the default.**
+Expect the suite to name things after a confirmation pass, and expect them: `RESTANDING`
+entries in `extractGoldSetFalseDrops` are exceptions whose labels have just been confirmed,
+and ADR-0043 requires each to be re-argued rather than inherited. A "pick a weaker fixture"
+failure wants a different page, never a moved threshold — the fixtures live in three places,
+`internal/pagegate/learned_veto_test.go`,
+`internal/processor/url_processor/url_processor_test.go`, which carries its own copies because
+an external test package cannot import them, and `cmd/llmbench/goldsetvetoboundary_test.go`,
+whose capture fixtures have to land on a named side of the cut for the drawing's own cases to
+mean anything. That is also why the verb runs the **whole** suite rather than
+`./cmd/llmbench/... ./internal/pagegate/...`: a hand-picked list is a list that goes stale.
+
+To re-read the numbers later without refitting, `go run ./cmd/llmbench train-scorer` prints
+the same report; to re-read the scorecard, run the `score-capture` command at the top of this
+section again, **after** the refit, so it scores the artifact you are about to ship rather
+than the one step 2 measured.
+
+**5. Flip the default.**
 
 ```bash
 # .env

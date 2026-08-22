@@ -997,7 +997,18 @@ go run ./cmd/llmbench goldset-apply \
 # 5. score it
 go run ./cmd/llmbench score-capture -in cmd/llmbench/extract-goldset/goldset.jsonl
 go run ./cmd/llmbench score-free
+
+# 6. after a confirmation pass: apply, recompute and rewrite the counts this record
+#    determines, refit pagegate's Posting Score weights, and run the guard suite --
+#    in one pass, with ADR-0049's pre-registered condition checked at the end. It
+#    exits non-zero when the result is not shippable, and it edits no label.
+go run ./cmd/llmbench goldset-refit
 ```
+
+`goldset-refit` owns every hard-coded count below that the record determines, and prints
+all sixteen of them, changed or not, so a rewrite lands in the diff rather than behind
+it. It does **not** own this file's own prose: the drawings table, the scorecard blocks
+and the label distributions are a human's to keep current.
 
 To **correct a label**, edit the `label` column of `labels.tsv` and run
 `goldset-apply`; it rewrites both files canonically and refuses a sheet whose stratum or
@@ -1013,7 +1024,7 @@ proposed.
 (ADR-0048): each fails only in the direction that means a human signature *vanished*,
 and merely logs the figure in the direction that means work landed, so a productive
 confirmation pass never leaves `main` red. Two things stay pinned in **both**
-directions: the three drawings' row counts, because a drawing is a fixed act of
+directions: the four drawings' row counts, because a drawing is a fixed act of
 sampling, and `ambiguousRows`, because marking a page unresolvable is a rare,
 deliberate keystroke that changes what every confusion number is computed over. The
 direction the ratchets gave up is asserted more sharply instead — the build requires
@@ -1033,9 +1044,10 @@ awk -F'\t' '$3=="lone-posting"' cmd/llmbench/extract-goldset/labels.tsv | column
 # fix any wrong label in the `label` column, then:
 go run ./cmd/llmbench goldset-apply -confirmed-by "<your name>" -confirm-stratum lone-posting
 
-# then set pendingHumanConfirmations to 0 in cmd/llmbench/goldset_test.go and commit
-# — the build no longer forces the edit, it logs the figure (ADR-0048), so do it in
-# the same commit.
+# then refit: goldset-refit recomputes pendingHumanConfirmations in
+# cmd/llmbench/goldset_test.go and every other count this record determines, and
+# rewrites them in place. Commit them with the confirmations.
+go run ./cmd/llmbench goldset-refit
 ```
 
 ### Confirming row by row with the labelling tool (#286)
@@ -1116,11 +1128,15 @@ go run ./cmd/llmbench goldset-apply
 # pre-filled with its own ids:
 go run ./cmd/llmbench goldset-apply -confirmed-by "<your name>" -confirm-ids /tmp/263/confirmed-01.txt
 
-# lower pendingBoundaryConfirmations in cmd/llmbench/goldset_test.go by what you confirmed,
-# in the same commit. The number is printed by the apply summary (boundary pending) and
-# logged by go test -v. Update ambiguousRows, boundaryDetailRows and the recovery-ledger
-# constants if your reading moved them.
+# then refit. goldset-refit lowers pendingBoundaryConfirmations by what you confirmed and
+# recomputes ambiguousRows, boundaryDetailRows and the recovery-ledger constants your
+# reading may have moved -- all of them printed, all of them in the same commit.
+go run ./cmd/llmbench goldset-refit
 ```
+
+The verb **refuses** to raise a pending count or lower a confirmed one. That direction
+means a human signature vanished, and ADR-0048 reserves it to the person who withdraws
+the confirmation; the refusal happens before anything is written.
 
 `-confirm-ids` names exactly the rows a human read, so `labels.tsv` shows precisely which
 labels gained a confirmer and the pass can span sessions. `-confirm-stratum boundary` is
@@ -1157,8 +1173,9 @@ go run ./cmd/llmbench goldset-worksheet -stratum random -n 20 -out /tmp/spotchec
 # labels.tsv, put your name in the `confirmed_by` column of EXACTLY the rows you read:
 go run ./cmd/llmbench goldset-apply
 
-# then raise randomSpotChecks in cmd/llmbench/goldset_test.go to the "spot-checked"
-# figure the apply summary just printed (the build logs it too, under go test -v).
+# then refit: goldset-refit raises randomSpotChecks in cmd/llmbench/goldset_test.go to
+# what the record now says, and prints the figure beside every other count.
+go run ./cmd/llmbench goldset-refit
 ```
 
 Read the 40 `verdict=true` rows first if you only have time for some: 31 of them are the
@@ -1201,9 +1218,9 @@ read `remote`, 43 `unspecified`.
 ```bash
 # edit any wrong value or drop any free_ok you refuse, then:
 go run ./cmd/llmbench goldset-apply -expected-confirmed-by "<your name>"
-# then set pendingExpectedConfirmations to 0 in cmd/llmbench/goldset_test.go
-# — the build no longer forces the edit, it logs the figure (ADR-0048), so do it in
-# the same commit.
+# then refit: goldset-refit lowers pendingExpectedConfirmations in
+# cmd/llmbench/goldset_test.go to what the record now says.
+go run ./cmd/llmbench goldset-refit
 ```
 
 These acceptances rest on the labels underneath them, so confirming (a) without confirming

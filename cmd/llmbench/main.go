@@ -66,6 +66,16 @@
 // which makes a difference between the rule that was measured and the rule that ships
 // unrepresentable. Deterministic: regenerating from the committed set reproduces the
 // committed file byte for byte, and a test holds that. No network, no model.
+//
+// goldset-refit (ADR-0049, #304) is step 4 of the Learned Veto's rollout as a single
+// pass: it applies the confirmed rows through goldset-apply, recomputes and rewrites the
+// counts the record determines in cmd/llmbench/goldset_test.go, re-runs the trainer
+// `go generate ./internal/pagegate` runs, then runs the repository's test suite over the
+// regenerated tree -- the one step that sees the new weights compiled, since this binary
+// compiled the previous ones in. It ends on ADR-0049's pre-registered condition, which
+// train-scorer reports and this verb ENFORCES: merging the trainer was never gated on
+// the floor, flipping the rung's default is. Exit 2 on a wiring error, 1 when the result
+// is not shippable, 0 otherwise. It stamps no provenance and edits no label.
 package main
 
 import (
@@ -118,6 +128,8 @@ func main() {
 		os.Exit(runGoldSetUI(rest))
 	case "goldset-apply":
 		os.Exit(runGoldSetApply(rest))
+	case "goldset-refit":
+		os.Exit(runGoldSetRefit(rest))
 	case "diff":
 		os.Exit(runDiff(rest))
 	default:

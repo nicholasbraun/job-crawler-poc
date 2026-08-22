@@ -155,80 +155,106 @@ type trainReport struct {
 	TopWeights []trainWeight    `json:"top_weights"`
 }
 
-// runTrainScorer fits the Posting Score over the committed Extract Gold Set, writes
-// the generated weights table pagegate compiles in, and reports what a Learned Veto
-// built on it would do to the pages the Positive Evidence rung accepts today
-// (ADR-0049). No network, no model.
+// trainOptions is train-scorer's whole input after flag parsing. It exists so
+// goldset-refit drives the SAME fit this verb drives (ADR-0049): the artifact is a pure
+// function of (Gold Set, trainer code, flag defaults), and a second caller
+// re-implementing the sequence is precisely how that stops being true.
+type trainOptions struct {
+	// In is the Extract Gold Set substrate to fit over; Out is the generated Go source
+	// the weights table lands in. Both are paths relative to the repo root.
+	In, Out                  string
+	Vocabulary, MinDF, Folds int
+	Seed                     string
+	// Report asks for the measurement as well as the fit. The measurement costs ~50
+	// cross-validated fits against the artifact's one, so the regenerability guard
+	// leaves it off.
+	Report bool
+}
+
+// defaultTrainOptions is the flag defaults AS A VALUE, so a caller that must not pick
+// its own knobs can say so by not picking any. goldset-refit takes it whole and
+// overrides only the two paths, which is what keeps the artifact a hermetic function of
+// the Gold Set, the trainer code and these defaults.
+func defaultTrainOptions() trainOptions {
+	return trainOptions{
+		In:         filepath.Join(defaultGoldSetDir, goldSetFile),
+		Out:        defaultWeightsPath,
+		Vocabulary: defaultScoreVocabulary,
+		MinDF:      defaultMinDocFrequency,
+		Folds:      defaultFolds,
+		Seed:       defaultFoldSeed,
+		Report:     true,
+	}
+}
+
+// trainScorer validates the options, fits the Posting Score over the Extract Gold Set,
+// writes the generated weights table pagegate compiles in, and -- when opts.Report --
+// measures what a Learned Veto built on it would do to the pages the Positive Evidence
+// rung accepts today (ADR-0049).
 //
 // It is the ONLY thing that may write posting_score_weights_gen.go, and it is in Go
 // because it calls the same pagegate.Signals the gate calls -- a trainer that
 // tokenized German slightly differently from the gate would ship a rule that is not
 // the rule that was measured, silently.
 //
+// It writes only REFUSALS (to stderr). Rendering the report and the alarms is the
+// caller's, so train-scorer can choose -json and goldset-refit can fold both into its
+// own transcript. The returned report is the zero value when opts.Report is false.
+//
 // Exit: 2 on a wiring error (nothing written), 1 if the artifact it was about to write
 // would lose a detail row the Positive Evidence rung accepts (also nothing written), 0
-// otherwise. The pre-registered 10% condition is REPORTED and never moves the exit
-// code: merging this is not gated on it, flipping the rung's default is.
-func runTrainScorer(args []string) int {
-	fs := flag.NewFlagSet("train-scorer", flag.ExitOnError)
-	in := fs.String("in", filepath.Join(defaultGoldSetDir, goldSetFile), "committed Extract Gold Set JSONL to fit over; read only, never written")
-	out := fs.String("out", defaultWeightsPath, "generated Go source to write pagegate's weights table to")
-	vocab := fs.Int("vocab", defaultScoreVocabulary, "Score Vocabulary words the artifact holds; 0 keeps every admissible candidate. Set from the size curve this verb reports, never by the run itself")
-	minDF := fs.Int("min-df", defaultMinDocFrequency, "smallest document frequency a candidate word may carry")
-	folds := fs.Int("folds", defaultFolds, "host-grouped cross-validation folds")
-	seed := fs.String("seed", defaultFoldSeed, "fixed seed the fold assignment hashes with; the run's only source of randomness")
-	report := fs.Bool("report", true, "print the measurement report; -report=false fits and writes only, which is what the regenerability guard uses so it costs one fit rather than fifty")
-	jsonOut := fs.Bool("json", false, "emit the report as indented JSON instead of the human-readable form; the exit code is unchanged")
-	_ = fs.Parse(args)
-
+// otherwise. The pre-registered 10% condition is REPORTED and never moves this exit
+// code: merging the trainer is not gated on it, flipping the rung's default is, and
+// goldset-refit is where that flip's decision procedure enforces it.
+func trainScorer(opts trainOptions) (trainReport, int) {
 	// Every knob is validated before anything is read or written, so a mistyped flag
 	// can never leave a half-considered artifact behind.
 	switch {
-	case *in == "" || *out == "":
+	case opts.In == "" || opts.Out == "":
 		fmt.Fprintln(os.Stderr, "usage: llmbench train-scorer [-in goldset.jsonl] [-out weights.go] [-vocab n] [-min-df n] [-folds n] [-seed s] [-report=false] [-json]")
-		return 2
-	case *vocab < 0:
-		fmt.Fprintf(os.Stderr, "llmbench train-scorer: -vocab must be >= 0 (0 keeps every candidate), got %d\n", *vocab)
-		return 2
-	case *minDF < 1:
-		fmt.Fprintf(os.Stderr, "llmbench train-scorer: -min-df must be >= 1, got %d\n", *minDF)
-		return 2
-	case *folds < 2:
-		fmt.Fprintf(os.Stderr, "llmbench train-scorer: -folds must be >= 2, got %d\n", *folds)
-		return 2
-	case *seed == "":
+		return trainReport{}, 2
+	case opts.Vocabulary < 0:
+		fmt.Fprintf(os.Stderr, "llmbench train-scorer: -vocab must be >= 0 (0 keeps every candidate), got %d\n", opts.Vocabulary)
+		return trainReport{}, 2
+	case opts.MinDF < 1:
+		fmt.Fprintf(os.Stderr, "llmbench train-scorer: -min-df must be >= 1, got %d\n", opts.MinDF)
+		return trainReport{}, 2
+	case opts.Folds < 2:
+		fmt.Fprintf(os.Stderr, "llmbench train-scorer: -folds must be >= 2, got %d\n", opts.Folds)
+		return trainReport{}, 2
+	case opts.Seed == "":
 		fmt.Fprintln(os.Stderr, "llmbench train-scorer: -seed must be set; an empty seed is not a reproducible fold assignment")
-		return 2
+		return trainReport{}, 2
 	}
 
-	samples, census, err := scorerSamples(*in)
+	samples, census, err := scorerSamples(opts.In)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench train-scorer: %v\n", err)
-		return 2
+		return trainReport{}, 2
 	}
 	if len(samples) == 0 {
-		fmt.Fprintf(os.Stderr, "llmbench train-scorer: no scorable rows in %s\n", *in)
-		return 2
+		fmt.Fprintf(os.Stderr, "llmbench train-scorer: no scorable rows in %s\n", opts.In)
+		return trainReport{}, 2
 	}
 
-	opts := fitOptions{Vocabulary: *vocab, MinDF: *minDF}
+	fit := fitOptions{Vocabulary: opts.Vocabulary, MinDF: opts.MinDF}
 	exclude := hostTokens(samples)
 	// Admission runs here as well as inside the fit, and the second pass is worth its
 	// cost twice over: it is what lets a min-df floor that admits nothing be refused
 	// before a degenerate table is written, and it is the census the report prints so
 	// the price of the leakage guard is on the record rather than assumed.
-	admissible, candidates := admissibleSignals(samples, exclude, opts.MinDF)
+	admissible, candidates := admissibleSignals(samples, exclude, fit.MinDF)
 	if len(admissible) == 0 {
-		fmt.Fprintf(os.Stderr, "llmbench train-scorer: no admissible Score Signal survived -min-df %d\n", opts.MinDF)
-		return 2
+		fmt.Fprintf(os.Stderr, "llmbench train-scorer: no admissible Score Signal survived -min-df %d\n", fit.MinDF)
+		return trainReport{}, 2
 	}
-	model := fitScorer(samples, exclude, opts)
+	model := fitScorer(samples, exclude, fit)
 
 	accepts := scoredAccepts(samples, func(s scorerSample) float64 { return model.score(s.Signals) })
 	threshold, ok := zeroLossThreshold(accepts)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "llmbench train-scorer: the Positive Evidence rung accepts no detail row in %s; the population was computed wrong\n", *in)
-		return 2
+		fmt.Fprintf(os.Stderr, "llmbench train-scorer: the Positive Evidence rung accepts no detail row in %s; the population was computed wrong\n", opts.In)
+		return trainReport{}, 2
 	}
 	chosen := measureVeto(accepts, vetoPoint{Threshold: threshold})
 	// The cut was chosen by the constraint rather than requested at a depth, so its
@@ -242,27 +268,50 @@ func runTrainScorer(args []string) int {
 		fmt.Fprintln(os.Stderr, red(fmt.Sprintf(
 			"llmbench train-scorer: the chosen cut loses %d detail row(s) the Positive Evidence rung accepts; nothing written",
 			chosen.DetailLost)))
-		return 1
+		return trainReport{}, 1
 	}
 
 	artifact := weightsArtifact{Model: model, Threshold: threshold, ScorableRows: len(samples), Hosts: hostCount(samples)}
 	src, err := renderWeightsSource(artifact)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench train-scorer: %v\n", err)
-		return 2
+		return trainReport{}, 2
 	}
 	// Staged and renamed rather than truncated and rewritten: a half-written weights
 	// table is a compile error at best and a silently truncated Score Vocabulary at
 	// worst, which is precisely the hazard ADR-0049 refuses to accept.
-	if err := atomicWrite(fileWrite{Path: *out, Perm: 0o644, Write: writeBytes(src)}); err != nil {
+	if err := atomicWrite(fileWrite{Path: opts.Out, Perm: 0o644, Write: writeBytes(src)}); err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench train-scorer: %v\n", err)
-		return 2
+		return trainReport{}, 2
 	}
-	if !*report {
-		return 0
+	if !opts.Report {
+		return trainReport{}, 0
 	}
+	return buildTrainReport(opts.In, samples, census, candidates, model, accepts, chosen, threshold, exclude, fit, opts.Seed, opts.Folds), 0
+}
 
-	r := buildTrainReport(*in, samples, census, candidates, model, accepts, chosen, threshold, exclude, opts, *seed, *folds)
+// runTrainScorer is train-scorer's flag front end: it parses the knobs, runs the fit
+// through trainScorer, and renders the report the run measured. Everything the verb
+// actually does lives in trainScorer, because goldset-refit drives the same fit
+// (ADR-0049) and two copies of the sequence is how an artifact stops being
+// reproducible.
+func runTrainScorer(args []string) int {
+	opts := defaultTrainOptions()
+	fs := flag.NewFlagSet("train-scorer", flag.ExitOnError)
+	fs.StringVar(&opts.In, "in", opts.In, "committed Extract Gold Set JSONL to fit over; read only, never written")
+	fs.StringVar(&opts.Out, "out", opts.Out, "generated Go source to write pagegate's weights table to")
+	fs.IntVar(&opts.Vocabulary, "vocab", opts.Vocabulary, "Score Vocabulary words the artifact holds; 0 keeps every admissible candidate. Set from the size curve this verb reports, never by the run itself")
+	fs.IntVar(&opts.MinDF, "min-df", opts.MinDF, "smallest document frequency a candidate word may carry")
+	fs.IntVar(&opts.Folds, "folds", opts.Folds, "host-grouped cross-validation folds")
+	fs.StringVar(&opts.Seed, "seed", opts.Seed, "fixed seed the fold assignment hashes with; the run's only source of randomness")
+	fs.BoolVar(&opts.Report, "report", opts.Report, "print the measurement report; -report=false fits and writes only, which is what the regenerability guard uses so it costs one fit rather than fifty")
+	jsonOut := fs.Bool("json", false, "emit the report as indented JSON instead of the human-readable form; the exit code is unchanged")
+	_ = fs.Parse(args)
+
+	r, code := trainScorer(opts)
+	if code != 0 || !opts.Report {
+		return code
+	}
 	if *jsonOut {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")

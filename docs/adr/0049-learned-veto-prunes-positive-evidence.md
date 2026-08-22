@@ -210,6 +210,17 @@ verdict, so the drop set may not be filtered by it either. By default the verb o
 **veto depth**; `-draw` is what commits rows, because the depth is the go/no-go and the rows it
 implies change the fitted weights.
 
+The sequence's fourth step ships as one verb, `llmbench goldset-refit`: apply, counts,
+regenerate, verify. The split between it and `train-scorer` is deliberate and is the condition's
+own logic — `train-scorer` **reports** the pre-registered floor and lets no exit code turn on it,
+because merging a trainer was never gated on it; `goldset-refit` **enforces** it, because flipping
+the rung's default is exactly what the condition governs and the refit is that flip's decision
+procedure. The verb rewrites the derived counts in `cmd/llmbench/goldset_test.go` and prints every
+one of them: automating the edit is fine, making it invisible is not. It refuses to move a
+confirmation ratchet in the direction that means a signature vanished (ADR-0048) and stamps no
+provenance of its own — a Blind Confirmation is a person's act, and nothing here licenses editing
+a label to move a number.
+
 **The condition, registered before the measurement:** the Learned Veto is turned on only if it
 vetoes **at least 10% of rung-8 accepts while losing none of the 127 `detail` rows** rung 8
 accepts today. Below that, a generated weights table, a trainer verb, a package, a rung and a

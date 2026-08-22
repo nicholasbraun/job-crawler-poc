@@ -113,6 +113,9 @@ go run ./cmd/llmbench goldset-sample-veto-boundary -capture <capture.jsonl> -sin
                                                 #    -draw appends the drop set to the Gold Set
 go run ./cmd/llmbench train-scorer               # refit the Posting Score over the Extract Gold Set and rewrite
                                                 #    pagegate's weights (must reproduce the committed file byte for byte)
+go run ./cmd/llmbench goldset-refit              # after a confirmation pass: apply, rewrite the derived
+                                                #    counts, refit the weights, run the suite, and check
+                                                #    ADR-0049's pre-registered condition
 go run ./cmd/llmbench goldset-ui -by "<your name>" -stratum random   # blind, one-keystroke confirmation pass (loopback only;
                                                                     #    measures Capture Fidelity and renders the page;
                                                                     #    -refetch=false for neither)
