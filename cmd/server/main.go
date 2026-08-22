@@ -540,8 +540,15 @@ func newFactory(
 	// consulting the EXTRACT Gate -- the walk's url processor and the refetch lane's
 	// changed-content re-extract -- are the ones the override below moves; the
 	// discovery processor reads the same struct for the DISCOVERY Gate, which never
-	// consults RequirePositiveEvidence or LearnedVeto. So each kill switch covers the
-	// whole extract path or none of it, and neither can touch Discovery.
+	// consults RequirePositiveEvidence or LearnedVeto. So EXTRACT_REQUIRE_POSITIVE_EVIDENCE
+	// covers the whole extract path or none of it, and it cannot touch Discovery.
+	//
+	// EXTRACT_LEARNED_VETO is deliberately NARROWER: it is a spend rule for the walk,
+	// and collection.NewRefetchProcessor clears it from its own copy (ADR-0049), so the
+	// refetch re-gate keeps asking "is this page still one posting" on every rung it
+	// runs. Setting it here still says what the crawl enforces -- the walk is where the
+	// extract bill is -- and the refetch lane's divergence is one rung, declared in the
+	// lane that owns it rather than by omission here.
 	gateConfig := crawler.DefaultLLMGateConfig()
 	gateConfig.RequirePositiveEvidence = requirePositiveEvidence
 	slog.Info("extract gate positive evidence (ADR-0044)", "enabled", requirePositiveEvidence)
@@ -877,7 +884,9 @@ func newFactory(
 						// certain-accepted on structure is not dormant-closed by an LLM blip —
 						// and the Extract Gate the changed-content re-extract now consults
 						// (ADR-0044). It is the SAME gateConfig the walk's url processor gets
-						// below, so the two lanes cannot diverge.
+						// below, so the two lanes cannot diverge on any rung that judges page
+						// STRUCTURE. NewRefetchProcessor clears the Learned Veto from its copy,
+						// which is the one deliberate divergence (ADR-0049).
 						GateConfig: gateConfig,
 						SourceHash: sourceHash,
 						// Legacy-summary heal (ADR-0041): rewrite a model-authored body from

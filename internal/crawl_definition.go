@@ -141,8 +141,9 @@ type LLMGateConfig struct {
 	// count — the escape hatch for dropping saturation entirely.
 	ExtractJobLinkSaturationCount int
 
-	// RequirePositiveEvidence turns on the Extract Gate's final rung (ADR-0044): a
-	// page that has cleared every reject rung is extracted only when it carries
+	// RequirePositiveEvidence turns on the Extract Gate's Positive Evidence rung
+	// (ADR-0044) -- its last reject-on-absence rung, with only the Learned Veto below
+	// it: a page that has cleared every reject rung is extracted only when it carries
 	// Positive Evidence of being a single posting, instead of being admitted just
 	// because nothing rejected it. False is the previous behaviour -- the blanket
 	// accept -- and is the kill switch that restores it without a deploy, wired to
@@ -166,6 +167,12 @@ type LLMGateConfig struct {
 	// pagegate.VetoThreshold. False is today's behaviour, the unconditional Positive
 	// Evidence accept, and is the kill switch that restores it without a deploy, wired
 	// to EXTRACT_LEARNED_VETO.
+	//
+	// Unlike RequirePositiveEvidence it reaches ONE lane, the walk. The Collection
+	// Cycle's refetch re-gate clears it from its own copy of this config
+	// (collection.NewRefetchProcessor), because a re-gate of a stored Job Listing asks
+	// whether the page is still one posting, not whether a new extract call is worth
+	// paying for — and ADR-0049's whole cost argument is the walk's extract bill.
 	//
 	// There is deliberately NO threshold field beside it. The operating point ships
 	// compiled in next to the weights the same training run produced (ADR-0049): a

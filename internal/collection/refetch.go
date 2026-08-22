@@ -40,6 +40,10 @@ type RefetchConfig struct {
 	// page. The changed-content re-extract then consults the Extract Gate with this SAME
 	// value (ADR-0044) — cmd/server hands the walk's url processor the identical config,
 	// so the two lanes cannot calibrate apart and a gate tightening reaches both at once.
+	//
+	// With ONE exception, applied by NewRefetchProcessor rather than left to the
+	// caller: the Learned Veto is cleared on this lane whatever the caller passes
+	// (ADR-0049). See the note on RefetchProcessor.gateConfig for why.
 	GateConfig crawler.LLMGateConfig
 	// SourceHash computes the extraction-cache key over a page's main content —
 	// bound to crawler.SourceHash with the extractor's ExtractMaxChars so the key
@@ -77,7 +81,10 @@ type RefetchConfig struct {
 	// streak and timestamps are untouched by this tap, because healing the Corpus is a
 	// bulk destructive decision this ticket deliberately does not take (#208). It is a
 	// lower bound: a listing on a dormant Career Page, one the URL-only re-gate already
-	// Closed, and one whose GET or parse failed are never judged. Optional.
+	// Closed, and one whose GET or parse failed are never judged. It stays a clean
+	// structural census whatever EXTRACT_LEARNED_VETO is set to, because this lane runs
+	// with the Learned Veto cleared (ADR-0049) — a fitted-score drop can never enter
+	// the number #208 sizes a bulk Close against. Optional.
 	OnRegateRejected func(ctx context.Context)
 }
 
@@ -96,11 +103,21 @@ type RefetchConfig struct {
 // extractor abstains, so the listing stays open on a stale last_seen: an accepted
 // v1 gap (deterministic soft-404 detection is out of this ticket's scope).
 type RefetchProcessor struct {
-	downloader          downloader.Downloader
-	parser              parser.Parser
-	liveness            crawler.CorpusLivenessRepository
-	dormancy            DormancyRecorder
-	classifier          careerpageprocessor.Confirmer
+	downloader downloader.Downloader
+	parser     parser.Parser
+	liveness   crawler.CorpusLivenessRepository
+	dormancy   DormancyRecorder
+	classifier careerpageprocessor.Confirmer
+	// gateConfig is RefetchConfig.GateConfig with the Learned Veto CLEARED (ADR-0049).
+	// The two rules answer different questions on this lane: every other Extract Gate
+	// rung asks "is this page still one posting", which is exactly what a re-gate of a
+	// stored listing needs, while the Learned Veto asks "is this call worth paying
+	// for" — a spend rule whose entire cost argument is the WALK's extract bill, over
+	// the rung-8 accept population the weights were fitted on. Leaving it armed here
+	// would put fitted-score drops into onRegateRejected, the number a bulk
+	// Corpus-Close is sized against (#208), and would freeze a changed page's Posting
+	// Body on a lane that records no Posting Score, no gated reason and no Shadow
+	// Extraction sample to notice it by.
 	gateConfig          crawler.LLMGateConfig
 	sourceHash          func(mainContent string) string
 	descriptions        crawler.CorpusDescriptionRepository
@@ -116,14 +133,21 @@ type RefetchProcessor struct {
 var _ processor.Processor[crawler.CollectionSeed] = (*RefetchProcessor)(nil)
 
 // NewRefetchProcessor builds a crawl-lane refetch processor.
+//
+// The Learned Veto is cleared here rather than at the wiring site (ADR-0049): the
+// lane's rule is a property of the lane, not of one caller's config literal, and
+// clearing it structurally is what keeps EXTRACT_LEARNED_VETO from reaching a second
+// lane the day someone builds this processor from a different config.
 func NewRefetchProcessor(cfg *RefetchConfig) *RefetchProcessor {
+	gateConfig := cfg.GateConfig
+	gateConfig.LearnedVeto = false
 	return &RefetchProcessor{
 		downloader:          cfg.Downloader,
 		parser:              cfg.Parser,
 		liveness:            cfg.Liveness,
 		dormancy:            cfg.Dormancy,
 		classifier:          cfg.Classifier,
-		gateConfig:          cfg.GateConfig,
+		gateConfig:          gateConfig,
 		sourceHash:          cfg.SourceHash,
 		descriptions:        cfg.Descriptions,
 		descriptionMaxChars: cfg.DescriptionMaxChars,
@@ -224,9 +248,12 @@ func (p *RefetchProcessor) stillCareerPage(ctx context.Context, url string, resp
 
 // stillExtractable reports whether the Extract Gate would STILL send this listing's
 // page to the LLM extractor, judged on the page this refetch has ALREADY downloaded
-// and parsed (ADR-0044) — no extra fetch, no model call. It is the same Extract Gate
-// the walk applies to a freshly-crawled page, read with the same GateConfig, so a
-// stored listing and a newly-walked page can never get different answers about one URL.
+// and parsed (ADR-0044) — no extra fetch, no model call. Every rung that asks whether
+// the page is still one posting is the walk's, read from the walk's own GateConfig, so
+// a stored listing and a newly-walked page can never get different STRUCTURAL answers
+// about one URL. The one rung deliberately absent is the Learned Veto, which asks a
+// different question (ADR-0049); NewRefetchProcessor clears it, so this reads
+// "structurally still one posting" and never "worth an extract call".
 //
 // The URL is rebuilt with crawler.NewURL rather than reused as a bare RawURL literal:
 // the gate's catalog rung and its same-host Job Listing link count both read u.Hostname,
