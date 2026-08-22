@@ -16,7 +16,7 @@ import (
 )
 
 // tinyGoldSet is a miniature Extract Gold Set: enough rows for the Positive Evidence
-// rung to accept a SEPARABLE mix, spread over enough strata that all sixteen derived
+// rung to accept a SEPARABLE mix, spread over enough strata that all seventeen derived
 // counts are non-trivially non-zero, and small enough that a whole refit costs
 // milliseconds. It exists because refitting the committed set would add two more full
 // fits to a package that already spends most of its runtime on two -- and because the
@@ -305,29 +305,107 @@ func TestGoldSetRefitRunsTheWholeSequence(t *testing.T) {
 	}
 }
 
-// TestGoldSetRefitRefusesToRaiseARatchet is ADR-0048's rule made executable: a pending
-// count rising means a human signature vanished, and only the person who withdraws a
-// confirmation may move it that way. The refusal has to land BEFORE anything is
+// TestGoldSetRefitRefusesARatchetMovingTheWrongWay is ADR-0048's rule made executable,
+// in BOTH of the directions that mean a human signature vanished: a pending count that
+// rose, and a confirmed count that fell. The refusal has to land BEFORE anything is
 // written, or the pass would leave the tree carrying a change nobody agreed to.
-func TestGoldSetRefitRefusesToRaiseARatchet(t *testing.T) {
-	dir := tinyGoldSetDir(t, tinyGoldSet())
-	counts := writeCountsFixture(t, map[string]int{"pendingBoundaryConfirmations": 0})
-	weights := filepath.Join(t.TempDir(), "posting_score_weights_gen.go")
-	was := readFileOrFail(t, counts)
+//
+// The falling case is not hypothetical -- it is the ordinary end of correcting a label,
+// which retracts that row's confirmation -- so it is driven here rather than argued.
+func TestGoldSetRefitRefusesARatchetMovingTheWrongWay(t *testing.T) {
+	tests := []struct {
+		name     string
+		override map[string]int
+		constant string
+	}{
+		{
+			name:     "a pending count rose",
+			override: map[string]int{"pendingBoundaryConfirmations": 0},
+			constant: "pendingBoundaryConfirmations",
+		},
+		{
+			// The fixture records more spot-checks than the record carries, which is what
+			// a withdrawn confirmation looks like from the counts file's side.
+			name:     "a confirmed count fell",
+			override: map[string]int{"randomSpotChecks": 99},
+			constant: "randomSpotChecks",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := tinyGoldSetDir(t, tinyGoldSet())
+			counts := writeCountsFixture(t, tt.override)
+			weights := filepath.Join(t.TempDir(), "posting_score_weights_gen.go")
+			was := readFileOrFail(t, counts)
 
-	var out bytes.Buffer
-	code := goldSetRefit(refitConfig{Dir: dir, Counts: counts, Weights: weights, Out: &out})
-	if code != 2 {
-		t.Fatalf("goldset-refit exited %d, want 2", code)
+			var out bytes.Buffer
+			code := goldSetRefit(refitConfig{Dir: dir, Counts: counts, Weights: weights, Out: &out})
+			if code != 2 {
+				t.Fatalf("goldset-refit exited %d, want 2", code)
+			}
+			if !strings.Contains(out.String(), tt.constant) {
+				t.Errorf("the refusal does not name the constant:\n%s", out.String())
+			}
+			if got := readFileOrFail(t, counts); got != was {
+				t.Errorf("the counts file was rewritten despite the refusal")
+			}
+			if _, err := os.Stat(weights); err == nil {
+				t.Errorf("%s was written despite the refusal", weights)
+			}
+		})
 	}
-	if !strings.Contains(out.String(), "pendingBoundaryConfirmations") {
-		t.Errorf("the refusal does not name the constant:\n%s", out.String())
+}
+
+// TestRatchetRefusalNamesTheEventThatHappened is the operator contract on the refusal
+// text. A ratchet moves the wrong way in two opposite directions, and an operator sent
+// after a rise when a count FELL looks for rows that were never appended and never
+// finds the confirmation they themselves withdrew -- so each direction has to be named
+// as what it is, and both have to end on the edit only that person may make.
+func TestRatchetRefusalNamesTheEventThatHappened(t *testing.T) {
+	tests := []struct {
+		name    string
+		change  countChange
+		says    []string
+		saysNot string
+	}{
+		{
+			name: "a pending count rose",
+			change: countChange{
+				Name: "pendingBoundaryConfirmations", Direction: countMayFall, Old: 0, New: 3,
+				Why: "Boundary Stratum rows still awaiting a human confirmation",
+			},
+			says:    []string{"pendingBoundaryConfirmations", "PENDING count ROSE", "drawing's own commit"},
+			saysNot: "FELL",
+		},
+		{
+			name: "a confirmed count fell",
+			change: countChange{
+				Name: "randomSpotChecks", Direction: countMayRise, Old: 120, New: 119,
+				Why: "random-stratum rows a human has read and confirmed",
+			},
+			says:    []string{"randomSpotChecks", "CONFIRMED count FELL", "corrected label retracted one"},
+			saysNot: "ROSE",
+		},
 	}
-	if got := readFileOrFail(t, counts); got != was {
-		t.Errorf("the counts file was rewritten despite the refusal")
-	}
-	if _, err := os.Stat(weights); err == nil {
-		t.Errorf("%s was written despite the refusal", weights)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := ratchetRefusal([]countChange{tt.change}, "counts.go", "weights.go")
+			for _, want := range tt.says {
+				if !strings.Contains(msg, want) {
+					t.Errorf("the refusal says nothing about %q:\n%s", want, msg)
+				}
+			}
+			if strings.Contains(msg, tt.saysNot) {
+				t.Errorf("the refusal describes the opposite direction (%q):\n%s", tt.saysNot, msg)
+			}
+			// Every refusal ends on the recovery: this verb may not make the edit, and
+			// without it the next run refuses again.
+			for _, want := range []string{"Recovery", "same commit", "counts.go", "weights.go"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("the refusal says nothing about %q:\n%s", want, msg)
+				}
+			}
+		})
 	}
 }
 

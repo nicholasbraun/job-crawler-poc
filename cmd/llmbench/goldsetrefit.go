@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/nicholasbraun/job-crawler-poc/internal/pagegate"
 )
@@ -71,8 +72,8 @@ func runGoldSetRefit(args []string) int {
 // goTestSuite runs the repository's whole suite. It is `go test -count=1 ./...` and NOT
 // a hand-picked package list, for the reason the runbook gives: a refit can move a
 // fixture across VetoThreshold in any package that pins one -- internal/pagegate,
-// internal/processor/url_processor and cmd/llmbench today -- and a list is a list that
-// goes stale. It needs a Docker daemon, because the repository suite spins Postgres and
+// internal/processor/url_processor, internal/collection and cmd/llmbench today -- and a
+// list is a list that goes stale. It needs a Docker daemon, because the repository suite spins Postgres and
 // Redis up through testcontainers; -count=1 because a verification a cache can satisfy
 // is not one. Not -race: CI owns that, and it doubles the cost for nothing this verb
 // asks.
@@ -234,15 +235,7 @@ func writeRefitCounts(cfg refitConfig, counts countsFile, changes []countChange)
 	}
 
 	if len(regressions) > 0 {
-		names := make([]string, 0, len(regressions))
-		for _, c := range regressions {
-			names = append(names, c.Name)
-		}
-		fmt.Fprintln(os.Stderr, red(fmt.Sprintf(
-			"llmbench goldset-refit: %v would move the way that means a human signature VANISHED, and a ratchet may only be moved that way by the person who withdraws the confirmation (ADR-0048). "+
-				"Nothing was written here: neither %s nor %s. goldset-apply already ran, and it is idempotent and stamped nothing. "+
-				"Either a signature was lost -- find it in the diff -- or rows were appended to the stratum, and that rise belongs in the drawing's own commit.",
-			names, cfg.Counts, cfg.Weights)))
+		fmt.Fprintln(os.Stderr, red(ratchetRefusal(regressions, cfg.Counts, cfg.Weights)))
 		return 2
 	}
 
@@ -261,6 +254,37 @@ func writeRefitCounts(cfg refitConfig, counts countsFile, changes []countChange)
 	// a record that did not change.
 	fmt.Fprintf(cfg.Out, "  %d counts checked, %d rewritten. They are in your diff -- commit them with the record.\n", len(changes), rewrites)
 	return 0
+}
+
+// ratchetRefusal is what the pass says when it refuses (ADR-0048). It names each moved
+// count with the EVENT ITS OWN DIRECTION describes -- a pending count rising and a
+// confirmed count falling are the same loss reported from opposite sides, and one
+// wording for both sends an operator looking for the wrong thing.
+//
+// It always ends on the recovery, because the ordinary way to reach this refusal is a
+// deliberate act the verb is not allowed to complete: correcting a label retracts that
+// row's confirmation (goldset-apply), which moves a ratchet the wrong way through no
+// mistake at all. ADR-0048 reserves that edit to the person who withdrew the
+// confirmation, so the message has to hand it to them rather than leave them to guess
+// that the pass will exit 2 on every subsequent run until they make it.
+func ratchetRefusal(regressions []countChange, countsPath, weightsPath string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "llmbench goldset-refit: %d count(s) would move the way that means a human signature VANISHED, "+
+		"and a ratchet may only be moved that way by the person who withdraws the confirmation (ADR-0048).\n", len(regressions))
+	for _, c := range regressions {
+		event := "a PENDING count ROSE: a signature that was in the record is not any more -- either it was lost, " +
+			"or rows were appended to the stratum and that rise belongs in the drawing's own commit"
+		if c.Direction == countMayRise {
+			event = "a CONFIRMED count FELL: a signature that was in the record is not any more -- either it was lost, " +
+				"or a corrected label retracted one, which goldset-apply does by design"
+		}
+		fmt.Fprintf(&b, "  %s  %d -> %d   %s (%s)\n", c.Name, c.Old, c.New, event, c.Why)
+	}
+	fmt.Fprintf(&b, "Nothing was written here: neither %s nor %s. goldset-apply already ran, and it is idempotent and stamped nothing.\n", countsPath, weightsPath)
+	b.WriteString("Recovery: find the move in the diff. If nobody meant it, restore the record and re-run. " +
+		"If it was deliberate -- you corrected a label, or you drew rows -- set each constant above to its printed value " +
+		"in the same commit as the act that moved it, then re-run; this verb may not make that edit for you, and until it is made every run exits 2 here.")
+	return b.String()
 }
 
 // refitOutcome is the pass's answer: whether the artifact it just built earns the flip,
@@ -297,7 +321,7 @@ func refitVerdict(r trainReport, verified bool, suiteErr error) refitOutcome {
 	if suiteErr != nil {
 		o.Reasons = append(o.Reasons, fmt.Sprintf(
 			"the guard suite is red (%v). Read it before anything else: after a Blind Confirmation pass, RESTANDING entries in extractGoldSetFalseDrops are EXPECTED -- a confirmation re-opens each exception and it must be re-argued, never inherited (ADR-0043). "+
-				"A \"pick a weaker fixture\" failure in internal/pagegate, internal/processor/url_processor or cmd/llmbench wants a different page, never a moved threshold.", suiteErr))
+				"A \"pick a weaker fixture\" failure -- in ANY package that pins a fixture to a side of the cut, and the suite names which -- wants a different page, never a moved threshold.", suiteErr))
 	}
 	if len(o.Reasons) > 0 {
 		o.Code = 1

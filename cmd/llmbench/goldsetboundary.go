@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -299,13 +300,19 @@ func replayBoundary(path string, scan captureScan, d boundaryDesign) (boundaryOu
 // where censusSelection stamps a drawing's rows, and the only place a boundary row's
 // stratum is decided -- which is what makes the stratum a reliable statement about
 // which config pair drew the row.
+//
+// The sort is STABLE for the reason the fit's two sorts are (trainscorerfit.go): the
+// URL key is total only by accident -- scanCapture dedupes by URL today -- and the
+// drawn rows are appended to the substrate in this order, so leaving two equal rows to
+// the sort's internals would make the committed file's byte order depend on the
+// toolchain. Determinism is what a drawing's provenance rests on.
 func withStratum(cands []candidate, s goldStratum) []candidate {
 	out := make([]candidate, 0, len(cands))
 	for _, c := range cands {
 		c.Stratum = s
 		out = append(out, c)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].URL < out[j].URL })
+	slices.SortStableFunc(out, func(a, b candidate) int { return strings.Compare(a.URL, b.URL) })
 	return out
 }
 
