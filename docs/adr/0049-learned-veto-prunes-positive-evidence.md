@@ -358,39 +358,47 @@ depth without a capture window. It is not a production estimate either: fourteen
 drawn from the Gold Set itself and heavily German university and Mittelstand, are a convenience
 population — the very thing the capture window exists to replace.
 
-### What the Shadow Extraction lane reported, and why its rate is not a false-drop rate
+### What the Shadow Extraction lane reported, and the failure mode it exposed
 
 Over the same window the lane returned 47 verdicts on `learned_veto`, four of them `accept` — pages
-the gate withheld a call from and the extractor then read as a single posting. Taken at face value
-that is 8.5%, against 0.33% for the Positive Evidence rung over 1,211 verdicts. Taken at face value
-it would say the fitted rung drops real postings twenty times faster than the argued one.
-
-Read the four pages and it says something else:
+the gate withheld a call from and the extractor then read as a single posting. Against 0.33% for the
+Positive Evidence rung over 1,211 verdicts, that reads as 8.5%. The rate is the wrong thing to take
+from it; the pages are the right thing.
 
 | flagged page | Posting Score | what the page is |
 |---|---:|---|
 | `jobicco.tu-braunschweig.de/de/1777` | 0.4807 | a private individual seeking a maths tutor, on a student-gig board |
 | `jobicco.tu-braunschweig.de/en/1777` | 0.1160 | **the same item**, served on the `/en/` language path |
-| `www.aqut.tf.fau.de/group/jobs/postdocs` | 0.0166 | an openings index — the title is the plural "Postdocs" |
+| `www.aqut.tf.fau.de/group/jobs/postdocs` | 0.0166 | a real single posting — one paragraph, one heading |
 | `www.wynncareersmacau.com/open-roles/85` | 0.4378 | "Commis" — a real single posting, JSON-LD and all |
 
-Four rows are three items. Two of the three — a tutoring request and an openings index — are pages
-the veto is arguably **right** to withhold a call from, and the low score on the index is the score
-being correct rather than confident-and-wrong. One, the Wynn posting, is a plausible genuine
-false-drop.
+Four rows are three items: one arguably outside the Corpus at all (a private tutoring request is not
+a Company's Job Listing), and **two genuine false-drops**.
 
-So the raw rate overstates the veto's error by roughly the ratio this ADR already predicts it would:
-three of the four flags are the **extractor over-accepting**, which is the 0.454-precision failure
-mode the rollout section cites when it forbids grading this rung against the extractor's own
-verdict. The live run did not merely fail to contradict that decision; it exhibited it. Anyone
-tempted to add an observe mode should read this table first.
+The aqut row is the one to learn from. Its title is the plural "Postdocs" and it looks at a glance
+like an openings index, but it is a single position: *"…a postdoc (f/m/d) with a background in
+quantum optics and/or color centers…"*, followed by an address and an email. One paragraph, one
+heading, and none of the sections a posting conventionally carries — no responsibilities block, no
+profile, no offer. It scored **0.0166**, which is not a marginal miss but a confident one.
 
-Two limits on the paragraph above, so it is not over-read in the other direction. The triage was
-**sighted** — the pages were fetched and read, which is not Blind Confirmation (ADR-0048) and cannot
-replace it. And one plausible false-drop in 47 verdicts is not a rate; it is one event. Neither
-8.5% nor any number derived from this triage belongs in a decision. What belongs in a decision is
-the capture-window pass the rollout section describes, over a frame nobody hand-picked, with the
-drop set confirmed blind. The four URLs above are the first candidates for that draw.
+That names a **systematic blind spot: terse postings**. ADR-0044 established that what distinguishes
+a posting is the *range* of its sections rather than the frequency of any word, and the Score
+Signals read that range as a gradation — so the fit leans on it, and a legitimate posting with no
+section structure at all falls to the bottom of the distribution. Academic and institute pages are
+the obvious exposed class, which matters because they are well represented in the Catalog. The
+body-length bucket is in the signal set and did not rescue this page; whether a terse-but-genuine
+posting is separable at all on the signals this rung reads is an open question, and the honest
+answer today is that nobody has measured it.
+
+Three limits, so the table is not over-read in either direction. The triage was **sighted** — the
+pages were fetched and read, which is not Blind Confirmation (ADR-0048) and cannot replace it. Two
+events in 47 verdicts is not a rate. And the extractor's own verdict, which produced these four
+flags, runs at 0.454 precision against human labels, so it both over- and under-accepts; the
+tutoring row is an instance of exactly that. Nothing derived from this triage belongs in a decision.
+What belongs in a decision is the capture-window pass the rollout section describes, over a frame
+nobody hand-picked, with the drop set confirmed blind — and that draw should deliberately reach for
+short-bodied pages, because this is where the rung is now known to be weakest. The four URLs above
+are its first candidates.
 
 ### What the run confirmed outright
 
