@@ -3,9 +3,10 @@
 // pure -- a URL and parsed page content in, a number out; no model, no network, no
 // database -- so the gate keeps that property.
 //
-// NOTHING CONSULTS IT YET. The Learned Veto rung that spends the score is #301, and
-// the weights table ships seeded empty (posting_score_weights_gen.go), so today
-// every page scores alike and no verdict can move.
+// NOTHING CONSULTS IT YET. The Learned Veto rung that spends the score is #301, so a
+// fitted table still moves no gate verdict: posting_score_weights_gen.go now carries
+// what "llmbench train-scorer" fitted over the committed Extract Gold Set, and the only
+// things that read it are this file and its tests.
 //
 // The learned half lives in the gate's OWN package rather than a sub-package, and
 // that is forced rather than chosen: the Score Signals reuse the gate's unexported

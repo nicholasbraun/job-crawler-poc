@@ -50,6 +50,16 @@
 // the delta between them. It exits non-zero on a DISAGREEMENT between the arms, never
 // on their level: the absolute false-drop count is extract's and score-capture's to
 // guard. No network, no model.
+//
+// train-scorer (ADR-0049, #300) is the only thing that writes pagegate's Posting Score
+// weights: it fits them over the committed Extract Gold Set, emits the generated Go
+// source the gate compiles in, and reports what a Learned Veto built on them would do
+// to the pages the Positive Evidence rung accepts today -- the population where the
+// whole extract bill is spent, and the only population a figure about this rung may be
+// quoted over. It is in Go because it calls the same pagegate.Signals the gate calls,
+// which makes a difference between the rule that was measured and the rule that ships
+// unrepresentable. Deterministic: regenerating from the committed set reproduces the
+// committed file byte for byte, and a test holds that. No network, no model.
 package main
 
 import (
@@ -84,6 +94,8 @@ func main() {
 		os.Exit(runScoreFree(rest))
 	case "score-rendering":
 		os.Exit(runScoreRendering(rest))
+	case "train-scorer":
+		os.Exit(runTrainScorer(rest))
 	case "goldset-sample":
 		os.Exit(runGoldSetSample(rest))
 	case "goldset-sample-random":

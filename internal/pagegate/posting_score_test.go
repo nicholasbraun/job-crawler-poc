@@ -417,28 +417,44 @@ func TestScoreIsBounded(t *testing.T) {
 	}
 }
 
-// TestSeededWeightsScoreEveryPageAlikeAndVetoNothing asserts the SEED, not the rule:
-// while posting_score_weights_gen.go ships empty, no page carries a weighted Score
-// Signal, so every page scores identically and no page can fall under the threshold.
-// That is what makes this ticket incapable of moving a gate verdict.
+// TestTheCommittedWeightsAreFittedAndSeparatePages holds what replaced the seed. It
+// is the successor to TestSeededWeightsScoreEveryPageAlikeAndVetoNothing, which
+// asserted the opposite -- that an unfitted table scores every page alike -- and which
+// the training run that committed real weights deleted, as its own comment said it
+// would.
 //
-// It holds by construction of the seed and is deliberately temporary: the training
-// run that commits fitted weights DELETES it, and from then on the regenerability
-// guard and TestExtractGoldSetFalseDropGuard hold this ground instead.
-func TestSeededWeightsScoreEveryPageAlikeAndVetoNothing(t *testing.T) {
+// It asserts DIRECTION and never a magnitude: the numbers themselves are held by the
+// regenerability guard (a retrain must reproduce the artifact byte for byte), by the
+// leakage guard (no entry is a word of a Gold Set host), by the zero-detail-loss guard
+// (the shipped threshold drops none of the detail rows Positive Evidence accepts) and
+// by TestExtractGoldSetFalseDropGuard. Restating a fitted weight here would only
+// duplicate the artifact in a place a retrain does not update.
+func TestTheCommittedWeightsAreFittedAndSeparatePages(t *testing.T) {
 	u := newURL(t, noEvidenceURL)
-	var want float64
-	first := true
-	for name, content := range scoreSpread(t) {
-		score := pagegate.Score(u, content)
-		if first {
-			want, first = score, false
+	spread := scoreSpread(t)
+
+	t.Run("the table is loaded, so pages no longer score alike", func(t *testing.T) {
+		seen := map[float64]struct{}{}
+		for _, content := range spread {
+			seen[pagegate.Score(u, content)] = struct{}{}
 		}
-		if score != want {
-			t.Errorf("%s scored %v, want %v: the seeded table must score every page alike", name, score, want)
+		if len(seen) < 2 {
+			t.Errorf("%d distinct score(s) across %d pages: an empty table would do this, a fitted one must not", len(seen), len(spread))
 		}
-		if score < pagegate.VetoThreshold {
-			t.Errorf("%s scored %v, below VetoThreshold %v: the seeded artifact must veto nothing", name, score, pagegate.VetoThreshold)
+	})
+
+	t.Run("a rich posting outscores an empty page", func(t *testing.T) {
+		posting := pagegate.Score(u, spread["a rich posting"])
+		empty := pagegate.Score(u, spread["an empty page"])
+		if posting <= empty {
+			t.Errorf("the rich posting scored %v and the empty page %v; the fit has the sign backwards", posting, empty)
 		}
-	}
+	})
+
+	t.Run("the threshold is an operating point rather than an off switch", func(t *testing.T) {
+		// 0 vetoes nothing and 1 vetoes everything; neither is a cut anybody measured.
+		if pagegate.VetoThreshold <= 0 || pagegate.VetoThreshold >= 1 {
+			t.Errorf("VetoThreshold = %v, want it strictly inside (0,1)", pagegate.VetoThreshold)
+		}
+	})
 }

@@ -190,8 +190,103 @@ already applies to thresholds: a cut that flatters the run is moving the wrong w
 - **The measurements above are provisional.** They come from an uncommitted probe: 442 rows, 5-fold
   CV, no held-out test set, signals hand-picked while looking at the same set, and unweighted
   numbers over a deliberately Boundary-heavy population (188 of 457). Treat the ordering of the
-  results as the finding, not the third decimal. The committed trainer replaces them, under
-  **host-grouped** folds so repeated hosts cannot flatter a split, and this ADR is amended with what
-  it reports.
+  results as the finding, not the third decimal. The committed trainer has now replaced them, under
+  **host-grouped** folds so repeated hosts cannot flatter a split; what it reported is the
+  amendment below.
 - **Rung 7's two false-drops are still rung 7's.** `hiring.cafe` and `jobs.blooloop.com` are dropped
   before Positive Evidence is consulted and are untouched here, as they were in #257.
+
+
+## Amendment: what the training run measured (#300)
+
+`llmbench train-scorer` was written, run over the committed Extract Gold Set, and its output is
+now `internal/pagegate/posting_score_weights_gen.go`. **The pre-registered condition is MET.**
+Everything below is restricted to the pages the Positive Evidence rung accepts, because that is
+the only population the Learned Veto will ever judge; no figure over all scorable rows appears in
+the trainer's report at all, so one cannot be mistaken for the other.
+
+| | rung 8 today | with the Learned Veto |
+|---|---:|---:|
+| scorable accepts | 177 | 127 |
+| `detail` among them | 127 | **127** |
+| leaks (hub-index + residue) | 13 + 37 | 0 + 0 |
+| precision | 0.7175 | **1.0000** |
+| `detail` lost | — | **0** |
+
+`VetoThreshold` is **0.605395**, and at that cut the rung withholds **50 of 177** extract calls —
+**28.2%** of rung 8's accepts, well past the 10% floor — while dropping none of the 127 `detail`
+rows, by name.
+
+**The population.** 457 rows: 0 unlabelled, 15 `ambiguous` set aside, **442 scorable** (140
+`detail`) across **357 hosts**. The rung admits **180** pages, of which 3 carry no scorable label,
+leaving the **177 / 127 / 0.7175** the table above starts from. **Zero** rows take the ATS
+exemption, confirming the census at the top of this ADR: the whole extract bill on this population
+is rung 8's.
+
+**The fit.** Full-batch gradient descent, 500 iterations, learning rate 0.5, L2 1e-4 on the
+weights and never the intercept, converging to a mean log-loss of 0.0247 with an intercept of
+-2.5028. Full batch removes the example-shuffling seed entirely; the run's only randomness is the
+committed fold seed. Cross-validation is 5 folds **grouped by host** (fold sizes 92 / 90 / 90 / 76
+/ 94 over the 357 host groups), with the Score Vocabulary reselected inside each fold's training
+half — selecting once over the whole set and then cross-validating measures a model that has
+already seen the held-out rows. Neither the L2 term nor the iteration count is a lever here: the
+out-of-fold read is flat across L2 from 1e-4 to 1e-2, and every longer run only overfits (at 1000
+iterations the out-of-fold precision falls).
+
+**The Score Vocabulary.** 37,320 candidate words; **583 removed as a word of a Gold Set host**
+and 32,321 as too rare (document frequency below 5), leaving 4,416 admissible. The artifact ships
+**500** of them plus the 17 structural Score Signals. The host exclusion is a real cost paid
+deliberately — it removes `jobs`, `career`, `karriere`, `berlin` and 579 others — and it is the
+price of the hazard this ADR names: 457 rows on 357 hosts.
+
+Out-of-fold precision over the surviving accepts at a 10% veto depth, against vocabulary size:
+
+| size | 50 | 100 | 200 | 300 | **500** | 1000 | all (4,416) | hashed 2^14 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| precision | 0.7736 | 0.7862 | 0.7862 | 0.7925 | **0.7987** | 0.7987 | 0.7987 | 0.7987 |
+| `detail` lost | 4 | 2 | 2 | 1 | **0** | 0 | 0 | 0 |
+
+Survivors are 159 at every size, so those precision steps are four rows, then two, then one. 500
+is the knee: the smallest size at the plateau, and the first at which the cut loses no `detail`
+row out of fold.
+
+**The gap to a full hashed representation is 0.0000** — the untruncated 2^14 hashed bag scores
+exactly what the 500-word explicit list scores, on the same rows, out of the same folds. The
+~0.02 line this ADR names as the point where the readable list is revisited is not approached, so
+the explicit list stands and costs nothing. It also earns its keep on the day it was written: the
+heaviest entries read `bewerben`, `apply`, `arbeiten`, `bieten`, `interesse`, `vergütung`,
+`ausbildung` on the positive side and `filter`, `view`, `see`, `page`, `featured`, `members`,
+`newsletter` on the negative — posting words against hub words, and not one sampled employer's
+name.
+
+**The within-accepts curve**, the thing nobody had computed. In-sample, with the shipped weights:
+
+| depth | 5% | 10% | 15% | 20% | 25% | 30% |
+|---|---:|---:|---:|---:|---:|---:|
+| `detail` lost | 0 | 0 | 0 | 0 | 0 | 3 |
+| precision | 0.7560 | 0.7987 | 0.8467 | 0.8944 | 0.9478 | 1.0000 |
+
+Out of fold, host-grouped — the honest generalization read, printed beside it and not to be
+confused with it:
+
+| depth | 5% | 10% | 15% | 20% | 25% | 30% |
+|---|---:|---:|---:|---:|---:|---:|
+| `detail` lost | 0 | 0 | 1 | 5 | 8 | 16 |
+| precision | 0.7560 | 0.7987 | 0.8400 | 0.8592 | 0.8947 | 0.8952 |
+
+The two agree to a 10% cut and diverge past it, which is the honest shape of a rule fitted on 442
+rows. **The chosen operating point is in-sample by necessity, not by oversight**:
+`TestExtractGoldSetFalseDropGuard`, the merge gate this ADR pins the threshold to, reads the same
+rows the same way, and a threshold chosen against anything else would turn that guard red for
+every posting it swapped. The out-of-fold ladder is what says how far past 10% the in-sample
+number can be trusted: not far. Whoever flips `EXTRACT_LEARNED_VETO` should read the 28.2% cut as
+an in-sample figure whose out-of-fold counterpart at 30% depth already costs 16 `detail` rows,
+and take the capture-window pass this ADR's rollout section describes before believing it.
+
+**Determinism.** The artifact is a pure function of (Gold Set, trainer code, flag defaults): rows
+sorted before the first sum, signal names indexed through a sorted slice rather than ranged out of
+a map, single-threaded accumulation, a fixed-seed fold assignment, every product in the descent
+written to block a fused multiply-add, and every weight rounded to six decimals before anything
+discrete reads it. Regenerating the committed file on `darwin/arm64` and on `amd64` produces
+byte-identical output; the largest cross-architecture divergence in the raw weights is 1e-15,
+against a nearest rounding boundary 1.2e-9 away.

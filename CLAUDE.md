@@ -105,6 +105,8 @@ go run ./cmd/llmbench bench                     # ...same, but confirms uncertai
 go run ./cmd/llmbench extract                   # Extract Gate over the reject-rung fixtures
 go run ./cmd/llmbench score-capture -in <labeled.jsonl>   # Extract Gate over the Extract Gold Set
 go run ./cmd/llmbench score-rendering            # A/B: Flattened Text vs Structural Rendering at one prompt budget
+go run ./cmd/llmbench train-scorer               # refit the Posting Score over the Extract Gold Set and rewrite
+                                                #    pagegate's weights (must reproduce the committed file byte for byte)
 go run ./cmd/llmbench goldset-ui -by "<your name>" -stratum random   # blind, one-keystroke confirmation pass (loopback only;
                                                                     #    measures Capture Fidelity and renders the page;
                                                                     #    -refetch=false for neither)
