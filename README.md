@@ -377,7 +377,7 @@ decide the rollout:
 
 | flag | default | what it sets |
 |---|---|---|
-| `-near-band` | `0.20` | the score width below `pagegate.VetoThreshold` that counts as *just below the cut*. The near band is `[VetoThreshold-band, VetoThreshold)` and everything below it is the deep band. Must be in `(0, VetoThreshold)`. |
+| `-near-band` | `pagegate.VetoThreshold / 3` (`0.055016` today) | the score width below `pagegate.VetoThreshold` that counts as *just below the cut*. The near band is `[VetoThreshold-band, VetoThreshold)` and everything below it is the deep band. Must be in `(0, VetoThreshold)`, which is why the default is **derived** rather than written down: every refit regenerates the threshold, and an absolute width outlives it as an *illegal* default the verb then refuses. |
 | `-accepted-rows` | `100` | rows to draw from the live-accept half of the drop set — the candidate false-drops the recall claim is read on. `0` takes the whole band. |
 | `-near-rows` | `80` | rows to draw from the near band, where the threshold is actually decided. `0` takes the whole band. |
 | `-deep-rows` | `40` | rows to draw from the deep-reject band — smaller, because this band confirms the bottom is junk and reaches for another short posting publishing no structured data. `0` takes the whole band. |

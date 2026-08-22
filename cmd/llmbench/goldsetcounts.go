@@ -31,7 +31,7 @@ const defaultCountsPath = "cmd/llmbench/goldset_test.go"
 // recordSnapshot is the applied record as the derived counts read it: the rows
 // themselves, plus ONE replay of today's shipping Positive Evidence rule over them
 // (boundaryCandidateConfig, which pins both extract kill switches -- ADR-0049) and the
-// boundary scorecard folded from it. Computed once, so seventeen constants cost one read
+// boundary scorecard folded from it. Computed once, so eighteen constants cost one read
 // and one replay and every one of them is read off the SAME state.
 type recordSnapshot struct {
 	Rows     []goldRow
@@ -148,6 +148,19 @@ var derivedCounts = []derivedCount{
 		Name: "vetoBoundaryStratumRows", Direction: countPinned,
 		Why:   "rows in the Learned Veto's own boundary drawing (ADR-0049)",
 		Value: func(s recordSnapshot) int { return rowsInDrawing(s, drawingVetoBoundary) },
+	},
+	{
+		Name: "outsideStructuralDrawingRows", Direction: countPinned,
+		Why: "rows outside the #256 structural drawing (the Free Extraction ground truth's scope)",
+		Value: func(s recordSnapshot) int {
+			n := 0
+			for _, row := range s.Rows {
+				if outsideStructuralDrawing(row) {
+					n++
+				}
+			}
+			return n
+		},
 	},
 	{
 		Name: "randomSpotChecks", Direction: countMayRise,

@@ -133,7 +133,19 @@ const (
 	// pendingVetoBoundaryConfirmations to the same count by hand -- goldset-refit refuses
 	// that rise, which is the point (ADR-0048) -- and moves stratumVetoBoundary into
 	// drawnStrata, all in the same diff.
-	vetoBoundaryStratumRows = 0
+	vetoBoundaryStratumRows = 280
+	// outsideStructuralDrawingRows is how many committed rows lie OUTSIDE the #256
+	// structural drawing. TestCommittedGoldSetFreeExtractionFidelity reads it to hold
+	// that every later drawing is out of the Free Extraction ground truth's scope, and
+	// it is derived from outsideStructuralDrawing -- the same predicate the replay
+	// filters on -- so the count and the filter cannot describe different rows.
+	//
+	// It is its OWN owned number rather than a sum of the drawings named today, and the
+	// difference is the whole reason it exists: a sum by name reads correctly until a
+	// fifth drawing lands, then goes silently wrong with nothing for goldset-refit to
+	// recompute and nothing for it to print. This one moves when a drawing does, and
+	// the refit says so.
+	outsideStructuralDrawingRows = 588
 	// randomStreamAcceptRate is the accept share the random drawing's weights were
 	// built on -- #261's census measurement of the live extract stream, not the
 	// capture file's own mix. TestCommittedRandomStratumIsWeightedToTheStream
@@ -188,7 +200,7 @@ const (
 	// nothing in the build counting them. RATCHET in ONE direction
 	// (confirmationFloor, ADR-0048): a rise fails the build, a fall is logged with the
 	// number to lower it to.
-	pendingVetoBoundaryConfirmations = 0
+	pendingVetoBoundaryConfirmations = 280
 	// ambiguousRows is how many rows carry the ambiguous label -- pages a reading
 	// could not settle, recorded rather than forced into a class. Pinned in BOTH
 	// directions: an ambiguity that appears, or one that quietly resolves, changes
@@ -207,7 +219,7 @@ const (
 	// pages a human read and could not settle, each carrying a note saying what the
 	// tension was. That is the guard working -- the rise was seen and acknowledged
 	// here, in the same commit as the confirmations that produced it.
-	ambiguousRows = 15
+	ambiguousRows = 45
 	// boundaryDetailRows is how many Boundary Stratum rows are labelled detail. Until
 	// #257 that was also how many Job Listings the Positive Evidence rule dropped
 	// here, because the stratum was DRAWN as the pages that rule skipped; #257 widened

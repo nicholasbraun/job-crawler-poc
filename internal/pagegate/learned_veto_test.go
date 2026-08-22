@@ -163,7 +163,21 @@ func TestLearnedVetoKillSwitchRestoresTheUnconditionalPositiveEvidenceAccept(t *
 // 9 and also scores below the threshold, so an attribution of learned_veto on any of
 // them would mean the rung had moved up the ladder.
 func TestLearnedVetoRunsLastAndNeverScoresAnATSPosting(t *testing.T) {
-	saturated := &crawler.Content{URLs: []string{}}
+	// The body is the chrome a link-saturated jobs index carries, and it is what keeps
+	// this page below the cut. Rung 7 fires at ExtractJobLinkSaturationCount distinct
+	// same-host job links (5) while jobLinkGrades saturates at 4, so EVERY page that
+	// reaches rung 7 carries the same +1.29 of link weight -- more than a bare fitted
+	// intercept can absorb, which leaves the body as the only lever. The fit already
+	// ranks hub chrome negative (ADR-0049's amendment names filter/view/see/page among
+	// its heaviest negative entries), so the honest fixture for "this page is a jobs
+	// index" is one that reads like a jobs index. It carries no posting section and
+	// stays under 256 bytes, so no vocabulary-group and no body-length grade fires,
+	// and plain text can trip neither rung 5 nor rung 6 -- both read structured data --
+	// so rung 7 still resolves it, which is what the case exists to prove.
+	saturated := &crawler.Content{
+		MainContent: "All open positions. Filter by location. View all.",
+		URLs:        []string{},
+	}
 	for i := 0; i < 10; i++ {
 		saturated.URLs = append(saturated.URLs, fmt.Sprintf("https://acme.com/jobs/%d", i))
 	}

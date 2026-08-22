@@ -65,12 +65,15 @@ func TestCommittedGoldSetFreeExtractionFidelity(t *testing.T) {
 		t.Errorf("skipped %d unlabeled rows, want 0 (every committed row carries a label)", skipped)
 	}
 	// The #256 ground truth was proposed over the structural drawing alone, and a
-	// fired row with no expectation is fatal, so every later drawing -- the random
-	// stratum and the boundary stratum -- is out of scope here by construction.
-	// Pinning the count keeps that a decision rather than an accident: if the filter
-	// ever stops biting, this number moves.
-	if want := randomStratumRows + boundaryStratumRows; outOfScope != want {
-		t.Errorf("skipped %d rows outside the #256 drawing, want %d (the random and boundary strata)", outOfScope, want)
+	// fired row with no expectation is fatal, so every LATER drawing is out of scope
+	// here by construction. Pinning the count keeps that a decision rather than an
+	// accident: if the filter ever stops biting, this number moves. It is a count
+	// goldset-refit OWNS rather than a sum of the drawings named today -- a sum by name
+	// is silently wrong the first time a drawing nobody listed lands, and a Gold Set
+	// change has to move a number the refit recomputes and prints (ADR-0049).
+	if outOfScope != outsideStructuralDrawingRows {
+		t.Errorf("skipped %d rows outside the #256 drawing, want %d; goldset-refit owns outsideStructuralDrawingRows -- rerun the refit rather than editing the number",
+			outOfScope, outsideStructuralDrawingRows)
 	}
 
 	sc := bench.ScoreFreeExtraction(rows).Free

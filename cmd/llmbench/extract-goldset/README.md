@@ -1042,11 +1042,14 @@ go run ./cmd/llmbench goldset-sample-boundary \
 go run ./cmd/llmbench goldset-sample-veto-boundary \
     -capture <repo>/capture/veto-window.jsonl \
     -since <the window's start, RFC3339> \
-    -near-band 0.20 -accepted-rows 100 -near-rows 80 -deep-rows 40
+    -accepted-rows 100 -near-rows 80 -deep-rows 40
 go run ./cmd/llmbench goldset-sample-veto-boundary \
     -capture <repo>/capture/veto-window.jsonl \
     -since <the window's start, RFC3339> \
-    -near-band 0.20 -accepted-rows 100 -near-rows 80 -deep-rows 40 -draw
+    -accepted-rows 100 -near-rows 80 -deep-rows 40 -draw
+#    -near-band is left at its default on purpose: it is derived from the compiled
+#    pagegate.VetoThreshold (a third of it), so it stays inside the legal (0, threshold)
+#    range across every refit, where a written-down width does not.
 
 # 2. the labeling view (a working artifact, never committed)
 #    -stratum / -n cut a deterministic subset: one stratum whole, or 20 rows of it

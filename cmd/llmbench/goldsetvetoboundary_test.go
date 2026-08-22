@@ -39,11 +39,14 @@ const (
 	richPostingTitle = "Senior Engineer (m/w/d) gesucht"
 	richPostingBody  = "Ihre Aufgaben. Ihr Profil. Wir bieten. Vollzeit. Ansprechpartner. " +
 		"Jetzt bewerben. Wir freuen uns auf Ihre Bewerbung. Vergütung nach Tarif. Arbeiten bei uns."
-	// nearPostingBody carries two posting sections and an apply affordance -- enough,
-	// under richPostingTitle, to lift a posting-shaped page well into the NEAR band
-	// without clearing the cut. The empty-content pages the file already uses score the
-	// bare fitted intercept and are its DEEP fixtures.
-	nearPostingBody = "Ihre Aufgaben. Jetzt bewerben."
+	// nearPostingBody is ONE posting section and nothing else: just enough to lift a
+	// posting-shaped page off the bare fitted intercept -- which is what the file's
+	// empty-content DEEP fixtures score -- to a point just below the cut. It rides an
+	// EMPTY Title, and that is the fixture's whole shape rather than an omission: after
+	// the 737-row refit a role-designating Title clears VetoThreshold unaided, and so
+	// does a second posting section, so a near page can afford neither. The near band is
+	// narrow and the two guards below say which side of each edge this has to land on.
+	nearPostingBody = "Wir bieten."
 	// unevidencedPostingBody is three posting sections with no apply affordance and no
 	// role designation, which the Positive Evidence rung sheds while the Posting Score
 	// ranks the page ABOVE VetoThreshold. It is the only shape that can put a page the
@@ -189,13 +192,13 @@ func vetoBandsCapture(t *testing.T) string {
 		requireVetoKeeps(t, "https://acme.test/jobs/senior-go-engineer", true, "2026-08-08T10:00:00Z", richPostingTitle, richPostingBody),
 		capturedPage(t, "https://acme.test/careers", true, "2026-08-08T10:00:01Z", nil, "our open roles"),
 		// The accept cell: the live extractor read each of these as one posting.
-		requireVetoDropsNear(t, vetoAcceptedURLs[0], true, "2026-08-08T10:00:02Z", richPostingTitle, nearPostingBody, defaultVetoNearBand),
+		requireVetoDropsNear(t, vetoAcceptedURLs[0], true, "2026-08-08T10:00:02Z", "", nearPostingBody, defaultVetoNearBand),
 		requireVetoDropsDeep(t, vetoAcceptedURLs[1], true, "2026-08-08T10:00:02Z", "", "", defaultVetoNearBand),
 		requireVetoDropsDeep(t, vetoAcceptedURLs[2], true, "2026-08-08T10:00:02Z", "", "", defaultVetoNearBand),
 		requireVetoDropsDeep(t, vetoAcceptedURLs[3], true, "2026-08-08T10:00:02Z", "", "", defaultVetoNearBand),
 	}
 	for _, u := range vetoNearURLs {
-		lines = append(lines, requireVetoDropsNear(t, u, false, "2026-08-08T10:00:03Z", richPostingTitle, nearPostingBody, defaultVetoNearBand))
+		lines = append(lines, requireVetoDropsNear(t, u, false, "2026-08-08T10:00:03Z", "", nearPostingBody, defaultVetoNearBand))
 	}
 	for _, u := range vetoDeepURLs {
 		lines = append(lines, requireVetoDropsDeep(t, u, false, "2026-08-08T10:00:04Z", "", "", defaultVetoNearBand))
@@ -966,7 +969,7 @@ func TestVetoBoundaryRefusesASecondDrawIntoTheStratum(t *testing.T) {
 	// A SECOND window, holding pages the first one never saw, so the refusal can only be
 	// the design's: there is plenty left to draw and the verb refuses anyway.
 	second := writeCapture(t,
-		requireVetoDropsNear(t, "https://acme.test/jobs/second-window-near", true, "2026-08-08T11:00:00Z", richPostingTitle, nearPostingBody, defaultVetoNearBand),
+		requireVetoDropsNear(t, "https://acme.test/jobs/second-window-near", true, "2026-08-08T11:00:00Z", "", nearPostingBody, defaultVetoNearBand),
 		requireVetoDropsDeep(t, "https://acme.test/jobs/second-window-deep", false, "2026-08-08T11:00:01Z", "", "", defaultVetoNearBand),
 	)
 	buf.Reset()

@@ -16,7 +16,7 @@ import (
 )
 
 // tinyGoldSet is a miniature Extract Gold Set: enough rows for the Positive Evidence
-// rung to accept a SEPARABLE mix, spread over enough strata that all seventeen derived
+// rung to accept a SEPARABLE mix, spread over enough strata that all eighteen derived
 // counts are non-trivially non-zero, and small enough that a whole refit costs
 // milliseconds. It exists because refitting the committed set would add two more full
 // fits to a package that already spends most of its runtime on two -- and because the
