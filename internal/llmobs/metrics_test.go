@@ -398,3 +398,64 @@ func TestMetricsGatedSeparatesTheLearnedVetoFromTheStructuralReason(t *testing.T
 		t.Errorf("gated by reason = %v, want %v", byReason, want)
 	}
 }
+
+// TestMetricsVetoThresholdIsAGaugeThatSurvivesTheNextScrape pins the instrument the
+// dashboard's cut line depends on. The Learned Veto's operating point is compiled in
+// beside the weights and re-chosen by every refit, so anything that writes it down goes
+// stale; exporting it is what lets a panel draw the cut the RUNNING binary would enforce
+// (ADR-0049).
+//
+// Two properties, and the second is the load-bearing one:
+//
+//   - the threshold arrives as the series' VALUE and never as an attribute -- ADR-0049
+//     keeps every Posting Score value out of every metric label;
+//   - it is still there on the NEXT collection with nothing recorded in between. It is
+//     set exactly once, at start-up, so a series that vanished after the first scrape
+//     would be a worse dashboard line than the hardcoded number it replaced.
+//
+// Non-parallel: the manual reader is the process-global meter provider and instruments
+// bind at NewMetrics.
+func TestMetricsVetoThresholdIsAGaugeThatSurvivesTheNextScrape(t *testing.T) {
+	reader := installLLMReader(t)
+	metrics := llmobs.NewMetrics()
+	ctx := t.Context()
+
+	// A threshold, not THE threshold: llmobs imports nothing from pagegate, and the
+	// composition root is what joins the two.
+	const threshold = 0.165048
+	metrics.SetVetoThreshold(ctx, threshold)
+
+	read := func(t *testing.T) (float64, bool) {
+		t.Helper()
+		var rm metricdata.ResourceMetrics
+		if err := reader.Collect(ctx, &rm); err != nil {
+			t.Fatalf("collecting metrics: %v", err)
+		}
+		m := llmMetric(&rm, "crawler.llm.veto.threshold")
+		if m == nil {
+			return 0, false
+		}
+		g, ok := m.Data.(metricdata.Gauge[float64])
+		if !ok {
+			t.Fatalf("crawler.llm.veto.threshold: unexpected data type %T, want a float64 gauge", m.Data)
+		}
+		if len(g.DataPoints) != 1 {
+			t.Fatalf("crawler.llm.veto.threshold has %d data points, want exactly 1", len(g.DataPoints))
+		}
+		if n := g.DataPoints[0].Attributes.Len(); n != 0 {
+			t.Errorf("crawler.llm.veto.threshold carries %d attributes, want none: the threshold is the VALUE, never a label",
+				n)
+		}
+		return g.DataPoints[0].Value, true
+	}
+
+	if got, present := read(t); !present || got != threshold {
+		t.Fatalf("crawler.llm.veto.threshold = %v (present=%v) after one Set, want %v", got, present, threshold)
+	}
+	// The scrape after the one that first saw it. Nothing is recorded in between, and
+	// the line must still be drawable.
+	if got, present := read(t); !present || got != threshold {
+		t.Errorf("crawler.llm.veto.threshold = %v (present=%v) on the SECOND collection with nothing recorded in between, want %v: the cut line is drawn from this series on every scrape",
+			got, present, threshold)
+	}
+}

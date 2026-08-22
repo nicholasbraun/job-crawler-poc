@@ -646,3 +646,75 @@ own verdict decides which pages it counts, and this record puts that verdict at 
 against human labels. It cannot be read as a false-drop rate; it is the reason the accepted band is
 drawn and confirmed blind rather than trusted. **The condition is met on depth and open on loss, and
 only the confirmation pass closes it.**
+
+## Amendment: the operating point moved when the Gold Set grew (#304)
+
+The Extract Gold Set went from 457 rows to **737** — the 280 new rows are the
+`veto-boundary` drawing the two amendments above designed, drawn from the closed
+18,233-page window. Refitting over the enlarged record moved the cut a long way:
+
+    VetoThreshold   0.605395  ->  0.165048
+
+**This is a correction, not a loosening.** The 457-row fit was not conservative; it was
+mis-calibrated on too narrow a population. It predicted a Veto Depth of 50 of 177
+scorable rung-8 accepts — 28.2% — and the closed window then measured 66%, the reading
+*What the closed window measured* above records. The 737-row fit predicts **240 of 427
+(56.21%)** at zero `detail` lost and reads **57.3%** over that same window. In-sample and
+stream agree for the first time.
+
+| | 457 rows | 737 rows |
+|---|---:|---:|
+| scorable rows / hosts | 442 / 357 | **692 / 516** |
+| mean log-loss | 0.0247 | **0.0421** |
+| `VetoThreshold` | 0.605395 | **0.165048** |
+| in-sample Veto Depth (scorable rung-8 accepts) | 50 of 177 (28.2%) | **240 of 427 (56.21%)** |
+| `detail` lost, in sample | 0 | **0** |
+| depth over the closed capture window | 66% | **57.3%** |
+
+Log-loss RISING is the good direction. At 442 rows against 517 weighted entries the model
+could largely memorise its training set, and the 1.0000 in-sample precision the first
+amendment records was that memorisation ceiling rather than a forecast. More rows pushed
+the fit toward generalising and the calibration followed.
+
+**The held-out reading.** 300 pages of that window that no drawing had selected, labelled
+independently of the fit: **57.3%** of extract calls cut, **recall 95.7%** of real Job
+Listings (95% range 91.4–99.8), and **precision 80.7%** of what it keeps, against a 36.0%
+baseline.
+
+That is **not** the out-of-fold figure, which at a comparable depth reads 27 of 180
+`detail` lost (15%), and the two must never be quoted as though they were one claim. They
+describe different populations. Out of fold reads the Extract Gold Set's rung-8 accepts,
+which are deliberately Boundary-Stratum-heavy — the hard population this record says of
+itself that it is. The held-out reading reads the stream. For *what happens if I turn this
+on*, quote the stream; for *how fragile is this fit*, quote out of fold. Never either
+without saying which.
+
+**The debt this threshold carries.** 280 of the 737 rows are the drawing's, and their
+labels are a **proposer's** — unconfirmed machine labels, which the founding measurement
+behind #296 puts below human ones by a wide margin: training on 12,152 extractor verdicts
+scored 0.617 where 442 human labels scored 0.836 (`docs/improving-the-posting-score.md`).
+A proposer is much better than the extractor's own verdict, which this record puts at 0.454
+precision against human labels, but it is still a machine label. So the shipped operating
+point is now derived partly from labels nobody has read, and every figure above inherits
+that.
+`pendingVetoBoundaryConfirmations` holds the debt at 280 and `goldset-refit` refuses to
+let it rise silently. Only the Blind Confirmation pass retires it.
+
+**The earlier amendments' figures stand as history.** Each was true when taken and each is
+read against the threshold of its day: the training run's 28.2%, the first live frame's
+49.8% over 213 judged pages, and the closed window's 0.6601 depth were all measured at
+0.605395. Nothing in them is edited. A measurement's worth is that it says what was seen
+at the time.
+
+**What the move exposed.** The threshold turned out to be written down in six places a
+refit cannot reach: a Grafana threshold step, three panel descriptions, a runbook
+sentence, a log-line example, and the **Veto Depth** glossary entry, which had embedded a
+measurement inside a definition. The dashboard now draws its cut line from
+`crawler_llm_veto_threshold`, a gauge set once at start-up from `pagegate.VetoThreshold`,
+so the line is the binary's own operating point rather than a number typed onto a panel —
+and it is the first time a running crawl states that operating point anywhere but a
+start-up log line. The glossary entry points here for its figures. Only the LINE follows
+the binary: the Posting Score histogram's bucket ladder stays fixed and unpinned from the
+threshold, for the reason the *Attribution* section gives — a boundary moving with every
+refit would silently re-bucket every historical series and destroy the drift comparison
+the histogram exists for.

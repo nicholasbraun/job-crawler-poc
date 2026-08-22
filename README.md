@@ -347,8 +347,12 @@ a `./capture` bind mount, the shape #116 used.
 
 **2. Score the window offline against the shipped weights.** The number to compute is the
 **veto depth** on that frame: of the pages today's gate extracts, the share whose Posting
-Score falls below `pagegate.VetoThreshold` (`0.605395`, compiled in beside the weights). It
-needs no labels, and the pages below the cut are the drop set step 3 confirms.
+Score falls below `pagegate.VetoThreshold` — compiled in beside the weights, printed by the
+verb's own report and by the start-up line, and exported as `crawler_llm_veto_threshold`. The
+value is deliberately not written into this sentence: every refit re-chooses it (it moved
+0.605395 → 0.165048 when the Gold Set grew to 737 rows), so a number here would be wrong from
+the next refit onward. It needs no labels, and the pages below the cut are the drop set step 3
+confirms.
 
 ```bash
 go run ./cmd/llmbench goldset-sample-veto-boundary \
@@ -529,12 +533,18 @@ EXTRACT_LEARNED_VETO=true
 docker compose up -d crawler   # `restart` re-runs the old environment; `up -d` recreates it
 ```
 
-Confirm it took from the startup line, which is the only place a running crawl says which
+Confirm it took from the startup line, which says both whether the rung is armed and which
 operating point it is enforcing:
 
 ```
-extract gate learned veto (ADR-0049) enabled=true threshold=0.605395
+extract gate learned veto (ADR-0049) enabled=true threshold=0.165048
 ```
+
+The threshold is whatever this build compiled in beside the weights — read it as the cut this
+binary enforces, not as a constant, because every refit re-chooses it. The same value is on the
+meter as `crawler_llm_veto_threshold`, which is what the dashboard's cut line is drawn from, so
+no panel and no runbook has to copy it. The gauge is set whatever the switch says; `enabled=true`
+is the switch's own word.
 
 #### After the flip — what to read
 
@@ -564,7 +574,9 @@ The **Learned Veto (ADR-0049)** row of the LLM telemetry dashboard
   rung's accepts *and* its vetoes. Recording only the vetoes would show where the cut is
   without showing what it is cutting into. The bucket ladder is fixed and deliberately not
   pinned to `VetoThreshold`: a boundary moving with every refit would re-bucket every
-  historical series and destroy the one comparison the instrument exists for.
+  historical series and destroy the one comparison the instrument exists for — the cut line
+  itself is drawn from `crawler_llm_veto_threshold`, so it follows the binary while the buckets
+  do not.
 
 **What drift looks like.** The 28.2% is in-sample over a deliberately Boundary-heavy
 population, so it is *not* a prediction of the live depth — the number to compare against is

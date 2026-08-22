@@ -553,9 +553,23 @@ func newFactory(
 	gateConfig.RequirePositiveEvidence = requirePositiveEvidence
 	slog.Info("extract gate positive evidence (ADR-0044)", "enabled", requirePositiveEvidence)
 	gateConfig.LearnedVeto = learnedVeto
-	// The threshold is compiled in beside the weights, so this log line is the only
-	// place a running crawl says which operating point it is enforcing (ADR-0049).
+	// The threshold is compiled in beside the weights, so a running crawl has to state
+	// it, and it now states it twice: here in the log, and on the meter as
+	// crawler.llm.veto.threshold, which is what the LLM dashboard draws its cut line
+	// from (ADR-0049). Neither writes the number down -- both read
+	// pagegate.VetoThreshold -- because every refit re-chooses it and a copied number is
+	// wrong from that refit onward. llmobs takes it as an argument for the same reason
+	// PrimeShadow takes its rungs above: that package knows nothing about the Extract
+	// Gate, and the Posting Score histogram's bucket ladder depends on it staying that
+	// way.
+	//
+	// Recorded whatever the switch says: the cut is a property of this binary, and an
+	// operator scoring a capture window BEFORE the flip needs to know which one the
+	// offline replay will use. `enabled` is where the switch speaks.
+	// context.Background: this writes one value onto the meter, like PrimeShadow; there
+	// is nothing for a cancellation to abort and no run to tie it to.
 	slog.Info("extract gate learned veto (ADR-0049)", "enabled", learnedVeto, "threshold", pagegate.VetoThreshold)
+	llmMetrics.SetVetoThreshold(context.Background(), pagegate.VetoThreshold)
 
 	return func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *runner.Counters, shouldStop func(context.Context) bool) (*runner.Engine, error) {
 		llmStats := &llmobs.Stats{}

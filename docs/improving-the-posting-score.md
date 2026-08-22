@@ -126,7 +126,9 @@ the commit which rows it is.
 **Forgetting that the threshold moves.** It is generated beside the weights and re-chosen by every
 refit under the zero-`detail`-loss constraint. Anything that hardcodes it — a dashboard line, a
 runbook sentence, a test fixture — is wrong the moment the Gold Set grows. Prefer reading
-`pagegate.VetoThreshold`, or a metric exported from it, over writing the number down.
+`pagegate.VetoThreshold`, or a metric exported from it, over writing the number down. Since
+#304 that metric exists: `crawler_llm_veto_threshold`, set once at start-up from
+`pagegate.VetoThreshold`, is what the LLM dashboard's cut line is drawn from.
 
 ## A turn of the loop, concretely
 
