@@ -337,3 +337,71 @@ written to block a fused multiply-add, and every weight rounded to six decimals 
 discrete reads it. Regenerating the committed file on `darwin/arm64` and on `amd64` produces
 byte-identical output; the largest cross-architecture divergence in the raw weights is 1e-15,
 against a nearest rounding boundary 1.2e-9 away.
+
+## Amendment: the first live observation (#304)
+
+Before merging, the rung was run live: the full Docker stack on the delivery branch,
+`EXTRACT_LEARNED_VETO=true`, `SHADOW_EXTRACT_RATE=1.0` so every reject was measured, and one
+Collection Cycle over fourteen Career Pages imported from hosts drawn out of the committed Extract
+Gold Set. The crawl walked 6,613 pages. This is the first time the Learned Veto has judged pages it
+was not fitted on.
+
+| | Gold Set (in-sample) | this live frame |
+|---|---:|---:|
+| pages reaching rung 9 | 177 | 213 |
+| vetoed | 50 | 106 |
+| **veto depth** | **28.2%** | **49.8%** |
+
+**Depth roughly doubles off the fitted population.** That is the finding, and it is the one the
+rollout section already anticipates when it says the 28.2% cut should not be believed past a 10%
+depth without a capture window. It is not a production estimate either: fourteen hand-picked hosts,
+drawn from the Gold Set itself and heavily German university and Mittelstand, are a convenience
+population — the very thing the capture window exists to replace.
+
+### What the Shadow Extraction lane reported, and why its rate is not a false-drop rate
+
+Over the same window the lane returned 47 verdicts on `learned_veto`, four of them `accept` — pages
+the gate withheld a call from and the extractor then read as a single posting. Taken at face value
+that is 8.5%, against 0.33% for the Positive Evidence rung over 1,211 verdicts. Taken at face value
+it would say the fitted rung drops real postings twenty times faster than the argued one.
+
+Read the four pages and it says something else:
+
+| flagged page | Posting Score | what the page is |
+|---|---:|---|
+| `jobicco.tu-braunschweig.de/de/1777` | 0.4807 | a private individual seeking a maths tutor, on a student-gig board |
+| `jobicco.tu-braunschweig.de/en/1777` | 0.1160 | **the same item**, served on the `/en/` language path |
+| `www.aqut.tf.fau.de/group/jobs/postdocs` | 0.0166 | an openings index — the title is the plural "Postdocs" |
+| `www.wynncareersmacau.com/open-roles/85` | 0.4378 | "Commis" — a real single posting, JSON-LD and all |
+
+Four rows are three items. Two of the three — a tutoring request and an openings index — are pages
+the veto is arguably **right** to withhold a call from, and the low score on the index is the score
+being correct rather than confident-and-wrong. One, the Wynn posting, is a plausible genuine
+false-drop.
+
+So the raw rate overstates the veto's error by roughly the ratio this ADR already predicts it would:
+three of the four flags are the **extractor over-accepting**, which is the 0.454-precision failure
+mode the rollout section cites when it forbids grading this rung against the extractor's own
+verdict. The live run did not merely fail to contradict that decision; it exhibited it. Anyone
+tempted to add an observe mode should read this table first.
+
+Two limits on the paragraph above, so it is not over-read in the other direction. The triage was
+**sighted** — the pages were fetched and read, which is not Blind Confirmation (ADR-0048) and cannot
+replace it. And one plausible false-drop in 47 verdicts is not a rate; it is one event. Neither
+8.5% nor any number derived from this triage belongs in a decision. What belongs in a decision is
+the capture-window pass the rollout section describes, over a frame nobody hand-picked, with the
+drop set confirmed blind. The four URLs above are the first candidates for that draw.
+
+### What the run confirmed outright
+
+The attribution design, end to end and under real traffic. The `learned_veto` series existed at zero
+before the first drop, so that drop read as a change rather than as a series springing into
+existence; every verdict filed under the rung's own name rather than Positive Evidence's; the score
+that caused each drop travelled with the sample onto the durable stream and reached the log line,
+while the same log line for a Positive Evidence drop carried no score at all; and no Posting Score
+appeared in any metric label. On the durable stream, 7 entries carrying the Learned Veto's rung
+carried 7 non-zero scores, and all 47 entries from other rungs carried zero — the rung gating the
+read, exactly as designed, with no presence flag.
+
+Each of those is a decision taken in the "Attribution" section above, and together they are what
+made three items legible enough to be argued about at all.
