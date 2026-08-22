@@ -86,8 +86,14 @@ func TestTheGateSharesOneBodyFoldAndOneLinkCountWithTheScore(t *testing.T) {
 		}
 	})
 
+	// One fold, handed to both rungs: the fold IS the page for each of them, so neither
+	// can be given one page's marks and another page's body.
 	t.Run("the shared inputs produce the standalone signals", func(t *testing.T) {
-		shared := signalsFrom(content, newBodyFold(content), countJobPostingLinks(u, content))
+		fold := newBodyFold(content)
+		if !hasPositiveEvidence(u, fold) {
+			t.Fatal("the fixture must clear rung 8, or rung 9 never sees the fold it made")
+		}
+		shared := signalsFrom(fold, countJobPostingLinks(u, content))
 		standalone := Signals(u, content)
 		if len(shared) != len(standalone) {
 			t.Fatalf("signalsFrom produced %d signals, Signals produced %d", len(shared), len(standalone))

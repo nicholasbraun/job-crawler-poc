@@ -194,15 +194,19 @@ const scoreMinWordRunes = 2
 // and one link walk per page rather than two of each. Both paths run the SAME
 // signalsFrom, so train and serve cannot describe different signals.
 func Signals(u crawler.URL, content *crawler.Content) []string {
-	return signalsFrom(content, newBodyFold(content), countJobPostingLinks(u, content))
+	return signalsFrom(newBodyFold(content), countJobPostingLinks(u, content))
 }
 
-// signalsFrom is Signals with its two expensive inputs supplied: the page's folded body
-// and its distinct same-host Job Listing link count. The URL is absent because it
-// contributes nothing else -- it is read ONLY as the base for that link count, which is
-// what keeps the Score Vocabulary from learning the handful of hosts the Gold Set
-// samples.
-func signalsFrom(content *crawler.Content, fold *bodyFold, jobLinks int) []string {
+// signalsFrom is Signals with its two expensive inputs supplied: the page's fold and its
+// distinct same-host Job Listing link count. The URL is absent because it contributes
+// nothing else -- it is read ONLY as the base for that link count, which is what keeps
+// the Score Vocabulary from learning the handful of hosts the Gold Set samples.
+//
+// The page arrives as its fold and not beside it, for hasPositiveEvidence's reason: two
+// arguments could name two different pages, and rung 9 grading one page's body against
+// another page's structured data is a silent wrong verdict on the gate's hot path.
+func signalsFrom(fold *bodyFold, jobLinks int) []string {
+	content := fold.content
 	body := fold.folded()
 	sigs := make([]string, 0, 256)
 	sigs = appendGrades(sigs, vocabularyGroupGrades, vocabularyGroupCount(body))

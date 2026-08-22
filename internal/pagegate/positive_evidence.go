@@ -46,16 +46,19 @@ import (
 // #257 changed is which marks exist, each one taken from a page the Boundary Stratum
 // recorded this rung dropping.
 //
-// content must be non-nil, the same contract the content reject rungs already
+// The page arrives as its fold, unfolded until a mark below asks for it, so the
+// Learned Veto rung reads the same copy this rung read rather than making a second one
+// (ADR-0049). The fold is the page HERE -- taking the Content beside it would let a
+// caller hand this rung one page's marks and another page's body, which no compiler
+// could catch and no verdict would show.
+//
+// fold.content must be non-nil, the same contract the content reject rungs already
 // hold (atsEmbed dereferences it too); every ShouldExtract call site parses the
 // page first. It reads content.Title as well as the body: both live call sites (the
 // walk's URL processor and the refetch lane) hand it a freshly parsed Content, so
 // the title is populated on both.
-//
-// fold carries the page's folded body, unfolded until a mark below asks for it, so the
-// Learned Veto rung reads the same copy this rung read rather than making a second one
-// (ADR-0049). It must be a fold of the same content.
-func hasPositiveEvidence(u crawler.URL, content *crawler.Content, fold *bodyFold) bool {
+func hasPositiveEvidence(u crawler.URL, fold *bodyFold) bool {
+	content := fold.content
 	if postingURL(u) {
 		return true
 	}
@@ -457,8 +460,11 @@ func foldedBody(content *crawler.Content) string {
 //
 // It is LAZY on purpose, not as an optimisation detail. hasPositiveEvidence's URL,
 // structured-data and Title marks admit a page without reading the body at all, and
-// that early exit is load-bearing: a page they admit must keep paying nothing for the
-// fold, whatever rung 9's switch says. The zero value is unusable; call newBodyFold.
+// that early exit is load-bearing twice over: with the veto OFF a page those marks
+// admit pays nothing for the fold at all, and with it ON the fold is still paid once
+// rather than twice. Rung 9 does read the body of every page rung 8 admits, so an
+// admitted page DOES fold when the veto is armed -- which is why the fold must not be
+// hoisted above rung 8. The zero value is unusable; call newBodyFold.
 type bodyFold struct {
 	content *crawler.Content
 	text    string

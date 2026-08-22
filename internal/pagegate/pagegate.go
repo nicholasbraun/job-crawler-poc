@@ -454,7 +454,7 @@ func ExtractGate(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateCon
 	// first, so this rung only ever decides pages nothing rejected -- a hub carrying
 	// an apply affordance is already gone. When the rung is off the gate keeps its
 	// previous blanket accept, which is the kill switch.
-	if cfg.RequirePositiveEvidence && !hasPositiveEvidence(u, content, fold) {
+	if cfg.RequirePositiveEvidence && !hasPositiveEvidence(u, fold) {
 		return ExtractVerdict{Rung: RungPositiveEvidence}
 	}
 	// rung 9 (ADR-0049): the Learned Veto. It sees only the pages rung 8 admitted --
@@ -477,7 +477,7 @@ func ExtractGate(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateCon
 	if !cfg.LearnedVeto {
 		return ExtractVerdict{Extract: true, Rung: RungNone}
 	}
-	score := scoreOf(signalsFrom(content, fold, jobLinks))
+	score := scoreOf(signalsFrom(fold, jobLinks))
 	if score < VetoThreshold {
 		return ExtractVerdict{Rung: RungLearnedVeto, Score: score, Scored: true}
 	}
