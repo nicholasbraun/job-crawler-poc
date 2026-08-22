@@ -27,12 +27,13 @@
 // pre-registered go/no-go for turning the rung on, and previews the sampling plan its
 // flags describe; -draw appends a STRATIFIED SAMPLE of the pages below the cut as the
 // veto-boundary stratum, both halves of the disagreement -- ADR-0049 forbids filtering
-// them by the extractor's own verdict -- in three bands: every accepted-but-dropped page,
-// a sample from just below the cut and a smaller one from the deep-reject band, each row
-// carrying the inverse of its selection probability. A census does not survive this rung:
-// the drop set is most of the stream, and every Boundary Stratum row owes a human
-// confirmation. goldset-worksheet renders
-// the labeler's view with the structured data and the live verdict withheld;
+// them by the extractor's own verdict -- in three bands, each with its own quota: the
+// live-accept half, a sample from just below the cut and a smaller one from the
+// deep-reject band, each row carrying the inverse of its selection probability. A census
+// does not survive this rung -- the drop set is most of the stream, and every Boundary
+// Stratum row owes a human confirmation -- and neither does a band without a quota, which
+// leaves the draw's size a function of the frame's. goldset-worksheet renders the
+// labeler's view with the structured data and the live verdict withheld;
 // goldset-confirm-sheet renders the boundary rows as ordered Markdown chunks a human
 // confirms a chunk at a time; goldset-apply folds labels and their provenance back
 // in. score-capture (#116) is what scores the resulting file

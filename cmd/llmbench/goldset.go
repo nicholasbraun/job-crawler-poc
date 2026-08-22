@@ -181,8 +181,8 @@ const (
 	// extractor's verdict, so the drop set may not be filtered by it either.
 	//
 	// It is a STRATIFIED SAMPLE of that drop set where stratumBoundary is a census
-	// (ADR-0049's #304 amendment). The disagreement is most of the stream on this rung
-	// -- 832 pages of a 1,006-page frame -- and ADR-0043 requires a human confirmation
+	// (ADR-0049's #304 amendments). The disagreement is most of the stream on this rung
+	// -- 12,036 pages of an 18,233-page frame -- and ADR-0043 requires a human confirmation
 	// on every Boundary Stratum row, so a census would owe thousands of them and never
 	// be finished, which would block the refit indefinitely. Its rows therefore carry
 	// INVERSE SELECTION PROBABILITIES normalized to the drawing's own row count rather
@@ -671,8 +671,13 @@ func isPostingType(t any, want string) bool {
 type goldBand string
 
 const (
-	// bandAccepted is the drop set's live-accept half: the candidate false-drops, taken
-	// as a CENSUS because the recall claim rests on exactly these pages.
+	// bandAccepted is the drop set's live-accept half: the candidate false-drops, and
+	// what the recall claim is read on. It is quota'd by -accepted-rows like the other
+	// two and sampled UNIFORMLY within the band, never sub-banded by score -- the band's
+	// question is a rate over the whole of it, and its rows are one cell at one
+	// inclusion probability. The recall claim survives the sampling because a
+	// hundred-row sample bounds that rate far more tightly than the 0.454-precision
+	// verdict that decides which pages land in the band at all (ADR-0049).
 	bandAccepted goldBand = "accepted"
 	// bandNear is the live-abstain half scoring just below VetoThreshold -- where the
 	// threshold is actually decided, and therefore where the confirmation budget buys

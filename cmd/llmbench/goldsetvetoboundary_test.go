@@ -152,14 +152,18 @@ func vetoCapture(t *testing.T) string {
 
 // The URLs vetoBandsCapture puts in each band, named so a case can assert exactly which
 // pages a quota took and which it left. The accepted band is the LIVE VERDICT's, not the
-// score's, which is why one of its three pages scores in the near band and two at the
+// score's, which is why one of its four pages scores in the near band and three at the
 // bottom: banding by verdict rather than by score is the design, and a case has to be
 // able to see it.
+//
+// The accepted band holds MORE pages than any quota a case passes it, for the reason the
+// other two bands do: a quota that does not BIND proves nothing about a sample.
 var (
 	vetoAcceptedURLs = []string{
 		"https://acme.test/jobs/accepted-near-role",
 		"https://acme.test/jobs/accepted-quiet-role",
 		"https://acme.test/jobs/accepted-silent-role",
+		"https://acme.test/jobs/accepted-still-role",
 	}
 	vetoNearURLs = []string{
 		"https://acme.test/jobs/near-role-1", "https://acme.test/jobs/near-role-2",
@@ -176,19 +180,19 @@ var (
 
 // vetoBandsCapture is the frame the STRATIFIED drawing is read over: the same two
 // out-of-drop-set pages vetoCapture carries -- one the veto keeps, one an index terminal
-// today's gate rejects -- plus a drop set of 3 live-accept, 6 near-band live-abstain and
-// 8 deep-band live-abstain pages. The two sampled bands are deliberately larger than the
-// quotas the cases pass, because a quota that does not BIND proves nothing about a
-// sample.
+// today's gate rejects -- plus a drop set of 4 live-accept, 6 near-band live-abstain and
+// 8 deep-band live-abstain pages. All three bands are deliberately larger than the quotas
+// the cases pass, because a quota that does not BIND proves nothing about a sample.
 func vetoBandsCapture(t *testing.T) string {
 	t.Helper()
 	lines := []string{
 		requireVetoKeeps(t, "https://acme.test/jobs/senior-go-engineer", true, "2026-08-08T10:00:00Z", richPostingTitle, richPostingBody),
 		capturedPage(t, "https://acme.test/careers", true, "2026-08-08T10:00:01Z", nil, "our open roles"),
-		// The census cell: the live extractor read each of these as one posting.
+		// The accept cell: the live extractor read each of these as one posting.
 		requireVetoDropsNear(t, vetoAcceptedURLs[0], true, "2026-08-08T10:00:02Z", richPostingTitle, nearPostingBody, defaultVetoNearBand),
 		requireVetoDropsDeep(t, vetoAcceptedURLs[1], true, "2026-08-08T10:00:02Z", "", "", defaultVetoNearBand),
 		requireVetoDropsDeep(t, vetoAcceptedURLs[2], true, "2026-08-08T10:00:02Z", "", "", defaultVetoNearBand),
+		requireVetoDropsDeep(t, vetoAcceptedURLs[3], true, "2026-08-08T10:00:02Z", "", "", defaultVetoNearBand),
 	}
 	for _, u := range vetoNearURLs {
 		lines = append(lines, requireVetoDropsNear(t, u, false, "2026-08-08T10:00:03Z", richPostingTitle, nearPostingBody, defaultVetoNearBand))
@@ -229,7 +233,12 @@ func mustParseVetoTime(t *testing.T, ts string) time.Time {
 // build, so a case that does not care about quotas still runs the SHIPPED design rather
 // than a plan invented in a test.
 func defaultVetoPlan() vetoBandPlan {
-	return vetoBandPlan{NearBand: defaultVetoNearBand, NearRows: defaultVetoNearRows, DeepRows: defaultVetoDeepRows}
+	return vetoBandPlan{
+		NearBand:     defaultVetoNearBand,
+		AcceptedRows: defaultVetoAcceptedRows,
+		NearRows:     defaultVetoNearRows,
+		DeepRows:     defaultVetoDeepRows,
+	}
 }
 
 // vetoDrawArgs is the drawing's arguments for one test capture and substrate, at the
@@ -328,8 +337,8 @@ func TestVetoBoundaryDrawsBothHalvesOfTheDisagreement(t *testing.T) {
 			t.Errorf("%s: drawn in stratum %q, want %q", row.URL, row.Stratum, stratumVetoBoundary)
 		}
 		// The weight is an inverse SELECTION probability, not a census weight: here the
-		// quotas exceed both band populations, so every probability is 1 and the two
-		// coincide -- what the drawing must never write is a zero.
+		// default quotas exceed every band's population, so each probability is 1 and the
+		// two coincide -- what the drawing must never write is a zero.
 		if row.Weight <= 0 {
 			t.Errorf("%s: weight %g, want a positive inverse selection probability", row.URL, row.Weight)
 		}
@@ -671,9 +680,10 @@ func TestVetoFloorIsReportedAndNeverFatal(t *testing.T) {
 //
 // It also holds the WEIGHT STRUCTURE this drawing's design implies, on the model of
 // TestCommittedRandomStratumIsWeightedToTheStream: three sampling cells, so at most
-// three distinct weights, one of them shared by every live-accept row (the censused
-// band) and at most two across the live-abstain ones -- and the whole stratum summing
-// to its own row count, because a drawing's weights normalize within the drawing.
+// three distinct weights, one of them shared by every live-accept row (they are one
+// cell, whatever its quota) and at most two across the live-abstain ones -- and the
+// whole stratum summing to its own row count, because a drawing's weights normalize
+// within the drawing.
 func TestCommittedVetoBoundaryStratumIsTheDropSet(t *testing.T) {
 	baseline := vetoBaselineConfig()
 	drawn := []goldRow{}
@@ -713,8 +723,8 @@ func TestCommittedVetoBoundaryStratumIsTheDropSet(t *testing.T) {
 			len(all), len(boundaryBands), all)
 	}
 	if len(accepted) > 1 {
-		t.Errorf("the live-accept rows carry %d distinct weights, want 1: that band is a CENSUS, so every one of its rows "+
-			"has inclusion probability 1 and therefore one weight: %v", len(accepted), accepted)
+		t.Errorf("the live-accept rows carry %d distinct weights, want 1: that band is ONE sampling cell, so its rows "+
+			"share one inclusion probability and therefore one weight: %v", len(accepted), accepted)
 	}
 	if len(abstained) > 2 {
 		t.Errorf("the live-abstain rows carry %d distinct weights, want at most 2 (the near and deep bands): %v", len(abstained), abstained)
@@ -745,15 +755,15 @@ func readFileOrFail(t *testing.T, path string) string {
 }
 
 // TestVetoBoundaryDrawIsStratifiedNotACensus is the whole point of the change. With a
-// quota below each sampled band's population, the draw takes every accepted-but-dropped
-// page, exactly -near-rows of the near band and exactly -deep-rows of the deep one --
-// where a census would have taken all seventeen. A census does not survive this rung:
-// the drop set is most of the stream, and ADR-0043 requires a human confirmation on
-// every row of it.
+// quota below EVERY band's population -- the live-accept half included -- the draw takes
+// exactly what the three quotas ask for, where a census would have taken all eighteen.
+// No band's drawn size is a function of the frame's any more, which is the property that
+// makes the draw finishable: the drop set is most of the stream on this rung, and
+// ADR-0043 requires a human confirmation on every row of it.
 func TestVetoBoundaryDrawIsStratifiedNotACensus(t *testing.T) {
 	dir := boundarySubstrate(t, "https://acme.test/jobs/already")
 	capture := vetoBandsCapture(t)
-	plan := vetoBandPlan{NearBand: defaultVetoNearBand, NearRows: 2, DeepRows: 3}
+	plan := vetoBandPlan{NearBand: defaultVetoNearBand, AcceptedRows: 2, NearRows: 2, DeepRows: 3}
 
 	var buf bytes.Buffer
 	if code := runBoundaryDrawing(vetoPlanDrawArgs(t, capture, dir, true, plan), &buf); code != 0 {
@@ -761,9 +771,9 @@ func TestVetoBoundaryDrawIsStratifiedNotACensus(t *testing.T) {
 	}
 
 	drawn := drawnVetoRows(t, dir)
-	if got := len(drawn); got != len(vetoAcceptedURLs)+plan.NearRows+plan.DeepRows {
+	if got := len(drawn); got != plan.AcceptedRows+plan.NearRows+plan.DeepRows {
 		t.Fatalf("drew %d rows, want %d (%d accepted + %d near + %d deep); a census would have drawn %d",
-			got, len(vetoAcceptedURLs)+plan.NearRows+plan.DeepRows, len(vetoAcceptedURLs), plan.NearRows, plan.DeepRows,
+			got, plan.AcceptedRows+plan.NearRows+plan.DeepRows, plan.AcceptedRows, plan.NearRows, plan.DeepRows,
 			len(vetoAcceptedURLs)+len(vetoNearURLs)+len(vetoDeepURLs))
 	}
 	for _, band := range []struct {
@@ -771,7 +781,7 @@ func TestVetoBoundaryDrawIsStratifiedNotACensus(t *testing.T) {
 		urls []string
 		want int
 	}{
-		{"accepted", vetoAcceptedURLs, len(vetoAcceptedURLs)},
+		{"accepted", vetoAcceptedURLs, plan.AcceptedRows},
 		{"near", vetoNearURLs, plan.NearRows},
 		{"deep", vetoDeepURLs, plan.DeepRows},
 	} {
@@ -781,91 +791,135 @@ func TestVetoBoundaryDrawIsStratifiedNotACensus(t *testing.T) {
 	}
 }
 
-// TestVetoBoundaryDrawsEveryAcceptedButDroppedPage holds the one band that is NOT
-// subject to a quota. The accepted band is the candidate false-drops, the recall claim
-// rests on exactly those pages, and sampling them would put sampling error on the number
-// the rollout turns on -- so the tightest quotas the two sampled bands accept must still
-// leave it whole.
-func TestVetoBoundaryDrawsEveryAcceptedButDroppedPage(t *testing.T) {
-	dir := boundarySubstrate(t, "https://acme.test/jobs/already")
+// TestVetoBoundaryTakesABandWholeWhenItsQuotaDoesNotBind is the backward compatibility
+// guarantee, expressed as a test rather than as a claim. A quota of 0 -- and any quota at
+// or above the band's population -- takes the band whole, which puts N_c/n_c at exactly 1
+// and therefore lands the band on exactly the weight the CENSUS design produced. That is
+// what lets one arithmetic serve all three bands instead of a second path for the band
+// that used to be exempt, and it is why -accepted-rows 0 restores the census exactly.
+//
+// The two runs are compared as BYTES, so the claim covers the weights without the test
+// doing any float arithmetic of its own.
+func TestVetoBoundaryTakesABandWholeWhenItsQuotaDoesNotBind(t *testing.T) {
 	capture := vetoBandsCapture(t)
 
-	var buf bytes.Buffer
-	plan := vetoBandPlan{NearBand: defaultVetoNearBand, NearRows: 1, DeepRows: 1}
-	if code := runBoundaryDrawing(vetoPlanDrawArgs(t, capture, dir, true, plan), &buf); code != 0 {
-		t.Fatalf("exit code %d, want 0\n%s", code, buf.String())
+	draw := func(t *testing.T, acceptedRows int) (string, []goldRow) {
+		t.Helper()
+		dir := boundarySubstrate(t, "https://acme.test/jobs/already")
+		plan := vetoBandPlan{NearBand: defaultVetoNearBand, AcceptedRows: acceptedRows, NearRows: 1, DeepRows: 1}
+		var buf bytes.Buffer
+		if code := runBoundaryDrawing(vetoPlanDrawArgs(t, capture, dir, true, plan), &buf); code != 0 {
+			t.Fatalf("exit code %d with -accepted-rows %d, want 0\n%s", code, acceptedRows, buf.String())
+		}
+		return readFileOrFail(t, filepath.Join(dir, goldSetFile)), drawnVetoRows(t, dir)
 	}
 
-	drawn := drawnVetoRows(t, dir)
-	if got := countDrawn(drawn, vetoAcceptedURLs); got != len(vetoAcceptedURLs) {
-		t.Errorf("drew %d of the %d accepted-but-dropped pages, want all of them: that band is a census, "+
-			"because the recall claim rests on exactly these rows", got, len(vetoAcceptedURLs))
+	census, censusRows := draw(t, 0)
+	slack, slackRows := draw(t, len(vetoAcceptedURLs)+50)
+	if census != slack {
+		t.Error("a quota of 0 and a quota the band cannot fill produced different substrates; both take the band whole, " +
+			"so both must land on the same rows AND the same weights")
 	}
-	if got := len(drawn); got != len(vetoAcceptedURLs)+2 {
-		t.Errorf("drew %d rows, want %d (the whole accepted band plus one row per sampled band)", got, len(vetoAcceptedURLs)+2)
+	for _, tc := range []struct {
+		name string
+		rows []goldRow
+	}{{"a quota of 0", censusRows}, {"a quota above the population", slackRows}} {
+		if got := countDrawn(tc.rows, vetoAcceptedURLs); got != len(vetoAcceptedURLs) {
+			t.Errorf("%s drew %d of the %d accepted-but-dropped pages, want all of them: a non-binding quota is the census",
+				tc.name, got, len(vetoAcceptedURLs))
+		}
+		if got := len(tc.rows); got != len(vetoAcceptedURLs)+2 {
+			t.Errorf("%s drew %d rows, want %d (the whole accepted band plus one row per sampled band)",
+				tc.name, got, len(vetoAcceptedURLs)+2)
+		}
 	}
 }
 
 // TestVetoBoundaryWeightsInvertTheSelectionProbability is the crux of the design. A
-// sampled row weighted 1 and pooled with a censused one makes any weighted read over the
-// stratum describe the enriched sample while claiming to describe the drop set, so each
-// band's rows carry N_c/n_c, normalized to the drawn row count.
+// sampled row weighted 1 and pooled with a fully-taken one makes any weighted read over
+// the stratum describe the enriched sample while claiming to describe the drop set, so
+// each band's rows carry N_c/n_c, normalized to the drawn row count.
+//
+// The two cases are the same arithmetic read at the accept band's two settings, which is
+// the point: a SAMPLED accept cell must carry N_acc/n_acc like any other band, and a
+// fully-taken one must land on the 1 the census produced. There is no second path.
 //
 // The RATIOS are asserted rather than the floats: a fixture count changing must move
 // this test's arithmetic, not falsify its claim.
 func TestVetoBoundaryWeightsInvertTheSelectionProbability(t *testing.T) {
-	dir := boundarySubstrate(t, "https://acme.test/jobs/already")
 	capture := vetoBandsCapture(t)
-	plan := vetoBandPlan{NearBand: defaultVetoNearBand, NearRows: 2, DeepRows: 4}
 
-	var buf bytes.Buffer
-	if code := runBoundaryDrawing(vetoPlanDrawArgs(t, capture, dir, true, plan), &buf); code != 0 {
-		t.Fatalf("exit code %d, want 0\n%s", code, buf.String())
-	}
-	drawn := drawnVetoRows(t, dir)
+	for _, tt := range []struct {
+		name string
+		plan vetoBandPlan
+		// near and deep are each band's weight as a multiple of the accept band's:
+		// (N_c/n_c) / (N_acc/n_acc), over populations of 4 accepted, 6 near and 8 deep.
+		near, deep float64
+	}{
+		{
+			// 4 of 4 accepted, 2 of 6 near, 4 of 8 deep: N_c/n_c of 1, 3 and 2.
+			name: "the accept band taken whole",
+			plan: vetoBandPlan{NearBand: defaultVetoNearBand, AcceptedRows: 0, NearRows: 2, DeepRows: 4},
+			near: 3, deep: 2,
+		},
+		{
+			// 2 of 4 accepted, 2 of 6 near, 2 of 8 deep: N_c/n_c of 2, 3 and 4.
+			name: "the accept band sampled",
+			plan: vetoBandPlan{NearBand: defaultVetoNearBand, AcceptedRows: 2, NearRows: 2, DeepRows: 2},
+			near: 1.5, deep: 2,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := boundarySubstrate(t, "https://acme.test/jobs/already")
+			var buf bytes.Buffer
+			if code := runBoundaryDrawing(vetoPlanDrawArgs(t, capture, dir, true, tt.plan), &buf); code != 0 {
+				t.Fatalf("exit code %d, want 0\n%s", code, buf.String())
+			}
+			drawn := drawnVetoRows(t, dir)
 
-	weights := map[string]float64{}
-	for _, row := range drawn {
-		band := "deep"
-		switch {
-		case contains(vetoAcceptedURLs, row.URL):
-			band = "accepted"
-		case contains(vetoNearURLs, row.URL):
-			band = "near"
-		}
-		if seen, ok := weights[band]; ok && seen != row.Weight {
-			t.Errorf("the %s band carries two weights, %g and %g; one cell means one inclusion probability", band, seen, row.Weight)
-		}
-		weights[band] = row.Weight
-	}
+			weights := map[string]float64{}
+			for _, row := range drawn {
+				band := "deep"
+				switch {
+				case contains(vetoAcceptedURLs, row.URL):
+					band = "accepted"
+				case contains(vetoNearURLs, row.URL):
+					band = "near"
+				}
+				if seen, ok := weights[band]; ok && seen != row.Weight {
+					t.Errorf("the %s band carries two weights, %g and %g; one cell means one inclusion probability", band, seen, row.Weight)
+				}
+				weights[band] = row.Weight
+			}
 
-	// N_c/n_c: 3 of 3 censused, 2 of 6 near, 4 of 8 deep -- so near rows stand for three
-	// pages each and deep rows for two, against the census cell's one.
-	for _, want := range []struct {
-		band  string
-		ratio float64
-	}{{"near", 3}, {"deep", 2}} {
-		got := weights[want.band] / weights["accepted"]
-		if math.Abs(got-want.ratio) > 1e-9 {
-			t.Errorf("the %s band's weight is %.6f times the censused band's, want %g -- the inverse of how thinly it was sampled",
-				want.band, got, want.ratio)
-		}
-	}
-	if !weightsBalanced(drawn, 1e-9) {
-		t.Errorf("the drawn rows' weights sum to %.9f over %d rows, want equal", weightSum(drawn), len(drawn))
-	}
-	if !strings.Contains(buf.String(), "drawn weight sum") || !strings.Contains(buf.String(), "inverse selection probability") {
-		t.Errorf("the report does not say what the weights ARE:\n%s", buf.String())
+			for _, want := range []struct {
+				band  string
+				ratio float64
+			}{{"near", tt.near}, {"deep", tt.deep}} {
+				got := weights[want.band] / weights["accepted"]
+				if math.Abs(got-want.ratio) > 1e-9 {
+					t.Errorf("the %s band's weight is %.6f times the accept band's, want %g -- the inverse of how thinly each was sampled",
+						want.band, got, want.ratio)
+				}
+			}
+			if !weightsBalanced(drawn, 1e-9) {
+				t.Errorf("the drawn rows' weights sum to %.9f over %d rows, want equal", weightSum(drawn), len(drawn))
+			}
+			if !strings.Contains(buf.String(), "drawn weight sum") || !strings.Contains(buf.String(), "inverse selection probability") {
+				t.Errorf("the report does not say what the weights ARE:\n%s", buf.String())
+			}
+		})
 	}
 }
 
 // TestVetoBoundaryDrawIsDeterministic holds what a committed artifact rests on: the same
 // capture and seed always produce the same file, byte for byte, while a new seed is a
-// deliberate, genuinely different resample of the SAMPLED bands only -- the censused one
-// has nothing to resample.
+// deliberate, genuinely different resample -- of the bands whose quota BINDS, since a
+// band taken whole has nothing to resample. The accept band is taken whole here, which
+// is what makes it the band the resample must leave alone.
 func TestVetoBoundaryDrawIsDeterministic(t *testing.T) {
 	capture := vetoBandsCapture(t)
-	plan := vetoBandPlan{NearBand: defaultVetoNearBand, NearRows: 2, DeepRows: 3}
+	plan := vetoBandPlan{NearBand: defaultVetoNearBand, AcceptedRows: 0, NearRows: 2, DeepRows: 3}
 
 	draw := func(t *testing.T, seed string) (string, []goldRow) {
 		t.Helper()
@@ -887,7 +941,7 @@ func TestVetoBoundaryDrawIsDeterministic(t *testing.T) {
 
 	_, resampled := draw(t, defaultVetoBoundarySeed+"-resample")
 	if countDrawn(resampled, vetoAcceptedURLs) != len(vetoAcceptedURLs) {
-		t.Error("a new seed changed the CENSUSED band; there is nothing there to resample")
+		t.Error("a new seed changed a band taken WHOLE; there is nothing there to resample")
 	}
 	if equalStrings(rowURLs(firstRows), rowURLs(resampled)) {
 		t.Error("a new seed selected exactly the same rows, so it is not keying the within-band selection at all")
@@ -932,9 +986,9 @@ func TestVetoBoundaryRefusesASecondDrawIntoTheStratum(t *testing.T) {
 func TestVetoBoundarySamplesThePopulationTheSubstrateHasNotAlreadyDrawn(t *testing.T) {
 	dir := boundarySubstrate(t, vetoDeepURLs[0])
 	capture := vetoBandsCapture(t)
-	// Take both sampled bands whole, so the only thing that can shrink the deep band is
-	// the exclusion.
-	plan := vetoBandPlan{NearBand: defaultVetoNearBand, NearRows: 0, DeepRows: 0}
+	// Take every band whole, so the only thing that can shrink the deep band is the
+	// exclusion.
+	plan := vetoBandPlan{NearBand: defaultVetoNearBand, AcceptedRows: 0, NearRows: 0, DeepRows: 0}
 
 	var buf bytes.Buffer
 	if code := runBoundaryDrawing(vetoPlanDrawArgs(t, capture, dir, true, plan), &buf); code != 0 {
@@ -952,7 +1006,7 @@ func TestVetoBoundarySamplesThePopulationTheSubstrateHasNotAlreadyDrawn(t *testi
 	report := buf.String()
 	for _, want := range []string{
 		// The drop set and the depth are over the WHOLE frame, committed page included.
-		"drop set             17 (live accept 3 / live abstain 14; this drawing takes both halves)",
+		"drop set             18 (live accept 4 / live abstain 14; this drawing takes both halves)",
 		"dropped committed    1",
 		"cell deep             verdict=false population     7  sampled   7",
 	} {
@@ -967,30 +1021,54 @@ func TestVetoBoundarySamplesThePopulationTheSubstrateHasNotAlreadyDrawn(t *testi
 // the rows the current quotas would take, and tunes the flags before a single row is
 // committed. Nothing is written and the gold set is not even opened, so the populations
 // it prints are pre-exclusion and the report says so.
+// Both renderings of the quota column are pinned, because an operator reads the accept
+// band's design off exactly this line: a quota of 0 prints "census" and any other prints
+// the number.
 func TestVetoBoundaryReportsThePlanBeforeDrawing(t *testing.T) {
 	capture := vetoBandsCapture(t)
-	absent := filepath.Join(t.TempDir(), "no-gold-set-here")
-	plan := vetoBandPlan{NearBand: defaultVetoNearBand, NearRows: 2, DeepRows: 3}
 
-	var buf bytes.Buffer
-	if code := runBoundaryDrawing(vetoPlanDrawArgs(t, capture, absent, false, plan), &buf); code != 0 {
-		t.Fatalf("exit code %d, want 0 with no -dir present\n%s", code, buf.String())
-	}
-	if _, err := os.Stat(absent); !os.IsNotExist(err) {
-		t.Errorf("the report-only run touched %s", absent)
-	}
-	report := buf.String()
-	for _, want := range []string{
-		"band accepted         population     3  quota census would draw     3",
-		"band near             population     6  quota 2      would draw     2",
-		"band deep             population     8  quota 3      would draw     3",
-		fmt.Sprintf("score in [%.6f, %.6f)", pagegate.VetoThreshold-plan.NearBand, pagegate.VetoThreshold),
-		"these populations are PRE-exclusion",
-		"wrote                nothing. Re-run with -draw to sample 8 rows from the 17-page drop set.",
+	for _, tt := range []struct {
+		name     string
+		plan     vetoBandPlan
+		accepted string
+		tail     string
+	}{
+		{
+			name:     "the accept band taken whole",
+			plan:     vetoBandPlan{NearBand: defaultVetoNearBand, AcceptedRows: 0, NearRows: 2, DeepRows: 3},
+			accepted: "band accepted         population     4  quota census would draw     4",
+			tail:     "wrote                nothing. Re-run with -draw to sample 9 rows from the 18-page drop set.",
+		},
+		{
+			name:     "the accept band quota'd",
+			plan:     vetoBandPlan{NearBand: defaultVetoNearBand, AcceptedRows: 2, NearRows: 2, DeepRows: 3},
+			accepted: "band accepted         population     4  quota 2      would draw     2",
+			tail:     "wrote                nothing. Re-run with -draw to sample 7 rows from the 18-page drop set.",
+		},
 	} {
-		if !strings.Contains(report, want) {
-			t.Errorf("the plan preview does not say %q:\n%s", want, report)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			absent := filepath.Join(t.TempDir(), "no-gold-set-here")
+			var buf bytes.Buffer
+			if code := runBoundaryDrawing(vetoPlanDrawArgs(t, capture, absent, false, tt.plan), &buf); code != 0 {
+				t.Fatalf("exit code %d, want 0 with no -dir present\n%s", code, buf.String())
+			}
+			if _, err := os.Stat(absent); !os.IsNotExist(err) {
+				t.Errorf("the report-only run touched %s", absent)
+			}
+			report := buf.String()
+			for _, want := range []string{
+				tt.accepted,
+				"band near             population     6  quota 2      would draw     2",
+				"band deep             population     8  quota 3      would draw     3",
+				fmt.Sprintf("score in [%.6f, %.6f)", pagegate.VetoThreshold-tt.plan.NearBand, pagegate.VetoThreshold),
+				"these populations are PRE-exclusion",
+				tt.tail,
+			} {
+				if !strings.Contains(report, want) {
+					t.Errorf("the plan preview does not say %q:\n%s", want, report)
+				}
+			}
+		})
 	}
 }
 
@@ -1010,6 +1088,7 @@ func TestVetoBoundaryRefusesAnUnusableBand(t *testing.T) {
 		{"a zero band", vetoBandPlan{NearBand: 0, NearRows: 2, DeepRows: 2}},
 		{"a negative band", vetoBandPlan{NearBand: -0.1, NearRows: 2, DeepRows: 2}},
 		{"a band wider than the threshold", vetoBandPlan{NearBand: pagegate.VetoThreshold, NearRows: 2, DeepRows: 2}},
+		{"a negative accepted quota", vetoBandPlan{NearBand: defaultVetoNearBand, AcceptedRows: -1, NearRows: 2, DeepRows: 2}},
 		{"a negative near quota", vetoBandPlan{NearBand: defaultVetoNearBand, NearRows: -1, DeepRows: 2}},
 		{"a negative deep quota", vetoBandPlan{NearBand: defaultVetoNearBand, NearRows: 2, DeepRows: -1}},
 	} {
@@ -1028,8 +1107,9 @@ func TestVetoBoundaryRefusesAnUnusableBand(t *testing.T) {
 
 // TestVetoBoundaryBandsSplitOnTheScore pins the partition itself: the accepted band is
 // the LIVE VERDICT's and never the score's -- one of its pages scores in the near band
-// and it still belongs to the census -- while the two sampled bands split the abstain
-// half at VetoThreshold - NearBand.
+// and it still belongs to the accept cell -- while the two score bands split the abstain
+// half at VetoThreshold - NearBand. That rule is what makes the accept band's own sample
+// uniform in score, and therefore readable per score region afterwards.
 func TestVetoBoundaryBandsSplitOnTheScore(t *testing.T) {
 	outcome := replayVetoCapture(t, vetoBandsCapture(t), learnedVetoBoundary)
 	bands, err := bandDropSet(outcome.DropSet(learnedVetoBoundary), defaultVetoPlan())

@@ -569,18 +569,19 @@ thing that measures correctness.
 > weighted count over it estimates something about *that drop set* — never about the stream. Its
 > rows never enter the weighted stream scorecard.
 
-Why a sample, where the #263 boundary is a census: a live capture window measured **832 dropped
-pages in a 1,006-page frame** (veto depth 82.7%), 54 of them pages the live extractor read as one
-posting. ADR-0043 requires a human confirmation on **every** Boundary Stratum row, and a census of
-a full window would owe thousands — a pass nobody finishes, and an unfinished one blocks the refit
-indefinitely, because the confirmation ratchet can never come down. Sampling makes the obligation
-finishable; it does not weaken it.
+Why a sample, where the #263 boundary is a census: the capture window closed at **18,233 framed
+pages** holding a drop set of **12,036**, banded 2,025 accepted / 370 near / 9,641 deep. ADR-0043
+requires a human confirmation on **every** Boundary Stratum row, and a census would owe **2,145** —
+a pass nobody finishes, and an unfinished one blocks the refit indefinitely, because the
+confirmation ratchet can never come down. At the defaults the same frame draws **100 + 80 + 40 =
+220**. Sampling makes the obligation finishable; it does not weaken it.
 
-Three bands, which partition the drop set exactly:
+Three bands, which partition the drop set exactly, each with its own quota — a band without one
+leaves the draw's size a function of the frame's, which is the failure the bands exist to fix:
 
 | band | population | design | why |
 |---|---|---|---|
-| **accepted** | drop ∧ live verdict *accept* | **census** | the candidate false-drops. The recall claim rests on exactly these, so sampling them would put sampling error on the number the rollout turns on. |
+| **accepted** | drop ∧ live verdict *accept* | sampled, `-accepted-rows` | the candidate false-drops, and what the recall claim is read on. Sampled *uniformly* within the band, never sub-banded by score: the band's question is a rate over the whole of it. 100 rows of 2,025 pins that rate to ±4.9pp at worst, against a bias no quota removes — the extractor's verdict decides which pages land here at all, at 0.454 precision. `0` restores the census exactly. |
 | **near** | drop ∧ live verdict *abstain* ∧ Posting Score in `[VetoThreshold − near-band, VetoThreshold)` | sampled, `-near-rows` | where the threshold is actually decided. |
 | **deep** | drop ∧ live verdict *abstain* ∧ below that | sampled, `-deep-rows` | to confirm the bottom is junk, and to reach for another **short posting publishing no structured data** — the shape ADR-0049's #304 amendment records the rung being weakest on. |
 
@@ -595,13 +596,14 @@ w_c = (N_c / n_c) × (n / N)     N_c, n_c = band population and rows drawn
                                 N, n     = their totals over the three bands
 ```
 
-so the drawn weights sum to the drawn rows. They are deliberately **not** built through
-`weightsFor`: that reconstructs a verdict share from the capture's per-verdict caps, because the
-random drawing's frame is a capped stream sample; this population is *enumerated* by the replay and
-its probabilities are known exactly.
+so the drawn weights sum to the drawn rows. One arithmetic serves all three bands: a band whose
+quota does not bind lands on `N_c/n_c = 1`, exactly the weight a census produces. They are
+deliberately **not** built through `weightsFor`: that reconstructs a verdict share from the
+capture's per-verdict caps, because the random drawing's frame is a capped stream sample; this
+population is *enumerated* by the replay and its probabilities are known exactly.
 
 **Determinism.** The draw is byte-reproducible from (capture, `-since`, `-seed`, `-near-band`,
-the two quotas, the URLs earlier drawings hold, **and the compiled weights**) — the bands are read
+the three quotas, the URLs earlier drawings hold, **and the compiled weights**) — the bands are read
 off the Posting Score, so after a refit the same command yields a different sample. That is why the
 table below records the threshold, the band edge and the seed. Within a band the selection is
 ascending `sha256(seed + "\n" + url)`, the same order every other drawing uses; no RNG anywhere.
@@ -1035,15 +1037,16 @@ go run ./cmd/llmbench goldset-sample-boundary \
 #     SAMPLE of the pages below the cut, BOTH verdict halves: ADR-0049 forbids grading
 #     that rung against the extractor's own verdict, so the drop set may not be filtered
 #     by it. Like 1c the pair lives in goldsetboundary.go rather than behind a flag; the
-#     BANDS live there too, and only the quotas are flags. The draw is taken ONCE.
+#     BANDS live there too, and only the quotas are flags -- one per band, so no band's
+#     drawn size is a function of the frame's. The draw is taken ONCE.
 go run ./cmd/llmbench goldset-sample-veto-boundary \
     -capture <repo>/capture/veto-window.jsonl \
     -since <the window's start, RFC3339> \
-    -near-band 0.20 -near-rows 80 -deep-rows 40
+    -near-band 0.20 -accepted-rows 100 -near-rows 80 -deep-rows 40
 go run ./cmd/llmbench goldset-sample-veto-boundary \
     -capture <repo>/capture/veto-window.jsonl \
     -since <the window's start, RFC3339> \
-    -near-band 0.20 -near-rows 80 -deep-rows 40 -draw
+    -near-band 0.20 -accepted-rows 100 -near-rows 80 -deep-rows 40 -draw
 
 # 2. the labeling view (a working artifact, never committed)
 #    -stratum / -n cut a deterministic subset: one stratum whole, or 20 rows of it

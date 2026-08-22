@@ -110,8 +110,9 @@ go run ./cmd/llmbench score-capture -in <labeled.jsonl> -gate-config <veto.json>
 go run ./cmd/llmbench score-rendering            # A/B: Flattened Text vs Structural Rendering at one prompt budget
 go run ./cmd/llmbench goldset-sample-veto-boundary -capture <capture.jsonl> -since <RFC3339>
                                                 #    veto depth over a capture frame (no labels), plus the
-                                                #    sampling plan preview; -draw appends a stratified sample
-                                                #    of the drop set in bands (-near-band/-near-rows/-deep-rows)
+                                                #    sampling plan preview; -draw appends a stratified sample of the
+                                                #    drop set in bands (-near-band, then a quota per band:
+                                                #    -accepted-rows/-near-rows/-deep-rows)
 go run ./cmd/llmbench train-scorer               # refit the Posting Score over the Extract Gold Set and rewrite
                                                 #    pagegate's weights (must reproduce the committed file byte for byte)
 go run ./cmd/llmbench goldset-refit              # after a confirmation pass: apply, rewrite the derived

@@ -30,10 +30,12 @@ import (
 // weight toward -- and the per-drawing weight balance therefore holds by construction.
 //
 // It is NOT every Boundary Stratum row's weight. A STRATIFIED Boundary Stratum
-// (selectionStratified, ADR-0049) samples two of its three bands, so its rows carry
-// the inverse of their own selection probability, normalized to the drawing's row
-// count. Weighting a sampled row 1 anyway would make any weighted read over the
-// stratum describe the enriched sample while claiming to describe the drop set.
+// (selectionStratified, ADR-0049) samples its bands, so its rows carry the inverse of
+// their own selection probability, normalized to the drawing's row count. Weighting a
+// sampled row 1 anyway would make any weighted read over the stratum describe the
+// enriched sample while claiming to describe the drop set. A band whose quota does not
+// bind is the one case where the two coincide, and it coincides by arithmetic rather
+// than by exception: taking a band whole makes N_c/n_c exactly 1.
 const boundaryCensusWeight = 1.0
 
 // selectionDesign is HOW a boundary design turns the disagreement into rows. It is a
@@ -54,7 +56,7 @@ const (
 )
 
 // boundaryBands is the fixed print / iteration order of a stratified drawing's bands.
-// The order is the argument's: the censused half first, then the two sampled ones from
+// The order is the argument's: the live-accept half first, then the two score bands from
 // the cut downwards.
 var boundaryBands = []goldBand{bandAccepted, bandNear, bandDeep}
 
@@ -64,13 +66,24 @@ const (
 	// the bands MEAN is the design and may not drift, but where "near" ends is a
 	// judgement an operator re-reads off the report's band populations.
 	defaultVetoNearBand = 0.20
-	// defaultVetoNearRows and defaultVetoDeepRows are the two sampled bands' quotas.
-	// They are COUNTS, not shares, because the human confirmation budget is absolute
-	// and does not scale with the frame: on the measured window (832 dropped of a
-	// 1,006-page frame, 54 of them live-accepted) they draw 54 + 80 + 40 = 174 rows,
-	// the order of a Blind Confirmation pass a person finishes, against a census of 832.
-	defaultVetoNearRows = 80
-	defaultVetoDeepRows = 40
+	// defaultVetoAcceptedRows, defaultVetoNearRows and defaultVetoDeepRows are the three
+	// bands' quotas. They are COUNTS, not shares, because the human confirmation budget
+	// is absolute and does not scale with the frame -- which is also why no band may be
+	// censused here. Over the CLOSED capture window (18,233 framed pages, a 12,036-row
+	// drop set banded 2,025 / 370 / 9,641) a census of the accepted band alone would owe
+	// 2,025 Blind Confirmations and the drawing 2,145; these defaults draw
+	// 100 + 80 + 40 = 220, the order of a pass a person finishes.
+	//
+	// 100 is what the accepted band's question costs to answer. A 100-row sample of 2,025
+	// pins that band's false-drop rate to a standard error of at most ~5 points --
+	// sqrt(p(1-p)/100) * sqrt(1925/2024) is 4.9pp at p=0.5 and 2.9pp at p=0.1 -- and that
+	// sampling variance is dominated by a bias no quota can remove: which pages land in
+	// this band at all is decided by the live extractor's verdict, which runs at 0.454
+	// precision against human labels (ADR-0049). Spending the confirmation budget against
+	// the smaller error while the larger one stands is not a trade worth making.
+	defaultVetoAcceptedRows = 100
+	defaultVetoNearRows     = 80
+	defaultVetoDeepRows     = 40
 )
 
 // boundaryBaselineConfig is TODAY'S blanket accept: the Extract Gate as it behaved
@@ -221,14 +234,17 @@ var positiveEvidenceBoundary = boundaryDesign{
 // the same gate with rung 9 armed, BOTH halves of the disagreement, drawn as a
 // STRATIFIED SAMPLE of the drop set rather than a census of it.
 //
-// The census this drawing shipped with does not survive contact with this rung. A live
-// capture window measured 1,006 framed pages against the shipped weights: veto depth
-// 82.7%, a drop set of 832 rows that grows with the frame, 54 of them pages the live
-// extractor read as a single posting. The disagreement is most of the stream here,
-// where ADR-0043's boundary was 188 pages -- and ADR-0043 requires a HUMAN confirmation
-// on every Boundary Stratum row, so a census would put thousands of rows in front of a
-// labeller, never be finished, and block the refit indefinitely. Sampling is what makes
-// the obligation finishable; it does not weaken it.
+// The census this drawing shipped with does not survive contact with this rung. The
+// capture window closed at 18,233 framed pages, and against the shipped weights it holds
+// a drop set of 12,036 rows, banded 2,025 accepted / 370 near / 9,641 deep. The
+// disagreement is most of the stream here, where ADR-0043's boundary was 188 pages --
+// and ADR-0043 requires a HUMAN confirmation on every Boundary Stratum row, so a census
+// would put 2,145 rows in front of a labeller, never be finished, and block the refit
+// indefinitely. Sampling is what makes the obligation finishable; it does not weaken it.
+//
+// EVERY band is sampled, the accepted one included. A band's population scales with the
+// frame, so a censused band keeps the draw's size a function of the frame's size -- the
+// failure the bands exist to fix.
 //
 // Stratifying on the live verdict is NOT the filtering this ADR forbids. Filtering
 // would give the pages the extractor abstained on inclusion probability ZERO, importing
@@ -420,9 +436,8 @@ func censusSelection(d boundaryDesign, census []candidate) selection {
 }
 
 // vetoBandPlan is the operator's half of the stratified design: the score band that
-// counts as "just below the cut", and how many rows to draw from each SAMPLED band.
-// The accepted band has no quota -- it is a census, for the reason
-// runGoldSetSampleVetoBoundary states.
+// counts as "just below the cut", and how many rows to draw from each of the three
+// bands.
 //
 // These are FLAGS where the bands themselves are code, for the reason
 // boundaryCandidateConfig gives about the pair: what the bands MEAN is the design and
@@ -433,9 +448,10 @@ type vetoBandPlan struct {
 	// the near band is [VetoThreshold-NearBand, VetoThreshold) and everything below it
 	// is the deep band.
 	NearBand float64
-	// NearRows and DeepRows are the two sampled bands' quotas. 0 means take the whole
-	// band, takeByHash's own convention.
-	NearRows, DeepRows int
+	// AcceptedRows, NearRows and DeepRows are the three bands' quotas, in boundaryBands
+	// order. 0 means take the whole band, takeByHash's own convention -- which on the
+	// accepted band is also the exact way back to the census this drawing shipped with.
+	AcceptedRows, NearRows, DeepRows int
 }
 
 // validate refuses a plan that would degenerate the design before anything is read.
@@ -447,16 +463,22 @@ func (p vetoBandPlan) validate() error {
 		return fmt.Errorf("-near-band must be in (0, %.6f) -- the compiled pagegate.VetoThreshold -- got %g; "+
 			"outside it one of the three bands is empty by construction and the design degenerates", pagegate.VetoThreshold, p.NearBand)
 	}
-	if p.NearRows < 0 || p.DeepRows < 0 {
-		return fmt.Errorf("-near-rows and -deep-rows must be >= 0 (0 takes the whole band), got %d and %d; "+
-			"a negative quota would silently become a census", p.NearRows, p.DeepRows)
+	if p.AcceptedRows < 0 || p.NearRows < 0 || p.DeepRows < 0 {
+		return fmt.Errorf("-accepted-rows, -near-rows and -deep-rows must be >= 0 (0 takes the whole band), got %d, %d and %d; "+
+			"a negative quota would silently become a census", p.AcceptedRows, p.NearRows, p.DeepRows)
 	}
 	return nil
 }
 
-// bandOf places an ABSTAINED page in one of the two sampled bands. The accept half is
-// bandAccepted by its live verdict and never by its score, because what makes those
-// pages the census cell is that the extractor read each of them as one posting.
+// bandOf places an ABSTAINED page in one of the two score bands. The accept half is
+// bandAccepted by its live verdict and NEVER by its score, because what makes those
+// pages one cell is that the extractor read each of them as one posting.
+//
+// That rule is also what makes the accepted band's own sample uniform IN SCORE: it is
+// one cell drawn at one probability across the whole 0..VetoThreshold spread, so every
+// score region is represented at the same rate and a later score-conditioned read of
+// that band is itself a simple random sample of its own sub-population, carrying the
+// one band weight. Sub-banding it by score would buy a little variance and cost that.
 func bandOf(score, threshold, nearBand float64) goldBand {
 	if score >= threshold-nearBand {
 		return bandNear
@@ -519,9 +541,11 @@ func stratifiedSelection(d boundaryDesign, drawable []candidate, p vetoBandPlan,
 	if err != nil {
 		return selection{}, err
 	}
-	// The accepted band's quota is 0 -- takeByHash's "take the whole cell" -- because
-	// it is a census: the recall claim rests on exactly those pages.
-	quotas := map[goldBand]int{bandAccepted: 0, bandNear: p.NearRows, bandDeep: p.DeepRows}
+	// All three quotas come from the plan, and 0 takes the band whole (takeByHash's
+	// convention). A fully-taken band lands on N_c/n_c == 1 and therefore on exactly the
+	// weight a census produces, so the arithmetic below is ONE path for all three bands --
+	// and always was: none of it ever depended on the accepted band being taken whole.
+	quotas := map[goldBand]int{bandAccepted: p.AcceptedRows, bandNear: p.NearRows, bandDeep: p.DeepRows}
 
 	taken := map[goldBand][]candidate{}
 	population, sampled := 0, 0
@@ -667,7 +691,9 @@ func runBoundaryDrawing(a boundaryDrawArgs, w io.Writer) int {
 	// A STRATIFIED drawing is drawn ONCE. A census tolerates a repeat, because a page
 	// taken under it had inclusion probability 1 whenever it was taken; a sample does
 	// not, and a second window's rows would carry a second set of inclusion
-	// probabilities into one stratum.
+	// probabilities into one stratum. No half of THIS drawing is repeat-tolerant any
+	// more -- the accepted band is sampled too -- so this refusal carries the whole
+	// guarantee rather than most of it.
 	if d.Selection == selectionStratified {
 		for _, row := range existing {
 			if row.Stratum != d.Stratum {
@@ -818,7 +844,7 @@ type boundarySummary struct {
 func bandNote(b goldBand, p vetoBandPlan) string {
 	switch b {
 	case bandAccepted:
-		return "the live-accept half: the candidate false-drops, censused"
+		return "the live-accept half: the candidate false-drops, and what the recall claim is read on"
 	case bandNear:
 		return fmt.Sprintf("score in [%.6f, %.6f) -- where the threshold is decided", pagegate.VetoThreshold-p.NearBand, pagegate.VetoThreshold)
 	case bandDeep:
@@ -887,7 +913,7 @@ func printBoundarySummary(w io.Writer, s boundarySummary) {
 			return
 		}
 		would := 0
-		quotas := map[goldBand]int{bandAccepted: 0, bandNear: s.Plan.NearRows, bandDeep: s.Plan.DeepRows}
+		quotas := map[goldBand]int{bandAccepted: s.Plan.AcceptedRows, bandNear: s.Plan.NearRows, bandDeep: s.Plan.DeepRows}
 		for _, b := range boundaryBands {
 			take := len(s.Bands[b])
 			if q := quotas[b]; q > 0 && q < take {
@@ -992,12 +1018,15 @@ func runGoldSetSampleBoundary(args []string) int {
 // stratum, BOTH halves of the disagreement, because ADR-0049 forbids filtering them by
 // the extractor's own verdict. It is a sample rather than a census because the drop set
 // is most of the stream on this rung and ADR-0043 requires a human confirmation on every
-// Boundary Stratum row: the defaults draw ~174 rows where a census of the measured window
-// would owe 832 and grow with the frame.
+// Boundary Stratum row: the defaults draw 220 rows where a census of the closed window
+// would owe 2,145 and grow with the frame.
 //
-// There is deliberately NO flag for the accepted band. It is a census because the recall
-// claim rests on exactly those pages -- sampling them would put sampling error on the one
-// number the rollout turns on -- and -since is the lever if it ever grows too large.
+// EVERY band carries a quota, the accepted one included. It was specified as a census on
+// the reasoning that those pages are the candidate false-drops the recall claim is read
+// on -- but the band scales with the frame like any other, and the closed window put
+// 2,025 rows in it, so a censused band still made the draw's size a function of the
+// frame's. That is the very failure the bands were introduced to fix, surviving in the
+// one band exempted from them. -accepted-rows 0 restores the census exactly.
 //
 // Returns the process exit code: 2 on a usage or validation error, 1 on IO, 0 on success.
 func runGoldSetSampleVetoBoundary(args []string) int {
@@ -1011,13 +1040,14 @@ func runGoldSetSampleVetoBoundary(args []string) int {
 	// change the fitted weights and each one owes a human confirmation.
 	draw := fs.Bool("draw", false, "append a stratified sample of the drop set to the Extract Gold Set as the veto-boundary stratum; the default reports the veto depth and writes nothing")
 	nearBand := fs.Float64("near-band", defaultVetoNearBand, "score width below pagegate.VetoThreshold that counts as JUST BELOW THE CUT: the near band is [VetoThreshold-band, VetoThreshold) and everything below it is the deep band; must be in (0, VetoThreshold)")
+	acceptedRows := fs.Int("accepted-rows", defaultVetoAcceptedRows, "rows to draw from the live-accept half of the drop set -- the candidate false-drops the recall claim is read on; 0 takes the whole band")
 	nearRows := fs.Int("near-rows", defaultVetoNearRows, "rows to draw from the near band, where the threshold is actually decided; 0 takes the whole band")
 	deepRows := fs.Int("deep-rows", defaultVetoDeepRows, "rows to draw from the deep-reject band -- smaller, because this band confirms the bottom is junk and looks for another short posting publishing no structured data (ADR-0049); 0 takes the whole band")
 	seed := fs.String("seed", defaultVetoBoundarySeed, "seed for the deterministic within-band selection; changing it is a deliberate resample")
 	_ = fs.Parse(args)
 
 	if *capture == "" || *since == "" {
-		fmt.Fprintln(os.Stderr, "usage: llmbench goldset-sample-veto-boundary -capture <capture.jsonl> -since <RFC3339> [-dir d] [-draw] [-near-band f] [-near-rows n] [-deep-rows n] [-seed s]")
+		fmt.Fprintln(os.Stderr, "usage: llmbench goldset-sample-veto-boundary -capture <capture.jsonl> -since <RFC3339> [-dir d] [-draw] [-near-band f] [-accepted-rows n] [-near-rows n] [-deep-rows n] [-seed s]")
 		return 2
 	}
 	cutoff, err := time.Parse(time.RFC3339, *since)
@@ -1030,7 +1060,7 @@ func runGoldSetSampleVetoBoundary(args []string) int {
 		Capture: *capture,
 		Dir:     *dir,
 		Since:   cutoff,
-		Plan:    vetoBandPlan{NearBand: *nearBand, NearRows: *nearRows, DeepRows: *deepRows},
+		Plan:    vetoBandPlan{NearBand: *nearBand, AcceptedRows: *acceptedRows, NearRows: *nearRows, DeepRows: *deepRows},
 		Seed:    *seed,
 		Draw:    *draw,
 	}, os.Stdout)

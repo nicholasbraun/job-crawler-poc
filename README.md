@@ -378,12 +378,15 @@ decide the rollout:
 | flag | default | what it sets |
 |---|---|---|
 | `-near-band` | `0.20` | the score width below `pagegate.VetoThreshold` that counts as *just below the cut*. The near band is `[VetoThreshold-band, VetoThreshold)` and everything below it is the deep band. Must be in `(0, VetoThreshold)`. |
+| `-accepted-rows` | `100` | rows to draw from the live-accept half of the drop set — the candidate false-drops the recall claim is read on. `0` takes the whole band. |
 | `-near-rows` | `80` | rows to draw from the near band, where the threshold is actually decided. `0` takes the whole band. |
 | `-deep-rows` | `40` | rows to draw from the deep-reject band — smaller, because this band confirms the bottom is junk and reaches for another short posting publishing no structured data. `0` takes the whole band. |
 | `-seed` | `extract-goldset-veto-boundary-v1` | keys the deterministic within-band selection. Changing it is a deliberate resample. |
 
-  There is deliberately **no** flag for the accepted band: it is a census, and `-since` is the
-  lever if it ever grows too large.
+  **Every** band carries a quota, the accepted one included. A band's population scales with
+  the frame, so a censused band would leave the draw's size a function of the frame's — the
+  failure the bands exist to fix. `-accepted-rows 0` restores the census exactly, weights and
+  all, and `-since` narrows the frame if a window ever calls for it.
 
 **3. Draw the drop set and confirm it blind.**
 
@@ -401,20 +404,23 @@ by it would import that bias before a human ever reads a row. That is where this
 differs from ADR-0044's `boundary` stratum, which takes the accept half only — and they are
 separate strata so a committed row says which pair drew it.
 
-A **sample**, where ADR-0044's boundary is a census, and the numbers are why. A live capture
-window measured over a 1,006-page frame against the shipped weights: veto depth **82.7%**, a
-drop set of **832 rows** that grows with the frame, **54** of them pages the live extractor
-read as a single posting. The disagreement here is most of the stream, where ADR-0044's was
-188 pages — and ADR-0043 requires a human confirmation on **every** Boundary Stratum row, so a
-census would owe thousands of Blind Confirmations, never be finished, and block the refit
-indefinitely. At the defaults the same frame draws ~174 rows. Sampling makes the obligation
-finishable; it does not weaken it.
+A **sample**, where ADR-0044's boundary is a census, and the numbers are why. The capture
+window closed at **18,233 framed pages**, holding a drop set of **12,036 rows** — banded
+**2,025** live-accept, **370** near and **9,641** deep. The disagreement here is most of the
+stream, where ADR-0044's was 188 pages — and ADR-0043 requires a human confirmation on
+**every** Boundary Stratum row, so a census would owe **2,145** Blind Confirmations, never be
+finished, and block the refit indefinitely. At the defaults the same frame draws **220** rows.
+Sampling makes the obligation finishable; it does not weaken it.
 
-Three bands, and each is there for its own reason:
+Three bands, each quota'd, and each there for its own reason:
 
-- **every accepted-but-dropped page**, censused. These are the candidate false-drops; the
-  recall claim rests on exactly them, and sampling them would put sampling error on the one
-  number the rollout turns on.
+- **a sample of the accepted-but-dropped pages**, where the recall claim is read. These are
+  the candidate false-drops. The band was specified as a census for exactly that reason, and
+  the closed window's 2,025 rows are why it is not one: a 100-row sample pins the band's
+  false-drop rate to a standard error of at most ~5 points, and that variance is dwarfed by a
+  bias no quota removes — which pages land in this band at all is decided by the extractor's
+  own verdict, at **0.454** precision against human labels. The band is sampled *uniformly*,
+  never sub-banded by score, so a score-conditioned read of it stays valid afterwards.
 - **a sample from just below the cut**, where the threshold is actually decided.
 - **a smaller sample from the deep-reject band**, to confirm the bottom really is junk and to
   reach deliberately for another **short posting publishing no structured data** — the shape
@@ -422,10 +428,12 @@ Three bands, and each is there for its own reason:
   were exactly that.
 
 Each row carries the **inverse of its selection probability**, normalized to the drawing's own
-row count. Weighting a sampled row 1 and pooling it with the censused ones would make any
-weighted read over the stratum describe the enriched sample while claiming to describe the drop
-set. What those weights estimate is *the pages the veto would withhold the call from over this
-frame*, minus the URLs earlier drawings already hold — never the stream.
+row count. Weighting a sampled row 1 and pooling it with rows drawn at another rate would make
+any weighted read over the stratum describe the enriched sample while claiming to describe the
+drop set. One arithmetic serves all three bands: a band whose quota does not bind lands on
+`N_c/n_c = 1`, which is exactly the weight a census produces. What those weights estimate is
+*the pages the veto would withhold the call from over this frame*, minus the URLs earlier
+drawings already hold — never the stream.
 
 Stratifying on the live verdict is **not** the filtering ADR-0049 forbids. Filtering would give
 the abstained pages inclusion probability *zero* and import the extractor's 0.454 precision into
@@ -441,7 +449,7 @@ yields a different sample, which is why the threshold, the band edge and the see
 Gold Set README's table in step 4.
 
 The rows the draw appended carry no confirmer, so the confirmation surface serves them one at a
-time — on the order of 150 rows, a pass a person finishes.
+time — on the order of 220 rows, a pass a person finishes.
 
 The label is taken **before** anything is revealed (ADR-0048), each row's **Capture Fidelity**
 is measured against a fresh fetch so a live view is admitted or refused per row (ADR-0047),

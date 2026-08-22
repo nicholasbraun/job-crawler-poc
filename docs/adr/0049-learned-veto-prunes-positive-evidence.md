@@ -491,15 +491,15 @@ So `learnedVetoBoundary` becomes a **stratified sample** of the drop set, in thr
 
 | band | population | design | why |
 |---|---|---|---|
-| **accepted** | drop ∧ live verdict *accept* | **census** | the candidate false-drops. The recall claim rests on exactly these ~54 pages per 1,000 framed, and sampling them would put sampling error on the one number the rollout turns on. |
+| **accepted** | drop ∧ live verdict *accept* | **census** — superseded by the amendment below, which quotas it with `-accepted-rows` | the candidate false-drops. The recall claim rests on exactly these ~54 pages per 1,000 framed. |
 | **near** | drop ∧ live verdict *abstain* ∧ score in `[VetoThreshold − band, VetoThreshold)` | sampled, `-near-rows` | where the threshold is actually decided, and therefore where a confirmation buys the most. |
 | **deep** | drop ∧ live verdict *abstain* ∧ score below that | sampled, `-deep-rows` | to confirm the bottom really is junk, and to reach deliberately for another **short posting publishing no structured data** — the shape the #304 amendment above records both live false-drops having. |
 
 The three partition the drop set exactly, so no page can be drawn twice and none can be missed.
-At the shipped defaults (`-near-band 0.20 -near-rows 80 -deep-rows 40`) the measured frame draws
-54 + 80 + 40 = **174** rows against a census of 832. The quotas are counts rather than shares
-because the human confirmation budget is absolute and does not scale with the frame; `-since` is
-the lever on the censused band.
+At the defaults this amendment shipped (`-near-band 0.20 -near-rows 80 -deep-rows 40`) the measured
+frame draws 54 + 80 + 40 = **174** rows against a census of 832. The quotas are counts rather than
+shares because the human confirmation budget is absolute and does not scale with the frame — which
+is also why the amendment below takes the exemption back and quotas the accepted band too.
 
 **Weighting.** Each row carries the inverse of its selection probability, normalized within this
 drawing: `w_c = (N_c/n_c) × (n/N)`, so the drawn weights sum to the drawn rows and the per-drawing
@@ -550,3 +550,71 @@ Nothing about the confirmation obligation changes. Every drawn row still owes a 
 Confirmation, `pendingVetoBoundaryConfirmations` is still the ratchet that counts them, and the
 commit that draws still raises it by hand because `goldset-refit` refuses a rise. Sampling makes
 that obligation **finishable**, which is the whole of what it buys.
+
+## Amendment: the accepted band is sampled too (#304)
+
+The amendment above gave two of the three bands a quota and left the third a census, on the
+reasoning that those pages are the candidate false-drops and the recall claim rests on exactly
+them. That reasoning was calibrated on the 1,006-page frame, where the band held 54 rows inside a
+~174-row draw. It does not survive the window closing.
+
+The capture window closed at **18,233 framed pages**. Against the shipped weights the drawing's
+plan preview over it reads:
+
+| band | population | quota | would draw | observed Posting Score |
+|---|---:|---|---:|---|
+| accepted | 2,025 | census | 2,025 | 0.000393..0.604716 |
+| near | 370 | 80 | 80 | |
+| deep | 9,641 | 40 | 40 | |
+| **drop set** | **12,036** | | **2,145** | |
+
+A band's population scales with the frame, so a **censused** band keeps the draw's size a function
+of the frame's size. That is precisely the failure the bands were introduced to fix, surviving in
+the one band that was exempted from them: 2,145 rows of Blind Confirmation is not a pass anybody
+finishes, and ADR-0043 requires every drawn row confirmed, so an unfinishable draw blocks the refit
+indefinitely — the same way a full census would.
+
+So the accepted band gets a quota too: **`-accepted-rows`, defaulting to 100**. The shipped
+defaults now draw **100 + 80 + 40 = 220** rows.
+
+**Why sampling a band that was deliberately censused is the better trade.** A 100-row sample of
+2,025 pins that band's false-drop rate to a standard error of at most ~5 points — finite-population
+corrected, `sqrt(p(1-p)/100) × sqrt(1925/2024)` is **±4.9pp at p=0.5** and **±2.9pp at p=0.1**. That
+sampling variance is dwarfed by a bias that is already present and that no quota can remove: which
+pages land in this band at all is decided by the extractor's own verdict, which this record puts at
+**0.454 precision** against human labels. Protecting against the smaller error while the larger one
+is unavoidable is not a good trade. The census was buying a precision the band's own definition
+cannot deliver.
+
+**The band is sampled uniformly, not spread by score.** It spans 0.000393..0.604716, and the
+temptation is to sub-band it. The reasons not to: the band's question is a **rate over the whole
+band** — of the pages the veto drops that the live extractor read as one posting, what share are
+really Job Listings — and a simple random sample within one cell estimates that with one weight and
+no further assumptions. *Where the threshold goes* is the **near** band's question, and that band is
+already sampled roughly four times harder (80 of 370 against 100 of 2,025). Sub-banding would also
+falsify the rule that the accept half is banded by the live verdict and **never** by its score,
+give it two weights, and add a fourth cell and a fourth flag — the redesign this change is not.
+Nothing is lost: the Posting Score is recomputable from every committed row's stored content, so a
+score-conditioned read of this band stays available, and it stays *valid* **because** the sample is
+uniform in score — every score region is represented at the same rate, so any score-conditioned
+subset is itself a simple random sample of its own sub-population, carrying the one band weight.
+
+**The weighting is unchanged.** The accepted band flows through the same `w_c = (N_c/n_c) × (n/N)`
+as the other two rather than a parallel path — one map entry, not a second arithmetic. A band whose
+quota does not bind still comes out exactly where the census put it: taking a band whole makes
+`N_c/n_c` exactly **1**, so `-accepted-rows 0` restores the census bit for bit, weights included.
+That is asserted as a test, not claimed.
+
+**This changes an unused design, not committed rows.** `veto-boundary` still holds **zero committed
+rows** — verified, not assumed — so no row was ever drawn under the census design and there is
+nothing to redefine. Had rows already existed, this move would not have been available: those rows
+would carry inclusion probability 1 in the accepted band, and a later sampled draw into the same
+stratum would pool two inclusion-probability designs, which is exactly what makes a weighted
+estimate over a stratum unrecoverable. The honest move would then have been a **new design with a
+new stratum** — its own pinned row count, its own confirmation ratchet, its own row in both
+READMEs' drawings tables — which is what the verb's own refusal already tells an operator: *a fresh
+window is a new drawing; declare it in code, as every drawing before it was.*
+
+Nothing about the confirmation obligation changes here either, and nothing about the depth, the
+bands' definitions, the determinism or the draw-once rule moves. This is one quota flag joining the
+two that already existed.
