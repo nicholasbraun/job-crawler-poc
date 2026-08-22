@@ -618,3 +618,31 @@ window is a new drawing; declare it in code, as every drawing before it was.*
 Nothing about the confirmation obligation changes here either, and nothing about the depth, the
 bands' definitions, the determinism or the draw-once rule moves. This is one quota flag joining the
 two that already existed.
+
+### What the closed window measured
+
+The plan preview above is also the first **Veto Depth** ever computed over a real stream frame, and
+it is recorded here rather than left in a terminal because it is the number the rollout was gated on:
+
+> Over the closed window — **18,233 framed pages across 1,206 of the Catalog's 1,221 hosts** — the
+> Learned Veto would withhold **12,036 of 18,233** extractor calls: a Veto Depth of **0.6601**.
+> ADR-0049's pre-registered floor of 0.10 is **MET**, by a factor of 6.6.
+
+Set that beside what the training run measured in-sample: a depth of 0.2825 at **zero** `detail`
+loss. The live frame cuts **more than twice as deep**, and the depth was still falling as the frame
+grew (0.854 at 465 pages → 0.827 at 1,006 → 0.709 at 3,033 → 0.670 at 7,258 → 0.660 at 18,233) as
+the host mix broadened and the baseline's own yield rose with it. Nothing in-sample predicted that,
+which is the whole case for taking a window before flipping a switch.
+
+The window also produced a reading the pre-registered condition does **not** cover, and it is the
+reason this record does not treat the floor being met as an argument for flipping. Of the 7,444
+pages in that frame the live extractor read as a single posting, the veto withholds the call from
+**2,025** — it keeps **72.8%** of them, at a precision of 87.4% against a 40.8% baseline. So the
+second half of the condition, *losing none of the `detail` rows*, holds in-sample and demonstrably
+does **not** hold on the stream.
+
+That figure is an upper bound on the harm and a weak one in both directions, because the extractor's
+own verdict decides which pages it counts, and this record puts that verdict at 0.454 precision
+against human labels. It cannot be read as a false-drop rate; it is the reason the accepted band is
+drawn and confirmed blind rather than trusted. **The condition is met on depth and open on loss, and
+only the confirmation pass closes it.**
