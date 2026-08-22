@@ -86,8 +86,8 @@ accepts (28.2%). Measured over a real capture frame of 18,233 pages, the same we
 narrow a population.
 
 **After** (737 rows): `VetoThreshold` 0.165048. In-sample Veto Depth 240 of 427 scorable accepts
-(56.21%) at zero `detail` lost. Over the same capture frame it drops 10,473 of 18,269 (57.3%), and
-live it ran at 52.3%. In-sample and stream agree for the first time.
+(56.21%) at zero `detail` lost. Over the same capture frame it drops **57.3%**, and live it ran at
+52.3%. In-sample and stream agree for the first time.
 
 **Held out** — 300 pages from that frame that no drawing had selected, labelled independently:
 
