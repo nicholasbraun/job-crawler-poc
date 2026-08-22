@@ -394,7 +394,7 @@ go run ./cmd/llmbench goldset-refit
 ```
 
 `goldset-refit` is the whole of what this step used to be. It folds the confirmed rows into
-the Extract Gold Set through `goldset-apply`, recomputes and rewrites the sixteen counts the
+the Extract Gold Set through `goldset-apply`, recomputes and rewrites the seventeen counts the
 record determines in `cmd/llmbench/goldset_test.go`, re-runs the trainer that
 `go generate ./internal/pagegate` runs, and then runs `go test -count=1 ./...` over the
 regenerated tree — the only step that sees the new weights *compiled*, which is why it is a
@@ -412,14 +412,22 @@ point moves with the labels rather than away from them. Never edit a label and n
 `VetoThreshold` by hand.
 
 The verb rewrites the counts, and that is deliberate — but it never makes the change
-invisible: every one of the sixteen is printed, changed or not, and each rewrite lands in your
+invisible: every one of the seventeen is printed, changed or not, and each rewrite lands in your
 diff. It **refuses** to move a confirmation ratchet in the direction that means a signature
 vanished (ADR-0048), and it stamps no provenance of its own: a confirmation is `goldset-ui`'s
-act and a human's. Two things it does not own and you still do, in the same commit:
-`drawnStrata` (which does not yet list `veto-boundary`) and the drawings table of
-`cmd/llmbench/extract-goldset/README.md` — paste the draw's summary there, the frame, the row
-count and **the `VetoThreshold` the cut was taken at**, because the threshold moves with the
-refit in this very step and that table is where the other three drawings record theirs.
+act and a human's. Three things it does not own and you still do, in the same commit:
+
+- `pendingVetoBoundaryConfirmations`, the `veto-boundary` stratum's confirmation ratchet. It ships
+  at `0` because the stratum ships undrawn, and drawing rows *raises* it — the one direction a
+  ratchet may only be moved by a human (ADR-0048), so the verb refuses the pass and names the
+  number to set. Raise it by hand in the drawing's commit, exactly as `pendingBoundaryConfirmations`
+  shipped at its own stratum's full count; every later refit then lowers it as confirmations land.
+- `drawnStrata`, which does not yet list `veto-boundary`.
+- the drawings table of `cmd/llmbench/extract-goldset/README.md` — paste the draw's summary there,
+  the frame, the row count and **the `VetoThreshold` the cut was taken at**, because the threshold
+  moves with the refit in this very step and that table is where the other three drawings record
+  theirs.
+
 `cmd/llmbench/extract-goldset/README.md` carries the whole maintenance sequence.
 
 Expect the suite to name things after a confirmation pass, and expect them: `RESTANDING`

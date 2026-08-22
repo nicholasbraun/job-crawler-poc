@@ -129,8 +129,10 @@ const (
 	// vetoBoundaryStratumRows is 0: ADR-0049's drawing ships DEFINED and undrawn,
 	// because drawing it needs a real capture window with the rung off (step 1 of
 	// *Turning the Learned Veto on* in the repository README) and every drawn row owes
-	// a human confirmation. The commit that runs the drawing sets this number and moves
-	// stratumVetoBoundary into drawnStrata in the same diff.
+	// a human confirmation. The commit that runs the drawing sets this number, raises
+	// pendingVetoBoundaryConfirmations to the same count by hand -- goldset-refit refuses
+	// that rise, which is the point (ADR-0048) -- and moves stratumVetoBoundary into
+	// drawnStrata, all in the same diff.
 	vetoBoundaryStratumRows = 0
 	// randomStreamAcceptRate is the accept share the random drawing's weights were
 	// built on -- #261's census measurement of the live extract stream, not the
@@ -172,12 +174,34 @@ const (
 	// rise fails the build, a fall is logged with the number to lower it to.
 	// extract-goldset/README.md says exactly how.
 	pendingBoundaryConfirmations = 188
+	// pendingVetoBoundaryConfirmations is the same ratchet on the OTHER Boundary
+	// Stratum -- the Learned Veto's own drawing (ADR-0049). It is a separate constant
+	// because it is a separate drawing: the two strata are drawn by different config
+	// pairs and confirmed in different passes, and one number over both would let a
+	// confirmation landing on one hide a signature vanishing from the other.
+	//
+	// It is 0 because the stratum ships DEFINED and undrawn (vetoBoundaryStratumRows).
+	// It stays a ratchet at 0 rather than waiting for the drawing: these are the rows
+	// the veto's own hard-zero false-drop guard would be decided on, so the commit that
+	// draws them must raise this number deliberately and lower it as the confirmations
+	// land -- it must not be able to add unconfirmed rows to the fit population with
+	// nothing in the build counting them. RATCHET in ONE direction
+	// (confirmationFloor, ADR-0048): a rise fails the build, a fall is logged with the
+	// number to lower it to.
+	pendingVetoBoundaryConfirmations = 0
 	// ambiguousRows is how many rows carry the ambiguous label -- pages a reading
 	// could not settle, recorded rather than forced into a class. Pinned in BOTH
 	// directions: an ambiguity that appears, or one that quietly resolves, changes
 	// what the confusion counts are computed over and must be seen in a diff. It is
 	// deliberately NOT one of ADR-0048's floors: marking a page unresolvable is a rare,
-	// deliberate keystroke, and it should stop the build until it is acknowledged.
+	// deliberate keystroke, and neither direction of it may pass unseen.
+	//
+	// What "unseen" rules out, exactly, since the two paths differ: a hand edit of the
+	// record leaves the build RED here until the constant is moved, while goldset-refit
+	// rewrites it and prints it under "ACKNOWLEDGE: a pinned census moved", so the
+	// change lands in the diff rather than stopping the pass (countPinned,
+	// goldsetcounts.go). Either way a human reads the number and commits it; neither
+	// way does the set quietly lose rows from every scoring denominator.
 	//
 	// It rose 10 -> 15 when the Random Stratum was confirmed row by row (#274): five
 	// pages a human read and could not settle, each carrying a note saying what the
@@ -2546,35 +2570,131 @@ func TestCommittedBoundaryRecoveryLedger(t *testing.T) {
 		total, recovered[bench.ExtractDetail], nonPostings, recovered[bench.ExtractAmbiguous])
 }
 
-// TestCommittedBoundaryStratumConfirmation is the ratchet ADR-0043 requires on this
-// stratum: EVERY row must carry a human confirmation, because these are the rows a
-// hard-zero false-drop guard is decided on. The count is a one-directional ratchet
-// (confirmationFloor, ADR-0048) -- a rise fails, a fall is logged -- so a confirmation
-// pass never turns the build red; a confirmation that vanished is caught by that
-// direction and, row by row, by TestCommittedRecordAgreesOnWhoConfirmedWhat. It
+// censusConfirmationRatchets is the ratchet each Boundary Stratum owes: the counts-file
+// constant recording how many of its rows still await a human confirmer, and what that
+// constant currently says. One entry per stratum rather than one number over both,
+// because the two are drawn by different config pairs and confirmed in different
+// passes -- pooled, a confirmation landing on one would hide a signature vanishing from
+// the other.
+//
+// It is a table so that TestCommittedBoundaryStrataConfirmation can assert it is
+// COMPLETE. A Boundary Stratum with no entry is the failure ADR-0043 forbids: rows a
+// hard-zero false-drop guard would be decided on, sitting in the fit population with
+// nothing in the build counting the confirmations they owe.
+var censusConfirmationRatchets = map[goldStratum]struct {
+	constant string
+	recorded int
+}{
+	stratumBoundary:     {"pendingBoundaryConfirmations", pendingBoundaryConfirmations},
+	stratumVetoBoundary: {"pendingVetoBoundaryConfirmations", pendingVetoBoundaryConfirmations},
+}
+
+// pendingCensusConfirmations partitions rows by Boundary Stratum and returns, per
+// stratum, the URLs carrying no human confirmer -- the figure each stratum's ratchet
+// records, and the same arithmetic derivedCounts' pendingIn performs for goldset-refit.
+//
+// Separate from the assertions on purpose: stratumVetoBoundary ships DEFINED and
+// undrawn, so over the committed record its half of the guard runs on nothing, and a
+// ratchet only ever exercised on an empty stratum proves nothing about the day the rows
+// land. TestPendingCensusConfirmationsCountsEveryBoundaryStratum runs it on rows.
+func pendingCensusConfirmations(rows []goldRow) map[goldStratum][]string {
+	pending := map[goldStratum][]string{}
+	for _, row := range rows {
+		if !isCensusStratum(row.Stratum) {
+			continue
+		}
+		if row.LabelProvenance.ConfirmedBy == "" {
+			pending[row.Stratum] = append(pending[row.Stratum], row.URL)
+		}
+	}
+	return pending
+}
+
+// TestCommittedBoundaryStrataConfirmation is the ratchet ADR-0043 requires on BOTH
+// Boundary Strata: EVERY row must carry a human confirmation, because these are the
+// rows a hard-zero false-drop guard is decided on. Each count is a one-directional
+// ratchet (confirmationFloor, ADR-0048) -- a rise fails, a fall is logged -- so a
+// confirmation pass never turns the build red; a confirmation that vanished is caught
+// by that direction and, row by row, by TestCommittedRecordAgreesOnWhoConfirmedWhat. It
 // refuses a machine confirmer outright so the gap can never be closed by the tooling
 // that opened it.
-func TestCommittedBoundaryStratumConfirmation(t *testing.T) {
-	pending := []string{}
-	for _, row := range loadCommittedGoldSet(t) {
-		if row.Stratum != stratumBoundary {
+//
+// It covers every stratum isCensusStratum names rather than one named stratum, and then
+// asserts that each of them OWNS a ratchet -- so a Boundary Stratum added without one
+// fails here rather than shipping rows into the fit population that nothing counts. The
+// ratchet count is checked against zero for the same reason
+// TestEveryDerivedCountInTheCountsFileIsOwned checks its own: a rename that emptied the
+// census would otherwise turn this guard into a silent pass.
+func TestCommittedBoundaryStrataConfirmation(t *testing.T) {
+	rows := loadCommittedGoldSet(t)
+	for _, row := range rows {
+		if !isCensusStratum(row.Stratum) {
 			continue
 		}
 		if machineName(row.LabelProvenance.ConfirmedBy) {
 			t.Errorf("%s: confirmed_by %q is a machine; a confirmation must come from a human", row.URL, row.LabelProvenance.ConfirmedBy)
 		}
 		if row.LabelProvenance.ProposedBy == "" || row.LabelProvenance.ProposedAt == "" {
-			t.Errorf("%s: boundary row has no proposer (%+v)", row.URL, row.LabelProvenance)
-		}
-		if row.LabelProvenance.ConfirmedBy == "" {
-			pending = append(pending, row.URL)
+			t.Errorf("%s: %s row has no proposer (%+v)", row.URL, row.Stratum, row.LabelProvenance)
 		}
 	}
-	confirmationFloor{
-		constant: "pendingBoundaryConfirmations",
-		counts:   "boundary rows await human confirmation (see extract-goldset/README.md)",
-		current:  len(pending), recorded: pendingBoundaryConfirmations,
-	}.assert(t)
+
+	pending := pendingCensusConfirmations(rows)
+	ratchets := 0
+	for _, s := range allStrata {
+		if !isCensusStratum(s) {
+			continue
+		}
+		ratchets++
+		r, owned := censusConfirmationRatchets[s]
+		if !owned {
+			t.Errorf("the %s stratum is a census and owns no confirmation ratchet. "+
+				"Add one to censusConfirmationRatchets, a constant beside pendingBoundaryConfirmations and a derivedCounts entry, or its rows reach the fit with nothing counting the confirmations ADR-0043 requires of them.", s)
+			continue
+		}
+		confirmationFloor{
+			constant: r.constant,
+			counts:   fmt.Sprintf("%s rows await human confirmation (see extract-goldset/README.md)", s),
+			current:  len(pending[s]), recorded: r.recorded,
+		}.assert(t)
+	}
+	if ratchets == 0 {
+		t.Fatal("no stratum reports itself a census at all; a rename would turn this guard into a silent pass")
+	}
+}
+
+// TestPendingCensusConfirmationsCountsEveryBoundaryStratum runs the ratchet's arithmetic
+// on rows the committed record does not yet hold. stratumVetoBoundary ships undrawn, so
+// without this the veto-boundary half of the guard above would be asserted only over an
+// empty stratum -- green whether it works or not, right up to the commit that draws it.
+func TestPendingCensusConfirmationsCountsEveryBoundaryStratum(t *testing.T) {
+	rows := []goldRow{
+		{URL: "https://a.test/jobs/one", Stratum: stratumBoundary, LabelProvenance: goldProvenance{ConfirmedBy: "A Human"}},
+		{URL: "https://a.test/jobs/two", Stratum: stratumBoundary},
+		{URL: "https://b.test/jobs/quiet", Stratum: stratumVetoBoundary},
+		{URL: "https://b.test/jobs/quieter", Stratum: stratumVetoBoundary},
+		{URL: "https://b.test/jobs/loud", Stratum: stratumVetoBoundary, LabelProvenance: goldProvenance{ConfirmedBy: "A Human"}},
+		// A sampled stratum, which has a ratchet of its own shape and must not be
+		// counted into either census.
+		{URL: "https://c.test/jobs/sampled", Stratum: stratumRandom},
+	}
+	pending := pendingCensusConfirmations(rows)
+	for _, want := range []struct {
+		stratum goldStratum
+		pending int
+	}{
+		{stratumBoundary, 1},
+		{stratumVetoBoundary, 2},
+	} {
+		t.Run(string(want.stratum), func(t *testing.T) {
+			if got := len(pending[want.stratum]); got != want.pending {
+				t.Errorf("%d %s rows await confirmation, want %d", got, want.stratum, want.pending)
+			}
+		})
+	}
+	if _, counted := pending[stratumRandom]; counted {
+		t.Errorf("the random stratum was counted into a census ratchet; it is spot-checked, not confirmed (ADR-0043)")
+	}
 }
 
 // TestCommittedGoldSetAmbiguityIsRecorded pins the pages a reading could not settle.

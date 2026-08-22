@@ -31,7 +31,7 @@ const defaultCountsPath = "cmd/llmbench/goldset_test.go"
 // recordSnapshot is the applied record as the derived counts read it: the rows
 // themselves, plus ONE replay of today's shipping Positive Evidence rule over them
 // (boundaryCandidateConfig, which pins both extract kill switches -- ADR-0049) and the
-// boundary scorecard folded from it. Computed once, so sixteen constants cost one read
+// boundary scorecard folded from it. Computed once, so seventeen constants cost one read
 // and one replay and every one of them is read off the SAME state.
 type recordSnapshot struct {
 	Rows     []goldRow
@@ -92,14 +92,20 @@ type derivedCount struct {
 // derivedCounts is every count goldset-refit recomputes, in the order the counts file
 // declares them, so the printed transcript reads down the file.
 //
-// Two of them are worth reading twice:
+// Three of them are worth reading twice:
 //
 //   - pendingBoundaryConfirmations has TWO readers with slightly different
-//     definitions. TestCommittedBoundaryStratumConfirmation counts every Boundary
+//     definitions. TestCommittedBoundaryStrataConfirmation counts every Boundary
 //     Stratum row with no confirmer; TestCommittedBoundaryFalseDropsUnderTheCandidateRule
 //     reads the scorecard's Unconfirmed, which replayCaptured computes over LABELLED
 //     rows only. The first dominates the second and both are ceilings, so taking the
 //     first keeps both green. Do not take the smaller.
+//   - pendingVetoBoundaryConfirmations is its twin on the OTHER Boundary Stratum, and
+//     the two are deliberately never pooled: one number over both strata would let a
+//     confirmation landing on ADR-0044's drawing hide a signature vanishing from
+//     ADR-0049's. Every Boundary Stratum owes one of these, which
+//     TestCommittedBoundaryStrataConfirmation asserts as a census rather than trusting
+//     this table to be complete.
 //   - randomStreamAcceptRate is the one number in that file that LOOKS derived and is
 //     not: it is #261's census measurement of the live extract stream, and the
 //     committed weights are checked against it. It is never rewritten, and being a
@@ -160,6 +166,11 @@ var derivedCounts = []derivedCount{
 		Name: "pendingBoundaryConfirmations", Direction: countMayFall,
 		Why:   "Boundary Stratum rows still awaiting a human confirmation",
 		Value: func(s recordSnapshot) int { return pendingIn(s, stratumBoundary) },
+	},
+	{
+		Name: "pendingVetoBoundaryConfirmations", Direction: countMayFall,
+		Why:   "Learned Veto boundary rows still awaiting a human confirmation",
+		Value: func(s recordSnapshot) int { return pendingIn(s, stratumVetoBoundary) },
 	},
 	{
 		Name: "ambiguousRows", Direction: countPinned,

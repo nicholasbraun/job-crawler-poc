@@ -1006,7 +1006,7 @@ go run ./cmd/llmbench goldset-refit
 ```
 
 `goldset-refit` owns every hard-coded count below that the record determines, and prints
-all sixteen of them, changed or not, so a rewrite lands in the diff rather than behind
+all seventeen of them, changed or not, so a rewrite lands in the diff rather than behind
 it. It does **not** own this file's own prose: the drawings table, the scorecard blocks
 and the label distributions are a human's to keep current.
 
@@ -1018,15 +1018,20 @@ proposed.
 
 ## Human confirmation — what is still owed
 
-**What the build asserts about confirmations.** The four confirmation counts —
+**What the build asserts about confirmations.** The five confirmation counts —
 `pendingHumanConfirmations`, `pendingExpectedConfirmations`,
-`pendingBoundaryConfirmations` and `randomSpotChecks` — are one-directional ratchets
+`pendingBoundaryConfirmations`, `pendingVetoBoundaryConfirmations` and
+`randomSpotChecks` — are one-directional ratchets
 (ADR-0048): each fails only in the direction that means a human signature *vanished*,
 and merely logs the figure in the direction that means work landed, so a productive
 confirmation pass never leaves `main` red. Two things stay pinned in **both**
 directions: the four drawings' row counts, because a drawing is a fixed act of
 sampling, and `ambiguousRows`, because marking a page unresolvable is a rare,
-deliberate keystroke that changes what every confusion number is computed over. The
+deliberate keystroke that changes what every confusion number is computed over.
+Pinned means neither direction may pass *unseen*, which the two maintenance paths
+deliver differently: a hand edit of the record leaves `go test` red until the constant
+is moved, while `goldset-refit` rewrites it and prints it as `ACKNOWLEDGE: a pinned
+census moved`, so it lands in your diff rather than stopping the pass. The
 direction the ratchets gave up is asserted more sharply instead — the build requires
 that `goldset.jsonl`, `labels.tsv` and `expected.tsv` name the **same confirmer on
 every row**, and names the rows where they do not.

@@ -83,6 +83,43 @@ func TestEveryDerivedCountInTheCountsFileIsOwned(t *testing.T) {
 	t.Logf("%d integer constants in %s, %d of them derived from the record", integers, committedCounts, len(derivedCounts))
 }
 
+// TestEveryCensusRatchetIsOneGoldsetRefitProtects ties the two halves of ADR-0043's
+// confirmation rule together: the build-time guard on the committed record
+// (censusConfirmationRatchets) and the refusal goldset-refit makes when a pending count
+// rises (derivedCounts). A ratchet the tests read but the verb does not own would be
+// rewritten by nobody and refused by nobody; one the verb owns but no test reads would
+// be a number with no reader.
+//
+// Direction matters as much as presence: countMayFall is what makes a RISE a refusal,
+// which is the only direction that means a human signature vanished on rows the fit
+// population is drawn from.
+func TestEveryCensusRatchetIsOneGoldsetRefitProtects(t *testing.T) {
+	owned := map[string]derivedCount{}
+	for _, c := range derivedCounts {
+		owned[c.Name] = c
+	}
+	if len(censusConfirmationRatchets) == 0 {
+		t.Fatal("no Boundary Stratum declares a confirmation ratchet; a rename would turn this guard into a silent pass")
+	}
+	for stratum, ratchet := range censusConfirmationRatchets {
+		t.Run(string(stratum), func(t *testing.T) {
+			c, ok := owned[ratchet.constant]
+			if !ok {
+				t.Fatalf("%s is the %s stratum's ratchet but goldset-refit does not own it; add it to derivedCounts so a refit recomputes it and refuses a rise", ratchet.constant, stratum)
+			}
+			if c.Direction != countMayFall {
+				t.Errorf("%s is a PENDING count and must be countMayFall, so a rise is refused rather than rewritten", ratchet.constant)
+			}
+			// The table's arithmetic must be this stratum's, not its neighbour's: one
+			// unconfirmed row here has to move this constant and no other.
+			snapshot := recordSnapshot{Rows: []goldRow{{URL: "https://a.test/jobs/one", Stratum: stratum}}}
+			if got := c.Value(snapshot); got != 1 {
+				t.Errorf("%s counts %d unconfirmed %s rows, want 1", ratchet.constant, got, stratum)
+			}
+		})
+	}
+}
+
 // TestReadCountLiteralsRefusesWhatItCannotRewrite holds the property the whole
 // mechanism rests on: a count goldset-refit silently skipped is a Gold Set change the
 // diff does not show, which is the one thing the hard-coded counts exist to prevent.
