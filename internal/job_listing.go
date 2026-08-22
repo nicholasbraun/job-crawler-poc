@@ -163,13 +163,26 @@ type RawJobListing struct {
 // RawJobListing is EMBEDDED, not a named field, so the JSON on the lane's durable
 // stream keeps its existing top-level URL/Content shape: an entry enqueued by an
 // older binary and redelivered after an upgrade still decodes into a whole page,
-// with Rung empty (reported as pagegate.RungUnknown) rather than silently attributed.
+// with Rung empty (reported as pagegate.RungUnknown) rather than silently attributed
+// and Score zero, which the rung keeps from being read as a Posting Score at all.
 //
 // Rung is the string form of a pagegate.ExtractRung. It is not that type because the
 // domain root cannot import the gate that reads it.
 type ShadowSample struct {
 	RawJobListing
 	Rung string
+	// Score is the Posting Score the Learned Veto judged this page by (ADR-0049). It
+	// travels WITH the sample for the same reason Rung does: re-deriving it downstream
+	// could use a different binary's weights, filing a verdict against a score the gate
+	// never computed.
+	//
+	// It is MEANINGFUL ONLY when Rung is the Learned Veto's. Every other rung leaves it
+	// 0, and so does an entry enqueued before this field existed and redelivered after
+	// an upgrade -- which is why no presence flag crosses the wire: such an entry can
+	// never carry the Learned Veto's rung (the rung and this field landed in one
+	// change), so the rung gates the read and a zero here is never read as a score of
+	// zero.
+	Score float64
 }
 
 // Extraction is the transient result of one extractor call: the structured

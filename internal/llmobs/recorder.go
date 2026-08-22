@@ -18,6 +18,12 @@ type Recorder interface {
 	// Gated records a page a cheap gate resolved without an LLM call, and the
 	// reason it short-circuited.
 	Gated(ctx context.Context, kind Kind, reason Reason)
+	// PostingScore records one Posting Score the Extract Gate's Learned Veto judged
+	// (ADR-0049), for BOTH the pages it let through and the pages it vetoed. Called only
+	// where the rung actually ran, so an unjudged page's zero never enters the
+	// distribution. It is not a Call and not a Gated -- it is the shape of the
+	// population those two counters split.
+	PostingScore(ctx context.Context, score float64)
 	// Shadow records one Shadow Extraction: the extractor's verdict on a page the
 	// Extract Gate rejected (ADR-0044), with the gate rung that rejected it so the
 	// false-drop rate can be split by cause. Deliberately NOT Call -- a shadow
@@ -78,6 +84,16 @@ func (r *recorder) Gated(ctx context.Context, kind Kind, reason Reason) {
 	}
 	if r.stats != nil {
 		r.stats.recordGated(kind)
+	}
+}
+
+// PostingScore fans out to the histogram ONLY. Stats is deliberately untouched: it is
+// the end-of-run summary of counts and rates, the veto's saving already lands there
+// through recordGated(KindExtract) and its false-drop rate through the shadow tallies,
+// and a distribution does not reduce to one honest scalar on a log line.
+func (r *recorder) PostingScore(ctx context.Context, score float64) {
+	if r.metrics != nil {
+		r.metrics.recordPostingScore(ctx, score)
 	}
 }
 
@@ -145,6 +161,7 @@ type nopRecorder struct{}
 
 func (nopRecorder) Call(context.Context, Kind, Outcome, time.Duration) {}
 func (nopRecorder) Gated(context.Context, Kind, Reason)                {}
+func (nopRecorder) PostingScore(context.Context, float64)              {}
 func (nopRecorder) Shadow(context.Context, ShadowVerdict, string)      {}
 func (nopRecorder) ShadowDropped(context.Context, string)              {}
 func (nopRecorder) Content(context.Context, Kind, string)              {}

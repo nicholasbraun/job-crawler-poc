@@ -1,9 +1,13 @@
 package shadowextractionprocessor_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,10 +57,48 @@ func (s *spyRecorder) ShadowDropped(context.Context, string) {
 	s.t.Error("the shadow processor never sheds a sample; only the walk that enqueues one does")
 }
 
+func (s *spyRecorder) PostingScore(context.Context, float64) {
+	s.t.Error("the shadow lane must never enter the Posting Score distribution: it sees ~1% of rejects and none of the accepts, so a distribution built here would describe a population nobody is judging")
+}
+
 func (s *spyRecorder) Content(context.Context, llmobs.Kind, string)          {}
 func (s *spyRecorder) Retry(context.Context, llmobs.Kind)                    {}
 func (s *spyRecorder) DeadLetter(context.Context, llmobs.Kind)               {}
 func (s *spyRecorder) QueueDepth(context.Context, llmobs.Kind, int64, int64) {}
+
+// captureLogs installs a JSON slog handler writing into buf for the duration of fn,
+// then restores the previous default logger.
+func captureLogs(t *testing.T, buf *bytes.Buffer, fn func()) {
+	t.Helper()
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	slog.SetDefault(slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	fn()
+}
+
+// falseDropLine returns the one false-drop log entry in buf, decoded. It fails the
+// test when there is not exactly one: the score assertions below are about that line
+// and nothing else.
+func falseDropLine(t *testing.T, buf *bytes.Buffer) map[string]any {
+	t.Helper()
+	var found []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("could not parse log line %q: %v", line, err)
+		}
+		if msg, _ := entry["msg"].(string); strings.Contains(msg, "false-drop sample") {
+			found = append(found, entry)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("false-drop log lines = %d, want exactly 1: %s", len(found), buf.String())
+	}
+	return found[0]
+}
 
 func shadowSample(t *testing.T, rawURL string, rung pagegate.ExtractRung) *crawler.ShadowSample {
 	t.Helper()
@@ -174,5 +216,85 @@ func TestProcessLabelsARunglessSampleUnknown(t *testing.T) {
 
 	if len(rec.rungs) != 1 || rec.rungs[0] != string(pagegate.RungUnknown) {
 		t.Errorf("recorded rungs = %v, want one %q", rec.rungs, pagegate.RungUnknown)
+	}
+}
+
+// TestProcessFilesTheLearnedVetosVerdictsAndLogsTheScore covers the one rung whose
+// drops cannot be explained in words (ADR-0049). Its verdicts are filed under its own
+// rung like every other, but its false-drop log line additionally carries the Posting
+// Score that dropped the page — the only account of that drop there is, and what makes
+// correcting the threshold evidence-backed rather than guesswork.
+//
+// The middle case is the sharp one: the RUNG gates the read, not the value. A sample
+// on another rung carries a Score field that means nothing (here deliberately
+// non-zero), and an entry enqueued by an older binary carries no rung at all. Logging
+// either as a Posting Score would file a number against a page the veto never judged.
+func TestProcessFilesTheLearnedVetosVerdictsAndLogsTheScore(t *testing.T) {
+	tests := []struct {
+		name      string
+		rung      pagegate.ExtractRung
+		score     float64
+		wantRung  string
+		wantScore bool
+	}{
+		{
+			name:      "a Learned Veto false-drop carries the score that dropped it",
+			rung:      pagegate.RungLearnedVeto,
+			score:     0.4212,
+			wantRung:  string(pagegate.RungLearnedVeto),
+			wantScore: true,
+		},
+		{
+			name:     "another rung's sample logs no score",
+			rung:     pagegate.RungPositiveEvidence,
+			score:    0.9,
+			wantRung: string(pagegate.RungPositiveEvidence),
+		},
+		{
+			name:     "a rungless sample from an older binary logs no score",
+			rung:     pagegate.RungNone,
+			wantRung: string(pagegate.RungUnknown),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &spyRecorder{t: t}
+			p := shadowextractionprocessor.NewProcessor(&shadowextractionprocessor.Config{
+				// An accepting extractor, so every case produces the false-drop line.
+				Extractor: &stubExtractor{extraction: crawler.Extraction{IsJobPosting: true}},
+				Recorder:  rec,
+			})
+
+			sample := shadowSample(t, "https://acme.com/jobs/senior-engineer", tt.rung)
+			sample.Score = tt.score
+
+			var buf bytes.Buffer
+			captureLogs(t, &buf, func() {
+				if err := p.Process(t.Context(), sample); err != nil {
+					t.Fatalf("Process returned error: %v", err)
+				}
+			})
+
+			if len(rec.rungs) != 1 || rec.rungs[0] != tt.wantRung {
+				t.Errorf("recorded rungs = %v, want one %q", rec.rungs, tt.wantRung)
+			}
+
+			entry := falseDropLine(t, &buf)
+			logged, present := entry["posting_score"]
+			if !tt.wantScore {
+				if present {
+					t.Errorf("false-drop line carries posting_score %v on rung %q: only the Learned Veto's samples hold a score",
+						logged, tt.wantRung)
+				}
+				return
+			}
+			if !present {
+				t.Fatalf("false-drop line carries no posting_score on the Learned Veto's rung: %s", buf.String())
+			}
+			if got, ok := logged.(float64); !ok || got != tt.score {
+				t.Errorf("logged posting_score = %v, want %v: the score that dropped the page is the whole account of the drop", logged, tt.score)
+			}
+		})
 	}
 }

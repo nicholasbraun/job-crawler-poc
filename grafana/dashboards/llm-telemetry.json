@@ -658,6 +658,197 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "type": "row",
+      "id": 105,
+      "title": "Learned Veto (ADR-0049)",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 53 }
+    },
+    {
+      "type": "stat",
+      "id": 17,
+      "title": "Extract calls the Learned Veto saved (range)",
+      "description": "Pages the Extract Gate's final rung withheld from the LLM extractor: each one carried Positive Evidence, but its Posting Score fell below the compiled-in threshold (ADR-0049). Every page counted here is an extractor call not made, which is what this rung is FOR. It has its own gated reason rather than being pooled into url_structure, because it is the one rung a single environment variable restores — pooled with every structural reject, the cost of pulling EXTRACT_LEARNED_VETO could not be read at all. Zero and flat until EXTRACT_LEARNED_VETO=true; the `or vector(0)` shows an explicit 0 rather than \"No data\" before the first veto lands.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 54 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "text" },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(increase(crawler_llm_gated_total{kind=\"extract\",reason=\"learned_veto\"}[$__range])) or vector(0)",
+          "legendFormat": "calls saved",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 18,
+      "title": "Veto depth — share of judged pages vetoed (range)",
+      "description": "The live, stream-weighted counterpart of the condition ADR-0049 registered BEFORE the measurement: the Learned Veto is worth its weights table only if it vetoes at least 10% of the Positive Evidence rung's accepts. Numerator is the calls saved; denominator is the Posting Score histogram's count, which is every page the rung actually judged — its vetoes AND its survivors. The training run measured 28.2% on the Extract Gold Set, in sample. A live number far from that is the first sign the walked stream does not look like the set the weights were fitted on; read the two distribution panels below before acting on it.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 54 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "text" },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "100 * sum(increase(crawler_llm_gated_total{kind=\"extract\",reason=\"learned_veto\"}[$__range])) / clamp_min(sum(increase(crawler_llm_posting_score_count[$__range])), 1)",
+          "legendFormat": "veto depth",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 19,
+      "title": "Learned Veto false-drop rate (live)",
+      "description": "The false-drop rate restricted to the Learned Veto's rung: the share of the pages IT dropped that the extractor nevertheless reads as a single job posting. This is the rung's ONLY risk — it can never add a call, so all of its downside sits here. The series is primed at zero by PrimeShadow, so the FIRST accept is visible to increase() rather than reading as no change at all. It is also the one rung that cannot explain a drop in words: the matching log line carries the Posting Score that caused each one (grep posting_score). Denominator is completed verdicts only; an errored sample produced none.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 54 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "text" },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "100 * sum(increase(crawler_llm_shadow_total{verdict=\"accept\",rung=\"learned_veto\"}[$__range])) / clamp_min(sum(increase(crawler_llm_shadow_total{verdict=~\"accept|abstain\",rung=\"learned_veto\"}[$__range])), 1)",
+          "legendFormat": "false-drop rate",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "bargauge",
+      "id": 20,
+      "title": "Posting Score distribution (cumulative, range)",
+      "description": "The empirical CDF of the Posting Score over every page the Learned Veto judged — the ones it kept as well as the ones it vetoed (ADR-0049). Recording only the vetoes would show where the cut is without showing what it is cutting into. Each bar is the count at or below its boundary, so the STEP between two bars is the density there. The cut sits at 0.605395: the bars up to that boundary are, to within one 0.05-wide band, what the veto removes. A cut landing in a steep step means small threshold moves have large effects on spend. The Posting Score is never a metric label value — these are the histogram's own buckets, which cost no series on any counter.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 58 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "showUnfilled": true,
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (le) (increase(crawler_llm_posting_score_bucket[$__range]))",
+          "legendFormat": "≤ {{le}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 21,
+      "title": "Posting Score quantiles",
+      "description": "The same distribution over time, which is the drift detector this instrument exists to be. The threshold line at 0.605395 draws where the cut sits inside it. The weights were fitted on the Extract Gold Set, so if p50 walks away from where it sat when they were fitted, the operating point is being applied to a population it was never measured on and the 28.2% in-sample veto depth stops meaning what it meant. The bucket ladder behind these quantiles is fixed and deliberately NOT pinned to the threshold: a boundary that moved with every refit would silently re-bucket every historical series and destroy exactly this comparison.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 58 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": { "mode": "line" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "transparent", "value": null },
+              { "color": "red", "value": 0.605395 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.10, sum by (le) (rate(crawler_llm_posting_score_bucket[$__rate_interval])))",
+          "legendFormat": "p10",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(crawler_llm_posting_score_bucket[$__rate_interval])))",
+          "legendFormat": "p50",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(crawler_llm_posting_score_bucket[$__rate_interval])))",
+          "legendFormat": "p90",
+          "refId": "C"
+        }
+      ]
     }
   ]
 }

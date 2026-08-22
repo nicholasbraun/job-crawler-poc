@@ -224,7 +224,7 @@ func Signals(u crawler.URL, content *crawler.Content) []string {
 // second implementation, which is exactly what this design exists to prevent; summing in
 // Signals' order is what makes the result reproducible.
 //
-// It is called from ExtractDecision's Learned Veto rung and nowhere else: only when the
+// It is called from ExtractGate's Learned Veto rung and nowhere else: only when the
 // veto is switched on, and only on pages every rung above it has already admitted --
 // which under the shipped configuration are the Positive Evidence rung's accepts, the
 // population the weights were fitted on.

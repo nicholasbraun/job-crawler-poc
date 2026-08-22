@@ -1,8 +1,11 @@
 // This file is the Learned Veto's table (ADR-0049), the way positive_evidence_test.go
-// is Positive Evidence's. Every case is stated through ExtractDecision or
+// is Positive Evidence's. Every case is stated through ExtractGate, ExtractDecision or
 // ShouldExtract and never by reaching into the Posting Score: the rung's contract is a
-// verdict and an attribution, and a test that asserted the arithmetic instead would go
-// red on a retrain that changed nothing anyone can observe.
+// verdict, an attribution and -- for the pages it judged -- the score it judged them
+// by, and a test that asserted the arithmetic instead would go red on a retrain that
+// changed nothing anyone can observe. Where a case does name the score it names it as
+// pagegate.Score of the same page, never as a literal, so it holds the reading equal to
+// the computation rather than pinning either to a number a retrain will move.
 
 package pagegate_test
 
@@ -243,7 +246,7 @@ func TestTheTwoExtractSwitchesComposeIndependently(t *testing.T) {
 // whether it ran is what it allocated. Signals builds a slice, a set and a sorted word
 // list per page; the gate's own rungs allocate a fixed handful. So a decision with the
 // veto off must allocate strictly less than the same decision on the same page with it
-// on -- which is the && short-circuit, observed rather than asserted about the source.
+// on -- which is the early return, observed rather than asserted about the source.
 //
 // The page is a rung-9 SURVIVOR carrying a long body, so the on-side really does the
 // whole Score Vocabulary scan; the point is that the score is computed, not that it
@@ -287,4 +290,113 @@ func numberWord(n int) string {
 		n /= 10
 	}
 	return string(out)
+}
+
+// TestExtractGateReportsThePostingScoreItJudgedBy is the Scored contract, stated at the
+// gate's own seam: the widest reading tells a caller not only what the rung decided but
+// whether the rung RAN, and the two cannot be conflated.
+//
+// Scored is not derivable from Rung. On a reject it would be -- Rung is learned_veto
+// exactly when the rung vetoed -- but RungNone covers three different accepts: the rung-2
+// ATS exemption (never scored), every accept at all on a crawl with the veto off (never
+// scored), and a rung-9 survivor (scored). Zero is a legitimate Posting Score, so without
+// Scored the walk would file the un-judged accepts' zeros into the live distribution and
+// report a stream that scores lowest of all.
+func TestExtractGateReportsThePostingScoreItJudgedBy(t *testing.T) {
+	tests := []struct {
+		name             string
+		url              string
+		content          *crawler.Content
+		positiveEvidence bool
+		learnedVeto      bool
+		wantExtract      bool
+		wantRung         pagegate.ExtractRung
+		wantScored       bool
+	}{
+		{
+			name:             "a vetoed page carries the score that dropped it",
+			url:              postingURLOnlyURL,
+			content:          &crawler.Content{},
+			positiveEvidence: true,
+			learnedVeto:      true,
+			wantExtract:      false,
+			wantRung:         pagegate.RungLearnedVeto,
+			wantScored:       true,
+		},
+		{
+			name:             "a survivor carries the score that saved it",
+			url:              noEvidenceURL,
+			content:          richPostingContent(),
+			positiveEvidence: true,
+			learnedVeto:      true,
+			wantExtract:      true,
+			wantRung:         pagegate.RungNone,
+			wantScored:       true,
+		},
+		{
+			name:             "the veto off scores nothing at all",
+			url:              postingURLOnlyURL,
+			content:          &crawler.Content{},
+			positiveEvidence: true,
+			learnedVeto:      false,
+			wantExtract:      true,
+			wantRung:         pagegate.RungNone,
+			wantScored:       false,
+		},
+		{
+			name:             "a page an earlier rung rejected is never scored",
+			url:              noEvidenceURL,
+			content:          &crawler.Content{},
+			positiveEvidence: true,
+			learnedVeto:      true,
+			wantExtract:      false,
+			wantRung:         pagegate.RungPositiveEvidence,
+			wantScored:       false,
+		},
+		{
+			// Load-bearing: an ATS posting scores below the threshold, so only the
+			// deterministic rung-2 exemption keeps it. Reporting it as Scored would feed the
+			// ATS Fetch lane's postings into a distribution fitted on a population that
+			// contains none of them (ADR-0049 counts zero such rows in the Gold Set).
+			name:             "an ATS posting is never scored",
+			url:              atsPostingURL,
+			content:          &crawler.Content{},
+			positiveEvidence: true,
+			learnedVeto:      true,
+			wantExtract:      true,
+			wantRung:         pagegate.RungNone,
+			wantScored:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u := newURL(t, tt.url)
+			if tt.wantRung == pagegate.RungLearnedVeto {
+				requireBelowThreshold(t, u, tt.content)
+			} else if tt.wantScored {
+				requireAtOrAboveThreshold(t, u, tt.content)
+			}
+
+			v := pagegate.ExtractGate(u, tt.content, extractSwitches(tt.positiveEvidence, tt.learnedVeto))
+			if v.Extract != tt.wantExtract || v.Rung != tt.wantRung {
+				t.Errorf("ExtractGate(%q) = (%v, %q), want (%v, %q)", tt.url, v.Extract, v.Rung, tt.wantExtract, tt.wantRung)
+			}
+			if v.Scored != tt.wantScored {
+				t.Errorf("ExtractGate(%q).Scored = %v, want %v: the verdict must say whether the Learned Veto rung ran",
+					tt.url, v.Scored, tt.wantScored)
+			}
+			if tt.wantScored {
+				if want := pagegate.Score(u, tt.content); v.Score != want {
+					t.Errorf("ExtractGate(%q).Score = %.6f, want %.6f: the verdict reports the score the rung judged by, not an approximation of it",
+						tt.url, v.Score, want)
+				}
+				return
+			}
+			if v.Score != 0 {
+				t.Errorf("ExtractGate(%q).Score = %.6f on an unscored page, want 0: a page the rung never judged must carry no score to record",
+					tt.url, v.Score)
+			}
+		})
+	}
 }

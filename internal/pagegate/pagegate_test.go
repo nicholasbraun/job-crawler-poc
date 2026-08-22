@@ -1059,6 +1059,15 @@ func TestShouldExtract(t *testing.T) {
 			if !extract && rung == pagegate.RungNone {
 				t.Errorf("ExtractDecision(%q) rejected but named no rung", tt.url)
 			}
+			// And the WIDEST reading must never disagree with either narrowing: the three
+			// are one implementation (ADR-0049), so a verdict, an attribution and a
+			// Posting Score that described different sequences would make every downstream
+			// join meaningless.
+			v := pagegate.ExtractGate(newURL(t, tt.url), tt.content, cfg)
+			if v.Extract != extract || v.Rung != rung {
+				t.Errorf("ExtractGate(%q) = (%v, %q), disagreeing with ExtractDecision (%v, %q): "+
+					"the three readings must run one implementation", tt.url, v.Extract, v.Rung, extract, rung)
+			}
 		})
 	}
 }
