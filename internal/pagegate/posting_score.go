@@ -3,10 +3,11 @@
 // pure -- a URL and parsed page content in, a number out; no model, no network, no
 // database -- so the gate keeps that property.
 //
-// NOTHING CONSULTS IT YET. The Learned Veto rung that spends the score is #301, so a
-// fitted table still moves no gate verdict: posting_score_weights_gen.go now carries
-// what "llmbench train-scorer" fitted over the committed Extract Gold Set, and the only
-// things that read it are this file and its tests.
+// ITS ONLY CONSUMER IS THE GATE'S LAST RUNG. The Learned Veto in pagegate.go is what
+// spends the score, and only when cfg.LearnedVeto is set -- default off, so on a crawl
+// that has not turned the rung on nothing here runs at all. The numbers it sums live in
+// posting_score_weights_gen.go, fitted by "llmbench train-scorer" over the committed
+// Extract Gold Set; the trainer and the benchmark read them through this same file.
 //
 // The learned half lives in the gate's OWN package rather than a sub-package, and
 // that is forced rather than chosen: the Score Signals reuse the gate's unexported
@@ -223,7 +224,10 @@ func Signals(u crawler.URL, content *crawler.Content) []string {
 // second implementation, which is exactly what this design exists to prevent; summing in
 // Signals' order is what makes the result reproducible.
 //
-// NOTHING CALLS IT YET -- the Learned Veto rung is #301.
+// It is called from ExtractDecision's Learned Veto rung and nowhere else: only when the
+// veto is switched on, and only on pages every rung above it has already admitted --
+// which under the shipped configuration are the Positive Evidence rung's accepts, the
+// population the weights were fitted on.
 func Score(u crawler.URL, content *crawler.Content) float64 {
 	z := scoreIntercept
 	for _, signal := range Signals(u, content) {

@@ -104,6 +104,9 @@ go run ./cmd/llmbench bench                     # ...same, but confirms uncertai
                                                 #    the real classifier (needs LLM_* env)
 go run ./cmd/llmbench extract                   # Extract Gate over the reject-rung fixtures
 go run ./cmd/llmbench score-capture -in <labeled.jsonl>   # Extract Gate over the Extract Gold Set
+go run ./cmd/llmbench score-capture -in <labeled.jsonl> -gate-config <veto.json>
+                                                #    ...the same scorecard with the Learned Veto on (ADR-0049);
+                                                #    veto.json is {"LearnedVeto": true}
 go run ./cmd/llmbench score-rendering            # A/B: Flattened Text vs Structural Rendering at one prompt budget
 go run ./cmd/llmbench train-scorer               # refit the Posting Score over the Extract Gold Set and rewrite
                                                 #    pagegate's weights (must reproduce the committed file byte for byte)

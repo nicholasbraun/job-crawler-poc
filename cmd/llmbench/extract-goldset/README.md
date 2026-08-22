@@ -698,6 +698,53 @@ Note that the blanket accept **also drops two `detail` rows** (`hiring.cafe/job/
 on this file, with the rung or without it: those two are reject-rung drops that predate
 ADR-0044 entirely. See the guard below.
 
+### The same scorecard with the Learned Veto on (ADR-0049)
+
+This is what `EXTRACT_LEARNED_VETO=true` would run in production. The rung ships **off**,
+so this section is the only place the shipped weights meet the whole Gold Set with the
+veto enforcing.
+
+```bash
+echo '{"LearnedVeto": true}' > /tmp/veto.json
+go run ./cmd/llmbench score-capture -in cmd/llmbench/extract-goldset/goldset.jsonl -gate-config /tmp/veto.json
+```
+
+```
+total             457
+extract-calls     127
+extract-call-rate 0.2779  (soft, no threshold)
+overall           precision 1.0000  recall 0.9071  f1 0.9513  accuracy 0.9706
+detail     recall 0.9071  (n=140, extracted 127, skipped 13)
+hub-index  accuracy 1.0000  (n=78, skipped 78, leaked 0)
+residue    accuracy 1.0000  (n=224, skipped 224, leaked 0)
+residue-count 224, residue-extracted 0
+ambiguous         15 (excluded from scoring entirely, 0 extracted)
+
+stream-weighted estimates (random stratum, n=120, effective n=92.3)
+composition detail 0.0584 / hub-index 0.0556 / residue 0.8476
+extract-call-rate 0.0565   precision 1.0000   recall 0.9677
+
+boundary stratum (n=188, unweighted)
+count detail 37 / hub-index 62 / residue 79 / ambiguous 10
+extracted 26, skipped 162
+false-drops 11, ambiguous-skipped 10, confirmed 0 of 188
+```
+
+Run the rung-on scorecard against the same file on the same day and it reads
+**180 calls at precision 0.7175**; the veto takes that to **127 at 1.0000** — the 50
+withheld calls and the 28.2% cut ADR-0049's amendment records. (The `hub-index` /
+`residue` / `ambiguous` counts differ from the block at the top of this section, which
+was pasted before later confirmations moved labels; compare the two scorecards by
+re-running both, not against that block.)
+
+**Read the drop side of this scorecard with the same suspicion as the one above.** The
+capture tap sits downstream of the Extract Gate, so this file cannot measure what the
+veto would drop out of pages the gate never admitted — it has none. The number this
+override exists to show is the one that did not move: `detail` recall is **0.9071**
+either way and the thirteen drops are the **same thirteen pages**, which is exactly what
+`TestExtractGoldSetFalseDropGuardUnderTheLearnedVeto` asserts as a set comparison. The
+`false-drops 11` in the boundary block are eleven of those same thirteen, unchanged.
+
 ## The guard (#264)
 
 The scorecards above are read by a human. The **guard** is read by CI:

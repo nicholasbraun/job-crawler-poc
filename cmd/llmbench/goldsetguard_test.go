@@ -2,9 +2,11 @@ package main
 
 import (
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/nicholasbraun/job-crawler-poc/cmd/llmbench/bench"
+	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 )
 
 // extractGoldSetFalseDrops is the LEDGER OF NAMED, ARGUED EXCEPTIONS the false-drop
@@ -139,9 +141,18 @@ var extractGoldSetFalseDrops = []bench.KnownFalseDrop{
 // sees.
 func guardRows(t *testing.T) []bench.FalseDropRow {
 	t.Helper()
+	return guardRowsUnder(t, boundaryCandidateConfig())
+}
+
+// guardRowsUnder is guardRows with the RULE config named, so the same replay-and-zip
+// can be run a second time with the Learned Veto on (ADR-0049). The BASELINE stays the
+// blanket accept in both runs: it is what makes rung attribution a measurement, and a
+// drop only the rule makes is the rule's, whichever of its two rungs produced it.
+func guardRowsUnder(t *testing.T, rule crawler.LLMGateConfig) []bench.FalseDropRow {
+	t.Helper()
 	path := filepath.Join("extract-goldset", goldSetFile)
 
-	rule, _, err := replayCaptured(path, boundaryCandidateConfig())
+	ruleRows, _, err := replayCaptured(path, rule)
 	if err != nil {
 		t.Fatalf("replayCaptured under the Positive Evidence rule: %v", err)
 	}
@@ -149,12 +160,12 @@ func guardRows(t *testing.T) []bench.FalseDropRow {
 	if err != nil {
 		t.Fatalf("replayCaptured under the blanket accept: %v", err)
 	}
-	if len(rule) != len(baseline) {
-		t.Fatalf("the two replays scored %d and %d rows of the same file; the guard cannot attribute a drop it cannot pair", len(rule), len(baseline))
+	if len(ruleRows) != len(baseline) {
+		t.Fatalf("the two replays scored %d and %d rows of the same file; the guard cannot attribute a drop it cannot pair", len(ruleRows), len(baseline))
 	}
 
-	rows := make([]bench.FalseDropRow, 0, len(rule))
-	for i, row := range rule {
+	rows := make([]bench.FalseDropRow, 0, len(ruleRows))
+	for i, row := range ruleRows {
 		if row.URL != baseline[i].URL {
 			t.Fatalf("row %d is %q under the rule and %q under the baseline; the replays are not aligned", i, row.URL, baseline[i].URL)
 		}
@@ -232,6 +243,79 @@ func TestExtractGoldSetFalseDropGuard(t *testing.T) {
 		}
 		t.Logf("  %-10s %s", standing, drop)
 	}
+}
+
+// learnedVetoConfig is the shipping Positive Evidence rule with ADR-0049's Learned
+// Veto on -- what EXTRACT_LEARNED_VETO=true runs, and what
+// `score-capture -gate-config '{"LearnedVeto": true}'` scores. Both switches are set
+// explicitly, for the reason boundaryCandidateConfig sets one: this config must keep
+// meaning "both rungs on" whatever either default later says.
+func learnedVetoConfig() crawler.LLMGateConfig {
+	cfg := boundaryCandidateConfig()
+	cfg.LearnedVeto = true
+	return cfg
+}
+
+// TestExtractGoldSetFalseDropGuardUnderTheLearnedVeto is the merge gate for ADR-0049's
+// rung, and it is where the threshold's pinning is CHECKED rather than trusted. The
+// trainer chose VetoThreshold as the deepest cut that loses none of the 127 detail rows
+// the Positive Evidence rung accepts, and the trainer's own test holds that through
+// pagegate.Score. This holds it END TO END, through the real gate with the switch on
+// and through the same ledger: the false-drop set must be IDENTICAL to the set without
+// the veto, so the thirteen named exceptions are exactly the same thirteen pages.
+//
+// It also cross-checks the one thing a unit test cannot see: the gate rejects on
+// "score < VetoThreshold" and the trainer counts a survivor on "score >= threshold". A
+// gate with that boundary the other way round would drop the lowest-scoring detail row,
+// and this test would name it.
+func TestExtractGoldSetFalseDropGuardUnderTheLearnedVeto(t *testing.T) {
+	off := bench.AuditFalseDrops(guardRows(t), extractGoldSetFalseDrops)
+	on := bench.AuditFalseDrops(guardRowsUnder(t, learnedVetoConfig()), extractGoldSetFalseDrops)
+
+	for _, drop := range on.Unrecorded {
+		t.Errorf("FALSE-DROP UNDER THE LEARNED VETO %s -- turning EXTRACT_LEARNED_VETO on drops a real Job Listing "+
+			"the ledger does not name. ADR-0049 pins the threshold to the ledger, so this means the weights and the "+
+			"ledger have parted company: re-run `llmbench train-scorer`. Do not add the page to "+
+			"extractGoldSetFalseDrops, and do not move VetoThreshold by hand.", drop)
+	}
+	for _, url := range on.Recovered {
+		t.Errorf("RECOVERED UNDER THE LEARNED VETO %s -- the rule no longer drops this page, so its ledger entry is "+
+			"stale. Delete the entry: the exception list may only shrink, and a recovery left standing is unearned "+
+			"headroom for the next drop.", url)
+	}
+	for _, drop := range on.Misattributed {
+		t.Errorf("MISATTRIBUTED UNDER THE LEARNED VETO %s -- the ledger records the other rung. A drop that has moved "+
+			"between the reject rungs and Positive Evidence means one of them has changed; find out which before "+
+			"re-filing the entry.", drop)
+	}
+	for _, drop := range on.Restanding {
+		t.Errorf("RESTANDING UNDER THE LEARNED VETO %s -- this label's human-confirmation state has changed since the "+
+			"exception was written, so the argument no longer stands where it was made (ADR-0043). Re-read the page "+
+			"and re-argue the entry, or recover it.", drop)
+	}
+
+	// The whole criterion in one comparison: the veto is SUBTRACTIVE ONLY over pages
+	// the gate already refuses to pay for, so it may change what is extracted but not
+	// what is DROPPED among real Job Listings.
+	if offURLs, onURLs := droppedURLs(off), droppedURLs(on); !slices.Equal(offURLs, onURLs) {
+		t.Errorf("the Learned Veto changes the false-drop SET.\n  without the veto: %v\n  with the veto:    %v\n"+
+			"ADR-0049 defines VetoThreshold as the deepest cut that loses none of the detail rows the Positive "+
+			"Evidence rung accepts today, so these two lists must match page for page.", offURLs, onURLs)
+	}
+	t.Logf("false-drops without the veto: %d; with the veto: %d (ledger entries: %d)",
+		len(off.Drops), len(on.Drops), len(extractGoldSetFalseDrops))
+}
+
+// droppedURLs is an audit's false-drops as a sorted URL list, the form in which two
+// audits are comparable: AuditFalseDrops emits them in replay order, which is the gold
+// set's line order and carries no meaning of its own.
+func droppedURLs(audit bench.FalseDropAudit) []string {
+	urls := make([]string, 0, len(audit.Drops))
+	for _, drop := range audit.Drops {
+		urls = append(urls, drop.URL)
+	}
+	slices.Sort(urls)
+	return urls
 }
 
 // TestExtractGoldSetMetricsAreReportedWithoutThresholds reports what the Positive

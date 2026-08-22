@@ -85,6 +85,16 @@ func TestDefaultLLMGateConfig(t *testing.T) {
 				"if you are turning the rung off, use EXTRACT_REQUIRE_POSITIVE_EVIDENCE=false rather than the default.")
 		}
 	})
+	t.Run("the Learned Veto ships off", func(t *testing.T) {
+		// ADR-0049 registered the flip as its own act, not a default change: the 28.2%
+		// cut that met its pre-registered condition is in-sample, and its out-of-fold
+		// counterpart already costs detail rows at a deeper cut.
+		if cfg.LearnedVeto {
+			t.Error("LearnedVeto = true, want false (ADR-0049 ships the rung OFF). " +
+				"Turning it on is a runbook -- a capture window, offline scoring, a blind confirmation of the " +
+				"pages it would drop, those labels committed -- not a default change. Use EXTRACT_LEARNED_VETO=true.")
+		}
+	})
 }
 
 func containsString(haystack []string, needle string) bool {

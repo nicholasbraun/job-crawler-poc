@@ -2,6 +2,7 @@ package pagegate_test
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
@@ -1073,37 +1074,48 @@ func TestExtractDecisionAttributesTheRejectingRung(t *testing.T) {
 		saturated.URLs = append(saturated.URLs, fmt.Sprintf("https://acme.com/jobs/%d", i))
 	}
 
+	// cfg is a pointer so a case can override the gate config; a nil cfg uses
+	// DefaultLLMGateConfig, the same idiom TestShouldExtract uses. Only the rung-9
+	// row needs it: the Learned Veto ships off, so the shipped default cannot reach
+	// the rung this table has to attribute.
 	tests := []struct {
 		name    string
 		url     string
 		content *crawler.Content
+		cfg     *crawler.LLMGateConfig
 		want    pagegate.ExtractRung
 	}{
-		{"rung 1: an ATS board root", "https://job-boards.greenhouse.io/acme", &crawler.Content{}, pagegate.RungATSBoardRoot},
-		{"rung 2b: a bare domain root", "https://acme.com", &crawler.Content{}, pagegate.RungBareOrLocaleRoot},
-		{"rung 2c: a terminal jobs-index segment", "https://acme.com/careers", &crawler.Content{}, pagegate.RungIndexTerminal},
-		{"rung 3: a strong-negative reject path", "https://acme.com/blog/hello", &crawler.Content{}, pagegate.RungRejectPath},
-		{"rung 4: a bare career-section index", "https://acme.com/karriere/arbeiten-bei-uns", &crawler.Content{}, pagegate.RungCareerIndex},
+		{"rung 1: an ATS board root", "https://job-boards.greenhouse.io/acme", &crawler.Content{}, nil, pagegate.RungATSBoardRoot},
+		{"rung 2b: a bare domain root", "https://acme.com", &crawler.Content{}, nil, pagegate.RungBareOrLocaleRoot},
+		{"rung 2c: a terminal jobs-index segment", "https://acme.com/careers", &crawler.Content{}, nil, pagegate.RungIndexTerminal},
+		{"rung 3: a strong-negative reject path", "https://acme.com/blog/hello", &crawler.Content{}, nil, pagegate.RungRejectPath},
+		{"rung 4: a bare career-section index", "https://acme.com/karriere/arbeiten-bei-uns", &crawler.Content{}, nil, pagegate.RungCareerIndex},
 		{
 			"rung 5: an embedded ATS board",
 			"https://acme.com/o/senior-engineer",
 			&crawler.Content{Embeds: []crawler.Embed{{Src: "https://acme.jobs.personio.de/search", IsFrame: true}}},
+			nil,
 			pagegate.RungATSEmbed,
 		},
 		{
 			"rung 6: a JSON-LD openings index",
 			"https://acme.com/o/senior-engineer",
 			&crawler.Content{JSONLD: []string{`[{"@type":"JobPosting"},{"@type":"JobPosting"}]`}},
+			nil,
 			pagegate.RungOpeningsIndex,
 		},
-		{"rung 7: a page saturated with same-host job links", "https://acme.com/o/senior-engineer", saturated, pagegate.RungJobLinkSaturation},
-		{"rung 8: no Positive Evidence at all", "https://acme.com/o/senior-engineer", &crawler.Content{}, pagegate.RungPositiveEvidence},
-		{"an accepted page names no rung", "https://acme.com/careers/senior-engineer", &crawler.Content{}, pagegate.RungNone},
+		{"rung 7: a page saturated with same-host job links", "https://acme.com/o/senior-engineer", saturated, nil, pagegate.RungJobLinkSaturation},
+		{"rung 8: no Positive Evidence at all", "https://acme.com/o/senior-engineer", &crawler.Content{}, nil, pagegate.RungPositiveEvidence},
+		{"rung 9: a Positive Evidence accept the Learned Veto withholds", "https://acme.com/jobs/senior-engineer", &crawler.Content{}, withLearnedVeto(), pagegate.RungLearnedVeto},
+		{"an accepted page names no rung", "https://acme.com/careers/senior-engineer", &crawler.Content{}, nil, pagegate.RungNone},
 	}
 
-	cfg := crawler.DefaultLLMGateConfig()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			cfg := crawler.DefaultLLMGateConfig()
+			if tt.cfg != nil {
+				cfg = *tt.cfg
+			}
 			extract, rung := pagegate.ExtractDecision(newURL(t, tt.url), tt.content, cfg)
 			if rung != tt.want {
 				t.Errorf("ExtractDecision(%q) rung = %q, want %q", tt.url, rung, tt.want)
@@ -1111,8 +1123,23 @@ func TestExtractDecisionAttributesTheRejectingRung(t *testing.T) {
 			if extract != (tt.want == pagegate.RungNone) {
 				t.Errorf("ExtractDecision(%q) = %v, inconsistent with rung %q", tt.url, extract, rung)
 			}
+			// Every rung the gate can attribute must be one PrimeShadow creates at zero
+			// (cmd/server wires RejectRungs into it), or that rung's FIRST false-drop is
+			// invisible to a range-scoped panel and reads as no change at all.
+			if tt.want != pagegate.RungNone && !slices.Contains(pagegate.RejectRungs(), tt.want) {
+				t.Errorf("rung %q is absent from RejectRungs(), so its series is not primed at zero", tt.want)
+			}
 		})
 	}
+}
+
+// withLearnedVeto returns DefaultLLMGateConfig with rung 9 switched on, which is what
+// EXTRACT_LEARNED_VETO=true does in production. The Positive Evidence rung stays at
+// its shipped default, because the veto only ever judges pages that rung admitted.
+func withLearnedVeto() *crawler.LLMGateConfig {
+	cfg := crawler.DefaultLLMGateConfig()
+	cfg.LearnedVeto = true
+	return &cfg
 }
 
 // withoutPositiveEvidence returns DefaultLLMGateConfig with the final rung cleared,

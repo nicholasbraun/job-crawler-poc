@@ -277,9 +277,13 @@ func jobLinkSaturation(count, k int) float64 {
 // the extractor only on Positive Evidence that it IS one posting (ADR-0044): a
 // posting-shaped URL or a lone structured-data posting admits it alone, while the
 // two text marks — an apply affordance and dense posting vocabulary — admit it only
-// in agreement with each other. That final rung fires only when
+// in agreement with each other. That rung fires only when
 // cfg.RequirePositiveEvidence is set; unset, the gate keeps its previous blanket
-// accept of everything nothing rejected.
+// accept of everything nothing rejected. A page it admits is then withheld anyway
+// when cfg.LearnedVeto is set and the page's Posting Score falls below the
+// compiled-in VetoThreshold (ADR-0049) — the only rung here that removes a call the
+// rest of the ladder was about to pay for, and the only one that is fitted rather
+// than argued.
 //
 // ExtractDecision is the same decision with the rejecting rung reported; this is the
 // verdict-only reading for the callers that do not attribute.
@@ -290,10 +294,11 @@ func ShouldExtract(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateC
 
 // ExtractRung names the ShouldExtract rung that REJECTED a page. It is the
 // attribution the Shadow Extraction lane records alongside each verdict (ADR-0044):
-// a false-drop the Positive Evidence kill switch would undo (RungPositiveEvidence)
-// and one it would not (any reject rung) are different failures with different
-// remedies, and a shadow accept rate that cannot tell them apart can read high for a
-// cause the named revert does not fix.
+// a false-drop EXTRACT_REQUIRE_POSITIVE_EVIDENCE would undo (RungPositiveEvidence),
+// one EXTRACT_LEARNED_VETO would undo (RungLearnedVeto), and one neither switch
+// recovers (any reject rung) are different failures with different remedies, and a
+// shadow accept rate that cannot tell them apart can read high for a cause the named
+// revert does not fix.
 //
 // The values are metric label values, so they are stable strings: renaming one
 // breaks a dashboard query and a historical series, not a compile.
@@ -313,6 +318,7 @@ const (
 	RungOpeningsIndex     ExtractRung = "openings_index"      // rung 6
 	RungJobLinkSaturation ExtractRung = "job_link_saturation" // rung 7
 	RungPositiveEvidence  ExtractRung = "positive_evidence"   // rung 8
+	RungLearnedVeto       ExtractRung = "learned_veto"        // rung 9
 	// RungUnknown labels a Shadow Extraction whose sample carries no rung -- an entry
 	// enqueued by an older binary and redelivered after an upgrade. It is never
 	// produced by this function; it exists so such a sample is visibly unattributed
@@ -335,7 +341,7 @@ func RejectRungs() []ExtractRung {
 	return []ExtractRung{
 		RungATSBoardRoot, RungBareOrLocaleRoot, RungIndexTerminal, RungRejectPath,
 		RungCareerIndex, RungATSEmbed, RungOpeningsIndex, RungJobLinkSaturation,
-		RungPositiveEvidence, RungUnknown,
+		RungPositiveEvidence, RungLearnedVeto, RungUnknown,
 	}
 }
 
@@ -398,6 +404,21 @@ func ExtractDecision(u crawler.URL, content *crawler.Content, cfg crawler.LLMGat
 	// previous blanket accept, which is the kill switch.
 	if cfg.RequirePositiveEvidence && !hasPositiveEvidence(u, content) {
 		return false, RungPositiveEvidence
+	}
+	// rung 9 (ADR-0049): the Learned Veto. It sees only the pages rung 8 admitted --
+	// where 100% of the extract bill on the measured population is spent -- and it
+	// only ever REMOVES a call, so every mark ADR-0044 argues still admits exactly
+	// what it admitted. It is the one rung in this ladder that is FITTED rather than
+	// argued, which is why it carries its own switch on top of rung 8's.
+	//
+	// The switch is read BEFORE the score and && short-circuits, so a crawl with the
+	// veto off does no signal extraction and no Score Vocabulary scan at all -- the
+	// rung costs nothing on a crawl not using it, which is the condition it ships
+	// under. The comparison is "<", matching the trainer's "score >= threshold
+	// survives" exactly; a page AT the threshold is kept, and that boundary is what
+	// makes the shipped cut the one that was measured.
+	if cfg.LearnedVeto && Score(u, content) < VetoThreshold {
+		return false, RungLearnedVeto
 	}
 	return true, RungNone
 }
