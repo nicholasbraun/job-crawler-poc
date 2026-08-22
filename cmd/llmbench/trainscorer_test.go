@@ -107,6 +107,13 @@ func TestTrainScorerRefusesAWiringError(t *testing.T) {
 // It parses the SHIPPED bytes rather than re-running the fit, which makes it a guard on
 // the artifact itself rather than on the trainer's intentions: a trainer that stopped
 // applying the exclusion, or a hand-edit of the generated file, both fail here.
+//
+// What it deliberately cannot catch is a change to the DEFINITION of a host word: the
+// expectation comes from the same hostTokens the trainer bans by, so the two move
+// together. Re-deriving the tokenization here instead would let the exclusion and the
+// thing it excludes from disagree about what a word is, which is the drift a shared
+// Signals() exists to prevent -- so the scope is stated in the artifact's own doc
+// comment and in ADR-0049 and read by a human, rather than asserted twice in code.
 func TestCommittedScoreVocabularyHoldsNoGoldSetHostWord(t *testing.T) {
 	samples, _, err := scorerSamples(committedGoldSet())
 	if err != nil {
@@ -211,6 +218,43 @@ func TestCommittedThresholdLosesNoDetailRowThePositiveEvidenceRungAccepts(t *tes
 		before.Scorable, before.Detail, before.Precision,
 		census.Vetoed, 100*census.VetoShare, census.HubIndexRemoved, census.ResidueRemoved,
 		census.Survivors, census.Precision, census.DetailLost)
+}
+
+// TestCurveSizesAlwaysCarriesTheRunsOwnVocabularySize holds the precondition the
+// hashed gap is measured under. The gap is ADR-0049's pre-registered trigger for
+// abandoning the readable word list, and an earlier form read it off whichever ladder
+// rung happened to equal -vocab, leaving a fabricated "+0.0000" when none did. The
+// chosen size is now measured directly and also reported, which is what this pins.
+func TestCurveSizesAlwaysCarriesTheRunsOwnVocabularySize(t *testing.T) {
+	tests := []struct {
+		name   string
+		chosen int
+		want   []int
+	}{
+		{name: "a size already on the ladder", chosen: 500, want: []int{50, 100, 200, 300, 500, 1000, 0}},
+		{name: "untruncated, which is the trailing rung", chosen: 0, want: []int{50, 100, 200, 300, 500, 1000, 0}},
+		{name: "between two rungs", chosen: 250, want: []int{50, 100, 200, 250, 300, 500, 1000, 0}},
+		{name: "below every rung", chosen: 10, want: []int{10, 50, 100, 200, 300, 500, 1000, 0}},
+		// 0 is "untruncated", not a size, so it stays last however large the choice.
+		{name: "above every rung", chosen: 5000, want: []int{50, 100, 200, 300, 500, 1000, 5000, 0}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := curveSizes(tt.chosen)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("curveSizes(%d) = %v, want %v", tt.chosen, got, tt.want)
+			}
+			if !slices.Contains(got, tt.chosen) {
+				t.Errorf("curveSizes(%d) does not carry the chosen size", tt.chosen)
+			}
+		})
+	}
+
+	// The ladder is a package-level slice every run reads; an insert that mutated it
+	// would leak one run's -vocab into the next.
+	if !slices.Equal(vocabularySizes, []int{50, 100, 200, 300, 500, 1000, 0}) {
+		t.Errorf("vocabularySizes was mutated to %v", vocabularySizes)
+	}
 }
 
 // TestThePositiveEvidenceRungSpendsTheWholeExtractBill holds the claim ADR-0049's

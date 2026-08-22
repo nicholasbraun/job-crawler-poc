@@ -127,9 +127,12 @@ const weightsTableDoc = `// scoreWeights is the Score Vocabulary and the structu
 // the words one sampled employer uses.
 //
 // Fitted over the %d scorable rows of the committed Extract Gold Set, holding %d Score
-// Vocabulary words. No entry is a word of any host in that set: the exclusion is applied
-// by the trainer and re-derived independently by a guard test, because those rows sit on
-// only %d hosts and a blind fit would learn one sampled employer's boilerplate.
+// Vocabulary words. No entry is a word of any host THOSE ROWS sit on: the exclusion is
+// applied by the trainer and re-checked against these shipped bytes by a guard test,
+// because they sit on only %d hosts and a blind fit would learn one sampled employer's
+// boilerplate. A host carried only by the file's unlabelled or ambiguous rows is out of
+// scope on purpose -- the fit never sees it, so it has nothing to leak -- and joins the
+// exclusion in the same regeneration that settles its label.
 //
 // Generated Go source rather than an embedded data file, and that is a deliberate
 // deviation from the repo's one precedent, internal/geo (ADR-0031): parseGazetteer

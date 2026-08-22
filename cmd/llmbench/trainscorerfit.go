@@ -97,6 +97,14 @@ type sampleCensus struct {
 // to a sample, sorted by URL. The sort is load-bearing: the fit sums over rows, and a
 // float sum taken in a different order is a different number in its last bits.
 //
+// The URL therefore has to be a TOTAL key, and this is where that is enforced: a second
+// row for a URL already in the file is refused outright. It would otherwise be a
+// determinism hazard nothing else catches -- two rows comparing equal leave their order
+// to the sort's internals, and a Go toolchain upgrade could then move a weight and turn
+// the regenerability guard red on one machine only -- and it would quietly halve a
+// row's out-of-fold reading too, since crossValidate keys its scores by URL. A
+// duplicate is also a Gold Set defect in its own right: two labels for one page.
+//
 // The Positive Evidence rung is replayed through boundaryCandidateConfig, which sets
 // RequirePositiveEvidence EXPLICITLY for the same reason the boundary draw does: the
 // population the Learned Veto judges must read the same before and after a default
@@ -109,7 +117,12 @@ func scorerSamples(path string) ([]scorerSample, sampleCensus, error) {
 	cfg := boundaryCandidateConfig()
 	census := sampleCensus{Rows: len(rows)}
 	samples := make([]scorerSample, 0, len(rows))
+	seen := make(map[string]struct{}, len(rows))
 	for _, row := range rows {
+		if _, dup := seen[row.URL]; dup {
+			return nil, sampleCensus{}, fmt.Errorf("gold set %q: %q appears more than once; one page carries one label, and a repeated URL would leave the fit's row order to the sort's internals", path, row.URL)
+		}
+		seen[row.URL] = struct{}{}
 		u, err := crawler.NewURL(row.URL)
 		if err != nil {
 			return nil, sampleCensus{}, fmt.Errorf("gold set %q: url %q: %w", path, row.URL, err)
@@ -139,7 +152,10 @@ func scorerSamples(path string) ([]scorerSample, sampleCensus, error) {
 			Accepted: accepted,
 		})
 	}
-	slices.SortFunc(samples, func(a, b scorerSample) int { return strings.Compare(a.URL, b.URL) })
+	// Stable, so the order is a function of the file even if the URL key ever stops
+	// being total. The duplicate check above is what makes it total today; the stable
+	// sort is what keeps a lapse from becoming a silent, architecture-dependent weight.
+	slices.SortStableFunc(samples, func(a, b scorerSample) int { return strings.Compare(a.URL, b.URL) })
 	return samples, census, nil
 }
 
@@ -158,11 +174,22 @@ func hostWords(host string) []string {
 	return words
 }
 
-// hostTokens is every word of every host in the committed Gold Set. It is the
-// leakage exclusion: 457 rows sit on far fewer hosts, so a blind fit will learn one
-// sampled employer's name and cross-validation will reward it (ADR-0049). The words
-// it removes are real costs -- "jobs", "career", "karriere", "berlin" are all host
-// tokens somewhere in the set -- and that is the price of the guard.
+// hostTokens is every word of every host in the FIT POPULATION -- the scorable rows,
+// which is what scorerSamples returns. It is the leakage exclusion: 442 rows sit on
+// 357 hosts, so a blind fit will learn one sampled employer's name and
+// cross-validation will reward it (ADR-0049). The words it removes are real costs --
+// "jobs", "career", "karriere", "berlin" are all host tokens somewhere in the set --
+// and that is the price of the guard.
+//
+// The fit population, and not every row of the file, is the RIGHT scope rather than a
+// convenient one: the hazard is a fit learning a host it was trained on and being
+// rewarded for it on that host's other rows, and a host carried only by unlabelled or
+// `ambiguous` rows is in neither half -- scorerSamples drops those rows before they
+// reach a fit or a fold, so nothing of that host is learnable or rewardable. Eleven of
+// the committed set's hosts are in exactly that position today. Settling one of their
+// labels moves its rows into the fit and its words into this ban list in the same
+// regeneration, which is why the scope needs no separate upkeep. What it does mean is
+// that the artifact and ADR-0049 must claim the fit population, not the whole file.
 func hostTokens(samples []scorerSample) map[string]struct{} {
 	tokens := map[string]struct{}{}
 	for _, s := range samples {
@@ -254,10 +281,17 @@ type fitOptions struct {
 
 // candidateCensus is what the admission step removed and why, so the cost of the
 // leakage guard is on the record rather than assumed.
+//
+// Every count here is over signal NAMES, not over distinct words: `title:apply` and
+// `body:apply` are two entries, because the two namespaces are two signals the fit
+// weighs separately. A reader comparing these numbers with the leakage guard's own log
+// line, which counts distinct host WORDS, will find two different figures for what
+// sounds like one thing -- so the report prints both side by side.
 type candidateCensus struct {
 	// Candidates is every distinct Score Vocabulary name the fit population carries.
 	Candidates int `json:"candidates"`
-	// HostWords is how many of those are a token of some host in the same set.
+	// HostWords is how many of those NAMES carry a word of some host in the fit
+	// population.
 	HostWords int `json:"dropped_host_words"`
 	// BelowMinDF is how many of the survivors are too rare to estimate.
 	BelowMinDF int `json:"dropped_below_min_df"`
@@ -314,10 +348,13 @@ func fitScorer(samples []scorerSample, exclude map[string]struct{}, opts fitOpti
 	// The row order is canonicalized HERE rather than trusted from the caller: the
 	// gradient sums over rows, a float sum taken in a different order differs in its
 	// last bits, and the artifact has to regenerate byte for byte from whatever slice
-	// a caller happens to hand over.
+	// a caller happens to hand over. Stable, for the reason scorerSamples' sort is:
+	// scorerSamples refuses a duplicate URL, so the key is total, and a stable sort is
+	// what keeps that from being the only thing standing between a lapse and a weight
+	// that moves with the toolchain.
 	ordered := make([]scorerSample, len(samples))
 	copy(ordered, samples)
-	slices.SortFunc(ordered, func(a, b scorerSample) int { return strings.Compare(a.URL, b.URL) })
+	slices.SortStableFunc(ordered, func(a, b scorerSample) int { return strings.Compare(a.URL, b.URL) })
 	samples = ordered
 
 	admissible, _ := admissibleSignals(samples, exclude, opts.MinDF)
@@ -477,10 +514,17 @@ func dropZeroWeights(m scorerModel) scorerModel {
 }
 
 // hashedSample folds a sample's Score Vocabulary names into 1<<hashedBits buckets and
-// leaves its structural signals explicit, so a comparison against it isolates the
-// truncation to an explicit word list and nothing else. It exists ONLY to measure what
-// a readable list costs against the probe's untruncated hashed form (ADR-0049);
-// nothing hashed is ever emitted.
+// leaves its structural signals explicit. It exists ONLY to measure what a readable
+// list costs against the probe's untruncated hashed form (ADR-0049); nothing hashed is
+// ever emitted.
+//
+// A bucket name carries neither the "title:" nor the "body:" prefix, so downstream it
+// reads as a structural signal: the min-df floor and the vocabulary truncation both
+// skip it. The hashed arm is therefore fitted over EVERY non-host-word candidate, the
+// too-rare ones included, and is a strictly more generous reference than the explicit
+// ladder rather than the same candidates in a different representation. That is a
+// property of the reference, not a defect in it -- sizeCurve says what it means for
+// reading the gap.
 //
 // The leakage exclusion is applied BEFORE the hash, and has to be: a hashed bucket no
 // longer carries the word that named it, so an arm that hashed first would quietly buy
@@ -539,11 +583,19 @@ func foldOf(seed, host string, folds int) int {
 // over the whole set and then cross-validating measures a model that has already seen
 // the held-out rows, which is the classic way to make a curve flatter itself.
 //
-// exclude is the host-token set of the WHOLE committed Gold Set, held-out hosts
-// included. That is deliberate and conservative: the exclusion only ever REMOVES
-// information from the training half, and it is the same exclusion the shipped
-// artifact carries.
-func crossValidate(samples []scorerSample, exclude map[string]struct{}, opts fitOptions, seed string, folds int) map[string]float64 {
+// exclude is the host-token set of the whole FIT POPULATION, held-out hosts included.
+// That is deliberate and conservative: the exclusion only ever REMOVES information from
+// the training half, and it is the same exclusion the shipped artifact carries.
+//
+// It also returns how many samples it could NOT score. A fold whose TRAINING half is
+// empty -- every host in the population having hashed to that one fold -- is skipped,
+// and its held rows then appear in no fold's output at all. Every caller reads the
+// result as scores[s.URL], where a missing key yields 0.0: a legitimate Posting Score
+// and the lowest one possible, so an unscored row sorts to the bottom of the
+// out-of-fold accept ladder and is counted among the first things any cut vetoes. A
+// ladder built that way looks measured and is not, so the count is returned rather than
+// left for a reader to notice.
+func crossValidate(samples []scorerSample, exclude map[string]struct{}, opts fitOptions, seed string, folds int) (map[string]float64, int) {
 	scores := make(map[string]float64, len(samples))
 	for fold := range folds {
 		train := []scorerSample{}
@@ -563,7 +615,13 @@ func crossValidate(samples []scorerSample, exclude map[string]struct{}, opts fit
 			scores[s.URL] = m.score(s.Signals)
 		}
 	}
-	return scores
+	unscored := 0
+	for _, s := range samples {
+		if _, ok := scores[s.URL]; !ok {
+			unscored++
+		}
+	}
+	return scores, unscored
 }
 
 // foldSizes reports how many samples each fold holds, so a report can show that the

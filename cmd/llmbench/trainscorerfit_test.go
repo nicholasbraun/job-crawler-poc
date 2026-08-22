@@ -146,6 +146,23 @@ func TestScorerSamplesAreSortedAndScorableOnly(t *testing.T) {
 			t.Errorf("skipped = %d, want 1", census.Skipped)
 		}
 	})
+
+	// The whole regenerability guarantee rests on the row order being a function of the
+	// file, and the row order is the URL. A repeated URL would make that key non-total,
+	// leaving two rows' relative order -- and so the gradient's float sum -- to the
+	// sort's internals; it would also halve one row's out-of-fold reading, since
+	// crossValidate keys its scores by URL. Loud beats latent.
+	t.Run("a repeated URL is refused rather than fitted", func(t *testing.T) {
+		dup := writeGoldSetLines(t, []goldRow{
+			{URL: "https://a.test/jobs/1", Label: bench.ExtractDetail},
+			{URL: "https://a.test/jobs/1", Label: bench.ExtractHubIndex},
+		})
+		if _, _, err := scorerSamples(dup); err == nil {
+			t.Fatal("scorerSamples accepted a gold set with the same URL twice")
+		} else if !strings.Contains(err.Error(), "https://a.test/jobs/1") {
+			t.Errorf("the error must name the repeated URL, got %v", err)
+		}
+	})
 }
 
 // TestHostWordsTokenizeLikeTheScoreVocabulary holds the shared tokenizer. The exclusion
@@ -306,6 +323,46 @@ func TestHostGroupedFoldsKeepAHostWhole(t *testing.T) {
 		}
 		if moved == 0 {
 			t.Error("no host moved fold under a different seed; the seed is not reaching the assignment")
+		}
+	})
+}
+
+// TestCrossValidateReportsRowsNoFoldCouldScore pins the coverage count. A held-out row
+// whose fold has no training half is scored by nobody, and every caller reads a missing
+// key as 0.0 -- a legitimate Posting Score and the lowest one possible, which sorts the
+// row to the bottom of the out-of-fold ladder and makes it one of the first rows any cut
+// vetoes. Returning the count is what lets the report say the ladder is fiction instead
+// of printing it as a measurement.
+func TestCrossValidateReportsRowsNoFoldCouldScore(t *testing.T) {
+	opts := fitOptions{Vocabulary: 0, MinDF: 1}
+
+	t.Run("every row is scored when the folds have both halves", func(t *testing.T) {
+		samples := separableSamples(t)
+		scores, unscored := crossValidate(samples, nil, opts, defaultFoldSeed, 2)
+		if unscored != 0 {
+			t.Errorf("unscored = %d, want 0 over %d rows on %d hosts", unscored, len(samples), hostCount(samples))
+		}
+		for _, s := range samples {
+			if _, ok := scores[s.URL]; !ok {
+				t.Errorf("%s has no out-of-fold score", s.URL)
+			}
+		}
+	})
+
+	t.Run("a single-host population leaves every row unscored", func(t *testing.T) {
+		// One host means one fold holds everything, so that fold's training half is
+		// empty and every other fold's held half is. Nothing is ever fitted, and
+		// nothing is ever scored.
+		samples := []scorerSample{
+			fitSample(t, "https://only.test/jobs/1", bench.ExtractDetail, "body:widget"),
+			fitSample(t, "https://only.test/jobs/2", bench.ExtractHubIndex, "body:filler"),
+		}
+		scores, unscored := crossValidate(samples, nil, opts, defaultFoldSeed, 2)
+		if unscored != len(samples) {
+			t.Errorf("unscored = %d, want %d", unscored, len(samples))
+		}
+		if len(scores) != 0 {
+			t.Errorf("scores = %v, want none: no fold had a training half", scores)
 		}
 	})
 }

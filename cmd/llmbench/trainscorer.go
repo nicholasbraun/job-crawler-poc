@@ -81,6 +81,11 @@ type trainPopulation struct {
 // trainVocabulary is what admission kept and what the fit did with it.
 type trainVocabulary struct {
 	candidateCensus
+	// DistinctHostWords is the size of the ban list itself, in WORDS. candidateCensus
+	// counts the signal names it removed, which is the larger number because a banned
+	// word is removed from the Title and body namespaces separately; the leakage guard
+	// logs this one. Both are printed so neither can be read as the other.
+	DistinctHostWords int `json:"distinct_host_words"`
 	// Kept is the Score Vocabulary the artifact ships; Weighted is every entry in it,
 	// structural signals included.
 	Kept     int `json:"kept_words"`
@@ -110,6 +115,12 @@ type trainVetoBlock struct {
 	Folds      int         `json:"folds"`
 	HostGroups int         `json:"host_groups"`
 	FoldSizes  []int       `json:"fold_sizes"`
+	// Unscored is how many rows no fold could hold out, and it must be zero for
+	// OutOfFold and SizeCurve to mean anything: an unscored row reads as a Posting
+	// Score of 0.0000, the lowest possible, and is counted among the first rows every
+	// cut vetoes. printTrainAlarms says so in red rather than letting a fabricated
+	// ladder read as a measurement.
+	Unscored int `json:"out_of_fold_unscored"`
 }
 
 // trainSizePoint is one point of the precision-versus-size curve, measured out of
@@ -289,7 +300,10 @@ func buildTrainReport(
 		}
 	}
 
-	outOfFold := crossValidate(samples, exclude, opts, seed, folds)
+	// Fold membership is a function of (host, seed, folds) alone, so a size that scores
+	// every sample here scores every sample at every other point on the size curve too.
+	// One coverage reading therefore covers the whole report.
+	outOfFold, unscored := crossValidate(samples, exclude, opts, seed, folds)
 	heldAccepts := scoredAccepts(samples, func(s scorerSample) float64 { return outOfFold[s.URL] })
 
 	r := trainReport{
@@ -301,14 +315,15 @@ func buildTrainReport(
 			Hosts:        hostCount(samples),
 		},
 		Vocabulary: trainVocabulary{
-			candidateCensus: candidates,
-			Kept:            len(model.vocabularyWords()),
-			Weighted:        len(model.Weights),
-			Intercept:       model.Intercept,
-			LogLoss:         meanLogLoss(samples, model),
-			Iterations:      fitIterations,
-			LearnRate:       fitLearnRate,
-			L2:              fitL2,
+			candidateCensus:   candidates,
+			DistinctHostWords: len(exclude),
+			Kept:              len(model.vocabularyWords()),
+			Weighted:          len(model.Weights),
+			Intercept:         model.Intercept,
+			LogLoss:           meanLogLoss(samples, model),
+			Iterations:        fitIterations,
+			LearnRate:         fitLearnRate,
+			L2:                fitL2,
 		},
 		WithinAccepts: trainVetoBlock{
 			Accepts:    censusOf(accepts),
@@ -317,6 +332,7 @@ func buildTrainReport(
 			Folds:      folds,
 			HostGroups: hostCount(samples),
 			FoldSizes:  foldSizes(samples, seed, folds),
+			Unscored:   unscored,
 		},
 		Chosen:    chosen,
 		Threshold: threshold,
@@ -333,28 +349,56 @@ func buildTrainReport(
 // costs against a hashed bag nobody can read.
 func sizeCurve(samples []scorerSample, exclude map[string]struct{}, opts fitOptions, seed string, folds int) ([]trainSizePoint, float64) {
 	at := func(rows []scorerSample, ex map[string]struct{}, size int) vetoPoint {
-		scores := crossValidate(rows, ex, fitOptions{Vocabulary: size, MinDF: opts.MinDF}, seed, folds)
+		scores, _ := crossValidate(rows, ex, fitOptions{Vocabulary: size, MinDF: opts.MinDF}, seed, folds)
 		return vetoAt(scoredAccepts(rows, func(s scorerSample) float64 { return scores[s.URL] }), sizeCurveDepth)
 	}
 
-	curve := make([]trainSizePoint, 0, len(vocabularySizes)+1)
-	for _, size := range vocabularySizes {
-		p := at(samples, exclude, size)
+	// The run's OWN size is measured directly rather than looked up in the ladder. An
+	// earlier form read the gap off whichever ladder rung happened to equal -vocab and
+	// left it at 0.0 when none did, so `-vocab 250` printed a fabricated "+0.0000" and
+	// the pre-registered HASHED GAP alarm could not fire -- a manufactured zero on the
+	// one number that governs a documented design reversal.
+	chosen := at(samples, exclude, opts.Vocabulary)
+
+	sizes := curveSizes(opts.Vocabulary)
+	curve := make([]trainSizePoint, 0, len(sizes)+1)
+	for _, size := range sizes {
+		p := chosen
+		if size != opts.Vocabulary {
+			p = at(samples, exclude, size)
+		}
 		curve = append(curve, trainSizePoint{N: size, Form: "explicit", Precision: p.Precision, Survivors: p.Survivors, DetailLost: p.DetailLost})
 	}
-	// The hashed arm folds the SAME admissible candidates into 2^14 buckets and caps
-	// nothing, so the comparison isolates the truncation. Its structural signals stay
-	// explicit in both arms.
+	// The hashed arm is the probe's 2^14 bag as the probe ran it, and it is a MORE
+	// generous reference than the explicit ladder rather than a like-for-like one: a
+	// hashed bucket is not a `title:`/`body:` name, so admissibleSignals reads it as a
+	// structural signal and it escapes both the min-df floor and the truncation. The arm
+	// therefore fits over every non-host-word candidate, the too-rare ones included,
+	// folded into 16,384 buckets. That is why a zero gap reads conservatively: the
+	// explicit list is matching a reference that saw strictly more. Only the leakage
+	// exclusion is shared, and it must be (see hashedSample).
 	h := at(hashedSamples(samples, exclude), nil, 0)
 	curve = append(curve, trainSizePoint{N: 0, Form: "hashed", Precision: h.Precision, Survivors: h.Survivors, DetailLost: h.DetailLost})
 
-	gap := 0.0
-	for _, p := range curve {
-		if p.Form == "explicit" && p.N == opts.Vocabulary {
-			gap = h.Precision - p.Precision
+	return curve, h.Precision - chosen.Precision
+}
+
+// curveSizes is the reported ladder with the run's chosen -vocab guaranteed on it, so
+// the gap the report prints is a point a reader can also see measured. The trailing 0
+// stays last: it is "untruncated", not a size, so a chosen size larger than every rung
+// still sorts ahead of it.
+func curveSizes(chosen int) []int {
+	if slices.Contains(vocabularySizes, chosen) {
+		return vocabularySizes
+	}
+	at := len(vocabularySizes) - 1
+	for i, n := range vocabularySizes {
+		if n != 0 && n > chosen {
+			at = i
+			break
 		}
 	}
-	return curve, gap
+	return slices.Insert(slices.Clone(vocabularySizes), at, chosen)
 }
 
 // topWeights is the heaviest entries each way. It is the fit's only explanation of
@@ -393,7 +437,8 @@ func printTrainReport(w io.Writer, r trainReport) {
 
 	v := r.Vocabulary
 	fmt.Fprintln(w, "\nscore vocabulary")
-	fmt.Fprintf(w, "  candidates        %d   dropped as a host word %d   dropped below min-df %d\n", v.Candidates, v.HostWords, v.BelowMinDF)
+	fmt.Fprintf(w, "  candidate entries %d   dropped as a host word %d (%d distinct host words)   dropped below min-df %d\n",
+		v.Candidates, v.HostWords, v.DistinctHostWords, v.BelowMinDF)
 	fmt.Fprintf(w, "  kept              %d words + %d structural signals = %d weighted entries\n", v.Kept, v.Structural, v.Weighted)
 	fmt.Fprintf(w, "  fit               intercept %.6f   mean log-loss %.4f   (full-batch, %d iterations, lr %.2f, l2 %g)\n",
 		v.Intercept, v.LogLoss, v.Iterations, v.LearnRate, v.L2)
@@ -445,9 +490,11 @@ func printVetoLadder(w io.Writer, points []vetoPoint) {
 	}
 }
 
-// printTrainAlarms writes the two findings a reader must not scroll past to stderr in
-// red. Neither moves the exit code: they are findings about the Gold Set, not failures
-// of the run (ADR-0049 pre-commits to recording an unmet floor as the honest outcome).
+// printTrainAlarms writes the findings a reader must not scroll past to stderr in red.
+// None moves the exit code: the first two are findings about the Gold Set rather than
+// failures of the run (ADR-0049 pre-commits to recording an unmet floor as the honest
+// outcome), and the third is about the -folds this run was given, which cannot touch
+// the artifact -- the fit does not cross-validate.
 func printTrainAlarms(r trainReport) {
 	if !r.FloorMet {
 		fmt.Fprintln(os.Stderr, red(fmt.Sprintf(
@@ -458,6 +505,11 @@ func printTrainAlarms(r trainReport) {
 		fmt.Fprintln(os.Stderr, red(fmt.Sprintf(
 			"HASHED GAP     %+.4f precision above the explicit list, past the %.2f ADR-0049 names as the point where the readable list is revisited",
 			r.HashedGap, hashedGapAlarm)))
+	}
+	if b := r.WithinAccepts; b.Unscored > 0 {
+		fmt.Fprintln(os.Stderr, red(fmt.Sprintf(
+			"NO OUT-OF-FOLD SCORE  %d of %d rows sit in a fold with no training half (%d folds over %d host groups), so nothing measured them: they read as 0.0000, the lowest possible Posting Score, and are counted among the first rows every cut vetoes. The out-of-fold ladder and the size curve above are not measurements. The artifact is unaffected -- the fit does not cross-validate.",
+			b.Unscored, r.Population.Scorable, b.Folds, b.HostGroups)))
 	}
 }
 
