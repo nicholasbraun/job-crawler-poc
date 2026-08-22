@@ -98,9 +98,16 @@ generated human-readable companion listing.
 ## How the weights ship
 
 `llmbench train-scorer` fits the weights over the committed Extract Gold Set and emits **generated
-Go source** into `internal/pagegate/extractscore`, which `pagegate` imports. The gate stays a pure
-function — URL and content in, verdict out, no model, no network, no database — and the weights
-are compiled in.
+Go source** into `pagegate` itself, not into a sub-package. The gate stays a pure function — URL and
+content in, verdict out, no model, no network, no database — and the weights are compiled in.
+
+A sub-package was the first design and does not compile: the Score Signals reuse the gate's
+unexported detectors, so `extractscore` would import `pagegate` while `pagegate` imports
+`extractscore` for the score — an import cycle. Both ways out are worse. Moving ADR-0044's argued
+word lists into a third leaf package relocates the disjointness invariant `positive_evidence.go`'s
+comment holds, and duplicating the detectors is the exact drift a shared `Signals()` exists to
+prevent. Same-package is also *less* API widening: three exported symbols (`Signals`, `Score`,
+`VetoThreshold`) rather than four exported detectors plus a new package's own surface.
 
 Two deviations from the repo's one precedent for generated data, `internal/geo` (ADR-0031), each
 deliberate:
