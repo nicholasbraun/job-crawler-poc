@@ -1,5 +1,11 @@
 # The Extract Gate requires tiered Positive Evidence, superseding reject-only
 
+> **Extended by ADR-0049.** The tier shape, every mark below, and the false-drop ledger are
+> unchanged. What changed is that this rung's ACCEPTS are now prunable: a Learned Veto scores the
+> pages Positive Evidence admits and withholds the extractor call from the weakest of them. It is
+> the only place in the gate with a bill attached — 100% of the extract spend on the Extract Gold
+> Set's population is made by this rung — and it ships off.
+
 ADR-0019 built the Extract Gate as reject-only and dropped #111's positive-ACCEPT rung for a
 specific reason: the keyword relevance filter already stood in front of the extractor, so
 "every page reaching the extractor has already been accepted — a structural ACCEPT is a

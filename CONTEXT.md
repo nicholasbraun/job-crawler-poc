@@ -233,12 +233,28 @@ The last path segment of a deep career URL that keeps it a Career Page rather th
 _Avoid_: listing keyword, hub keyword
 
 **Extract Gate**:
-The collection lane's counterpart to the Gate: a deterministic, pre-LLM pass that decides whether a candidate posting page reaches the LLM extractor. It first *rejects* the page shapes the Gate accepts as hubs — an ATS Embed, a structured-data openings index, a link-saturated page — reading the same Structural Signals with opposite polarity, and then requires Positive Evidence of a single posting from whatever survives. Verdict is binary (extract or skip), not the Gate's three-way band, and it is tuned separately so its calibration never shifts the Gate.
+The collection lane's counterpart to the Gate: a deterministic, pre-LLM pass that decides whether a candidate posting page reaches the LLM extractor. It first *rejects* the page shapes the Gate accepts as hubs — an ATS Embed, a structured-data openings index, a link-saturated page — reading the same Structural Signals with opposite polarity, then requires Positive Evidence of a single posting from whatever survives, and finally withholds the call from a page whose Posting Score is too low to be worth it (the Learned Veto). Verdict is binary (extract or skip), not the Gate's three-way band, and it is tuned separately so its calibration never shifts the Gate.
 _Avoid_: extract filter, relevance gate, ShouldExtract (in prose)
 
 **Positive Evidence**:
 The mark the Extract Gate requires before spending an extractor call: that a page *is* one posting, not merely that it is not a hub. Tiered — a *strong* mark stands on its own (a posting-shaped URL, a lone structured-data posting, a title announcing one vacancy, or four of the five sections a posting has), while the *weak* marks count only in agreement: two posting sections corroborated by an apply affordance or by a role designation in the title. The tiering is the measurement, not a taste — an apply affordance alone fires on a third of non-postings — and which marks sit in which tier is settled page by page against the Extract Gold Set.
 _Avoid_: accept signal, positive signal (bare), allowlist
+
+**Posting Score**:
+The Extract Gate's learned, graded estimate that a page is one Job Listing. Where Positive Evidence is argued mark by mark, this is fitted to the Extract Gold Set — so it cannot explain a verdict in words, it can only rank one page against another. Distinct from the Gate's Confidence Score, which grades a different question on the discovery path and is hand-weighted.
+_Avoid_: confidence score, model score, probability, ML score
+
+**Learned Veto**:
+The Extract Gate's refusal to spend an extractor call on a page that carries Positive Evidence but whose Posting Score is too low. It only ever removes a call, never adds one, so all of its risk sits on the false-drop side — which is why a page it drops carries the score that dropped it.
+_Avoid_: scorer rung, model gate, ML gate, classifier
+
+**Score Signals**:
+What the Posting Score reads: the Structural Signals the Extract Gate already computes, taken as gradations rather than as the thresholded marks Positive Evidence collapses them into, together with the Score Vocabulary. The gradation is the whole point — every page the Learned Veto judges has already cleared Positive Evidence's thresholds, so only the degrees still separate them.
+_Avoid_: features, inputs, variables
+
+**Score Vocabulary**:
+The words the Posting Score weighs, learned from the Extract Gold Set rather than curated like the Extract Gate's other word lists. It holds no host or URL words, so the score cannot mistake the handful of sites the Gold Set happens to sample for evidence about the web. Being learned rather than argued, it is reviewed as data: a reader checks that it weighs the words a posting uses, not the words one sampled employer uses.
+_Avoid_: word bag, feature set, dictionary, stopwords
 
 **Free Extraction**:
 A Job Listing read straight from a page's lone structured-data posting, with no LLM call. It fires only where the structured data is unambiguous — exactly one posting node, no openings index, a title — **and the page still renders what it declares**. That last condition exists because a withdrawn or filled posting is routinely served with its structured data intact above a body reading only "this position is no longer active": unambiguous structured data alone proved to be a claim a page can keep making after it stops being true.
