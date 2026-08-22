@@ -8,9 +8,14 @@
 // the same Structural Signals read oppositely on the two paths: on discovery they
 // accept a hub as a Career Page, on extract they REJECT a hub as an index to
 // crawl rather than extract — with the ATS posting deterministically exempt. On
-// its final rung ShouldExtract additionally requires Positive Evidence that the
-// page IS one posting (ADR-0044, positive_evidence.go), so clearing every reject
-// rung is no longer enough to spend an extractor call.
+// its last reject-on-absence rung ShouldExtract additionally requires Positive
+// Evidence that the page IS one posting (ADR-0044, positive_evidence.go), so clearing
+// every reject rung is no longer enough to spend an extractor call. A page Positive
+// Evidence admits is then withheld anyway, on the FINAL rung, when cfg.LearnedVeto is
+// set and the page's Posting Score falls below the compiled-in VetoThreshold
+// (ADR-0049, posting_score.go) -- the one rule in this package that is fitted rather
+// than argued, and the only rung that removes a call the rest of the ladder was about
+// to pay for.
 package pagegate
 
 import (
@@ -429,18 +434,27 @@ func ExtractGate(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateCon
 		// fire it.
 		return ExtractVerdict{Rung: RungOpeningsIndex}
 	}
-	if jobLinkSaturation(countJobPostingLinks(u, content), cfg.ExtractJobLinkSaturationCount) >= 1 {
+	// Counted once and carried down: rung 7 rejects on it, and rung 9 grades it. It
+	// parses every outbound link, so a page with thousands of ordinary links -- which
+	// rung 7 does not reject, because it counts only same-host JOB links -- would pay
+	// for that walk twice if the veto re-derived it.
+	jobLinks := countJobPostingLinks(u, content)
+	if jobLinkSaturation(jobLinks, cfg.ExtractJobLinkSaturationCount) >= 1 {
 		// rung 7: a page saturated with distinct same-host job links is a jobs index.
 		// Reuses both pure detectors with reject polarity; an
 		// ExtractJobLinkSaturationCount <= 0 makes jobLinkSaturation return 0, so this
 		// rung then never fires.
 		return ExtractVerdict{Rung: RungJobLinkSaturation}
 	}
+	// The one fold of the page body rungs 8 and 9 share. Still unfolded here: rung 8's
+	// URL, structured-data and Title marks admit a page without reading the body, and
+	// with the veto off nothing below asks for it either.
+	fold := newBodyFold(content)
 	// rung 8 (ADR-0044): Positive Evidence. Every reject rung above has resolved
 	// first, so this rung only ever decides pages nothing rejected -- a hub carrying
 	// an apply affordance is already gone. When the rung is off the gate keeps its
 	// previous blanket accept, which is the kill switch.
-	if cfg.RequirePositiveEvidence && !hasPositiveEvidence(u, content) {
+	if cfg.RequirePositiveEvidence && !hasPositiveEvidence(u, content, fold) {
 		return ExtractVerdict{Rung: RungPositiveEvidence}
 	}
 	// rung 9 (ADR-0049): the Learned Veto. It sees only the pages rung 8 admitted --
@@ -456,10 +470,14 @@ func ExtractGate(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateCon
 	// zero as a Posting Score. The comparison is "<", matching the trainer's "score
 	// >= threshold survives" exactly; a page AT the threshold is kept, and that
 	// boundary is what makes the shipped cut the one that was measured.
+	//
+	// It sums scoreOf over signalsFrom rather than calling Score, so the fold and the
+	// link count above are reused rather than recomputed. Same arithmetic, same
+	// signals, same order -- Score is the standalone reading of this very path.
 	if !cfg.LearnedVeto {
 		return ExtractVerdict{Extract: true, Rung: RungNone}
 	}
-	score := Score(u, content)
+	score := scoreOf(signalsFrom(content, fold, jobLinks))
 	if score < VetoThreshold {
 		return ExtractVerdict{Rung: RungLearnedVeto, Score: score, Scored: true}
 	}

@@ -51,7 +51,11 @@ import (
 // page first. It reads content.Title as well as the body: both live call sites (the
 // walk's URL processor and the refetch lane) hand it a freshly parsed Content, so
 // the title is populated on both.
-func hasPositiveEvidence(u crawler.URL, content *crawler.Content) bool {
+//
+// fold carries the page's folded body, unfolded until a mark below asks for it, so the
+// Learned Veto rung reads the same copy this rung read rather than making a second one
+// (ADR-0049). It must be a fold of the same content.
+func hasPositiveEvidence(u crawler.URL, content *crawler.Content, fold *bodyFold) bool {
 	if postingURL(u) {
 		return true
 	}
@@ -85,8 +89,9 @@ func hasPositiveEvidence(u crawler.URL, content *crawler.Content) bool {
 	// the largest body observed in the capture is ~757 KB, so a fold per mark would be
 	// three full copies of it per page on the gate's hottest path. The fold sits BELOW
 	// the URL, structured-data and Title marks on purpose: a page they admit never
-	// pays for it at all.
-	body := foldedBody(content)
+	// pays for it at all -- which is why the fold is asked for HERE and not at the top,
+	// even though the caller already holds it.
+	body := fold.folded()
 	// Counted once and reused: the strong threshold and the weak tier read the same
 	// number, and re-deriving it would walk all five groups a second time.
 	groups := vocabularyGroupCount(body)
@@ -442,4 +447,31 @@ func vocabularyGroupCount(body string) int {
 // no-op.
 func foldedBody(content *crawler.Content) string {
 	return strings.ToLower(crawler.FlattenedText(content.MainContent))
+}
+
+// bodyFold is one page's foldedBody, computed AT MOST ONCE and shared by every rung
+// that reads it. Two rungs do: Positive Evidence (rung 8) and, when it is armed, the
+// Learned Veto's Score Signals (rung 9, ADR-0049). Folding per rung would mean a
+// second full copy of a body observed at up to ~757 KB in the capture, on a gate that
+// runs on every walked page with fifty workers behind it.
+//
+// It is LAZY on purpose, not as an optimisation detail. hasPositiveEvidence's URL,
+// structured-data and Title marks admit a page without reading the body at all, and
+// that early exit is load-bearing: a page they admit must keep paying nothing for the
+// fold, whatever rung 9's switch says. The zero value is unusable; call newBodyFold.
+type bodyFold struct {
+	content *crawler.Content
+	text    string
+	done    bool
+}
+
+// newBodyFold prepares a page's fold without performing it.
+func newBodyFold(content *crawler.Content) *bodyFold { return &bodyFold{content: content} }
+
+// folded returns the page's foldedBody, folding on first use.
+func (b *bodyFold) folded() string {
+	if !b.done {
+		b.text, b.done = foldedBody(b.content), true
+	}
+	return b.text
 }

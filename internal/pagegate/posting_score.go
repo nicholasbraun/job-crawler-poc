@@ -187,11 +187,26 @@ const scoreMinWordRunes = 2
 //
 // content must be non-nil, the same contract hasPositiveEvidence holds; every call site
 // parses the page first.
+//
+// This is the standalone reading, and it is what the trainer calls: it derives the two
+// expensive inputs itself. ExtractGate reaches signalsFrom directly with the fold rung 8
+// already made and the link count rung 7 already computed, so the veto costs one fold
+// and one link walk per page rather than two of each. Both paths run the SAME
+// signalsFrom, so train and serve cannot describe different signals.
 func Signals(u crawler.URL, content *crawler.Content) []string {
-	body := foldedBody(content)
+	return signalsFrom(content, newBodyFold(content), countJobPostingLinks(u, content))
+}
+
+// signalsFrom is Signals with its two expensive inputs supplied: the page's folded body
+// and its distinct same-host Job Listing link count. The URL is absent because it
+// contributes nothing else -- it is read ONLY as the base for that link count, which is
+// what keeps the Score Vocabulary from learning the handful of hosts the Gold Set
+// samples.
+func signalsFrom(content *crawler.Content, fold *bodyFold, jobLinks int) []string {
+	body := fold.folded()
 	sigs := make([]string, 0, 256)
 	sigs = appendGrades(sigs, vocabularyGroupGrades, vocabularyGroupCount(body))
-	sigs = appendGrades(sigs, jobLinkGrades, countJobPostingLinks(u, content))
+	sigs = appendGrades(sigs, jobLinkGrades, jobLinks)
 	for _, grade := range bodyLengthGrades {
 		if len(body) >= grade.minBytes {
 			sigs = append(sigs, grade.name)
@@ -224,13 +239,22 @@ func Signals(u crawler.URL, content *crawler.Content) []string {
 // second implementation, which is exactly what this design exists to prevent; summing in
 // Signals' order is what makes the result reproducible.
 //
-// It is called from ExtractGate's Learned Veto rung and nowhere else: only when the
+// This is the standalone reading, for the trainer's guard and for anyone scoring a page
+// on its own. ExtractGate's Learned Veto rung sums scoreOf over signalsFrom instead, to
+// reuse the fold and the link count the rungs above it already made -- the SAME
+// arithmetic over the SAME signals, with nothing recomputed. The rung runs only when the
 // veto is switched on, and only on pages every rung above it has already admitted --
 // which under the shipped configuration are the Positive Evidence rung's accepts, the
 // population the weights were fitted on.
 func Score(u crawler.URL, content *crawler.Content) float64 {
+	return scoreOf(Signals(u, content))
+}
+
+// scoreOf squashes the weighted sum of already-computed Score Signals. It is the one
+// place the functional form lives, so the gate's rung and Score cannot drift apart.
+func scoreOf(signals []string) float64 {
 	z := scoreIntercept
-	for _, signal := range Signals(u, content) {
+	for _, signal := range signals {
 		z += scoreWeights[signal]
 	}
 	return 1 / (1 + math.Exp(-z))
