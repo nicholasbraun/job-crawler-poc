@@ -299,7 +299,7 @@ The Extract Gate's counterpart to the Gold Set: real pages the live extract stre
 _Avoid_: extract test set, second gold set
 
 **Boundary Stratum**:
-The part of the Extract Gold Set drawn from pages where candidate gate variants disagree, rather than sampled from the stream — where a false-drop hides, and the only labels that must be human-confirmed. Its counterpart random stratum carries sampling weights instead, so stream-level numbers stay honest. The set may hold more than one, each defined by the pair of gate rules whose disagreement drew it and named after that pair: rows drawn under different rules describe different boundaries, so pooling them would make each unreadable, and a row's stratum is how it says which pair drew it.
+The part of the Extract Gold Set drawn from pages where candidate gate variants disagree, rather than sampled from the stream — where a false-drop hides, and the only labels that must be human-confirmed. It may be taken as a **census** of that disagreement, whose rows all carry weight 1, or as a **stratified sample** of it, whose rows carry inverse-inclusion-probability weights; which one it is follows from how large the disagreement is against the human confirmation budget, and sampling it makes the confirmation obligation finishable rather than optional. The set may hold more than one, each defined by the pair of gate rules whose disagreement drew it and named after that pair: rows drawn under different rules describe different boundaries, so pooling them would make each unreadable, and a row's stratum is how it says which pair drew it — and, because one stratum is claimed by one design, under which inclusion probabilities.
 _Avoid_: hard cases, edge sample, review queue
 
 **Random Stratum**:

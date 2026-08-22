@@ -115,6 +115,9 @@ func tinyRow(url string, label bench.ExtractLabel, stratum goldStratum, confirme
 	}
 	return goldRow{
 		URL: url, Verdict: label == bench.ExtractDetail, TS: "2026-08-08T10:00:00Z",
+		// The weight is ARBITRARY here: this is a synthetic temp-dir fixture no weight
+		// guard reads, and the veto-boundary row below is a stratified drawing's whose
+		// real weight would be an inverse selection probability, not this 1.
 		Label: label, Stratum: stratum, Weight: boundaryCensusWeight,
 		LabelProvenance: prov, Content: content,
 	}

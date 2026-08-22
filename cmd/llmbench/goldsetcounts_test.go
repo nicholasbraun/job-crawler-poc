@@ -83,9 +83,9 @@ func TestEveryDerivedCountInTheCountsFileIsOwned(t *testing.T) {
 	t.Logf("%d integer constants in %s, %d of them derived from the record", integers, committedCounts, len(derivedCounts))
 }
 
-// TestEveryCensusRatchetIsOneGoldsetRefitProtects ties the two halves of ADR-0043's
+// TestEveryBoundaryRatchetIsOneGoldsetRefitProtects ties the two halves of ADR-0043's
 // confirmation rule together: the build-time guard on the committed record
-// (censusConfirmationRatchets) and the refusal goldset-refit makes when a pending count
+// (boundaryConfirmationRatchets) and the refusal goldset-refit makes when a pending count
 // rises (derivedCounts). A ratchet the tests read but the verb does not own would be
 // rewritten by nobody and refused by nobody; one the verb owns but no test reads would
 // be a number with no reader.
@@ -93,15 +93,15 @@ func TestEveryDerivedCountInTheCountsFileIsOwned(t *testing.T) {
 // Direction matters as much as presence: countMayFall is what makes a RISE a refusal,
 // which is the only direction that means a human signature vanished on rows the fit
 // population is drawn from.
-func TestEveryCensusRatchetIsOneGoldsetRefitProtects(t *testing.T) {
+func TestEveryBoundaryRatchetIsOneGoldsetRefitProtects(t *testing.T) {
 	owned := map[string]derivedCount{}
 	for _, c := range derivedCounts {
 		owned[c.Name] = c
 	}
-	if len(censusConfirmationRatchets) == 0 {
+	if len(boundaryConfirmationRatchets) == 0 {
 		t.Fatal("no Boundary Stratum declares a confirmation ratchet; a rename would turn this guard into a silent pass")
 	}
-	for stratum, ratchet := range censusConfirmationRatchets {
+	for stratum, ratchet := range boundaryConfirmationRatchets {
 		t.Run(string(stratum), func(t *testing.T) {
 			c, ok := owned[ratchet.constant]
 			if !ok {

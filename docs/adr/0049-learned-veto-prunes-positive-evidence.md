@@ -208,7 +208,10 @@ how it says which pair drew it. It takes **both** halves of the disagreement, wh
 takes the accept half only: this ADR rules out grading the rung against the extractor's own
 verdict, so the drop set may not be filtered by it either. By default the verb only reports the
 **veto depth**; `-draw` is what commits rows, because the depth is the go/no-go and the rows it
-implies change the fitted weights.
+implies change the fitted weights. The drawing was specified here as a **census** of the drop
+set; the amendment *"the drop set is sampled in bands"* below replaced that with a stratified
+sample once the drop set's real size was measured, so read the census claim in this paragraph as
+superseded.
 
 The sequence's fourth step ships as one verb, `llmbench goldset-refit`: apply, counts,
 regenerate, verify. The split between it and `train-scorer` is deliberate and is the condition's
@@ -460,3 +463,90 @@ holding entries from every rung. Both figures are correct and they count differe
 
 Each of those is a decision taken in the "Attribution" section above, and together they are what
 made three items legible enough to be argued about at all.
+
+## Amendment: the drop set is sampled in bands, not censused (#304)
+
+The census this ADR specified does not survive contact with this rung, and the reason is a
+measurement.
+
+A capture window was run as the rollout section prescribes — the veto **off**, `EXTRACT_CAPTURE_MAX=0`
+so the file is a stream frame and not a sampling design — and scored offline against the shipped
+weights. Over a 1,006-page frame:
+
+| | |
+|---|---:|
+| veto depth | **82.7%** |
+| drop set | **832** rows, and it grows with the frame |
+| of those, pages the live extractor read as one posting | **54** |
+| pages the veto keeps | 174, of which 128 extractor-accepted |
+| recall / precision of the keep set against that verdict | 70.3% / 73.6%, against a 13–18% baseline |
+
+The disagreement is **most of the stream** here, where ADR-0044's boundary was 188 pages in
+total. ADR-0043 requires a **human confirmation on every Boundary Stratum row**, so a census of a
+full window would put thousands of rows in front of a labeller for Blind Confirmation. That is not
+a pass anybody finishes — and an unfinished census does not merely delay the evidence, it blocks
+the refit indefinitely, because the confirmation ratchet the refit enforces can never come down.
+
+So `learnedVetoBoundary` becomes a **stratified sample** of the drop set, in three bands:
+
+| band | population | design | why |
+|---|---|---|---|
+| **accepted** | drop ∧ live verdict *accept* | **census** | the candidate false-drops. The recall claim rests on exactly these ~54 pages per 1,000 framed, and sampling them would put sampling error on the one number the rollout turns on. |
+| **near** | drop ∧ live verdict *abstain* ∧ score in `[VetoThreshold − band, VetoThreshold)` | sampled, `-near-rows` | where the threshold is actually decided, and therefore where a confirmation buys the most. |
+| **deep** | drop ∧ live verdict *abstain* ∧ score below that | sampled, `-deep-rows` | to confirm the bottom really is junk, and to reach deliberately for another **short posting publishing no structured data** — the shape the #304 amendment above records both live false-drops having. |
+
+The three partition the drop set exactly, so no page can be drawn twice and none can be missed.
+At the shipped defaults (`-near-band 0.20 -near-rows 80 -deep-rows 40`) the measured frame draws
+54 + 80 + 40 = **174** rows against a census of 832. The quotas are counts rather than shares
+because the human confirmation budget is absolute and does not scale with the frame; `-since` is
+the lever on the censused band.
+
+**Weighting.** Each row carries the inverse of its selection probability, normalized within this
+drawing: `w_c = (N_c/n_c) × (n/N)`, so the drawn weights sum to the drawn rows and the per-drawing
+balance the record already asserts holds by construction. This is the crux, and getting it wrong
+would be invisible: weight 1 is correct only where the inclusion probability is 1, so pooling
+weight-1 *sampled* rows with the censused ones would make any weighted read over the stratum
+describe the enriched sample while claiming to describe the drop set — the deep band understated
+against the census cell by roughly `(N_deep/n_deep)/(N_acc/n_acc)`, an order of magnitude at the
+defaults. The weights are **not** built through the random drawing's `weightsFor`: that function
+reconstructs a verdict share from the capture's per-verdict caps because that drawing's frame is a
+capped stream sample, whereas this population is *enumerated* by the replay and its inclusion
+probabilities are known exactly. What the weights estimate, and what belongs in the Gold Set's own
+README: *the pages the Learned Veto would withhold the call from over this capture frame, minus
+the URLs earlier drawings already committed.* It is not a stream estimate — a drop set is not a
+stream — and these rows still never enter the weighted stream scorecard.
+
+**The stratum is reused, not forked.** `veto-boundary` holds **zero committed rows** today: it
+ships defined and undrawn. No row was ever drawn under the census design, so replacing that design
+mixes nothing, and forking a second stratum would fork the counts, the ratchet, the confirmation
+surface's `-stratum` argument and both READMEs for no gain. What keeps it safe afterwards is a
+code guarantee rather than a promise: a boundary design now declares its **selection design**
+(census or stratified) beside its pair and its stratum, a stratum is claimed by exactly one design
+— asserted as a property — and therefore by exactly one selection design. A committed row states
+which pair drew it *and* under which inclusion probabilities, through its stratum and through
+nothing else.
+
+**Stratifying on the live verdict is not the filtering this ADR forbids.** Filtering would give the
+pages the extractor abstained on inclusion probability **zero**, importing that verdict's 0.454
+precision into the sample before a human reads a row. Stratification gives every page of the drop
+set a non-zero, *known* probability and the weights restore the whole set. Nothing is excluded and
+no verdict decides a label; the drawing still takes both halves.
+
+**Determinism, and one honest caveat.** The within-band selection is the same hash order every
+other drawing uses — ascending `sha256(seed + "\n" + url)`, its own seed because it is its own draw
+— so the same capture and seed yield a byte-identical file while a new seed is a genuine unbiased
+resample. No RNG anywhere. The caveat: a band is decided on the **Posting Score**, so the sample is
+a function of the compiled weights as well as of the capture and the flags. After a refit the same
+command yields a different sample, which is why the draw records its `VetoThreshold`, its band edge
+and its seed in the Gold Set's drawings table.
+
+**The drawing is taken once.** A census tolerates a repeat — a page taken under it had inclusion
+probability 1 whenever it was taken — but a second window's sample would carry a second set of
+inclusion probabilities into one stratum, and pooling two selection designs there is exactly what
+makes a weighted estimate over it unrecoverable. The verb refuses a second draw and names the
+alternative: a fresh window is a new *drawing*, declared in code as every drawing before it was.
+
+Nothing about the confirmation obligation changes. Every drawn row still owes a Blind
+Confirmation, `pendingVetoBoundaryConfirmations` is still the ratchet that counts them, and the
+commit that draws still raises it by hand because `goldset-refit` refuses a rise. Sampling makes
+that obligation **finishable**, which is the whole of what it buys.

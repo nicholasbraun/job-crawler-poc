@@ -279,6 +279,11 @@ func printRandomSampleSummary(w io.Writer, scan, framed captureScan, sel selecti
 // keyed by the exact line the dedupe chose so a re-extracted URL yields the same
 // record the stratification saw. Only selected lines are decoded whole, so peak
 // memory stays proportional to the sample rather than to the 87 MB capture.
+//
+// Each row's weight is looked up on its WHOLE cell, band included: a design may sample
+// two cells that share a stratum and a verdict at different rates (ADR-0049's veto
+// boundary samples its near and deep bands separately), and keying on the pair alone
+// would collapse them and write one band's weight over the other's rows.
 func readSelected(path string, sel selection) ([]goldRow, error) {
 	byLine := map[int]candidate{}
 	for _, c := range sel.Chosen {
@@ -310,7 +315,7 @@ func readSelected(path string, sel selection) ([]goldRow, error) {
 			return nil, fmt.Errorf("capture line %d: %w", lineNo, err)
 		}
 		row.Stratum = cand.Stratum
-		row.Weight = weightByCell[cellKey{cand.Stratum, cand.Verdict}]
+		row.Weight = weightByCell[cellKey{Stratum: cand.Stratum, Verdict: cand.Verdict, Band: cand.Band}]
 		rows = append(rows, row)
 	}
 	if err := sc.Err(); err != nil {

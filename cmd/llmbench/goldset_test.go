@@ -448,10 +448,10 @@ func TestSampleAppliesThePlan(t *testing.T) {
 	for _, c := range sel.Cells {
 		got[c.Key] = c
 	}
-	if c := got[cellKey{stratumLonePosting, true}]; c.Population != 10 || c.Sampled != 3 {
+	if c := got[cellKey{Stratum: stratumLonePosting, Verdict: true}]; c.Population != 10 || c.Sampled != 3 {
 		t.Errorf("lone-posting/accept: population %d sampled %d, want 10 and 3", c.Population, c.Sampled)
 	}
-	if c := got[cellKey{stratumNoPosting, false}]; c.Population != 2 || c.Sampled != 2 {
+	if c := got[cellKey{Stratum: stratumNoPosting, Verdict: false}]; c.Population != 2 || c.Sampled != 2 {
 		t.Errorf("no-posting/abstain: population %d sampled %d, want 2 and 2", c.Population, c.Sampled)
 	}
 }
@@ -655,20 +655,20 @@ func TestLiveAcceptShareIgnoresTheCappedTail(t *testing.T) {
 func TestWeightsSumToRowCountAndInvertOversampling(t *testing.T) {
 	// The populations and quotas realized on the committed capture.
 	pops := map[cellKey]int{
-		{stratumLonePosting, true}:       777,
-		{stratumLonePosting, false}:      24,
-		{stratumAmbiguousPosting, true}:  0,
-		{stratumAmbiguousPosting, false}: 1,
-		{stratumNoPosting, true}:         1037,
-		{stratumNoPosting, false}:        2432,
+		{Stratum: stratumLonePosting, Verdict: true}:       777,
+		{Stratum: stratumLonePosting, Verdict: false}:      24,
+		{Stratum: stratumAmbiguousPosting, Verdict: true}:  0,
+		{Stratum: stratumAmbiguousPosting, Verdict: false}: 1,
+		{Stratum: stratumNoPosting, Verdict: true}:         1037,
+		{Stratum: stratumNoPosting, Verdict: false}:        2432,
 	}
 	counts := map[cellKey]int{
-		{stratumLonePosting, true}:       46,
-		{stratumLonePosting, false}:      24,
-		{stratumAmbiguousPosting, true}:  0,
-		{stratumAmbiguousPosting, false}: 1,
-		{stratumNoPosting, true}:         33,
-		{stratumNoPosting, false}:        45,
+		{Stratum: stratumLonePosting, Verdict: true}:       46,
+		{Stratum: stratumLonePosting, Verdict: false}:      24,
+		{Stratum: stratumAmbiguousPosting, Verdict: true}:  0,
+		{Stratum: stratumAmbiguousPosting, Verdict: false}: 1,
+		{Stratum: stratumNoPosting, Verdict: true}:         33,
+		{Stratum: stratumNoPosting, Verdict: false}:        45,
 	}
 	weights, err := weightsFor(samplePlan, pops, counts, 0.3432)
 	if err != nil {
@@ -684,8 +684,8 @@ func TestWeightsSumToRowCountAndInvertOversampling(t *testing.T) {
 		t.Errorf("weights sum to %.6f over %d rows, want equal", total, rows)
 	}
 
-	rare := weights[cellKey{stratumLonePosting, false}] // 24 of 24 taken
-	common := weights[cellKey{stratumNoPosting, false}] // 45 of 2432 taken
+	rare := weights[cellKey{Stratum: stratumLonePosting, Verdict: false}] // 24 of 24 taken
+	common := weights[cellKey{Stratum: stratumNoPosting, Verdict: false}] // 45 of 2432 taken
 	if !(rare > 0 && common > 0 && rare < common) {
 		t.Errorf("exhaustive cell weight %.4f is not below the thinly-sampled cell weight %.4f", rare, common)
 	}
@@ -799,7 +799,7 @@ func TestRandomPlanWeightsReconstructTheStreamRate(t *testing.T) {
 		got[c.Key] = c
 	}
 	// With a 1:2 draw the weights collapse to 3p and 1.5(1-p).
-	accept, abstain := got[cellKey{stratumRandom, true}], got[cellKey{stratumRandom, false}]
+	accept, abstain := got[cellKey{Stratum: stratumRandom, Verdict: true}], got[cellKey{Stratum: stratumRandom, Verdict: false}]
 	if math.Abs(accept.Weight-3*p) > 1e-9 {
 		t.Errorf("accept weight %.6f, want %.6f (3p)", accept.Weight, 3*p)
 	}
@@ -1295,9 +1295,20 @@ func TestWorksheetWithholdsTheStructuredData(t *testing.T) {
 // drawn" is a fact about this artifact at this commit, not about the type.
 var drawnStrata = []goldStratum{stratumLonePosting, stratumAmbiguousPosting, stratumNoPosting, stratumRandom, stratumBoundary}
 
-// isCensusStratum reports whether s is one of the Boundary Strata, whose rows are a
-// census and therefore all carry weight 1.
-func isCensusStratum(s goldStratum) bool { return s == stratumBoundary || s == stratumVetoBoundary }
+// isCensusStratum reports whether s's rows are a CENSUS -- inclusion probability 1,
+// so weight exactly 1. Only ADR-0043's boundary is one: the Learned Veto's boundary is
+// a STRATIFIED SAMPLE of its drop set (ADR-0049), and its rows carry inverse selection
+// probabilities instead.
+func isCensusStratum(s goldStratum) bool { return s == stratumBoundary }
+
+// isBoundaryStratum reports whether s is a Boundary Stratum -- drawn from where two
+// gate rules disagree rather than from the stream, and therefore owing a HUMAN
+// confirmation on every row (ADR-0043), whether it was censused or sampled. This is the
+// predicate the confirmation ratchets key on; isCensusStratum is the narrower one, about
+// weights alone.
+func isBoundaryStratum(s goldStratum) bool {
+	return s == stratumBoundary || s == stratumVetoBoundary
+}
 
 // TestCommittedGoldSetIsWellFormed is the structural guard on the committed file:
 // it is the evidence base every later extract decision is argued from, so a row
@@ -1352,9 +1363,11 @@ func TestCommittedGoldSetIsWellFormed(t *testing.T) {
 		if !row.Label.Valid() {
 			t.Errorf("%s: label %q is not one of detail / hub-index / residue / ambiguous", row.URL, row.Label)
 		}
-		// Either Boundary Stratum is a census, so its weight is not a sampling artifact
-		// to be recomputed: it is 1 by definition, and any other value means the row
-		// arrived from a drawing that thought it was sampling.
+		// A CENSUS stratum's weight is not a sampling artifact to be recomputed: it is 1
+		// by definition, and any other value means the row arrived from a drawing that
+		// thought it was sampling. The veto boundary is deliberately outside this check --
+		// it samples, so its weights are inverse selection probabilities and
+		// TestCommittedVetoBoundaryStratumIsTheDropSet asserts their structure instead.
 		if isCensusStratum(row.Stratum) && row.Weight != boundaryCensusWeight {
 			t.Errorf("%s: %s row carries weight %g, want the census weight %g", row.URL, row.Stratum, row.Weight, boundaryCensusWeight)
 		}
@@ -2296,10 +2309,10 @@ func TestBoundaryIsTheDisagreementSet(t *testing.T) {
 	if got := outcome.DroppedAbstained; len(got) != 1 || got[0].URL != "https://acme.test/company/we-moved" {
 		t.Errorf("abstain half = %v, want exactly the abstained page the two configs disagree on", urlsOf(got))
 	}
-	// The census this design draws is the accept half alone, which is what makes the
-	// abstain page above recorded rather than drawn.
-	if got := outcome.Census(positiveEvidenceBoundary); len(got) != 1 || got[0].URL != "https://acme.test/company/we-grew" {
-		t.Errorf("census = %v, want the accept half only", urlsOf(got))
+	// The drop set this design draws from is the accept half alone, which is what makes
+	// the abstain page above recorded rather than drawn.
+	if got := outcome.DropSet(positiveEvidenceBoundary); len(got) != 1 || got[0].URL != "https://acme.test/company/we-grew" {
+		t.Errorf("drop set = %v, want the accept half only", urlsOf(got))
 	}
 }
 
@@ -2386,7 +2399,8 @@ func TestBoundarySampleRefusesADuplicateURL(t *testing.T) {
 
 	drawn := []goldRow{{URL: "https://acme.test/company/we-grew", Verdict: true, Stratum: stratumBoundary, Weight: boundaryCensusWeight}}
 	committed := map[string]struct{}{"https://acme.test/company/we-grew": {}}
-	if err := validateDrawnBoundaryRows(positiveEvidenceBoundary, drawn, committed); err == nil {
+	sel := censusSelection(positiveEvidenceBoundary, []candidate{{URL: "https://acme.test/company/we-grew", Verdict: true}})
+	if err := validateDrawnBoundaryRows(positiveEvidenceBoundary, sel, drawn, committed); err == nil {
 		t.Error("validateDrawnBoundaryRows accepted a row the substrate already carries")
 	}
 }
@@ -2570,7 +2584,7 @@ func TestCommittedBoundaryRecoveryLedger(t *testing.T) {
 		total, recovered[bench.ExtractDetail], nonPostings, recovered[bench.ExtractAmbiguous])
 }
 
-// censusConfirmationRatchets is the ratchet each Boundary Stratum owes: the counts-file
+// boundaryConfirmationRatchets is the ratchet each Boundary Stratum owes: the counts-file
 // constant recording how many of its rows still await a human confirmer, and what that
 // constant currently says. One entry per stratum rather than one number over both,
 // because the two are drawn by different config pairs and confirmed in different
@@ -2580,8 +2594,10 @@ func TestCommittedBoundaryRecoveryLedger(t *testing.T) {
 // It is a table so that TestCommittedBoundaryStrataConfirmation can assert it is
 // COMPLETE. A Boundary Stratum with no entry is the failure ADR-0043 forbids: rows a
 // hard-zero false-drop guard would be decided on, sitting in the fit population with
-// nothing in the build counting the confirmations they owe.
-var censusConfirmationRatchets = map[goldStratum]struct {
+// nothing in the build counting the confirmations they owe. It is keyed on
+// isBoundaryStratum and not on isCensusStratum: sampling a drop set makes the
+// confirmation obligation FINISHABLE, never optional.
+var boundaryConfirmationRatchets = map[goldStratum]struct {
 	constant string
 	recorded int
 }{
@@ -2589,18 +2605,18 @@ var censusConfirmationRatchets = map[goldStratum]struct {
 	stratumVetoBoundary: {"pendingVetoBoundaryConfirmations", pendingVetoBoundaryConfirmations},
 }
 
-// pendingCensusConfirmations partitions rows by Boundary Stratum and returns, per
-// stratum, the URLs carrying no human confirmer -- the figure each stratum's ratchet
+// pendingBoundaryStratumConfirmations partitions rows by Boundary Stratum and returns,
+// per stratum, the URLs carrying no human confirmer -- the figure each stratum's ratchet
 // records, and the same arithmetic derivedCounts' pendingIn performs for goldset-refit.
 //
 // Separate from the assertions on purpose: stratumVetoBoundary ships DEFINED and
 // undrawn, so over the committed record its half of the guard runs on nothing, and a
 // ratchet only ever exercised on an empty stratum proves nothing about the day the rows
-// land. TestPendingCensusConfirmationsCountsEveryBoundaryStratum runs it on rows.
-func pendingCensusConfirmations(rows []goldRow) map[goldStratum][]string {
+// land. TestPendingBoundaryConfirmationsCountEveryBoundaryStratum runs it on rows.
+func pendingBoundaryStratumConfirmations(rows []goldRow) map[goldStratum][]string {
 	pending := map[goldStratum][]string{}
 	for _, row := range rows {
-		if !isCensusStratum(row.Stratum) {
+		if !isBoundaryStratum(row.Stratum) {
 			continue
 		}
 		if row.LabelProvenance.ConfirmedBy == "" {
@@ -2619,16 +2635,16 @@ func pendingCensusConfirmations(rows []goldRow) map[goldStratum][]string {
 // refuses a machine confirmer outright so the gap can never be closed by the tooling
 // that opened it.
 //
-// It covers every stratum isCensusStratum names rather than one named stratum, and then
-// asserts that each of them OWNS a ratchet -- so a Boundary Stratum added without one
-// fails here rather than shipping rows into the fit population that nothing counts. The
-// ratchet count is checked against zero for the same reason
+// It covers every stratum isBoundaryStratum names rather than one named stratum, and
+// then asserts that each of them OWNS a ratchet -- so a Boundary Stratum added without
+// one fails here rather than shipping rows into the fit population that nothing counts.
+// The ratchet count is checked against zero for the same reason
 // TestEveryDerivedCountInTheCountsFileIsOwned checks its own: a rename that emptied the
-// census would otherwise turn this guard into a silent pass.
+// predicate would otherwise turn this guard into a silent pass.
 func TestCommittedBoundaryStrataConfirmation(t *testing.T) {
 	rows := loadCommittedGoldSet(t)
 	for _, row := range rows {
-		if !isCensusStratum(row.Stratum) {
+		if !isBoundaryStratum(row.Stratum) {
 			continue
 		}
 		if machineName(row.LabelProvenance.ConfirmedBy) {
@@ -2639,17 +2655,17 @@ func TestCommittedBoundaryStrataConfirmation(t *testing.T) {
 		}
 	}
 
-	pending := pendingCensusConfirmations(rows)
+	pending := pendingBoundaryStratumConfirmations(rows)
 	ratchets := 0
 	for _, s := range allStrata {
-		if !isCensusStratum(s) {
+		if !isBoundaryStratum(s) {
 			continue
 		}
 		ratchets++
-		r, owned := censusConfirmationRatchets[s]
+		r, owned := boundaryConfirmationRatchets[s]
 		if !owned {
-			t.Errorf("the %s stratum is a census and owns no confirmation ratchet. "+
-				"Add one to censusConfirmationRatchets, a constant beside pendingBoundaryConfirmations and a derivedCounts entry, or its rows reach the fit with nothing counting the confirmations ADR-0043 requires of them.", s)
+			t.Errorf("the %s stratum is a Boundary Stratum and owns no confirmation ratchet. "+
+				"Add one to boundaryConfirmationRatchets, a constant beside pendingBoundaryConfirmations and a derivedCounts entry, or its rows reach the fit with nothing counting the confirmations ADR-0043 requires of them.", s)
 			continue
 		}
 		confirmationFloor{
@@ -2659,26 +2675,27 @@ func TestCommittedBoundaryStrataConfirmation(t *testing.T) {
 		}.assert(t)
 	}
 	if ratchets == 0 {
-		t.Fatal("no stratum reports itself a census at all; a rename would turn this guard into a silent pass")
+		t.Fatal("no stratum reports itself a Boundary Stratum at all; a rename would turn this guard into a silent pass")
 	}
 }
 
-// TestPendingCensusConfirmationsCountsEveryBoundaryStratum runs the ratchet's arithmetic
+// TestPendingBoundaryConfirmationsCountEveryBoundaryStratum runs the ratchet's arithmetic
 // on rows the committed record does not yet hold. stratumVetoBoundary ships undrawn, so
 // without this the veto-boundary half of the guard above would be asserted only over an
 // empty stratum -- green whether it works or not, right up to the commit that draws it.
-func TestPendingCensusConfirmationsCountsEveryBoundaryStratum(t *testing.T) {
+func TestPendingBoundaryConfirmationsCountEveryBoundaryStratum(t *testing.T) {
 	rows := []goldRow{
 		{URL: "https://a.test/jobs/one", Stratum: stratumBoundary, LabelProvenance: goldProvenance{ConfirmedBy: "A Human"}},
 		{URL: "https://a.test/jobs/two", Stratum: stratumBoundary},
 		{URL: "https://b.test/jobs/quiet", Stratum: stratumVetoBoundary},
 		{URL: "https://b.test/jobs/quieter", Stratum: stratumVetoBoundary},
 		{URL: "https://b.test/jobs/loud", Stratum: stratumVetoBoundary, LabelProvenance: goldProvenance{ConfirmedBy: "A Human"}},
-		// A sampled stratum, which has a ratchet of its own shape and must not be
-		// counted into either census.
+		// The Random Stratum, which is SPOT-CHECKED rather than confirmed and has a
+		// ratchet of its own shape, so it must not be counted into either Boundary
+		// Stratum's.
 		{URL: "https://c.test/jobs/sampled", Stratum: stratumRandom},
 	}
-	pending := pendingCensusConfirmations(rows)
+	pending := pendingBoundaryStratumConfirmations(rows)
 	for _, want := range []struct {
 		stratum goldStratum
 		pending int
@@ -2693,7 +2710,7 @@ func TestPendingCensusConfirmationsCountsEveryBoundaryStratum(t *testing.T) {
 		})
 	}
 	if _, counted := pending[stratumRandom]; counted {
-		t.Errorf("the random stratum was counted into a census ratchet; it is spot-checked, not confirmed (ADR-0043)")
+		t.Errorf("the random stratum was counted into a Boundary Stratum ratchet; it is spot-checked, not confirmed (ADR-0043)")
 	}
 }
 

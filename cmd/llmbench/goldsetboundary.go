@@ -23,13 +23,55 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/pagegate"
 )
 
-// boundaryCensusWeight is every Boundary Stratum row's weight. It is exactly 1
-// because the stratum is a CENSUS: every page the drawing's half of the
-// disagreement holds is taken, so each row's inclusion probability is 1 and its
-// inverse is 1. There is no accept-share correction to apply -- a census describes
-// no stream, so there is no population to weight toward -- and the per-drawing
-// weight balance therefore holds by construction.
+// boundaryCensusWeight is a CENSUS boundary drawing's row weight. It is exactly 1
+// because every page the drawing's half of the disagreement holds is taken, so each
+// row's inclusion probability is 1 and its inverse is 1. There is no accept-share
+// correction to apply -- a census describes no stream, so there is no population to
+// weight toward -- and the per-drawing weight balance therefore holds by construction.
+//
+// It is NOT every Boundary Stratum row's weight. A STRATIFIED Boundary Stratum
+// (selectionStratified, ADR-0049) samples two of its three bands, so its rows carry
+// the inverse of their own selection probability, normalized to the drawing's row
+// count. Weighting a sampled row 1 anyway would make any weighted read over the
+// stratum describe the enriched sample while claiming to describe the drop set.
 const boundaryCensusWeight = 1.0
+
+// selectionDesign is HOW a boundary design turns the disagreement into rows. It is a
+// field of the design rather than a flag, for boundaryCandidateConfig's reason: a
+// stratum is claimed by exactly one design and therefore by exactly one selection
+// design, which is how a committed row states not just which PAIR drew it but under
+// which inclusion probabilities. Mixing two selection designs inside one stratum is
+// what makes a weighted estimate over it unrecoverable.
+type selectionDesign string
+
+const (
+	// selectionCensus takes every page of the half the design draws, at
+	// boundaryCensusWeight.
+	selectionCensus selectionDesign = "census"
+	// selectionStratified samples the drop set in bands and weights each row by the
+	// inverse of its selection probability (ADR-0049).
+	selectionStratified selectionDesign = "stratified"
+)
+
+// boundaryBands is the fixed print / iteration order of a stratified drawing's bands.
+// The order is the argument's: the censused half first, then the two sampled ones from
+// the cut downwards.
+var boundaryBands = []goldBand{bandAccepted, bandNear, bandDeep}
+
+const (
+	// defaultVetoNearBand is the score width below pagegate.VetoThreshold that counts
+	// as "just below the cut". It is a FLAG's default rather than a constant use: what
+	// the bands MEAN is the design and may not drift, but where "near" ends is a
+	// judgement an operator re-reads off the report's band populations.
+	defaultVetoNearBand = 0.20
+	// defaultVetoNearRows and defaultVetoDeepRows are the two sampled bands' quotas.
+	// They are COUNTS, not shares, because the human confirmation budget is absolute
+	// and does not scale with the frame: on the measured window (832 dropped of a
+	// 1,006-page frame, 54 of them live-accepted) they draw 54 + 80 + 40 = 174 rows,
+	// the order of a Blind Confirmation pass a person finishes, against a census of 832.
+	defaultVetoNearRows = 80
+	defaultVetoDeepRows = 40
+)
 
 // boundaryBaselineConfig is TODAY'S blanket accept: the Extract Gate as it behaved
 // before ADR-0044's Positive Evidence rung. RequirePositiveEvidence is set FALSE
@@ -114,9 +156,10 @@ func vetoCandidateConfig() crawler.LLMGateConfig {
 	return cfg
 }
 
-// boundaryDesign is one boundary census's complete definition: the verb that draws
+// boundaryDesign is one boundary drawing's complete definition: the verb that draws
 // it, the stratum its rows are stamped with, the two gate configs whose disagreement
-// IS the boundary, and which half of that disagreement the census takes.
+// IS the boundary, which half of that disagreement the drawing takes, and HOW it
+// selects rows out of that half.
 //
 // Pair and stratum live in ONE value on purpose. A committed row states which pair
 // drew it through its stratum and through nothing else, so a row's provenance is read
@@ -128,6 +171,11 @@ type boundaryDesign struct {
 	// Stratum stamps every row this design draws. No two designs may share one
 	// (TestEachBoundaryDesignStampsItsOwnStratum).
 	Stratum goldStratum
+	// Selection is how the design turns its half of the disagreement into rows, and it
+	// is the second half of a committed row's provenance: because a stratum is claimed
+	// by exactly one design, a row's stratum states its inclusion-probability design
+	// too. Every design must set it (TestEachBoundaryDesignStampsItsOwnStratum).
+	Selection selectionDesign
 	// Baseline and Candidate are the pair. They are funcs in THIS FILE rather than a
 	// -gate-config flag for the reason boundaryCandidateConfig states: a flag would let
 	// a later run silently redefine a boundary that already-committed rows claim, and
@@ -160,6 +208,7 @@ type boundaryDesign struct {
 var positiveEvidenceBoundary = boundaryDesign{
 	Verb:                 "goldset-sample-boundary",
 	Stratum:              stratumBoundary,
+	Selection:            selectionCensus,
 	Baseline:             boundaryBaselineConfig,
 	Candidate:            boundaryCandidateConfig,
 	ExtractorAcceptsOnly: true,
@@ -169,10 +218,27 @@ var positiveEvidenceBoundary = boundaryDesign{
 }
 
 // learnedVetoBoundary is ADR-0049's rollout drawing (#304): the shipping gate against
-// the same gate with rung 9 armed, BOTH halves of the disagreement.
+// the same gate with rung 9 armed, BOTH halves of the disagreement, drawn as a
+// STRATIFIED SAMPLE of the drop set rather than a census of it.
+//
+// The census this drawing shipped with does not survive contact with this rung. A live
+// capture window measured 1,006 framed pages against the shipped weights: veto depth
+// 82.7%, a drop set of 832 rows that grows with the frame, 54 of them pages the live
+// extractor read as a single posting. The disagreement is most of the stream here,
+// where ADR-0043's boundary was 188 pages -- and ADR-0043 requires a HUMAN confirmation
+// on every Boundary Stratum row, so a census would put thousands of rows in front of a
+// labeller, never be finished, and block the refit indefinitely. Sampling is what makes
+// the obligation finishable; it does not weaken it.
+//
+// Stratifying on the live verdict is NOT the filtering this ADR forbids. Filtering
+// would give the pages the extractor abstained on inclusion probability ZERO, importing
+// its 0.454 precision into the sample. Here every page of the drop set keeps a non-zero,
+// KNOWN inclusion probability and the weights restore the whole set; no verdict decides
+// a label, and ExtractorAcceptsOnly stays false.
 var learnedVetoBoundary = boundaryDesign{
 	Verb:                 "goldset-sample-veto-boundary",
 	Stratum:              stratumVetoBoundary,
+	Selection:            selectionStratified,
 	Baseline:             vetoBaselineConfig,
 	Candidate:            vetoCandidateConfig,
 	ExtractorAcceptsOnly: false, // see boundaryDesign.ExtractorAcceptsOnly, and ADR-0049
@@ -222,9 +288,11 @@ func (o boundaryOutcome) Depth() float64 {
 	return float64(o.Drop()) / float64(o.BaselineAccepts)
 }
 
-// Census is the drop set the design actually draws: both verdict halves, or the
-// accept half alone. The result never aliases the outcome's own slices.
-func (o boundaryOutcome) Census(d boundaryDesign) []candidate {
+// DropSet is the population the design draws from: both verdict halves, or the accept
+// half alone. It is deliberately not called a census -- a census design takes all of
+// it, a stratified one samples it (ADR-0049) -- and the result never aliases the
+// outcome's own slices.
+func (o boundaryOutcome) DropSet(d boundaryDesign) []candidate {
 	out := make([]candidate, 0, o.Drop())
 	out = append(out, o.DroppedAccepted...)
 	if d.ExtractorAcceptsOnly {
@@ -238,6 +306,11 @@ func (o boundaryOutcome) Census(d boundaryDesign) []candidate {
 // partitioning the pages the two disagree on by the live extractor's own verdict. It
 // decodes one record at a time and keeps only the candidate handle, so peak memory
 // stays proportional to the disagreement set rather than to the whole capture.
+//
+// A DISAGREEMENT row also carries away its Posting Score, which is what a stratified
+// design bands it on (ADR-0049). It is read here, on the pages that need it, rather
+// than over the whole frame: the content is already decoded at this point, and the
+// score of a page no drawing will ever look at is work nobody asked for.
 func replayBoundary(path string, scan captureScan, d boundaryDesign) (boundaryOutcome, error) {
 	byLine := map[int]candidate{}
 	for _, c := range scan.Candidates {
@@ -285,8 +358,10 @@ func replayBoundary(path string, scan captureScan, d boundaryDesign) (boundaryOu
 		case !before && after:
 			out.Reversed = append(out.Reversed, rec.URL)
 		case cand.Verdict:
+			cand.Score = pagegate.Score(u, &rec.Content)
 			out.DroppedAccepted = append(out.DroppedAccepted, cand)
 		default:
+			cand.Score = pagegate.Score(u, &rec.Content)
 			out.DroppedAbstained = append(out.DroppedAbstained, cand)
 		}
 	}
@@ -316,11 +391,13 @@ func withStratum(cands []candidate, s goldStratum) []candidate {
 	return out
 }
 
-// censusSelection builds the drawing's selection by hand: a census has no quota to
-// apply and no accept share to weight by. It emits ONE CELL PER VERDICT HALF the
-// design takes, both at boundaryCensusWeight -- readSelected keys each row's weight
-// on {stratum, verdict}, so a design that draws the abstain half without a cell for
-// it would write those rows at weight 0 and fail the substrate's weight guard.
+// censusSelection builds a CENSUS drawing's selection by hand: a census has no quota
+// to apply and no accept share to weight by. It emits ONE CELL PER VERDICT HALF the
+// design takes, both at boundaryCensusWeight -- readSelected keys each row's weight on
+// its whole cell, so a design that draws the abstain half without a cell for it would
+// write those rows at weight 0 and fail the substrate's weight guard. It leaves the
+// cell's band empty, which is what a census's cell IS: it draws every page of the half
+// at one probability, so there is no band to distinguish.
 func censusSelection(d boundaryDesign, census []candidate) selection {
 	byVerdict := map[bool]int{}
 	for _, c := range census {
@@ -333,7 +410,7 @@ func censusSelection(d boundaryDesign, census []candidate) selection {
 	sel := selection{Chosen: withStratum(census, d.Stratum)}
 	for _, v := range verdicts {
 		sel.Cells = append(sel.Cells, cellResult{
-			Key:        cellKey{d.Stratum, v},
+			Key:        cellKey{Stratum: d.Stratum, Verdict: v},
 			Population: byVerdict[v],
 			Sampled:    byVerdict[v],
 			Weight:     boundaryCensusWeight,
@@ -342,13 +419,155 @@ func censusSelection(d boundaryDesign, census []candidate) selection {
 	return sel
 }
 
+// vetoBandPlan is the operator's half of the stratified design: the score band that
+// counts as "just below the cut", and how many rows to draw from each SAMPLED band.
+// The accepted band has no quota -- it is a census, for the reason
+// runGoldSetSampleVetoBoundary states.
+//
+// These are FLAGS where the bands themselves are code, for the reason
+// boundaryCandidateConfig gives about the pair: what the bands MEAN is the design and
+// may not drift, while how many rows a human can confirm this week is not a design
+// question at all.
+type vetoBandPlan struct {
+	// NearBand is the score width below pagegate.VetoThreshold that counts as "near":
+	// the near band is [VetoThreshold-NearBand, VetoThreshold) and everything below it
+	// is the deep band.
+	NearBand float64
+	// NearRows and DeepRows are the two sampled bands' quotas. 0 means take the whole
+	// band, takeByHash's own convention.
+	NearRows, DeepRows int
+}
+
+// validate refuses a plan that would degenerate the design before anything is read.
+// Both refusals are about a band that cannot exist: a band edge outside the score's
+// own range leaves one of the three cells empty by construction, and a negative quota
+// would slip through takeByHash's "n <= 0 takes everything" convention as a census.
+func (p vetoBandPlan) validate() error {
+	if p.NearBand <= 0 || p.NearBand >= pagegate.VetoThreshold {
+		return fmt.Errorf("-near-band must be in (0, %.6f) -- the compiled pagegate.VetoThreshold -- got %g; "+
+			"outside it one of the three bands is empty by construction and the design degenerates", pagegate.VetoThreshold, p.NearBand)
+	}
+	if p.NearRows < 0 || p.DeepRows < 0 {
+		return fmt.Errorf("-near-rows and -deep-rows must be >= 0 (0 takes the whole band), got %d and %d; "+
+			"a negative quota would silently become a census", p.NearRows, p.DeepRows)
+	}
+	return nil
+}
+
+// bandOf places an ABSTAINED page in one of the two sampled bands. The accept half is
+// bandAccepted by its live verdict and never by its score, because what makes those
+// pages the census cell is that the extractor read each of them as one posting.
+func bandOf(score, threshold, nearBand float64) goldBand {
+	if score >= threshold-nearBand {
+		return bandNear
+	}
+	return bandDeep
+}
+
+// bandDropSet partitions a drop set into the three bands and stamps each candidate
+// with the band it landed in. The three partition the set exactly, so no page can be
+// selected twice and none can be missed.
+//
+// A page scoring at or above pagegate.VetoThreshold in a drop set is REFUSED rather
+// than banded: the drop set holding a page the veto keeps means the pair replayed was
+// not the Learned Veto's, and stamping such a page with a band would be a claim about
+// a cut it is on the other side of.
+func bandDropSet(drawable []candidate, p vetoBandPlan) (map[goldBand][]candidate, error) {
+	out := map[goldBand][]candidate{}
+	for _, b := range boundaryBands {
+		out[b] = []candidate{}
+	}
+	for _, c := range drawable {
+		if c.Score >= pagegate.VetoThreshold {
+			return nil, fmt.Errorf("%s is in the drop set yet scores %.6f, at or above pagegate.VetoThreshold %.6f: "+
+				"this pair is not the Learned Veto's, so banding it on the Posting Score would stamp a band that is a lie",
+				c.URL, c.Score, pagegate.VetoThreshold)
+		}
+		b := bandAccepted
+		if !c.Verdict {
+			b = bandOf(c.Score, pagegate.VetoThreshold, p.NearBand)
+		}
+		c.Band = b
+		out[b] = append(out[b], c)
+	}
+	return out, nil
+}
+
+// stratifiedSelection draws the design's sample: it bands the drop set, takes each
+// band's quota in deterministic hash order, and weights every row by the INVERSE of
+// its selection probability, normalized within this drawing:
+//
+//	w_c = (N_c / n_c) * (n / N)
+//
+// so the drawn weights sum to n and the per-drawing balance weightsBalanced asserts
+// holds by construction, exactly as it does for the random drawing.
+//
+// It deliberately does NOT go through weightsFor. That function reconstructs a VERDICT
+// share from the capture's per-verdict caps, because the random drawing's frame is a
+// capped stream sample with unobserved stream behind it. This drawing's population is
+// ENUMERATED by the replay: the caps do not distort it, the inclusion probabilities are
+// known exactly, and dragging an accept-share estimate in would add an estimate the
+// design neither needs nor can use.
+//
+// What the resulting weights estimate is stated once, here, because it is the thing a
+// later reader will get wrong: the pages the Learned Veto would withhold the call from
+// over THIS capture frame, minus the URLs earlier drawings already committed. It is not
+// a stream estimate -- a drop set is not a stream -- and these rows must never enter
+// bench.ScoreExtractStream.
+func stratifiedSelection(d boundaryDesign, drawable []candidate, p vetoBandPlan, seed string) (selection, error) {
+	bands, err := bandDropSet(drawable, p)
+	if err != nil {
+		return selection{}, err
+	}
+	// The accepted band's quota is 0 -- takeByHash's "take the whole cell" -- because
+	// it is a census: the recall claim rests on exactly those pages.
+	quotas := map[goldBand]int{bandAccepted: 0, bandNear: p.NearRows, bandDeep: p.DeepRows}
+
+	taken := map[goldBand][]candidate{}
+	population, sampled := 0, 0
+	for _, b := range boundaryBands {
+		taken[b] = takeByHash(bands[b], seed, quotas[b])
+		population += len(bands[b])
+		sampled += len(taken[b])
+	}
+	if sampled == 0 {
+		return selection{}, fmt.Errorf("the quotas draw no row at all from a %d-page drop set; there is nothing to weight", population)
+	}
+
+	sel := selection{}
+	chosen := []candidate{}
+	for _, b := range boundaryBands {
+		n := len(taken[b])
+		weight := 0.0
+		if n > 0 {
+			weight = (float64(len(bands[b])) / float64(n)) * (float64(sampled) / float64(population))
+		}
+		// An empty band still emits its cell, so a band the frame simply has no pages in
+		// is VISIBLE in the account rather than absent from it.
+		sel.Cells = append(sel.Cells, cellResult{
+			Key:        cellKey{Stratum: d.Stratum, Verdict: b == bandAccepted, Band: b},
+			Population: len(bands[b]),
+			Sampled:    n,
+			Weight:     weight,
+		})
+		chosen = append(chosen, taken[b]...)
+	}
+	sel.Chosen = withStratum(chosen, d.Stratum)
+	return sel, nil
+}
+
 // boundaryDrawArgs is one boundary run's inputs, parsed and validated.
 type boundaryDrawArgs struct {
 	Design  boundaryDesign
 	Capture string
 	Dir     string
 	Since   time.Time
-	// Draw appends the census to the Extract Gold Set. False reports the depth and
+	// Plan and Seed are the STRATIFIED design's inputs and are ignored by a census
+	// one. Seed keys the within-band selection, so the same capture and seed always
+	// yield a byte-identical file while a new seed is a genuine unbiased resample.
+	Plan vetoBandPlan
+	Seed string
+	// Draw appends the drawing to the Extract Gold Set. False reports the depth and
 	// writes nothing -- and never even opens Dir.
 	Draw bool
 }
@@ -359,16 +578,26 @@ type boundaryDrawArgs struct {
 // set to the Extract Gold Set. Like goldset-sample-random the draw is APPEND-ONLY:
 // existing labels, provenance and expected extractions pass through untouched.
 //
-// The exclusion of already-committed URLs happens AFTER the replay, on the census
+// The exclusion of already-committed URLs happens AFTER the replay, on the drop set
 // alone. A page cannot carry two drawings' weights, so it must not be DRAWN twice --
 // but excluding it before the replay would make the depth a number about how much of
 // this frame an earlier drawing happened to sample, and the depth is ADR-0049's
-// pre-registered go/no-go over the frame as a whole.
+// pre-registered go/no-go over the frame as a whole. For a stratified design the
+// exclusion therefore narrows the SAMPLING POPULATION, which is what makes each band's
+// inclusion probability correct: what it samples is "the drop set minus the pages
+// earlier drawings hold", exactly as the #263 drawing defined its own frame. The depth
+// is still over the whole frame, and both numbers are reported.
 //
 // Returns the process exit code: 2 on a usage or validation error, 1 on IO, 0
 // otherwise. Nothing is written unless every check passes.
 func runBoundaryDrawing(a boundaryDrawArgs, w io.Writer) int {
 	d := a.Design
+	if d.Selection == selectionStratified {
+		if err := a.Plan.validate(); err != nil {
+			fmt.Fprintf(os.Stderr, "llmbench %s: %v\n", d.Verb, err)
+			return 2
+		}
+	}
 	scan, err := scanCapture(a.Capture)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench %s: %v\n", d.Verb, err)
@@ -397,6 +626,7 @@ func runBoundaryDrawing(a boundaryDrawArgs, w io.Writer) int {
 		Scan:       scan,
 		Outcome:    outcome,
 		OutOfFrame: outOfFrame,
+		Plan:       a.Plan,
 	}
 	// Report mode stops here, before the substrate is even opened. It is the
 	// non-destructive default for the veto's drawing because the depth is ADR-0049's
@@ -405,6 +635,18 @@ func runBoundaryDrawing(a boundaryDrawArgs, w io.Writer) int {
 	// on a rollout the number may yet say no to. An EMPTY drop set is not an error
 	// here -- "the candidate would withhold nothing" is a measurement.
 	if !a.Draw {
+		// A stratified design also previews its PLAN here -- per band, the population and
+		// the rows the current quotas would take -- because that is what the operator
+		// tunes the flags from. Those populations are PRE-exclusion by construction: this
+		// path never opens the substrate, and it must not start.
+		if d.Selection == selectionStratified {
+			bands, err := bandDropSet(outcome.DropSet(d), a.Plan)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "llmbench %s: %v\n", d.Verb, err)
+				return 2
+			}
+			summary.Bands = bands
+		}
 		printBoundarySummary(w, summary)
 		return 0
 	}
@@ -422,10 +664,27 @@ func runBoundaryDrawing(a boundaryDrawArgs, w io.Writer) int {
 	for _, row := range existing {
 		committed[row.URL] = struct{}{}
 	}
-	census := outcome.Census(d)
-	drawable, alreadyCommitted := withoutURLs(census, committed)
+	// A STRATIFIED drawing is drawn ONCE. A census tolerates a repeat, because a page
+	// taken under it had inclusion probability 1 whenever it was taken; a sample does
+	// not, and a second window's rows would carry a second set of inclusion
+	// probabilities into one stratum.
+	if d.Selection == selectionStratified {
+		for _, row := range existing {
+			if row.Stratum != d.Stratum {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "llmbench %s: the substrate already holds %s rows (e.g. %s), and a stratified drawing is drawn ONCE.\n",
+				d.Verb, d.Stratum, row.URL)
+			fmt.Fprintf(os.Stderr, "  Appending a second window's sample would pool two selection designs in one stratum, "+
+				"which is exactly what makes a weighted estimate over it unrecoverable. A fresh window is a new DRAWING: "+
+				"declare it in code, as every drawing before it was. Nothing was written.\n")
+			return 2
+		}
+	}
+	dropSet := outcome.DropSet(d)
+	drawable, alreadyCommitted := withoutURLs(dropSet, committed)
 	if len(drawable) == 0 {
-		if len(census) == 0 {
+		if len(dropSet) == 0 {
 			fmt.Fprintf(os.Stderr, "llmbench %s: the two configs disagree on no page this drawing takes; there is no boundary to draw\n", d.Verb)
 		} else {
 			fmt.Fprintf(os.Stderr, "llmbench %s: every page on the boundary is already in the substrate; nothing left to draw\n", d.Verb)
@@ -433,12 +692,20 @@ func runBoundaryDrawing(a boundaryDrawArgs, w io.Writer) int {
 		return 2
 	}
 
-	drawn, err := readSelected(a.Capture, censusSelection(d, drawable))
+	sel := censusSelection(d, drawable)
+	if d.Selection == selectionStratified {
+		sel, err = stratifiedSelection(d, drawable, a.Plan, a.Seed)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "llmbench %s: %v\n", d.Verb, err)
+			return 2
+		}
+	}
+	drawn, err := readSelected(a.Capture, sel)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench %s: %v\n", d.Verb, err)
 		return 1
 	}
-	if err := validateDrawnBoundaryRows(d, drawn, committed); err != nil {
+	if err := validateDrawnBoundaryRows(d, sel, drawn, committed); err != nil {
 		fmt.Fprintf(os.Stderr, "llmbench %s: %v\n", d.Verb, err)
 		return 2
 	}
@@ -449,7 +716,7 @@ func runBoundaryDrawing(a boundaryDrawArgs, w io.Writer) int {
 		return 1
 	}
 
-	summary.Drawn, summary.Merged = drawn, merged
+	summary.Sel, summary.Drawn, summary.Merged = sel, drawn, merged
 	summary.AlreadyCommitted, summary.Substrate, summary.Drew = alreadyCommitted, substrate, true
 	printBoundarySummary(w, summary)
 	return 0
@@ -457,15 +724,29 @@ func runBoundaryDrawing(a boundaryDrawArgs, w io.Writer) int {
 
 // validateDrawnBoundaryRows refuses a draw that could corrupt the substrate: a row
 // already committed (one page cannot carry two drawings' incompatible weights), a
-// duplicate within the draw, a row outside the design's own stratum, a weight that
-// is not the census weight, or a row that arrived carrying a label. Nothing is
-// written until it passes, so a bad draw leaves the committed file exactly as it was.
+// duplicate within the draw, a row outside the design's own stratum, a weight the
+// design's own selection cannot have produced, or a row that arrived carrying a label.
+// Nothing is written until it passes, so a bad draw leaves the committed file exactly
+// as it was.
+//
+// The weight check is the design's, because the two designs mean different things by a
+// legitimate weight: a census row is exactly boundaryCensusWeight, while a stratified
+// row must carry one of the SAMPLED cells' weights and the draw as a whole must
+// normalize to its own row count. That pair is the direct regression test for a
+// cell-keying bug -- the hazard censusSelection's two-cell comment already names, one
+// band deeper.
 //
 // The live verdict is checked only for a design that says it takes the accept half.
 // The Learned Veto's drawing takes both halves and MUST NOT be given this check back:
 // ADR-0049 forbids grading that rung against the extractor's own verdict, so a drop
 // set filtered by it would import that bias before a human ever reads a row.
-func validateDrawnBoundaryRows(d boundaryDesign, drawn []goldRow, committed map[string]struct{}) error {
+func validateDrawnBoundaryRows(d boundaryDesign, sel selection, drawn []goldRow, committed map[string]struct{}) error {
+	drawnWeights := map[float64]struct{}{}
+	for _, c := range sel.Cells {
+		if c.Sampled > 0 && c.Weight > 0 {
+			drawnWeights[c.Weight] = struct{}{}
+		}
+	}
 	seen := map[string]struct{}{}
 	for _, row := range drawn {
 		if _, dup := committed[row.URL]; dup {
@@ -478,8 +759,19 @@ func validateDrawnBoundaryRows(d boundaryDesign, drawn []goldRow, committed map[
 		if row.Stratum != d.Stratum {
 			return fmt.Errorf("drew %q in stratum %q, want %q", row.URL, row.Stratum, d.Stratum)
 		}
-		if row.Weight != boundaryCensusWeight {
-			return fmt.Errorf("drew %q with weight %g, want the census weight %g", row.URL, row.Weight, boundaryCensusWeight)
+		switch d.Selection {
+		case selectionStratified:
+			if row.Weight <= 0 {
+				return fmt.Errorf("drew %q with weight %g; a stratified drawing weights every row by the inverse of its "+
+					"selection probability, and a non-positive weight means its cell was keyed wrong", row.URL, row.Weight)
+			}
+			if _, ok := drawnWeights[row.Weight]; !ok {
+				return fmt.Errorf("drew %q with weight %g, which is no sampled cell's weight; its cell was keyed wrong", row.URL, row.Weight)
+			}
+		default:
+			if row.Weight != boundaryCensusWeight {
+				return fmt.Errorf("drew %q with weight %g, want the census weight %g", row.URL, row.Weight, boundaryCensusWeight)
+			}
 		}
 		if d.ExtractorAcceptsOnly && !row.Verdict {
 			return fmt.Errorf("drew %q, whose live verdict was abstain; this drawing takes the accept half of the disagreement", row.URL)
@@ -487,6 +779,10 @@ func validateDrawnBoundaryRows(d boundaryDesign, drawn []goldRow, committed map[
 		if row.Label != "" {
 			return fmt.Errorf("drew %q carrying label %q; a fresh draw is unlabelled", row.URL, row.Label)
 		}
+	}
+	if d.Selection == selectionStratified && len(drawn) > 0 && !weightsBalanced(drawn, 1e-9) {
+		return fmt.Errorf("the drawn rows' weights sum to %.9f over %d rows; a drawing's weights normalize to its own row count",
+			weightSum(drawn), len(drawn))
 	}
 	return nil
 }
@@ -502,20 +798,62 @@ type boundarySummary struct {
 	Outcome    boundaryOutcome
 	OutOfFrame int
 
+	// Plan and Bands are a STRATIFIED design's half of the account. Bands is filled in
+	// REPORT mode only, where it is the plan preview the flags are tuned from, and its
+	// populations are therefore PRE-exclusion: that path never opens the substrate.
+	Plan  vetoBandPlan
+	Bands map[goldBand][]candidate
+
+	// Sel is the selection a draw actually realized: per cell, the population it drew
+	// from, the rows it took, and the weight they carry.
+	Sel              selection
 	Drawn, Merged    []goldRow
 	AlreadyCommitted int
 	Substrate        string
 	Drew             bool
 }
 
+// bandNote states in one line what a band is for, so the report argues its own design
+// rather than leaving the reader to remember it.
+func bandNote(b goldBand, p vetoBandPlan) string {
+	switch b {
+	case bandAccepted:
+		return "the live-accept half: the candidate false-drops, censused"
+	case bandNear:
+		return fmt.Sprintf("score in [%.6f, %.6f) -- where the threshold is decided", pagegate.VetoThreshold-p.NearBand, pagegate.VetoThreshold)
+	case bandDeep:
+		return fmt.Sprintf("score < %.6f -- is the bottom really junk?", pagegate.VetoThreshold-p.NearBand)
+	default:
+		return ""
+	}
+}
+
+// bandScoreRange renders a band's observed Posting Score range, or a marker for an
+// empty band -- an empty band is a fact about the frame, not a gap in the report.
+func bandScoreRange(cands []candidate) string {
+	if len(cands) == 0 {
+		return "(empty)"
+	}
+	lo, hi := cands[0].Score, cands[0].Score
+	for _, c := range cands[1:] {
+		lo, hi = min(lo, c.Score), max(hi, c.Score)
+	}
+	return fmt.Sprintf("score %.6f..%.6f", lo, hi)
+}
+
 // printBoundarySummary writes the account an operator needs to trust a boundary run:
 // what the capture held, what each narrowing step dropped, the rule the cut was taken
 // at, the depth and its denominator, BOTH halves of the disagreement, and the
 // reversed count that proves the candidate subtractive. A run that drew adds the two
-// row counts; a run that only reported says so and names the flag that would draw.
+// row counts and its realized per-cell design; a run that only reported says so, names
+// the flag that would draw, and -- for a stratified design -- previews the plan the
+// flags currently describe.
 //
-// There is deliberately NO accept share: it does not apply to a census, and printing
-// one would invite somebody to weight this drawing.
+// There is deliberately NO accept share, for either design. A census describes no
+// stream to weight toward, and a stratified drawing's population is ENUMERATED by the
+// replay rather than sampled out of a capped stream, so there is no cap correction to
+// apply either. Printing one would invite somebody to weight this drawing toward a
+// population it is not about.
 func printBoundarySummary(w io.Writer, s boundarySummary) {
 	o, d := s.Outcome, s.Design
 	half := "both halves"
@@ -544,12 +882,44 @@ func printBoundarySummary(w io.Writer, s boundarySummary) {
 	}
 	fmt.Fprintf(w, "  reversed             %d (pages the CANDIDATE adds; this pair's candidate can only ever subtract, so this must be 0)\n", len(o.Reversed))
 	if !s.Drew {
-		fmt.Fprintf(w, "  wrote                nothing. Re-run with -draw to append the %d-row census.\n", len(o.Census(d)))
+		if d.Selection != selectionStratified {
+			fmt.Fprintf(w, "  wrote                nothing. Re-run with -draw to append the %d-row census.\n", len(o.DropSet(d)))
+			return
+		}
+		would := 0
+		quotas := map[goldBand]int{bandAccepted: 0, bandNear: s.Plan.NearRows, bandDeep: s.Plan.DeepRows}
+		for _, b := range boundaryBands {
+			take := len(s.Bands[b])
+			if q := quotas[b]; q > 0 && q < take {
+				take = q
+			}
+			would += take
+			quota := "census"
+			if q := quotas[b]; q > 0 {
+				quota = fmt.Sprint(q)
+			}
+			fmt.Fprintf(w, "  %-21s population %5d  quota %-6s would draw %5d  %s\n",
+				"band "+string(b), len(s.Bands[b]), quota, take, bandNote(b, s.Plan))
+			fmt.Fprintf(w, "                       %s\n", bandScoreRange(s.Bands[b]))
+		}
+		fmt.Fprintf(w, "                       these populations are PRE-exclusion: this mode never opens the gold set,\n")
+		fmt.Fprintf(w, "                       so the pages earlier drawings already hold are still counted here\n")
+		fmt.Fprintf(w, "  wrote                nothing. Re-run with -draw to sample %d rows from the %d-page drop set.\n", would, len(o.DropSet(d)))
 		return
 	}
 	fmt.Fprintf(w, "  dropped committed    %d (boundary pages the substrate already carries)\n", s.AlreadyCommitted)
+	if d.Selection == selectionStratified {
+		for _, c := range s.Sel.Cells {
+			fmt.Fprintf(w, "  %-21s verdict=%-5v population %5d  sampled %3d  weight %.5f\n",
+				"cell "+string(c.Key.Band), c.Key.Verdict, c.Population, c.Sampled, c.Weight)
+		}
+	}
 	fmt.Fprintf(w, "  drawn rows           %d\n", len(s.Drawn))
-	fmt.Fprintf(w, "  drawn weight sum     %.4f (census: every weight is exactly %g)\n", weightSum(s.Drawn), boundaryCensusWeight)
+	if d.Selection == selectionStratified {
+		fmt.Fprintf(w, "  drawn weight sum     %.4f (inverse selection probability, normalized to the drawn rows)\n", weightSum(s.Drawn))
+	} else {
+		fmt.Fprintf(w, "  drawn weight sum     %.4f (census: every weight is exactly %g)\n", weightSum(s.Drawn), boundaryCensusWeight)
+	}
 	fmt.Fprintf(w, "  substrate rows       %d (%d existing + %d drawn)\n", len(s.Merged), len(s.Merged)-len(s.Drawn), len(s.Drawn))
 	if info, err := os.Stat(s.Substrate); err == nil {
 		fmt.Fprintf(w, "  wrote                %s (%d bytes)\n", s.Substrate, info.Size())
@@ -578,7 +948,8 @@ func floorVerdict(d boundaryDesign, o boundaryOutcome) string {
 //
 // It takes NO -gate-config and NO -seed, for the reason boundaryCandidateConfig
 // states, and the drawing is a CENSUS of the disagreement's accept half, so there is
-// no within-cell order to seed and every weight is exactly 1.
+// no within-cell order to seed and every weight is exactly 1. That is this drawing's
+// property alone: the Learned Veto's drawing samples, and therefore does take a seed.
 //
 // It also has no -draw: this stratum is drawn and FROZEN (ADR-0043's consequence on
 // re-drawing, TestCommittedBoundaryRecoveryLedger), so a report-only mode over it
@@ -613,12 +984,22 @@ func runGoldSetSampleBoundary(args []string) int {
 // drawing against the Learned Veto's own pair: the shipping gate with rung 9 off
 // versus on. By default it only REPORTS the **veto depth** over the capture frame --
 // of the pages today's gate extracts, the share the veto would withhold -- which
-// needs no labels and is the pre-registered go/no-go for turning the rung on.
+// needs no labels and is the pre-registered go/no-go for turning the rung on. Report
+// mode also previews the sampling plan the flags below currently describe, which is
+// what those flags are tuned from before anything is committed.
 //
-// -draw appends the pages below the cut as the veto-boundary stratum, BOTH halves of
-// the disagreement, because ADR-0049 forbids filtering them by the extractor's own
-// verdict. Returns the process exit code: 2 on a usage or validation error, 1 on IO,
-// 0 on success.
+// -draw appends a STRATIFIED SAMPLE of the pages below the cut as the veto-boundary
+// stratum, BOTH halves of the disagreement, because ADR-0049 forbids filtering them by
+// the extractor's own verdict. It is a sample rather than a census because the drop set
+// is most of the stream on this rung and ADR-0043 requires a human confirmation on every
+// Boundary Stratum row: the defaults draw ~174 rows where a census of the measured window
+// would owe 832 and grow with the frame.
+//
+// There is deliberately NO flag for the accepted band. It is a census because the recall
+// claim rests on exactly those pages -- sampling them would put sampling error on the one
+// number the rollout turns on -- and -since is the lever if it ever grows too large.
+//
+// Returns the process exit code: 2 on a usage or validation error, 1 on IO, 0 on success.
 func runGoldSetSampleVetoBoundary(args []string) int {
 	fs := flag.NewFlagSet("goldset-sample-veto-boundary", flag.ExitOnError)
 	capture := fs.String("capture", "", "extract-capture JSONL written by the EXTRACT_CAPTURE_PATH tap (required; gitignored, never committed)")
@@ -628,11 +1009,15 @@ func runGoldSetSampleVetoBoundary(args []string) int {
 	// always write: the depth is ADR-0049's pre-registered go/no-go for the whole
 	// rollout and must be read before the set it implies is committed, since those rows
 	// change the fitted weights and each one owes a human confirmation.
-	draw := fs.Bool("draw", false, "append the drop set to the Extract Gold Set as the veto-boundary stratum; the default reports the veto depth and writes nothing")
+	draw := fs.Bool("draw", false, "append a stratified sample of the drop set to the Extract Gold Set as the veto-boundary stratum; the default reports the veto depth and writes nothing")
+	nearBand := fs.Float64("near-band", defaultVetoNearBand, "score width below pagegate.VetoThreshold that counts as JUST BELOW THE CUT: the near band is [VetoThreshold-band, VetoThreshold) and everything below it is the deep band; must be in (0, VetoThreshold)")
+	nearRows := fs.Int("near-rows", defaultVetoNearRows, "rows to draw from the near band, where the threshold is actually decided; 0 takes the whole band")
+	deepRows := fs.Int("deep-rows", defaultVetoDeepRows, "rows to draw from the deep-reject band -- smaller, because this band confirms the bottom is junk and looks for another short posting publishing no structured data (ADR-0049); 0 takes the whole band")
+	seed := fs.String("seed", defaultVetoBoundarySeed, "seed for the deterministic within-band selection; changing it is a deliberate resample")
 	_ = fs.Parse(args)
 
 	if *capture == "" || *since == "" {
-		fmt.Fprintln(os.Stderr, "usage: llmbench goldset-sample-veto-boundary -capture <capture.jsonl> -since <RFC3339> [-dir d] [-draw]")
+		fmt.Fprintln(os.Stderr, "usage: llmbench goldset-sample-veto-boundary -capture <capture.jsonl> -since <RFC3339> [-dir d] [-draw] [-near-band f] [-near-rows n] [-deep-rows n] [-seed s]")
 		return 2
 	}
 	cutoff, err := time.Parse(time.RFC3339, *since)
@@ -645,6 +1030,8 @@ func runGoldSetSampleVetoBoundary(args []string) int {
 		Capture: *capture,
 		Dir:     *dir,
 		Since:   cutoff,
+		Plan:    vetoBandPlan{NearBand: *nearBand, NearRows: *nearRows, DeepRows: *deepRows},
+		Seed:    *seed,
 		Draw:    *draw,
 	}, os.Stdout)
 }

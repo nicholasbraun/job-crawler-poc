@@ -24,9 +24,14 @@
 // drawing against the Learned Veto's own pair, the veto off versus on. By default it
 // only REPORTS the veto depth over a capture frame -- of the pages today's gate
 // extracts, the share the veto would withhold -- which needs no labels and is the
-// pre-registered go/no-go for turning the rung on; -draw appends the pages below the
-// cut as the veto-boundary stratum, both halves of the disagreement, because ADR-0049
-// forbids filtering them by the extractor's own verdict. goldset-worksheet renders
+// pre-registered go/no-go for turning the rung on, and previews the sampling plan its
+// flags describe; -draw appends a STRATIFIED SAMPLE of the pages below the cut as the
+// veto-boundary stratum, both halves of the disagreement -- ADR-0049 forbids filtering
+// them by the extractor's own verdict -- in three bands: every accepted-but-dropped page,
+// a sample from just below the cut and a smaller one from the deep-reject band, each row
+// carrying the inverse of its selection probability. A census does not survive this rung:
+// the drop set is most of the stream, and every Boundary Stratum row owes a human
+// confirmation. goldset-worksheet renders
 // the labeler's view with the structured data and the live verdict withheld;
 // goldset-confirm-sheet renders the boundary rows as ordered Markdown chunks a human
 // confirms a chunk at a time; goldset-apply folds labels and their provenance back

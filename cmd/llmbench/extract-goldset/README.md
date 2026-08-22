@@ -14,7 +14,7 @@ format and a file; they share nothing else, and their weights are never pooled:
 | **structural** (#254) | `lone-posting`, `ambiguous-posting`, `no-posting` | 149 | the July capture, 4271 deduped pages | 0.3432 | the Free Extraction's own population, sampled where the mechanism lives |
 | **random** (#262) | `random` | 120 | the August faithful frame, 5162 deduped pages | 0.0753 | a random sample of the stream, so composition, precision and cost describe production |
 | **boundary** (#263) | `boundary` | 188 | the same frame, 5042 candidates | n/a (a census) | the pages the two gate rules **disagree** on — where a false drop hides |
-| **veto-boundary** (#304) | `veto-boundary` | 0 | — (drawn during the rollout) | n/a (a census) | the pages the **Learned Veto** would withhold the call from; see *Turning the Learned Veto on* in the repository README |
+| **veto-boundary** (#304) | `veto-boundary` | 0 | — (drawn during the rollout) | n/a (a stratified sample of the drop set) | the pages the **Learned Veto** would withhold the call from, sampled in three bands so the confirmation pass is finishable; see *The veto boundary (#304)* below and *Turning the Learned Veto on* in the repository README |
 
 This replaces `../extract-testdata` as the Extract Gate's **evidence base**. Those
 fixtures are synthetic — invented domains, every `detail` page carrying exactly one
@@ -561,6 +561,71 @@ Name the check for what it is: **a same-model re-read, so its agreement rate is 
 bound on label reliability, not an independent audit.** The human confirmation is the only
 thing that measures correctness.
 
+## The veto boundary (#304) — the design, before it is drawn
+
+> The population is **the pages today's shipping Extract Gate extracts that the Learned Veto
+> would withhold the call from**, over one capture frame, **minus the URLs the earlier drawings
+> already committed**. It is a **stratified sample** of that drop set, not a census of it, and a
+> weighted count over it estimates something about *that drop set* — never about the stream. Its
+> rows never enter the weighted stream scorecard.
+
+Why a sample, where the #263 boundary is a census: a live capture window measured **832 dropped
+pages in a 1,006-page frame** (veto depth 82.7%), 54 of them pages the live extractor read as one
+posting. ADR-0043 requires a human confirmation on **every** Boundary Stratum row, and a census of
+a full window would owe thousands — a pass nobody finishes, and an unfinished one blocks the refit
+indefinitely, because the confirmation ratchet can never come down. Sampling makes the obligation
+finishable; it does not weaken it.
+
+Three bands, which partition the drop set exactly:
+
+| band | population | design | why |
+|---|---|---|---|
+| **accepted** | drop ∧ live verdict *accept* | **census** | the candidate false-drops. The recall claim rests on exactly these, so sampling them would put sampling error on the number the rollout turns on. |
+| **near** | drop ∧ live verdict *abstain* ∧ Posting Score in `[VetoThreshold − near-band, VetoThreshold)` | sampled, `-near-rows` | where the threshold is actually decided. |
+| **deep** | drop ∧ live verdict *abstain* ∧ below that | sampled, `-deep-rows` | to confirm the bottom is junk, and to reach for another **short posting publishing no structured data** — the shape ADR-0049's #304 amendment records the rung being weakest on. |
+
+Stratifying on the live verdict is **not** the filtering ADR-0049 forbids: every page keeps a
+non-zero, known inclusion probability and the weights restore the whole set, where filtering would
+give the abstained half probability zero.
+
+**The weights** are inverse selection probabilities, normalized within this drawing:
+
+```
+w_c = (N_c / n_c) × (n / N)     N_c, n_c = band population and rows drawn
+                                N, n     = their totals over the three bands
+```
+
+so the drawn weights sum to the drawn rows. They are deliberately **not** built through
+`weightsFor`: that reconstructs a verdict share from the capture's per-verdict caps, because the
+random drawing's frame is a capped stream sample; this population is *enumerated* by the replay and
+its probabilities are known exactly.
+
+**Determinism.** The draw is byte-reproducible from (capture, `-since`, `-seed`, `-near-band`,
+the two quotas, the URLs earlier drawings hold, **and the compiled weights**) — the bands are read
+off the Posting Score, so after a refit the same command yields a different sample. That is why the
+table below records the threshold, the band edge and the seed. Within a band the selection is
+ascending `sha256(seed + "\n" + url)`, the same order every other drawing uses; no RNG anywhere.
+
+**The drawing is taken once.** A second window's rows would carry a second set of inclusion
+probabilities into one stratum, and the verb refuses a second draw for that reason. A fresh window
+is a new *drawing*, declared in code as every drawing before it was.
+
+### The arithmetic — filled in when the draw happens
+
+| | |
+|---|---|
+| capture / frame (`-since`) | — |
+| framed pages / `gate extracts` / drop set | — |
+| `VetoThreshold` the cut was taken at | — |
+| `-seed` | — |
+| `-near-band` / band edge score | — |
+
+| band | population | drawn | weight |
+|---|---:|---:|---:|
+| accepted (live verdict accept) | — | — | — |
+| near | — | — | — |
+| deep | — | — | — |
+
 ## The labeling protocol
 
 `llmbench goldset-worksheet` renders the labeler's view: the page's own title, two
@@ -754,8 +819,8 @@ either way and the thirteen drops are the **same thirteen pages**, which is exac
 `false-drops 11` in the boundary block are eleven of those same thirteen, unchanged.
 
 Turning the rung on in production is a separate act with its own sequence — a capture
-window, an offline score, a Blind Confirmation of the pages it would drop, those labels
-committed here, and only then the flip. It is written up under *Turning the Learned Veto
+window, an offline score, a Blind Confirmation of a stratified sample of the pages it
+would drop, those labels committed here, and only then the flip. It is written up under *Turning the Learned Veto
 on* in the repository `README.md`.
 
 ## The guard (#264)
@@ -963,18 +1028,22 @@ go run ./cmd/llmbench goldset-sample-boundary \
     -capture <repo>/capture/extract-capture.jsonl \
     -since 2026-08-07T21:13:00Z
 
-# 1d. the veto boundary (ADR-0049). WITHOUT -draw it writes nothing and only reports
-#     the veto depth over the frame -- the pre-registered go/no-go for turning rung 9
-#     on, which needs no labels. WITH -draw it appends the pages below the cut, BOTH
-#     verdict halves: ADR-0049 forbids grading that rung against the extractor's own
-#     verdict, so the drop set may not be filtered by it. Like 1c the pair lives in
-#     goldsetboundary.go rather than behind a flag.
+# 1d. the veto boundary (ADR-0049). WITHOUT -draw it writes nothing: it reports the
+#     veto depth over the frame -- the pre-registered go/no-go for turning rung 9 on,
+#     which needs no labels -- and previews the sampling plan the flags below describe,
+#     which is what those flags are tuned from. WITH -draw it appends a STRATIFIED
+#     SAMPLE of the pages below the cut, BOTH verdict halves: ADR-0049 forbids grading
+#     that rung against the extractor's own verdict, so the drop set may not be filtered
+#     by it. Like 1c the pair lives in goldsetboundary.go rather than behind a flag; the
+#     BANDS live there too, and only the quotas are flags. The draw is taken ONCE.
 go run ./cmd/llmbench goldset-sample-veto-boundary \
     -capture <repo>/capture/veto-window.jsonl \
-    -since <the window's start, RFC3339>
+    -since <the window's start, RFC3339> \
+    -near-band 0.20 -near-rows 80 -deep-rows 40
 go run ./cmd/llmbench goldset-sample-veto-boundary \
     -capture <repo>/capture/veto-window.jsonl \
-    -since <the window's start, RFC3339> -draw
+    -since <the window's start, RFC3339> \
+    -near-band 0.20 -near-rows 80 -deep-rows 40 -draw
 
 # 2. the labeling view (a working artifact, never committed)
 #    -stratum / -n cut a deterministic subset: one stratum whole, or 20 rows of it

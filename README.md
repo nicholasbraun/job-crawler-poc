@@ -358,7 +358,7 @@ go run ./cmd/llmbench goldset-sample-veto-boundary \
 This writes **nothing**. It is `goldset-sample-boundary`'s machinery against the veto's own
 pair (`LearnedVeto` off versus on), and that pair lives in `cmd/llmbench/goldsetboundary.go`
 rather than behind a `-gate-config` flag, for the reason that file states: a flag would let a
-later run silently redefine a boundary the committed rows claim. Three lines of the report
+later run silently redefine a boundary the committed rows claim. Four parts of the report
 decide the rollout:
 
 - **`gate extracts` against `candidate frame`.** The tap sits downstream of the Extract Gate,
@@ -369,6 +369,21 @@ decide the rollout:
   rung stays off.
 - **`reversed`**, which must be `0`. The Learned Veto is subtractive only, so a page it *adds*
   means the rung is not the rule this drawing assumes; the verb refuses to draw when it happens.
+- **the `band` lines** — the plan preview. The drop set is not drawn whole (step 3), so the
+  report shows each band's population, its observed Posting Score range, the quota the flags
+  currently set and the rows a draw would take. Those populations are *pre-exclusion*: this
+  mode never opens the Gold Set, so the pages earlier drawings already hold are still counted
+  in them. Tune the flags here, before anything is committed:
+
+| flag | default | what it sets |
+|---|---|---|
+| `-near-band` | `0.20` | the score width below `pagegate.VetoThreshold` that counts as *just below the cut*. The near band is `[VetoThreshold-band, VetoThreshold)` and everything below it is the deep band. Must be in `(0, VetoThreshold)`. |
+| `-near-rows` | `80` | rows to draw from the near band, where the threshold is actually decided. `0` takes the whole band. |
+| `-deep-rows` | `40` | rows to draw from the deep-reject band — smaller, because this band confirms the bottom is junk and reaches for another short posting publishing no structured data. `0` takes the whole band. |
+| `-seed` | `extract-goldset-veto-boundary-v1` | keys the deterministic within-band selection. Changing it is a deliberate resample. |
+
+  There is deliberately **no** flag for the accepted band: it is a census, and `-since` is the
+  lever if it ever grows too large.
 
 **3. Draw the drop set and confirm it blind.**
 
@@ -378,14 +393,55 @@ go run ./cmd/llmbench goldset-sample-veto-boundary \
 go run ./cmd/llmbench goldset-ui -by "<your name>" -stratum veto-boundary
 ```
 
-`-draw` appends every page below the cut — **both** the ones the live extractor accepted and
-the ones it abstained on — as the `veto-boundary` stratum: a census, append-only, weight 1,
-unlabelled. Both halves on purpose: ADR-0049 forbids grading this rung against the extractor's
-own verdict (precision **0.454** against human labels), so filtering the drop set by it would
-import that bias before a human ever reads a row. That is where this drawing differs from
-ADR-0044's `boundary` stratum, which takes the accept half only — and they are separate strata
-so a committed row says which pair drew it. The rows the draw appended carry no confirmer, so
-the confirmation surface serves them one at a time.
+`-draw` appends a **stratified sample** of the pages below the cut as the `veto-boundary`
+stratum: append-only, unlabelled, and **both** the pages the live extractor accepted and the
+ones it abstained on. Both halves on purpose: ADR-0049 forbids grading this rung against the
+extractor's own verdict (precision **0.454** against human labels), so filtering the drop set
+by it would import that bias before a human ever reads a row. That is where this drawing
+differs from ADR-0044's `boundary` stratum, which takes the accept half only — and they are
+separate strata so a committed row says which pair drew it.
+
+A **sample**, where ADR-0044's boundary is a census, and the numbers are why. A live capture
+window measured over a 1,006-page frame against the shipped weights: veto depth **82.7%**, a
+drop set of **832 rows** that grows with the frame, **54** of them pages the live extractor
+read as a single posting. The disagreement here is most of the stream, where ADR-0044's was
+188 pages — and ADR-0043 requires a human confirmation on **every** Boundary Stratum row, so a
+census would owe thousands of Blind Confirmations, never be finished, and block the refit
+indefinitely. At the defaults the same frame draws ~174 rows. Sampling makes the obligation
+finishable; it does not weaken it.
+
+Three bands, and each is there for its own reason:
+
+- **every accepted-but-dropped page**, censused. These are the candidate false-drops; the
+  recall claim rests on exactly them, and sampling them would put sampling error on the one
+  number the rollout turns on.
+- **a sample from just below the cut**, where the threshold is actually decided.
+- **a smaller sample from the deep-reject band**, to confirm the bottom really is junk and to
+  reach deliberately for another **short posting publishing no structured data** — the shape
+  ADR-0049's #304 amendment records the rung being weakest on, since both live false-drops
+  were exactly that.
+
+Each row carries the **inverse of its selection probability**, normalized to the drawing's own
+row count. Weighting a sampled row 1 and pooling it with the censused ones would make any
+weighted read over the stratum describe the enriched sample while claiming to describe the drop
+set. What those weights estimate is *the pages the veto would withhold the call from over this
+frame*, minus the URLs earlier drawings already hold — never the stream.
+
+Stratifying on the live verdict is **not** the filtering ADR-0049 forbids. Filtering would give
+the abstained pages inclusion probability *zero* and import the extractor's 0.454 precision into
+the sample; here every page of the drop set keeps a non-zero, known probability and the weights
+restore the whole set. No verdict decides a label.
+
+The drawing is taken **once**: a second window's rows would carry a second set of inclusion
+probabilities into one stratum, so the verb refuses a second draw and says so. A fresh window is
+a new *drawing*, declared in code as every drawing before it was. The draw is byte-reproducible
+from (capture, `-since`, `-seed`, the band flags, the URLs earlier drawings hold, **and the
+compiled weights**) — the bands are read off the Posting Score, so after a refit the same command
+yields a different sample, which is why the threshold, the band edge and the seed go into the
+Gold Set README's table in step 4.
+
+The rows the draw appended carry no confirmer, so the confirmation surface serves them one at a
+time — on the order of 150 rows, a pass a person finishes.
 
 The label is taken **before** anything is revealed (ADR-0048), each row's **Capture Fidelity**
 is measured against a fresh fetch so a live view is admitted or refused per row (ADR-0047),
@@ -430,8 +486,9 @@ act and a human's. Three things it does not own and you still do, in the same co
   shipped at its own stratum's full count; every later refit then lowers it as confirmations land.
 - `drawnStrata`, which does not yet list `veto-boundary`.
 - the drawings table of `cmd/llmbench/extract-goldset/README.md` — paste the draw's summary there,
-  the frame, the row count and **the `VetoThreshold` the cut was taken at**, because the threshold
-  moves with the refit in this very step and that table is where the other three drawings record
+  the frame, the row count, the seed, the band edge, each band's population / drawn / weight and
+  **the `VetoThreshold` the cut was taken at**, because the threshold moves with the refit in this
+  very step, the bands were read off it, and that table is where the other three drawings record
   theirs.
 
 `cmd/llmbench/extract-goldset/README.md` carries the whole maintenance sequence.
