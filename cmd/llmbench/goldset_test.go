@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -2374,51 +2375,96 @@ func TestBoundarySampleRefusesADuplicateURL(t *testing.T) {
 // against, and the OFF arm of the subtractive-only guard all keep saying what they say
 // today.
 //
-// It is written as a switch-by-switch census rather than as equality checks so that
-// ADDING a third kill switch to LLMGateConfig and forgetting to pin it is what fails
-// here — which is the failure this test is for.
+// It is a CENSUS OVER THE STRUCT rather than a list of equality checks, because the
+// failure it exists for is a kill switch that was ADDED and left unpinned, and a
+// hand-written list of checks cannot see one. Every bool crawler.LLMGateConfig declares
+// must be named by every config's want map, so a third switch fails HERE, on the day it
+// is added, rather than on the day its default flips -- when it would silently make
+// boundaryCandidateConfig "Positive Evidence plus rung 10", fit the trainer against a
+// population rung 10 had already pruned, and let boundaryBaselineConfig stop being the
+// pre-ADR-0044 blanket accept.
 func TestBoundaryConfigsPinEveryExtractKillSwitch(t *testing.T) {
 	tests := []struct {
-		name                    string
-		cfg                     crawler.LLMGateConfig
-		requirePositiveEvidence bool
-		learnedVeto             bool
+		name string
+		cfg  crawler.LLMGateConfig
+		// want is what every one of LLMGateConfig's bool fields must hold in cfg, keyed
+		// by field name. A switch the struct declares and this map does not name is the
+		// failure this test is for; a name here the struct does not declare is a stale
+		// pin, and fails too.
+		want map[string]bool
 	}{
 		{
 			// The pre-ADR-0044 blanket accept: no Positive Evidence rung, and no rung 9
 			// either, since rung 9 did not exist.
 			name: "baseline", cfg: boundaryBaselineConfig(),
-			requirePositiveEvidence: false, learnedVeto: false,
+			want: map[string]bool{"RequirePositiveEvidence": false, "LearnedVeto": false},
 		},
 		{
 			// The shipping tiered rule, and NOTHING below it: rung 8's accept set is by
 			// definition pre-veto, because the veto only ever prunes it.
 			name: "candidate", cfg: boundaryCandidateConfig(),
-			requirePositiveEvidence: true, learnedVeto: false,
+			want: map[string]bool{"RequirePositiveEvidence": true, "LearnedVeto": false},
 		},
 		{
 			// The gate as production ships it, which is the veto depth's denominator. It
 			// returns what the candidate above returns TODAY and is a separate claim: this
 			// one has to track production, that one is frozen at what drew #263's rows.
 			name: "veto baseline", cfg: vetoBaselineConfig(),
-			requirePositiveEvidence: true, learnedVeto: false,
+			want: map[string]bool{"RequirePositiveEvidence": true, "LearnedVeto": false},
 		},
 		{
 			// What EXTRACT_LEARNED_VETO=true runs: the same ladder with rung 9 enforcing.
 			name: "veto candidate", cfg: vetoCandidateConfig(),
-			requirePositiveEvidence: true, learnedVeto: true,
+			want: map[string]bool{"RequirePositiveEvidence": true, "LearnedVeto": true},
 		},
 	}
+
+	switches := extractKillSwitches(t)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.cfg.RequirePositiveEvidence; got != tt.requirePositiveEvidence {
-				t.Errorf("RequirePositiveEvidence = %v, want %v pinned explicitly", got, tt.requirePositiveEvidence)
+			fields := reflect.ValueOf(tt.cfg)
+			for _, name := range switches {
+				want, pinned := tt.want[name]
+				if !pinned {
+					t.Errorf("crawler.LLMGateConfig declares the kill switch %s and this config does not pin it. "+
+						"Set it explicitly in %s and name it here with the value this boundary means, or the config silently becomes whatever DefaultLLMGateConfig says on the day that default flips.",
+						name, tt.name)
+					continue
+				}
+				if got := fields.FieldByName(name).Bool(); got != want {
+					t.Errorf("%s = %v, want %v pinned explicitly", name, got, want)
+				}
 			}
-			if got := tt.cfg.LearnedVeto; got != tt.learnedVeto {
-				t.Errorf("LearnedVeto = %v, want %v pinned explicitly", got, tt.learnedVeto)
+			for name := range tt.want {
+				if !slices.Contains(switches, name) {
+					t.Errorf("this config pins %s, which crawler.LLMGateConfig no longer declares as a bool; the pin is stale", name)
+				}
 			}
 		})
 	}
+}
+
+// extractKillSwitches is every bool field crawler.LLMGateConfig declares, in
+// declaration order -- the gate's kill switches, since that is the only thing a bool on
+// this struct has ever been (ADR-0044, ADR-0049).
+//
+// It FAILS on an empty census, the same backstop TestEveryDerivedCountInTheCountsFileIsOwned
+// carries: a struct rename that found no bool at all would otherwise turn the census
+// above into a silent pass, which is precisely the shape of failure it was written to
+// end.
+func extractKillSwitches(t *testing.T) []string {
+	t.Helper()
+	typ := reflect.TypeOf(crawler.LLMGateConfig{})
+	names := []string{}
+	for i := range typ.NumField() {
+		if f := typ.Field(i); f.Type.Kind() == reflect.Bool {
+			names = append(names, f.Name)
+		}
+	}
+	if len(names) == 0 {
+		t.Fatalf("%s declares no bool field at all; a rename would turn this census into a silent pass", typ)
+	}
+	return names
 }
 
 // TestCommittedBoundaryStratumIsTheDisagreementSet is the half of this drawing's
