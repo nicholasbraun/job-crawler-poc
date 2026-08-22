@@ -390,25 +390,37 @@ from it; the pages are the right thing.
 | `jobicco.tu-braunschweig.de/de/1777` | 0.4807 | a private individual seeking a maths tutor, on a student-gig board |
 | `jobicco.tu-braunschweig.de/en/1777` | 0.1160 | **the same item**, served on the `/en/` language path |
 | `www.aqut.tf.fau.de/group/jobs/postdocs` | 0.0166 | a real single posting — one paragraph, one heading |
-| `www.wynncareersmacau.com/open-roles/85` | 0.4378 | "Commis" — a real single posting, JSON-LD and all |
+| `www.wynncareersmacau.com/open-roles/85` | 0.4378 | "Commis" — a real single posting, ~800 characters, no JobPosting structured data |
 
 Four rows are three items: one arguably outside the Corpus at all (a private tutoring request is not
-a Company's Job Listing), and **two genuine false-drops**.
+a Company's Job Listing), and **two genuine false-drops**. Both false-drops are the same shape.
 
-The aqut row is the one to learn from. Its title is the plural "Postdocs" and it looks at a glance
-like an openings index, but it is a single position: *"…a postdoc (f/m/d) with a background in
-quantum optics and/or color centers…"*, followed by an address and an email. One paragraph, one
-heading, and none of the sections a posting conventionally carries — no responsibilities block, no
-profile, no offer. It scored **0.0166**, which is not a marginal miss but a confident one.
+The aqut row shows it plainest. Its title is the plural "Postdocs" and it looks at a glance like an
+openings index, but it is a single position: *"…a postdoc (f/m/d) with a background in quantum optics
+and/or color centers…"*, followed by an address and an email. One paragraph, one heading, and none of
+the sections a posting conventionally carries. It scored **0.0166** — not a marginal miss but a
+confident one.
 
-That names a **systematic blind spot: terse postings**. ADR-0044 established that what distinguishes
-a posting is the *range* of its sections rather than the frequency of any word, and the Score
-Signals read that range as a gradation — so the fit leans on it, and a legitimate posting with no
-section structure at all falls to the bottom of the distribution. Academic and institute pages are
-the obvious exposed class, which matters because they are well represented in the Catalog. The
-body-length bucket is in the signal set and did not rescue this page; whether a terse-but-genuine
-posting is separable at all on the signals this rung reads is an open question, and the honest
-answer today is that nobody has measured it.
+The Wynn row is the same failure with the structure present but empty. It does carry three
+conventional headings — Job Purpose, Key Responsibilities, Competencies and Requirements — but one
+line sits under each, about 800 characters of posting text in total, below the tenth percentile of
+the `detail` rows the score was fitted on (p10 1,799 B, median 3,883 B). Its `ld+json` is
+Organization and WebSite boilerplate; there is no JobPosting node anywhere on the page.
+
+Together they name a **systematic blind spot: short postings that publish no structured data**.
+ADR-0044 established that what distinguishes a posting is the *range* of its sections rather than the
+frequency of any word, and the Score Signals read that range as a gradation — so the fit leans on it.
+Where the range is absent or nominally present but unfilled, and the lone-structured-posting signal
+is absent too, the page falls to the bottom of the distribution however genuine it is. The
+body-length bucket is in the signal set and rescued neither page.
+
+Two things follow, and they pull in opposite directions. The drops are **explicable** — the score is
+behaving consistently with what it reads, not erratically — which means the failure is predictable
+and can be drawn for deliberately rather than discovered later as unattributed coverage loss. But
+explicable is not harmless: both pages are real Job Listings, both would be lost from the Corpus, and
+short postings without structured data are not a rare shape on small-company and institutional sites.
+Whether pages of that shape are separable at all on the signals this rung reads is an open question,
+and the honest answer today is that nobody has measured it.
 
 Three limits, so the table is not over-read in either direction. The triage was **sighted** — the
 pages were fetched and read, which is not Blind Confirmation (ADR-0048) and cannot replace it. Two
@@ -417,8 +429,8 @@ flags, runs at 0.454 precision against human labels, so it both over- and under-
 tutoring row is an instance of exactly that. Nothing derived from this triage belongs in a decision.
 What belongs in a decision is the capture-window pass the rollout section describes, over a frame
 nobody hand-picked, with the drop set confirmed blind — and that draw should deliberately reach for
-short-bodied pages, because this is where the rung is now known to be weakest. The four URLs above
-are its first candidates.
+short-bodied pages carrying no structured data, because that is the shape the rung is now known to
+be weakest on. The four URLs above are its first candidates.
 
 ### What the run confirmed outright
 
