@@ -344,20 +344,42 @@ a `./capture` bind mount, the shape #116 used.
 Score falls below `pagegate.VetoThreshold` (`0.605395`, compiled in beside the weights). It
 needs no labels, and the pages below the cut are the drop set step 3 confirms.
 
-`llmbench goldset-sample-boundary` already computes this exact census — it replays two gate
-configs over a capture and takes every page the two disagree on — but the pair it replays is
-ADR-0044's, fixed in `cmd/llmbench/goldsetboundary.go` rather than passed as a flag, and
-deliberately so: a flag would let a later run silently redefine a boundary the committed rows
-claim. So drawing the veto's boundary is that same verb against the veto's own pair
-(`LearnedVeto` off versus on), added to that file in the commit that draws it. Nothing else
-about the drawing changes: it stays a census, append-only, weight 1.
+```bash
+go run ./cmd/llmbench goldset-sample-veto-boundary \
+    -capture capture/veto-window.jsonl -since <the window's start, RFC3339>
+```
 
-**3. Confirm the drop set blind.** The rows the draw appended carry no confirmer, so the
-confirmation surface serves them one at a time:
+This writes **nothing**. It is `goldset-sample-boundary`'s machinery against the veto's own
+pair (`LearnedVeto` off versus on), and that pair lives in `cmd/llmbench/goldsetboundary.go`
+rather than behind a `-gate-config` flag, for the reason that file states: a flag would let a
+later run silently redefine a boundary the committed rows claim. Three lines of the report
+decide the rollout:
+
+- **`gate extracts` against `candidate frame`.** The tap sits downstream of the Extract Gate,
+  so these should be within a few rows of each other. A large gap means a reject rung moved
+  since the window and the frame is stale.
+- **`depth` against ADR-0049's pre-registered 10% floor**, which the report itself states as
+  MET or NOT MET. Below it, **stop**: the honest outcome is an amendment to ADR-0049 and the
+  rung stays off.
+- **`reversed`**, which must be `0`. The Learned Veto is subtractive only, so a page it *adds*
+  means the rung is not the rule this drawing assumes; the verb refuses to draw when it happens.
+
+**3. Draw the drop set and confirm it blind.**
 
 ```bash
-go run ./cmd/llmbench goldset-ui -by "<your name>" -stratum boundary
+go run ./cmd/llmbench goldset-sample-veto-boundary \
+    -capture capture/veto-window.jsonl -since <the window's start, RFC3339> -draw
+go run ./cmd/llmbench goldset-ui -by "<your name>" -stratum veto-boundary
 ```
+
+`-draw` appends every page below the cut — **both** the ones the live extractor accepted and
+the ones it abstained on — as the `veto-boundary` stratum: a census, append-only, weight 1,
+unlabelled. Both halves on purpose: ADR-0049 forbids grading this rung against the extractor's
+own verdict (precision **0.454** against human labels), so filtering the drop set by it would
+import that bias before a human ever reads a row. That is where this drawing differs from
+ADR-0044's `boundary` stratum, which takes the accept half only — and they are separate strata
+so a committed row says which pair drew it. The rows the draw appended carry no confirmer, so
+the confirmation surface serves them one at a time.
 
 The label is taken **before** anything is revealed (ADR-0048), each row's **Capture Fidelity**
 is measured against a fresh fetch so a live view is admitted or refused per row (ADR-0047),
@@ -367,10 +389,16 @@ everything in this line of work.
 
 **4. Commit the confirmed rows — and refit.** They join the Extract Gold Set through
 `goldset-apply`, with the drawing's row count and confirmation counts updated in
-`cmd/llmbench/goldset_test.go` in the same commit; `cmd/llmbench/extract-goldset/README.md`
-carries the whole maintenance sequence. Then remember what ADR-0049 makes true: **the Gold Set
-now produces part of the gate as well as scoring it.** Adding rows changes the fitted weights,
-so `TestTrainScorerReproducesTheCommittedWeights` goes red until you regenerate:
+`cmd/llmbench/goldset_test.go` in the same commit — `vetoBoundaryStratumRows` (0 until the
+drawing runs) and `drawnStrata` (which does not yet list `veto-boundary`) are the two the draw
+moves. Paste the draw's summary into the drawings table of
+`cmd/llmbench/extract-goldset/README.md` in the same commit too: the frame, the row count, and
+**the `VetoThreshold` the cut was taken at** — because the threshold moves with the refit in
+this very step, and that table is where the other three drawings record theirs.
+`cmd/llmbench/extract-goldset/README.md` carries the whole maintenance sequence. Then remember
+what ADR-0049 makes true: **the Gold Set now produces part of the gate as well as scoring it.**
+Adding rows changes the fitted weights, so `TestTrainScorerReproducesTheCommittedWeights` goes
+red until you regenerate:
 
 ```bash
 go generate ./internal/pagegate     # re-runs llmbench train-scorer over the Gold Set
@@ -383,11 +411,12 @@ operating point moves with the labels rather than away from them. If a newly con
 and never move `VetoThreshold` by hand.
 
 Run the **whole** suite, not `./cmd/llmbench/... ./internal/pagegate/...`: a refit can move a
-hand-picked fixture page across `VetoThreshold`, and the fixtures live in two places —
-`internal/pagegate/learned_veto_test.go` and `internal/processor/url_processor/url_processor_test.go`,
-which carries its own copies because an external test package cannot import them. Both fail
-with "pick a weaker fixture" when that happens, and both want a different page rather than a
-moved threshold.
+hand-picked fixture page across `VetoThreshold`, and the fixtures live in three places —
+`internal/pagegate/learned_veto_test.go`, `internal/processor/url_processor/url_processor_test.go`,
+which carries its own copies because an external test package cannot import them, and
+`cmd/llmbench/goldsetvetoboundary_test.go`, whose capture fixtures have to land on a named side
+of the cut for the drawing's own cases to mean anything. All three fail with "pick a weaker
+fixture" when that happens, and all three want a different page rather than a moved threshold.
 
 **5. Re-read the numbers on the artifact you are actually about to ship** — the refitted one,
 not the one step 2 measured — with the scorecard command at the top of this section, and check

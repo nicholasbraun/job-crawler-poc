@@ -108,6 +108,9 @@ go run ./cmd/llmbench score-capture -in <labeled.jsonl> -gate-config <veto.json>
                                                 #    ...the same scorecard with the Learned Veto on (ADR-0049);
                                                 #    veto.json is {"LearnedVeto": true}
 go run ./cmd/llmbench score-rendering            # A/B: Flattened Text vs Structural Rendering at one prompt budget
+go run ./cmd/llmbench goldset-sample-veto-boundary -capture <capture.jsonl> -since <RFC3339>
+                                                #    veto depth over a capture frame (no labels);
+                                                #    -draw appends the drop set to the Gold Set
 go run ./cmd/llmbench train-scorer               # refit the Posting Score over the Extract Gold Set and rewrite
                                                 #    pagegate's weights (must reproduce the committed file byte for byte)
 go run ./cmd/llmbench goldset-ui -by "<your name>" -stratum random   # blind, one-keystroke confirmation pass (loopback only;

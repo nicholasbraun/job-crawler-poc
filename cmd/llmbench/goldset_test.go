@@ -112,11 +112,12 @@ const pendingHumanConfirmations = 1
 const pendingExpectedConfirmations = 1
 
 const (
-	// structuralStratumRows, randomStratumRows and boundaryStratumRows are the three
-	// drawings' exact row counts. They are pinned rather than bounded because a
-	// drawing is a fixed act of sampling: a row appearing or vanishing changes what
-	// every weighted number estimates, and must be seen in a diff. The boundary count
-	// is not even a sample size -- it is the size of the disagreement itself.
+	// structuralStratumRows, randomStratumRows, boundaryStratumRows and
+	// vetoBoundaryStratumRows are the four drawings' exact row counts. They are pinned
+	// rather than bounded because a drawing is a fixed act of sampling: a row appearing
+	// or vanishing changes what every weighted number estimates, and must be seen in a
+	// diff. The two boundary counts are not even sample sizes -- each is the size of a
+	// disagreement itself.
 	//
 	// Unlike the confirmation counts below they are NOT floors: ADR-0048 relaxed those
 	// because confirmations landing is progress, and a row appearing or vanishing never
@@ -124,6 +125,12 @@ const (
 	structuralStratumRows = 149
 	randomStratumRows     = 120
 	boundaryStratumRows   = 188
+	// vetoBoundaryStratumRows is 0: ADR-0049's drawing ships DEFINED and undrawn,
+	// because drawing it needs a real capture window with the rung off (step 1 of
+	// *Turning the Learned Veto on* in the repository README) and every drawn row owes
+	// a human confirmation. The commit that runs the drawing sets this number and moves
+	// stratumVetoBoundary into drawnStrata in the same diff.
+	vetoBoundaryStratumRows = 0
 	// randomStreamAcceptRate is the accept share the random drawing's weights were
 	// built on -- #261's census measurement of the live extract stream, not the
 	// capture file's own mix. TestCommittedRandomStratumIsWeightedToTheStream
@@ -314,12 +321,21 @@ func loadCommittedGoldSet(t *testing.T) []goldRow {
 // it, so the sampler tests read the same shape production produces.
 func capturedPage(t *testing.T, url string, verdict bool, ts string, jsonLD []string, mainContent string) string {
 	t.Helper()
+	return capturedPageTitled(t, url, verdict, ts, "page", jsonLD, mainContent)
+}
+
+// capturedPageTitled is capturedPage with the page's own Title settable. The Posting
+// Score weighs Title words in their own namespace (ADR-0049), so a fixture that has
+// to land on a named side of VetoThreshold must be able to set it; capturedPage pins
+// it to "page" and stays that way for the call sites that do not care.
+func capturedPageTitled(t *testing.T, url string, verdict bool, ts, title string, jsonLD []string, mainContent string) string {
+	t.Helper()
 	rec := struct {
 		URL     string          `json:"url"`
 		Verdict bool            `json:"verdict"`
 		TS      string          `json:"ts"`
 		Content crawler.Content `json:"content"`
-	}{URL: url, Verdict: verdict, TS: ts, Content: crawler.Content{Title: "page", MainContent: mainContent, JSONLD: jsonLD}}
+	}{URL: url, Verdict: verdict, TS: ts, Content: crawler.Content{Title: title, MainContent: mainContent, JSONLD: jsonLD}}
 	line, err := json.Marshal(rec)
 	if err != nil {
 		t.Fatalf("marshal capture line: %v", err)
@@ -1249,6 +1265,15 @@ func TestWorksheetWithholdsTheStructuredData(t *testing.T) {
 	}
 }
 
+// drawnStrata is the subset of allStrata the committed file actually holds rows in.
+// It is a test-local list rather than a property of goldStratum because "has been
+// drawn" is a fact about this artifact at this commit, not about the type.
+var drawnStrata = []goldStratum{stratumLonePosting, stratumAmbiguousPosting, stratumNoPosting, stratumRandom, stratumBoundary}
+
+// isCensusStratum reports whether s is one of the Boundary Strata, whose rows are a
+// census and therefore all carry weight 1.
+func isCensusStratum(s goldStratum) bool { return s == stratumBoundary || s == stratumVetoBoundary }
+
 // TestCommittedGoldSetIsWellFormed is the structural guard on the committed file:
 // it is the evidence base every later extract decision is argued from, so a row
 // that cannot be scored, weighted, or attributed must fail the build rather than
@@ -1269,14 +1294,17 @@ func TestCommittedGoldSetIsWellFormed(t *testing.T) {
 	if got := len(byDrawing[drawingBoundary]); got != boundaryStratumRows {
 		t.Errorf("the boundary drawing has %d rows, want %d", got, boundaryStratumRows)
 	}
-	if want := structuralStratumRows + randomStratumRows + boundaryStratumRows; len(rows) != want {
-		t.Errorf("gold set has %d rows, want %d (the three drawings and nothing else)", len(rows), want)
+	if got := len(byDrawing[drawingVetoBoundary]); got != vetoBoundaryStratumRows {
+		t.Errorf("the veto-boundary drawing has %d rows, want %d", got, vetoBoundaryStratumRows)
+	}
+	if want := structuralStratumRows + randomStratumRows + boundaryStratumRows + vetoBoundaryStratumRows; len(rows) != want {
+		t.Errorf("gold set has %d rows, want %d (the four drawings and nothing else)", len(rows), want)
 	}
 	// Per drawing AND file-wide. A weight normalizes within its drawing, so the
 	// per-drawing balance is the real invariant; the file-wide one holds only because
 	// each drawing's weights sum to its own row count, and asserting both catches a
 	// drawing that borrowed mass from the other.
-	for _, d := range []goldDrawing{drawingStructural, drawingRandom, drawingBoundary} {
+	for _, d := range []goldDrawing{drawingStructural, drawingRandom, drawingBoundary, drawingVetoBoundary} {
 		if !weightsBalanced(byDrawing[d], 1e-6) {
 			t.Errorf("the %s drawing's weights sum to %.6f over %d rows, want equal", d, weightSum(byDrawing[d]), len(byDrawing[d]))
 		}
@@ -1299,13 +1327,16 @@ func TestCommittedGoldSetIsWellFormed(t *testing.T) {
 		if !row.Label.Valid() {
 			t.Errorf("%s: label %q is not one of detail / hub-index / residue / ambiguous", row.URL, row.Label)
 		}
-		// The Boundary Stratum is a census, so its weight is not a sampling artifact
+		// Either Boundary Stratum is a census, so its weight is not a sampling artifact
 		// to be recomputed: it is 1 by definition, and any other value means the row
 		// arrived from a drawing that thought it was sampling.
-		if row.Stratum == stratumBoundary && row.Weight != boundaryCensusWeight {
-			t.Errorf("%s: boundary row carries weight %g, want the census weight %g", row.URL, row.Weight, boundaryCensusWeight)
+		if isCensusStratum(row.Stratum) && row.Weight != boundaryCensusWeight {
+			t.Errorf("%s: %s row carries weight %g, want the census weight %g", row.URL, row.Stratum, row.Weight, boundaryCensusWeight)
 		}
-		// This drawing takes the accept half of the disagreement only.
+		// The ADR-0044 drawing takes the accept half of the disagreement only. The
+		// veto-boundary drawing deliberately does NOT: ADR-0049 forbids grading that
+		// rung against the live extractor's verdict, so this stays keyed on
+		// stratumBoundary alone.
 		if row.Stratum == stratumBoundary && !row.Verdict {
 			t.Errorf("%s: boundary row whose live verdict was abstain", row.URL)
 		}
@@ -1387,13 +1418,24 @@ func TestCommittedGoldSetIsWellFormed(t *testing.T) {
 			t.Errorf("no row is labelled %q; the set must exercise all three classes", l)
 		}
 	}
-	for _, s := range allStrata {
+	// drawnStrata, not allStrata: a stratum that is DEFINED and drawable but whose
+	// drawing has not been run is the honest state of the set, not a defect.
+	// stratumVetoBoundary is in that state (ADR-0049's rollout draws it from a real
+	// capture window), and the commit that draws it moves it here and sets
+	// vetoBoundaryStratumRows in the same diff.
+	for _, s := range drawnStrata {
 		if byStratum[s] == 0 {
 			t.Errorf("no row is in stratum %q", s)
 		}
 	}
 	t.Logf("labels: %v", byLabel)
-	t.Logf("strata: %v", byStratum)
+	// In allStrata's order, and over every stratum rather than only the drawn ones, so
+	// a stratum standing at 0 is VISIBLE in the log rather than absent from it.
+	counts := make([]string, 0, len(allStrata))
+	for _, s := range allStrata {
+		counts = append(counts, fmt.Sprintf("%s:%d", s, byStratum[s]))
+	}
+	t.Logf("strata: %s", strings.Join(counts, " "))
 }
 
 // TestCommittedGoldSetHumanConfirmation is the honest ratchet on ADR-0043's
@@ -2216,18 +2258,23 @@ func TestBoundaryIsTheDisagreementSet(t *testing.T) {
 		t.Fatalf("scanCapture: %v", err)
 	}
 
-	accept, abstain, reversed, err := boundaryDisagreements(capture, scan)
+	outcome, err := replayBoundary(capture, scan, positiveEvidenceBoundary)
 	if err != nil {
-		t.Fatalf("boundaryDisagreements: %v", err)
+		t.Fatalf("replayBoundary: %v", err)
 	}
-	if len(reversed) != 0 {
-		t.Errorf("the Positive Evidence rung added %d pages (%v); it is supposed to be purely additive", len(reversed), reversed)
+	if len(outcome.Reversed) != 0 {
+		t.Errorf("the Positive Evidence rung added %d pages (%v); it is supposed to be purely additive", len(outcome.Reversed), outcome.Reversed)
 	}
-	if len(accept) != 1 || accept[0].URL != "https://acme.test/company/we-grew" {
-		t.Errorf("accept half = %v, want exactly the accepted page the two configs disagree on", urlsOf(accept))
+	if got := outcome.DroppedAccepted; len(got) != 1 || got[0].URL != "https://acme.test/company/we-grew" {
+		t.Errorf("accept half = %v, want exactly the accepted page the two configs disagree on", urlsOf(got))
 	}
-	if len(abstain) != 1 || abstain[0].URL != "https://acme.test/company/we-moved" {
-		t.Errorf("abstain half = %v, want exactly the abstained page the two configs disagree on", urlsOf(abstain))
+	if got := outcome.DroppedAbstained; len(got) != 1 || got[0].URL != "https://acme.test/company/we-moved" {
+		t.Errorf("abstain half = %v, want exactly the abstained page the two configs disagree on", urlsOf(got))
+	}
+	// The census this design draws is the accept half alone, which is what makes the
+	// abstain page above recorded rather than drawn.
+	if got := outcome.Census(positiveEvidenceBoundary); len(got) != 1 || got[0].URL != "https://acme.test/company/we-grew" {
+		t.Errorf("census = %v, want the accept half only", urlsOf(got))
 	}
 }
 
@@ -2314,21 +2361,22 @@ func TestBoundarySampleRefusesADuplicateURL(t *testing.T) {
 
 	drawn := []goldRow{{URL: "https://acme.test/company/we-grew", Verdict: true, Stratum: stratumBoundary, Weight: boundaryCensusWeight}}
 	committed := map[string]struct{}{"https://acme.test/company/we-grew": {}}
-	if err := validateDrawnBoundaryRows(drawn, committed); err == nil {
+	if err := validateDrawnBoundaryRows(positiveEvidenceBoundary, drawn, committed); err == nil {
 		t.Error("validateDrawnBoundaryRows accepted a row the substrate already carries")
 	}
 }
 
-// TestBoundaryConfigsPinEveryExtractKillSwitch holds the property both boundary
+// TestBoundaryConfigsPinEveryExtractKillSwitch holds the property all four boundary
 // configs exist for: what they mean must not depend on what DefaultLLMGateConfig
-// currently says. Each Extract Gate kill switch is set EXPLICITLY in both, so the day
-// one of them ships on by default (ADR-0044 did it once, ADR-0049's rollout prescribes
-// it again) the boundary, the rung-8 accept population the trainer fits against, and
-// the OFF arm of the subtractive-only guard all keep saying what they say today.
+// currently says. Each Extract Gate kill switch is set EXPLICITLY in every one, so the
+// day one of them ships on by default (ADR-0044 did it once, ADR-0049's rollout
+// prescribes it again) both boundaries, the rung-8 accept population the trainer fits
+// against, and the OFF arm of the subtractive-only guard all keep saying what they say
+// today.
 //
-// It is written as a switch-by-switch census rather than as two equality checks so
-// that ADDING a third kill switch to LLMGateConfig and forgetting to pin it is what
-// fails here — which is the failure this test is for.
+// It is written as a switch-by-switch census rather than as equality checks so that
+// ADDING a third kill switch to LLMGateConfig and forgetting to pin it is what fails
+// here — which is the failure this test is for.
 func TestBoundaryConfigsPinEveryExtractKillSwitch(t *testing.T) {
 	tests := []struct {
 		name                    string
@@ -2347,6 +2395,18 @@ func TestBoundaryConfigsPinEveryExtractKillSwitch(t *testing.T) {
 			// definition pre-veto, because the veto only ever prunes it.
 			name: "candidate", cfg: boundaryCandidateConfig(),
 			requirePositiveEvidence: true, learnedVeto: false,
+		},
+		{
+			// The gate as production ships it, which is the veto depth's denominator. It
+			// returns what the candidate above returns TODAY and is a separate claim: this
+			// one has to track production, that one is frozen at what drew #263's rows.
+			name: "veto baseline", cfg: vetoBaselineConfig(),
+			requirePositiveEvidence: true, learnedVeto: false,
+		},
+		{
+			// What EXTRACT_LEARNED_VETO=true runs: the same ladder with rung 9 enforcing.
+			name: "veto candidate", cfg: vetoCandidateConfig(),
+			requirePositiveEvidence: true, learnedVeto: true,
 		},
 	}
 	for _, tt := range tests {

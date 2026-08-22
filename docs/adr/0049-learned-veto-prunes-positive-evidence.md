@@ -201,6 +201,15 @@ confirm them blind (ADR-0048), commit them into the Gold Set, then flip the defa
 confirmed rows outlive the decision, which matters because label quality, not volume, is the
 binding constraint on every approach in this line.
 
+The drawing is `llmbench goldset-sample-veto-boundary`, and the pages it appends are the
+`veto-boundary` stratum — a second Boundary Stratum, separate from ADR-0044's `boundary` because
+a different pair over a different frame is a different boundary, and a committed row's stratum is
+how it says which pair drew it. It takes **both** halves of the disagreement, where ADR-0044's
+takes the accept half only: this ADR rules out grading the rung against the extractor's own
+verdict, so the drop set may not be filtered by it either. By default the verb only reports the
+**veto depth**; `-draw` is what commits rows, because the depth is the go/no-go and the rows it
+implies change the fitted weights.
+
 **The condition, registered before the measurement:** the Learned Veto is turned on only if it
 vetoes **at least 10% of rung-8 accepts while losing none of the 127 `detail` rows** rung 8
 accepts today. Below that, a generated weights table, a trainer verb, a package, a rung and a

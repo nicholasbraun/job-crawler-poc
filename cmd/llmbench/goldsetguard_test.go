@@ -245,18 +245,6 @@ func TestExtractGoldSetFalseDropGuard(t *testing.T) {
 	}
 }
 
-// learnedVetoConfig is the shipping Positive Evidence rule with ADR-0049's Learned
-// Veto on -- what EXTRACT_LEARNED_VETO=true runs, and what
-// `score-capture -gate-config <file holding {"LearnedVeto": true}>` scores. The flag
-// takes a PATH, never inline JSON: loadGateConfig reads the file. Both switches are set
-// explicitly, for the reason boundaryCandidateConfig pins both: this config must keep
-// meaning "both rungs on" whatever either default later says.
-func learnedVetoConfig() crawler.LLMGateConfig {
-	cfg := boundaryCandidateConfig()
-	cfg.LearnedVeto = true
-	return cfg
-}
-
 // TestExtractGoldSetFalseDropGuardUnderTheLearnedVeto is the merge gate for ADR-0049's
 // rung, and it is where the threshold's pinning is CHECKED rather than trusted. The
 // trainer chose VetoThreshold as the deepest cut that loses none of the 127 detail rows
@@ -271,7 +259,7 @@ func learnedVetoConfig() crawler.LLMGateConfig {
 // and this test would name it.
 func TestExtractGoldSetFalseDropGuardUnderTheLearnedVeto(t *testing.T) {
 	off := bench.AuditFalseDrops(guardRows(t), extractGoldSetFalseDrops)
-	on := bench.AuditFalseDrops(guardRowsUnder(t, learnedVetoConfig()), extractGoldSetFalseDrops)
+	on := bench.AuditFalseDrops(guardRowsUnder(t, vetoCandidateConfig()), extractGoldSetFalseDrops)
 
 	for _, drop := range on.Unrecorded {
 		t.Errorf("FALSE-DROP UNDER THE LEARNED VETO %s -- turning EXTRACT_LEARNED_VETO on drops a real Job Listing "+

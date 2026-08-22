@@ -6,14 +6,15 @@ page URL, the extractor's original verdict, a label
 (`detail` / `hub-index` / `residue`, or `ambiguous` for a page a review could not
 settle), its sampling stratum, its sampling weight, and its label provenance.
 
-The file holds **three drawings**. They share a row format and a file; they share nothing
-else, and their weights are never pooled:
+The file holds **four drawings**, one of which is defined and not yet drawn. They share a row
+format and a file; they share nothing else, and their weights are never pooled:
 
 | drawing | strata | rows | drawn from | accept share | what it is for |
 |---|---|---:|---|---:|---|
 | **structural** (#254) | `lone-posting`, `ambiguous-posting`, `no-posting` | 149 | the July capture, 4271 deduped pages | 0.3432 | the Free Extraction's own population, sampled where the mechanism lives |
 | **random** (#262) | `random` | 120 | the August faithful frame, 5162 deduped pages | 0.0753 | a random sample of the stream, so composition, precision and cost describe production |
 | **boundary** (#263) | `boundary` | 188 | the same frame, 5042 candidates | n/a (a census) | the pages the two gate rules **disagree** on — where a false drop hides |
+| **veto-boundary** (#304) | `veto-boundary` | 0 | — (drawn during the rollout) | n/a (a census) | the pages the **Learned Veto** would withhold the call from; see *Turning the Learned Veto on* in the repository README |
 
 This replaces `../extract-testdata` as the Extract Gate's **evidence base**. Those
 fixtures are synthetic — invented domains, every `detail` page carrying exactly one
@@ -961,6 +962,19 @@ go run ./cmd/llmbench goldset-sample-random \
 go run ./cmd/llmbench goldset-sample-boundary \
     -capture <repo>/capture/extract-capture.jsonl \
     -since 2026-08-07T21:13:00Z
+
+# 1d. the veto boundary (ADR-0049). WITHOUT -draw it writes nothing and only reports
+#     the veto depth over the frame -- the pre-registered go/no-go for turning rung 9
+#     on, which needs no labels. WITH -draw it appends the pages below the cut, BOTH
+#     verdict halves: ADR-0049 forbids grading that rung against the extractor's own
+#     verdict, so the drop set may not be filtered by it. Like 1c the pair lives in
+#     goldsetboundary.go rather than behind a flag.
+go run ./cmd/llmbench goldset-sample-veto-boundary \
+    -capture <repo>/capture/veto-window.jsonl \
+    -since <the window's start, RFC3339>
+go run ./cmd/llmbench goldset-sample-veto-boundary \
+    -capture <repo>/capture/veto-window.jsonl \
+    -since <the window's start, RFC3339> -draw
 
 # 2. the labeling view (a working artifact, never committed)
 #    -stratum / -n cut a deterministic subset: one stratum whole, or 20 rows of it
