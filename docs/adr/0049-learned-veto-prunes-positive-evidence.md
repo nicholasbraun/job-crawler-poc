@@ -98,9 +98,20 @@ generated human-readable companion listing.
 ## How the weights ship
 
 `llmbench train-scorer` fits the weights over the committed Extract Gold Set and emits **generated
-Go source** into `internal/pagegate/extractscore`, which `pagegate` imports. The gate stays a pure
-function — URL and content in, verdict out, no model, no network, no database — and the weights
-are compiled in.
+Go source** into `pagegate` itself, not into a sub-package. The gate stays a pure function — URL and
+content in, verdict out, no model, no network, no database — and the weights are compiled in.
+
+A sub-package was the first design and does not compile: the Score Signals reuse the gate's
+unexported detectors, so `extractscore` would import `pagegate` while `pagegate` imports
+`extractscore` for the score — an import cycle. Both ways out are worse. Moving ADR-0044's argued
+word lists into a third leaf package relocates the disjointness invariant `positive_evidence.go`'s
+comment holds, and duplicating the detectors is the exact drift a shared `Signals()` exists to
+prevent. Same-package is also *less* API widening: five exported symbols (`Signals`, `Score`,
+`VetoThreshold`, plus `ExtractGate` and its `ExtractVerdict`) rather than four exported detectors
+plus a new package's own surface. The last two are not the score's API but the ladder's: the walk
+needs the verdict, the rejecting rung and the score from ONE evaluation, and `RungNone` covers
+three different accepts of which only one was scored — so `Scored` is not derivable from `Rung`,
+and a caller re-deriving either would be describing a sequence that did not run.
 
 Two deviations from the repo's one precedent for generated data, `internal/geo` (ADR-0031), each
 deliberate:
@@ -117,7 +128,36 @@ deliberate:
 
 Two guards hold the artifact: retraining from the committed Gold Set must reproduce the committed
 weights bit for bit (so a weight can only move by a Gold Set change or a trainer change, both
-visible in the same diff), and no vocabulary entry may be a word of any host in the Gold Set.
+visible in the same diff), and no vocabulary entry may be a word of any host the fit population
+sits on.
+
+## The rung runs on the walk only, and not on the Collection refetch lane
+
+Two lanes call `ShouldExtract`, and `cmd/server` hands them one `LLMGateConfig` on purpose, so
+that no gate tightening can reach one and miss the other. The Learned Veto is the one rung
+excluded from that arrangement: `collection.NewRefetchProcessor` clears it from its own copy,
+whatever the caller passes.
+
+They are asking different questions. Every other rung asks *is this page still one posting* —
+which is exactly what a re-gate of a stored Job Listing needs, and why the refetch lane consults
+the gate at all (ADR-0044). The Learned Veto asks *is this call worth paying for*, and the whole
+argument above is about the walk's bill: 100% of the extract spend on the measured population is
+rung 8's, over pages the walk has just discovered. A Job Listing already in the Corpus is not new
+spend; refreshing it is the cheapest thing the Collection Cycle does.
+
+Leaving it armed there would have cost three things. `collection.refetch.regate_rejected` is
+documented — in its own field, in `internal/collection/metrics.go`, and on the collection
+dashboard — as the number of Open listings a full content re-gate would Close, and it is what
+sizes the deliberate bulk Corpus-Close of #208; a fitted score ranking a page low is not a
+structural false positive, and pooling the two would inflate that number by roughly the veto's
+depth and invite a destructive decision on it. The refetch lane also records no
+`Gated(learned_veto)`, no Posting Score and no Shadow Extraction sample, so a false-drop there
+would be unobservable by construction. And a changed page below the cut would keep a stale
+Posting Body and a stale `source_hash` while staying Open, re-downloaded and re-rejected every
+Cycle with nothing to notice it by.
+
+The divergence is declared in the lane that owns it rather than by omission at the wiring site,
+and `TestRefetchLaneNeverArmsTheLearnedVeto` pins it with a page the walk's gate does veto.
 
 ## Attribution, and why the score is not a label
 
@@ -161,6 +201,29 @@ confirm them blind (ADR-0048), commit them into the Gold Set, then flip the defa
 confirmed rows outlive the decision, which matters because label quality, not volume, is the
 binding constraint on every approach in this line.
 
+The drawing is `llmbench goldset-sample-veto-boundary`, and the pages it appends are the
+`veto-boundary` stratum — a second Boundary Stratum, separate from ADR-0044's `boundary` because
+a different pair over a different frame is a different boundary, and a committed row's stratum is
+how it says which pair drew it. It takes **both** halves of the disagreement, where ADR-0044's
+takes the accept half only: this ADR rules out grading the rung against the extractor's own
+verdict, so the drop set may not be filtered by it either. By default the verb only reports the
+**veto depth**; `-draw` is what commits rows, because the depth is the go/no-go and the rows it
+implies change the fitted weights. The drawing was specified here as a **census** of the drop
+set; the amendment *"the drop set is sampled in bands"* below replaced that with a stratified
+sample once the drop set's real size was measured, so read the census claim in this paragraph as
+superseded.
+
+The sequence's fourth step ships as one verb, `llmbench goldset-refit`: apply, counts,
+regenerate, verify. The split between it and `train-scorer` is deliberate and is the condition's
+own logic — `train-scorer` **reports** the pre-registered floor and lets no exit code turn on it,
+because merging a trainer was never gated on it; `goldset-refit` **enforces** it, because flipping
+the rung's default is exactly what the condition governs and the refit is that flip's decision
+procedure. The verb rewrites the derived counts in `cmd/llmbench/goldset_test.go` and prints every
+one of them: automating the edit is fine, making it invisible is not. It refuses to move a
+confirmation ratchet in the direction that means a signature vanished (ADR-0048) and stamps no
+provenance of its own — a Blind Confirmation is a person's act, and nothing here licenses editing
+a label to move a number.
+
 **The condition, registered before the measurement:** the Learned Veto is turned on only if it
 vetoes **at least 10% of rung-8 accepts while losing none of the 127 `detail` rows** rung 8
 accepts today. Below that, a generated weights table, a trainer verb, a package, a rung and a
@@ -183,8 +246,475 @@ already applies to thresholds: a cut that flatters the run is moving the wrong w
 - **The measurements above are provisional.** They come from an uncommitted probe: 442 rows, 5-fold
   CV, no held-out test set, signals hand-picked while looking at the same set, and unweighted
   numbers over a deliberately Boundary-heavy population (188 of 457). Treat the ordering of the
-  results as the finding, not the third decimal. The committed trainer replaces them, under
-  **host-grouped** folds so repeated hosts cannot flatter a split, and this ADR is amended with what
-  it reports.
+  results as the finding, not the third decimal. The committed trainer has now replaced them, under
+  **host-grouped** folds so repeated hosts cannot flatter a split; what it reported is the
+  amendment below.
 - **Rung 7's two false-drops are still rung 7's.** `hiring.cafe` and `jobs.blooloop.com` are dropped
   before Positive Evidence is consulted and are untouched here, as they were in #257.
+
+
+## Amendment: what the training run measured (#300)
+
+`llmbench train-scorer` was written, run over the committed Extract Gold Set, and its output is
+now `internal/pagegate/posting_score_weights_gen.go`. **The pre-registered condition is MET.**
+Everything below is restricted to the pages the Positive Evidence rung accepts, because that is
+the only population the Learned Veto will ever judge; no figure over all scorable rows appears in
+the trainer's report at all, so one cannot be mistaken for the other.
+
+| | rung 8 today | with the Learned Veto |
+|---|---:|---:|
+| scorable accepts | 177 | 127 |
+| `detail` among them | 127 | **127** |
+| leaks (hub-index + residue) | 13 + 37 | 0 + 0 |
+| precision | 0.7175 | **1.0000** |
+| `detail` lost | — | **0** |
+
+`VetoThreshold` is **0.605395**, and at that cut the rung withholds **50 of 177** extract calls —
+**28.2%** of rung 8's accepts, well past the 10% floor — while dropping none of the 127 `detail`
+rows, by name.
+
+**The population.** 457 rows: 0 unlabelled, 15 `ambiguous` set aside, **442 scorable** (140
+`detail`) across **357 hosts**. The rung admits **180** pages, of which 3 carry no scorable label,
+leaving the **177 / 127 / 0.7175** the table above starts from. **Zero** rows take the ATS
+exemption, confirming the census at the top of this ADR: the whole extract bill on this population
+is rung 8's.
+
+**The fit.** Full-batch gradient descent, 500 iterations, learning rate 0.5, L2 1e-4 on the
+weights and never the intercept, converging to a mean log-loss of 0.0247 with an intercept of
+-2.5028. Full batch removes the example-shuffling seed entirely; the run's only randomness is the
+committed fold seed. Cross-validation is 5 folds **grouped by host** (fold sizes 92 / 90 / 90 / 76
+/ 94 over the 357 host groups), with the Score Vocabulary reselected inside each fold's training
+half — selecting once over the whole set and then cross-validating measures a model that has
+already seen the held-out rows. Neither the L2 term nor the iteration count is a lever here: the
+out-of-fold read is flat across L2 from 1e-4 to 1e-2, and every longer run only overfits (at 1000
+iterations the out-of-fold precision falls).
+
+**The Score Vocabulary.** 37,320 candidate *entries*; **583 removed as a word of a Gold Set
+host** and 32,321 as too rare (document frequency below 5), leaving 4,416 admissible. The
+artifact ships **500** of them plus the 17 structural Score Signals. Entries, not words: a word
+in a Title and the same word in a body are two signals the fit weighs separately, so the 583
+removed entries are the **490 distinct host words** the leakage guard logs, struck from whichever
+namespaces carried them. The host exclusion is a real cost paid deliberately — it removes `jobs`,
+`career`, `karriere`, `berlin` and 486 others — and it is the price of the hazard this ADR names:
+442 scorable rows on 357 hosts.
+
+The ban list is built from the **fit population**, the 442 scorable rows, and not from all 457.
+That is the hazard's own scope rather than a convenience: a host carried only by `ambiguous` rows
+— eleven of them today — is in neither the training half nor the held-out half of any fold, so
+there is nothing of it to learn and nothing to reward. Settling such a label moves its rows into
+the fit and its words into the ban list in the same regeneration.
+
+Out-of-fold precision over the surviving accepts at a 10% veto depth, against vocabulary size:
+
+| size | 50 | 100 | 200 | 300 | **500** | 1000 | all (4,416) | hashed 2^14 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| precision | 0.7736 | 0.7862 | 0.7862 | 0.7925 | **0.7987** | 0.7987 | 0.7987 | 0.7987 |
+| `detail` lost | 4 | 2 | 2 | 1 | **0** | 0 | 0 | 0 |
+
+Survivors are 159 at every size, so those precision steps are four rows, then two, then one. 500
+is the knee: the smallest size at the plateau, and the first at which the cut loses no `detail`
+row out of fold.
+
+**The gap to a full hashed representation is 0.0000** — the untruncated 2^14 hashed bag scores
+exactly what the 500-word explicit list scores, on the same rows, out of the same folds. The
+hashed arm is the more generous of the two by construction: a bucket name is not a `title:`/`body:`
+signal, so it escapes the min-df floor as well as the truncation, and the arm is fitted over every
+non-host-word candidate — the 32,321 too-rare ones included — rather than over the 4,416 the
+explicit ladder may draw from. A zero gap against a reference that saw strictly more is a
+conservative reading, not a flattering one. The
+~0.02 line this ADR names as the point where the readable list is revisited is not approached, so
+the explicit list stands and costs nothing. It also earns its keep on the day it was written: the
+heaviest entries read `bewerben`, `apply`, `arbeiten`, `bieten`, `interesse`, `vergütung`,
+`ausbildung` on the positive side and `filter`, `view`, `see`, `page`, `featured`, `members`,
+`newsletter` on the negative — posting words against hub words, and not one sampled employer's
+name.
+
+**The within-accepts curve**, the thing nobody had computed. In-sample, with the shipped weights:
+
+| depth | 5% | 10% | 15% | 20% | 25% | 30% |
+|---|---:|---:|---:|---:|---:|---:|
+| `detail` lost | 0 | 0 | 0 | 0 | 0 | 3 |
+| precision | 0.7560 | 0.7987 | 0.8467 | 0.8944 | 0.9478 | 1.0000 |
+
+Out of fold, host-grouped — the honest generalization read, printed beside it and not to be
+confused with it:
+
+| depth | 5% | 10% | 15% | 20% | 25% | 30% |
+|---|---:|---:|---:|---:|---:|---:|
+| `detail` lost | 0 | 0 | 1 | 5 | 8 | 16 |
+| precision | 0.7560 | 0.7987 | 0.8400 | 0.8592 | 0.8947 | 0.8952 |
+
+The two agree to a 10% cut and diverge past it, which is the honest shape of a rule fitted on 442
+rows. **The chosen operating point is in-sample by necessity, not by oversight**:
+`TestExtractGoldSetFalseDropGuard`, the merge gate this ADR pins the threshold to, reads the same
+rows the same way, and a threshold chosen against anything else would turn that guard red for
+every posting it swapped. The out-of-fold ladder is what says how far past 10% the in-sample
+number can be trusted: not far. Whoever flips `EXTRACT_LEARNED_VETO` should read the 28.2% cut as
+an in-sample figure whose out-of-fold counterpart at 30% depth already costs 16 `detail` rows,
+and take the capture-window pass this ADR's rollout section describes before believing it.
+
+**Determinism.** The artifact is a pure function of (Gold Set, trainer code, flag defaults): rows
+sorted before the first sum, signal names indexed through a sorted slice rather than ranged out of
+a map, single-threaded accumulation, a fixed-seed fold assignment, every product in the descent
+written to block a fused multiply-add, and every weight rounded to six decimals before anything
+discrete reads it. Regenerating the committed file on `darwin/arm64` and on `amd64` produces
+byte-identical output; the largest cross-architecture divergence in the raw weights is 1e-15,
+against a nearest rounding boundary 1.2e-9 away.
+
+## Amendment: the first live observation (#304)
+
+Before merging, the rung was run live: the full Docker stack on the delivery branch,
+`EXTRACT_LEARNED_VETO=true`, `SHADOW_EXTRACT_RATE=1.0` so every reject was *sampled* rather than
+sub-sampled, and one Collection Cycle over fourteen Career Pages imported from hosts drawn out of
+the committed Extract Gold Set. The crawl walked 6,613 pages. This is the first time the Learned
+Veto has judged pages it was not fitted on. Sampled is not the same as measured: the Shadow
+Extraction lane is asynchronous and bounded, and 47 of the 106 vetoes had returned a verdict by the
+time the window closed.
+
+| | Gold Set (in-sample) | this live frame |
+|---|---:|---:|
+| pages reaching rung 9 | 177 | 213 |
+| vetoed | 50 | 106 |
+| **veto depth** | **28.2%** | **49.8%** |
+
+The two denominators are not quite the same population, and the difference is worth naming before
+the two numbers are compared. The live 213 is every page the rung judged. The Gold Set's 177 is
+every page the rung judged *that carries a scorable label* — the committed set's rung-8 accepts
+number 180, and three of them are labelled `ambiguous`, which the trainer excludes from both halves
+because detail loss can only be read on a labelled row. Over all 180 the in-sample depth is 53 of
+180, **29.4%** (`score-capture` reports the two arms as 180 calls and 127). The gap is three rows
+today and grows with every ambiguous label; it does not change the finding below.
+
+**Depth roughly doubles off the fitted population.** That is the finding, and it is the one the
+rollout section already anticipates when it says the 28.2% cut should not be believed past a 10%
+depth without a capture window. It is not a production estimate either: fourteen hand-picked hosts,
+drawn from the Gold Set itself and heavily German university and Mittelstand, are a convenience
+population — the very thing the capture window exists to replace.
+
+### What the Shadow Extraction lane reported, and the failure mode it exposed
+
+Over the same window the lane returned 47 verdicts on `learned_veto`, four of them `accept` — pages
+the gate withheld a call from and the extractor then read as a single posting. Against 0.33% for the
+Positive Evidence rung over 1,211 verdicts, that reads as 8.5%. The rate is the wrong thing to take
+from it; the pages are the right thing.
+
+| flagged page | Posting Score | what the page is |
+|---|---:|---|
+| `jobicco.tu-braunschweig.de/de/1777` | 0.4807 | a private individual seeking a maths tutor, on a student-gig board |
+| `jobicco.tu-braunschweig.de/en/1777` | 0.1160 | **the same item**, served on the `/en/` language path |
+| `www.aqut.tf.fau.de/group/jobs/postdocs` | 0.0166 | a real single posting — one paragraph, one heading |
+| `www.wynncareersmacau.com/open-roles/85` | 0.4378 | "Commis" — a real single posting, ~800 characters, no JobPosting structured data |
+
+Four rows are three items: one arguably outside the Corpus at all (a private tutoring request is not
+a Company's Job Listing), and **two genuine false-drops**. Both false-drops are the same shape.
+
+The aqut row shows it plainest. Its title is the plural "Postdocs" and it looks at a glance like an
+openings index, but it is a single position: *"…a postdoc (f/m/d) with a background in quantum optics
+and/or color centers…"*, followed by an address and an email. One paragraph, one heading, and none of
+the sections a posting conventionally carries. It scored **0.0166** — not a marginal miss but a
+confident one.
+
+The Wynn row is the same failure with the structure present but empty. It does carry three
+conventional headings — Job Purpose, Key Responsibilities, Competencies and Requirements — but one
+line sits under each, about 800 characters of posting text in total, below the tenth percentile of
+the `detail` rows the score was fitted on (p10 1,799 B, median 3,883 B). Its `ld+json` is
+Organization and WebSite boilerplate; there is no JobPosting node anywhere on the page.
+
+Together they name a **systematic blind spot: short postings that publish no structured data**.
+ADR-0044 established that what distinguishes a posting is the *range* of its sections rather than the
+frequency of any word, and the Score Signals read that range as a gradation — so the fit leans on it.
+Where the range is absent or nominally present but unfilled, and the lone-structured-posting signal
+is absent too, the page falls to the bottom of the distribution however genuine it is. The
+body-length bucket is in the signal set and rescued neither page.
+
+Two things follow, and they pull in opposite directions. The drops are **explicable** — the score is
+behaving consistently with what it reads, not erratically — which means the failure is predictable
+and can be drawn for deliberately rather than discovered later as unattributed coverage loss. But
+explicable is not harmless: both pages are real Job Listings, both would be lost from the Corpus, and
+short postings without structured data are not a rare shape on small-company and institutional sites.
+Whether pages of that shape are separable at all on the signals this rung reads is an open question,
+and the honest answer today is that nobody has measured it.
+
+Three limits, so the table is not over-read in either direction. The triage was **sighted** — the
+pages were fetched and read, which is not Blind Confirmation (ADR-0048) and cannot replace it. Two
+events in 47 verdicts is not a rate. And the extractor's own verdict, which produced these four
+flags, runs at 0.454 precision against human labels, so it both over- and under-accepts; the
+tutoring row is an instance of exactly that. Nothing derived from this triage belongs in a decision.
+What belongs in a decision is the capture-window pass the rollout section describes, over a frame
+nobody hand-picked, with the drop set confirmed blind — and that draw should deliberately reach for
+short-bodied pages carrying no structured data, because that is the shape the rung is now known to
+be weakest on. The four URLs above are its first candidates.
+
+### What the run confirmed outright
+
+The attribution design, end to end and under real traffic. The `learned_veto` series existed at zero
+before the first drop, so that drop read as a change rather than as a series springing into
+existence; every verdict filed under the rung's own name rather than Positive Evidence's; the score
+that caused each drop travelled with the sample onto the durable stream and reached the log line,
+while the same log line for a Positive Evidence drop carried no score at all; and no Posting Score
+appeared in any metric label. A read of the durable stream taken during the run held **54 entries**:
+7 carried the Learned Veto's rung and every one of those 7 carried a non-zero score, while the other
+47 — 17 `bare_or_locale_root`, 28 `positive_evidence`, 1 `career_index`, 1 `index_terminal` — carried
+zero. The rung gated the read, exactly as designed, with no presence flag.
+
+That 47 is not the 47 verdicts above, and the coincidence of size is worth stating outright: the
+lane's 47 is the window's total on one rung, while this 47 is a point-in-time snapshot of a stream
+holding entries from every rung. Both figures are correct and they count different things.
+
+Each of those is a decision taken in the "Attribution" section above, and together they are what
+made three items legible enough to be argued about at all.
+
+## Amendment: the drop set is sampled in bands, not censused (#304)
+
+The census this ADR specified does not survive contact with this rung, and the reason is a
+measurement.
+
+A capture window was run as the rollout section prescribes — the veto **off**, `EXTRACT_CAPTURE_MAX=0`
+so the file is a stream frame and not a sampling design — and scored offline against the shipped
+weights. Over a 1,006-page frame:
+
+| | |
+|---|---:|
+| veto depth | **82.7%** |
+| drop set | **832** rows, and it grows with the frame |
+| of those, pages the live extractor read as one posting | **54** |
+| pages the veto keeps | 174, of which 128 extractor-accepted |
+| recall / precision of the keep set against that verdict | 70.3% / 73.6%, against a 13–18% baseline |
+
+The disagreement is **most of the stream** here, where ADR-0044's boundary was 188 pages in
+total. ADR-0043 requires a **human confirmation on every Boundary Stratum row**, so a census of a
+full window would put thousands of rows in front of a labeller for Blind Confirmation. That is not
+a pass anybody finishes — and an unfinished census does not merely delay the evidence, it blocks
+the refit indefinitely, because the confirmation ratchet the refit enforces can never come down.
+
+So `learnedVetoBoundary` becomes a **stratified sample** of the drop set, in three bands:
+
+| band | population | design | why |
+|---|---|---|---|
+| **accepted** | drop ∧ live verdict *accept* | **census** — superseded by the amendment below, which quotas it with `-accepted-rows` | the candidate false-drops. The recall claim rests on exactly these ~54 pages per 1,000 framed. |
+| **near** | drop ∧ live verdict *abstain* ∧ score in `[VetoThreshold − band, VetoThreshold)` | sampled, `-near-rows` | where the threshold is actually decided, and therefore where a confirmation buys the most. |
+| **deep** | drop ∧ live verdict *abstain* ∧ score below that | sampled, `-deep-rows` | to confirm the bottom really is junk, and to reach deliberately for another **short posting publishing no structured data** — the shape the #304 amendment above records both live false-drops having. |
+
+The three partition the drop set exactly, so no page can be drawn twice and none can be missed.
+At the defaults this amendment shipped (`-near-band 0.20 -near-rows 80 -deep-rows 40`) the measured
+frame draws 54 + 80 + 40 = **174** rows against a census of 832. The quotas are counts rather than
+shares because the human confirmation budget is absolute and does not scale with the frame — which
+is also why the amendment below takes the exemption back and quotas the accepted band too.
+
+**Weighting.** Each row carries the inverse of its selection probability, normalized within this
+drawing: `w_c = (N_c/n_c) × (n/N)`, so the drawn weights sum to the drawn rows and the per-drawing
+balance the record already asserts holds by construction. This is the crux, and getting it wrong
+would be invisible: weight 1 is correct only where the inclusion probability is 1, so pooling
+weight-1 *sampled* rows with the censused ones would make any weighted read over the stratum
+describe the enriched sample while claiming to describe the drop set — the deep band understated
+against the census cell by roughly `(N_deep/n_deep)/(N_acc/n_acc)`, an order of magnitude at the
+defaults. The weights are **not** built through the random drawing's `weightsFor`: that function
+reconstructs a verdict share from the capture's per-verdict caps because that drawing's frame is a
+capped stream sample, whereas this population is *enumerated* by the replay and its inclusion
+probabilities are known exactly. What the weights estimate, and what belongs in the Gold Set's own
+README: *the pages the Learned Veto would withhold the call from over this capture frame, minus
+the URLs earlier drawings already committed.* It is not a stream estimate — a drop set is not a
+stream — and these rows still never enter the weighted stream scorecard.
+
+**The stratum is reused, not forked.** `veto-boundary` holds **zero committed rows** today: it
+ships defined and undrawn. No row was ever drawn under the census design, so replacing that design
+mixes nothing, and forking a second stratum would fork the counts, the ratchet, the confirmation
+surface's `-stratum` argument and both READMEs for no gain. What keeps it safe afterwards is a
+code guarantee rather than a promise: a boundary design now declares its **selection design**
+(census or stratified) beside its pair and its stratum, a stratum is claimed by exactly one design
+— asserted as a property — and therefore by exactly one selection design. A committed row states
+which pair drew it *and* under which inclusion probabilities, through its stratum and through
+nothing else.
+
+**Stratifying on the live verdict is not the filtering this ADR forbids.** Filtering would give the
+pages the extractor abstained on inclusion probability **zero**, importing that verdict's 0.454
+precision into the sample before a human reads a row. Stratification gives every page of the drop
+set a non-zero, *known* probability and the weights restore the whole set. Nothing is excluded and
+no verdict decides a label; the drawing still takes both halves.
+
+**Determinism, and one honest caveat.** The within-band selection is the same hash order every
+other drawing uses — ascending `sha256(seed + "\n" + url)`, its own seed because it is its own draw
+— so the same capture and seed yield a byte-identical file while a new seed is a genuine unbiased
+resample. No RNG anywhere. The caveat: a band is decided on the **Posting Score**, so the sample is
+a function of the compiled weights as well as of the capture and the flags. After a refit the same
+command yields a different sample, which is why the draw records its `VetoThreshold`, its band edge
+and its seed in the Gold Set's drawings table.
+
+**The drawing is taken once.** A census tolerates a repeat — a page taken under it had inclusion
+probability 1 whenever it was taken — but a second window's sample would carry a second set of
+inclusion probabilities into one stratum, and pooling two selection designs there is exactly what
+makes a weighted estimate over it unrecoverable. The verb refuses a second draw and names the
+alternative: a fresh window is a new *drawing*, declared in code as every drawing before it was.
+
+Nothing about the confirmation obligation changes. Every drawn row still owes a Blind
+Confirmation, `pendingVetoBoundaryConfirmations` is still the ratchet that counts them, and the
+commit that draws still raises it by hand because `goldset-refit` refuses a rise. Sampling makes
+that obligation **finishable**, which is the whole of what it buys.
+
+## Amendment: the accepted band is sampled too (#304)
+
+The amendment above gave two of the three bands a quota and left the third a census, on the
+reasoning that those pages are the candidate false-drops and the recall claim rests on exactly
+them. That reasoning was calibrated on the 1,006-page frame, where the band held 54 rows inside a
+~174-row draw. It does not survive the window closing.
+
+The capture window closed at **18,233 framed pages**. Against the shipped weights the drawing's
+plan preview over it reads:
+
+| band | population | quota | would draw | observed Posting Score |
+|---|---:|---|---:|---|
+| accepted | 2,025 | census | 2,025 | 0.000393..0.604716 |
+| near | 370 | 80 | 80 | |
+| deep | 9,641 | 40 | 40 | |
+| **drop set** | **12,036** | | **2,145** | |
+
+A band's population scales with the frame, so a **censused** band keeps the draw's size a function
+of the frame's size. That is precisely the failure the bands were introduced to fix, surviving in
+the one band that was exempted from them: 2,145 rows of Blind Confirmation is not a pass anybody
+finishes, and ADR-0043 requires every drawn row confirmed, so an unfinishable draw blocks the refit
+indefinitely — the same way a full census would.
+
+So the accepted band gets a quota too: **`-accepted-rows`, defaulting to 100**. The shipped
+defaults now draw **100 + 80 + 40 = 220** rows.
+
+**Why sampling a band that was deliberately censused is the better trade.** A 100-row sample of
+2,025 pins that band's false-drop rate to a standard error of at most ~5 points — finite-population
+corrected, `sqrt(p(1-p)/100) × sqrt(1925/2024)` is **±4.9pp at p=0.5** and **±2.9pp at p=0.1**. That
+sampling variance is dwarfed by a bias that is already present and that no quota can remove: which
+pages land in this band at all is decided by the extractor's own verdict, which this record puts at
+**0.454 precision** against human labels. Protecting against the smaller error while the larger one
+is unavoidable is not a good trade. The census was buying a precision the band's own definition
+cannot deliver.
+
+**The band is sampled uniformly, not spread by score.** It spans 0.000393..0.604716, and the
+temptation is to sub-band it. The reasons not to: the band's question is a **rate over the whole
+band** — of the pages the veto drops that the live extractor read as one posting, what share are
+really Job Listings — and a simple random sample within one cell estimates that with one weight and
+no further assumptions. *Where the threshold goes* is the **near** band's question, and that band is
+already sampled roughly four times harder (80 of 370 against 100 of 2,025). Sub-banding would also
+falsify the rule that the accept half is banded by the live verdict and **never** by its score,
+give it two weights, and add a fourth cell and a fourth flag — the redesign this change is not.
+Nothing is lost: the Posting Score is recomputable from every committed row's stored content, so a
+score-conditioned read of this band stays available, and it stays *valid* **because** the sample is
+uniform in score — every score region is represented at the same rate, so any score-conditioned
+subset is itself a simple random sample of its own sub-population, carrying the one band weight.
+
+**The weighting is unchanged.** The accepted band flows through the same `w_c = (N_c/n_c) × (n/N)`
+as the other two rather than a parallel path — one map entry, not a second arithmetic. A band whose
+quota does not bind still comes out exactly where the census put it: taking a band whole makes
+`N_c/n_c` exactly **1**, so `-accepted-rows 0` restores the census bit for bit, weights included.
+That is asserted as a test, not claimed.
+
+**This changes an unused design, not committed rows.** `veto-boundary` still holds **zero committed
+rows** — verified, not assumed — so no row was ever drawn under the census design and there is
+nothing to redefine. Had rows already existed, this move would not have been available: those rows
+would carry inclusion probability 1 in the accepted band, and a later sampled draw into the same
+stratum would pool two inclusion-probability designs, which is exactly what makes a weighted
+estimate over a stratum unrecoverable. The honest move would then have been a **new design with a
+new stratum** — its own pinned row count, its own confirmation ratchet, its own row in both
+READMEs' drawings tables — which is what the verb's own refusal already tells an operator: *a fresh
+window is a new drawing; declare it in code, as every drawing before it was.*
+
+Nothing about the confirmation obligation changes here either, and nothing about the depth, the
+bands' definitions, the determinism or the draw-once rule moves. This is one quota flag joining the
+two that already existed.
+
+### What the closed window measured
+
+The plan preview above is also the first **Veto Depth** ever computed over a real stream frame, and
+it is recorded here rather than left in a terminal because it is the number the rollout was gated on:
+
+> Over the closed window — **18,233 framed pages across 1,206 of the Catalog's 1,221 hosts** — the
+> Learned Veto would withhold **12,036 of 18,233** extractor calls: a Veto Depth of **0.6601**.
+> ADR-0049's pre-registered floor of 0.10 is **MET**, by a factor of 6.6.
+
+Set that beside what the training run measured in-sample: a depth of 0.2825 at **zero** `detail`
+loss. The live frame cuts **more than twice as deep**, and the depth was still falling as the frame
+grew (0.854 at 465 pages → 0.827 at 1,006 → 0.709 at 3,033 → 0.670 at 7,258 → 0.660 at 18,233) as
+the host mix broadened and the baseline's own yield rose with it. Nothing in-sample predicted that,
+which is the whole case for taking a window before flipping a switch.
+
+The window also produced a reading the pre-registered condition does **not** cover, and it is the
+reason this record does not treat the floor being met as an argument for flipping. Of the 7,444
+pages in that frame the live extractor read as a single posting, the veto withholds the call from
+**2,025** — it keeps **72.8%** of them, at a precision of 87.4% against a 40.8% baseline. So the
+second half of the condition, *losing none of the `detail` rows*, holds in-sample and demonstrably
+does **not** hold on the stream.
+
+That figure is an upper bound on the harm and a weak one in both directions, because the extractor's
+own verdict decides which pages it counts, and this record puts that verdict at 0.454 precision
+against human labels. It cannot be read as a false-drop rate; it is the reason the accepted band is
+drawn and confirmed blind rather than trusted. **The condition is met on depth and open on loss, and
+only the confirmation pass closes it.**
+
+## Amendment: the operating point moved when the Gold Set grew (#304)
+
+The Extract Gold Set went from 457 rows to **737** — the 280 new rows are the
+`veto-boundary` drawing the two amendments above designed, drawn from the closed
+18,233-page window. Refitting over the enlarged record moved the cut a long way:
+
+    VetoThreshold   0.605395  ->  0.165048
+
+**This is a correction, not a loosening.** The 457-row fit was not conservative; it was
+mis-calibrated on too narrow a population. It predicted a Veto Depth of 50 of 177
+scorable rung-8 accepts — 28.2% — and the closed window then measured 66%, the reading
+*What the closed window measured* above records. The 737-row fit predicts **240 of 427
+(56.21%)** at zero `detail` lost and reads **57.3%** over that same window. In-sample and
+stream agree for the first time.
+
+| | 457 rows | 737 rows |
+|---|---:|---:|
+| scorable rows / hosts | 442 / 357 | **692 / 516** |
+| mean log-loss | 0.0247 | **0.0421** |
+| `VetoThreshold` | 0.605395 | **0.165048** |
+| in-sample Veto Depth (scorable rung-8 accepts) | 50 of 177 (28.2%) | **240 of 427 (56.21%)** |
+| `detail` lost, in sample | 0 | **0** |
+| depth over the closed capture window | 66% | **57.3%** |
+
+Log-loss RISING is the good direction. At 442 rows against 517 weighted entries the model
+could largely memorise its training set, and the 1.0000 in-sample precision the first
+amendment records was that memorisation ceiling rather than a forecast. More rows pushed
+the fit toward generalising and the calibration followed.
+
+**The held-out reading.** 300 pages of that window that no drawing had selected, labelled
+independently of the fit: **57.3%** of extract calls cut, **recall 95.7%** of real Job
+Listings (95% range 91.4–99.8), and **precision 80.7%** of what it keeps, against a 36.0%
+baseline.
+
+That is **not** the out-of-fold figure, which at a comparable depth reads 27 of 180
+`detail` lost (15%), and the two must never be quoted as though they were one claim. They
+describe different populations. Out of fold reads the Extract Gold Set's rung-8 accepts,
+which are deliberately Boundary-Stratum-heavy — the hard population this record says of
+itself that it is. The held-out reading reads the stream. For *what happens if I turn this
+on*, quote the stream; for *how fragile is this fit*, quote out of fold. Never either
+without saying which.
+
+**The debt this threshold carries.** 280 of the 737 rows are the drawing's, and their
+labels are a **proposer's** — unconfirmed machine labels, which the founding measurement
+behind #296 puts below human ones by a wide margin: training on 12,152 extractor verdicts
+scored 0.617 where 442 human labels scored 0.836 (`docs/improving-the-posting-score.md`).
+A proposer is much better than the extractor's own verdict, which this record puts at 0.454
+precision against human labels, but it is still a machine label. So the shipped operating
+point is now derived partly from labels nobody has read, and every figure above inherits
+that.
+`pendingVetoBoundaryConfirmations` holds the debt at 280 and `goldset-refit` refuses to
+let it rise silently. Only the Blind Confirmation pass retires it.
+
+**The earlier amendments' figures stand as history.** Each was true when taken and each is
+read against the threshold of its day: the training run's 28.2%, the first live frame's
+49.8% over 213 judged pages, and the closed window's 0.6601 depth were all measured at
+0.605395. Nothing in them is edited. A measurement's worth is that it says what was seen
+at the time.
+
+**What the move exposed.** The threshold turned out to be written down in six places a
+refit cannot reach: a Grafana threshold step, three panel descriptions, a runbook
+sentence, a log-line example, and the **Veto Depth** glossary entry, which had embedded a
+measurement inside a definition. The dashboard now draws its cut line from
+`crawler_llm_veto_threshold`, a gauge set once at start-up from `pagegate.VetoThreshold`,
+so the line is the binary's own operating point rather than a number typed onto a panel —
+and it is the first time a running crawl states that operating point anywhere but a
+start-up log line. The glossary entry points here for its figures. Only the LINE follows
+the binary: the Posting Score histogram's bucket ladder stays fixed and unpinned from the
+threshold, for the reason the *Attribution* section gives — a boundary moving with every
+refit would silently re-bucket every historical series and destroy the drift comparison
+the histogram exists for.

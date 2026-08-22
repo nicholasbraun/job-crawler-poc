@@ -87,6 +87,11 @@ func (m *Metrics) RobotsBlocked(ctx context.Context) { m.robotsBlocked.Add(ctx, 
 // (ADR-0044). It is a measurement, not an action: nothing is Closed, and no listing's
 // Listing Lifecycle, Liveness, streak or timestamps move. Read it as an increase over a
 // Cycle, and as a LOWER bound — only listings actually refetched this Cycle are judged.
+//
+// It counts STRUCTURAL rejections only, and stays comparable across the
+// EXTRACT_LEARNED_VETO flip: the refetch lane runs with the Learned Veto cleared
+// (ADR-0049), so a page dropped for scoring low can never enter this series. That is
+// what keeps it usable as the size of a deliberate bulk Corpus-Close (#208).
 func (m *Metrics) RegateRejected(ctx context.Context) { m.regateRejected.Add(ctx, 1) }
 
 // RecordCycle records one whole-Cycle wall-clock duration in milliseconds.

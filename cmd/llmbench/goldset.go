@@ -56,9 +56,12 @@ type goldRow struct {
 	// cannot stratify on a label you have not produced yet, and a stratum defined
 	// by the label would make the sample circular.
 	Stratum goldStratum `json:"stratum"`
-	// Weight is the row's inverse inclusion probability, normalized so the file's
-	// weights sum to its row count. Derived from the capture's per-verdict caps
-	// (weightsFor), NEVER from the file's own accept/abstain mix.
+	// Weight is the row's inverse inclusion probability, normalized so its DRAWING's
+	// weights sum to that drawing's row count. Where it comes from is the drawing's own
+	// design: the sampled drawings derive it from the capture's per-verdict caps
+	// (weightsFor), a census carries exactly 1, and a stratified Boundary Stratum
+	// carries the inverse of its band's selection rate (ADR-0049). It is NEVER derived
+	// from the file's own accept/abstain mix, which the caps produced.
 	Weight          float64        `json:"weight"`
 	LabelProvenance goldProvenance `json:"label_provenance"`
 	// Expected is the field-fidelity ground truth a Free Extraction is scored
@@ -166,16 +169,41 @@ const (
 	// random stratum it is its own DRAWING, and its rows never enter the weighted
 	// stream estimates -- a census of a disagreement set describes no population.
 	stratumBoundary goldStratum = "boundary"
+	// stratumVetoBoundary is the Learned Veto's boundary (ADR-0049): the pages the
+	// Extract Gate extracts today that rung 9 would withhold the call from --
+	// computed by replaying the veto off and on over the captured content, never
+	// guessed. It is a Boundary Stratum exactly as stratumBoundary is, and a SEPARATE
+	// one because it is a different pair's disagreement over a different capture
+	// frame; the stratum is how a committed row says which pair drew it.
+	//
+	// It takes BOTH halves of the disagreement, where stratumBoundary takes the
+	// accept half only: ADR-0049 forbids grading this rung against the live
+	// extractor's verdict, so the drop set may not be filtered by it either.
+	//
+	// It is a STRATIFIED SAMPLE of that drop set where stratumBoundary is a census
+	// (ADR-0049's #304 amendments). The disagreement is most of the stream on this rung
+	// -- 12,036 pages of an 18,233-page frame -- and ADR-0043 requires a human confirmation
+	// on every Boundary Stratum row, so a census would owe thousands of them and never
+	// be finished, which would block the refit indefinitely. Its rows therefore carry
+	// INVERSE SELECTION PROBABILITIES normalized to the drawing's own row count rather
+	// than weight 1. Like every Boundary Stratum it is its own drawing and never
+	// pooled into a weighted stream estimate: a drop set is not a stream.
+	stratumVetoBoundary goldStratum = "veto-boundary"
 )
 
 // allStrata is the fixed print / iteration order for per-stratum breakdowns.
-// Mirrors bench.AllExtractLabels.
-var allStrata = []goldStratum{stratumLonePosting, stratumAmbiguousPosting, stratumNoPosting, stratumRandom, stratumBoundary}
+// Mirrors bench.AllExtractLabels. A stratum belongs here once it is DEFINED, not
+// once it has been drawn: the veto boundary ships defined and empty, because
+// drawing it needs a real capture window and is the operator's own act.
+var allStrata = []goldStratum{stratumLonePosting, stratumAmbiguousPosting, stratumNoPosting, stratumRandom, stratumBoundary, stratumVetoBoundary}
 
-// Valid reports whether s is one of the known strata.
+// Valid reports whether s is one of the known strata. It is the whole integration
+// point for a new stratum: goldset-ui, goldset-apply, goldset-worksheet and
+// goldset-confirm-sheet all take a stratum by name and validate it through here,
+// so none of them needs to learn about one.
 func (s goldStratum) Valid() bool {
 	return s == stratumLonePosting || s == stratumAmbiguousPosting || s == stratumNoPosting ||
-		s == stratumRandom || s == stratumBoundary
+		s == stratumRandom || s == stratumBoundary || s == stratumVetoBoundary
 }
 
 // goldDrawing groups strata into the DRAW they came from. A drawing is the scope a
@@ -203,6 +231,13 @@ const (
 	// which is exactly why it is a drawing of its own rather than more rows in
 	// another one.
 	drawingBoundary goldDrawing = "boundary"
+	// drawingVetoBoundary is ADR-0049's rollout draw: a stratified sample of the pages
+	// the Learned Veto would withhold the extractor call from. Its own drawing because
+	// it is its own capture frame and its own rule pair, and -- UNLIKE the boundary
+	// drawing -- its weights are not all 1: two of its three bands are sampled, so each
+	// row carries the inverse of its own selection probability and this drawing is the
+	// scope those weights normalize over.
+	drawingVetoBoundary goldDrawing = "veto-boundary"
 )
 
 // Drawing returns the drawing s belongs to, or "" for a stratum-less row -- a raw,
@@ -215,6 +250,8 @@ func (s goldStratum) Drawing() goldDrawing {
 		return drawingRandom
 	case stratumBoundary:
 		return drawingBoundary
+	case stratumVetoBoundary:
+		return drawingVetoBoundary
 	default:
 		return ""
 	}
@@ -307,6 +344,9 @@ const (
 	// it is a distinct draw: reusing defaultSeed would correlate the two samples'
 	// within-cell orders for no reason.
 	defaultRandomSeed = "extract-goldset-random-v1"
+	// defaultVetoBoundarySeed keys the Learned Veto boundary's within-band selection
+	// (ADR-0049). A DISTINCT seed for the same reason defaultRandomSeed is one.
+	defaultVetoBoundarySeed = "extract-goldset-veto-boundary-v1"
 	// captureScanBuffer bounds one capture line. Captured lines carry the full
 	// parsed MainContent; the largest observed is ~757 KB.
 	captureScanBuffer = 8 * 1024 * 1024
@@ -343,6 +383,12 @@ type candidate struct {
 	// Line is the 1-based capture line the candidate won, so the emit pass picks
 	// the exact same record the dedupe chose.
 	Line int
+	// Score is the Posting Score the boundary replay read off this page, and Band the
+	// sampling band that score put it in (ADR-0049). Both are ZERO on a candidate that
+	// did not go through a stratified boundary drawing -- scanCapture never decodes a
+	// page's content, so nothing else is in a position to fill them.
+	Score float64
+	Band  goldBand
 }
 
 // tsVerdict is one capture record reduced to the two fields the cap analysis
@@ -477,14 +523,26 @@ func frameSince(scan captureScan, cutoff time.Time) (captureScan, int) {
 // README rather than corrected for.
 func excludingURLs(scan captureScan, exclude map[string]struct{}) (captureScan, int) {
 	out := scan
-	out.Candidates = make([]candidate, 0, len(scan.Candidates))
+	var dropped int
+	out.Candidates, dropped = withoutURLs(scan.Candidates, exclude)
+	return out, dropped
+}
+
+// withoutURLs drops the candidates whose URL is in exclude, returning the survivors
+// and how many it dropped. It is the exclusion itself, separated from the scan it
+// usually narrows: the boundary drawings apply the same rule to a CENSUS they have
+// already computed rather than to the frame they computed it over, because a page an
+// earlier drawing sampled must not be drawn twice while still counting toward what
+// the frame's rules decide (ADR-0049).
+func withoutURLs(cands []candidate, exclude map[string]struct{}) ([]candidate, int) {
+	out := make([]candidate, 0, len(cands))
 	dropped := 0
-	for _, c := range scan.Candidates {
+	for _, c := range cands {
 		if _, skip := exclude[c.URL]; skip {
 			dropped++
 			continue
 		}
-		out.Candidates = append(out.Candidates, c)
+		out = append(out, c)
 	}
 	return out, dropped
 }
@@ -606,10 +664,38 @@ func isPostingType(t any, want string) bool {
 	return false
 }
 
-// cellKey identifies one sampling cell.
+// goldBand is the within-stratum sampling band a design draws a row from, or "" for
+// a design whose cell is (stratum, verdict) alone -- every drawing before ADR-0049's
+// veto boundary. It is part of the CELL, never part of the row: what a committed row
+// owes an estimate is its inclusion probability, and that travels as its weight.
+type goldBand string
+
+const (
+	// bandAccepted is the drop set's live-accept half: the candidate false-drops, and
+	// what the recall claim is read on. It is quota'd by -accepted-rows like the other
+	// two and sampled UNIFORMLY within the band, never sub-banded by score -- the band's
+	// question is a rate over the whole of it, and its rows are one cell at one
+	// inclusion probability. The recall claim survives the sampling because a
+	// hundred-row sample bounds that rate far more tightly than the 0.454-precision
+	// verdict that decides which pages land in the band at all (ADR-0049).
+	bandAccepted goldBand = "accepted"
+	// bandNear is the live-abstain half scoring just below VetoThreshold -- where the
+	// threshold is actually decided, and therefore where the confirmation budget buys
+	// the most.
+	bandNear goldBand = "near"
+	// bandDeep is the live-abstain half scoring below the near band: sampled more
+	// thinly, to confirm the bottom really is junk and to catch another short posting
+	// publishing no structured data (ADR-0049's #304 amendment).
+	bandDeep goldBand = "deep"
+)
+
+// cellKey identifies one sampling cell. The band is part of the key because a design
+// may sample two cells that share a stratum AND a verdict at different rates: without
+// it those cells collapse and one band's weight is written over the other's rows.
 type cellKey struct {
 	Stratum goldStratum
 	Verdict bool
+	Band    goldBand // "" for every design whose cell is (stratum, verdict) alone
 }
 
 // cellResult reports what the plan actually drew from one cell, so an operator can
@@ -641,7 +727,7 @@ type selection struct {
 func applyPlan(scan captureScan, plan []cellPlan, seed string, acceptShare float64) (selection, error) {
 	covered := map[cellKey]int{}
 	for _, p := range plan {
-		key := cellKey{p.Stratum, p.Verdict}
+		key := cellKey{Stratum: p.Stratum, Verdict: p.Verdict}
 		if _, dup := covered[key]; dup {
 			return selection{}, fmt.Errorf("sample plan: duplicate cell %s/%v", p.Stratum, p.Verdict)
 		}
@@ -650,7 +736,7 @@ func applyPlan(scan captureScan, plan []cellPlan, seed string, acceptShare float
 
 	buckets := map[cellKey][]candidate{}
 	for _, c := range scan.Candidates {
-		key := cellKey{c.Stratum, c.Verdict}
+		key := cellKey{Stratum: c.Stratum, Verdict: c.Verdict}
 		if _, ok := covered[key]; !ok {
 			return selection{}, fmt.Errorf("sample plan does not cover cell %s/%v (candidate %s)", c.Stratum, c.Verdict, c.URL)
 		}
@@ -670,7 +756,7 @@ func applyPlan(scan captureScan, plan []cellPlan, seed string, acceptShare float
 	counts := map[cellKey]int{}
 	pops := map[cellKey]int{}
 	for _, p := range plan {
-		key := cellKey{p.Stratum, p.Verdict}
+		key := cellKey{Stratum: p.Stratum, Verdict: p.Verdict}
 		cell := buckets[key]
 		pops[key] = len(cell)
 		take := takeByHash(cell, seed, p.N)
@@ -683,7 +769,7 @@ func applyPlan(scan captureScan, plan []cellPlan, seed string, acceptShare float
 		return selection{}, err
 	}
 	for _, p := range plan {
-		key := cellKey{p.Stratum, p.Verdict}
+		key := cellKey{Stratum: p.Stratum, Verdict: p.Verdict}
 		sel.Cells = append(sel.Cells, cellResult{Key: key, Population: pops[key], Sampled: counts[key], Weight: weights[key]})
 	}
 
@@ -804,7 +890,7 @@ func weightsFor(plan []cellPlan, pops, counts map[cellKey]int, acceptShare float
 	popByVerdict := map[bool]int{}
 	sampled := 0
 	for _, p := range plan {
-		key := cellKey{p.Stratum, p.Verdict}
+		key := cellKey{Stratum: p.Stratum, Verdict: p.Verdict}
 		popByVerdict[p.Verdict] += pops[key]
 		sampled += counts[key]
 	}
@@ -814,7 +900,7 @@ func weightsFor(plan []cellPlan, pops, counts map[cellKey]int, acceptShare float
 
 	weights := map[cellKey]float64{}
 	for _, p := range plan {
-		key := cellKey{p.Stratum, p.Verdict}
+		key := cellKey{Stratum: p.Stratum, Verdict: p.Verdict}
 		n := counts[key]
 		if n == 0 {
 			continue

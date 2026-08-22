@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/collection"
+	"github.com/nicholasbraun/job-crawler-poc/internal/pagegate"
 )
 
 // TestRefetchPerListingLiveness drives the crawl-lane refetch outcomes (ADR-0035):
@@ -687,6 +688,76 @@ func TestRefetchReGateReadsTheLaneGateConfig(t *testing.T) {
 				t.Errorf("OnRegateRejected = %d, want %d", rejected, tt.wantRejected)
 			}
 		})
+	}
+}
+
+// TestRefetchLaneNeverArmsTheLearnedVeto pins the one Extract Gate rung the refetch
+// lane deliberately does NOT run (ADR-0049). EXTRACT_LEARNED_VETO reaches this
+// processor through the shared gate config, and armed here it would withhold a
+// re-extraction and file the drop in the re-gate counter #208 sizes a bulk Close
+// against — on a lane that records no Posting Score and no Shadow Extraction sample to
+// notice it by.
+//
+// The fixture page is verified to score BELOW pagegate.VetoThreshold first, so the
+// test cannot pass because the page happened to survive the cut; it passes only
+// because the rung never ran.
+func TestRefetchLaneNeverArmsTheLearnedVeto(t *testing.T) {
+	const postingURL = "https://acme.com/jobs/senior-go-engineer"
+	page := uuid.New()
+	parser := fakeParser{}
+
+	// What the walk would do to this very page with the veto on: the gate must reject
+	// it at the Learned Veto rung, or this test proves nothing.
+	u, err := crawler.NewURL(postingURL)
+	if err != nil {
+		t.Fatalf("NewURL: %v", err)
+	}
+	content, err := parser.Parse([]byte("new-body"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	armed := crawler.DefaultLLMGateConfig()
+	armed.LearnedVeto = true
+	if v := pagegate.ExtractGate(u, content, armed); v.Extract || v.Rung != pagegate.RungLearnedVeto {
+		t.Fatalf("fixture must be vetoed by the walk's gate, got extract=%v rung=%q score=%v; pick a weaker page",
+			v.Extract, v.Rung, v.Score)
+	}
+
+	dl := newFakeDownloader()
+	dl.ok("https://acme.com/careers", "hub")
+	live := newFakeLiveness()
+	extract := &captureExtract{}
+
+	posting := &crawler.JobListing{CanonicalURL: "c-posting", URL: postingURL,
+		SourceHash: "old-body", CompanyKey: "acme.com"}
+	live.open[page] = []*crawler.JobListing{posting}
+	dl.ok(posting.URL, "new-body") // changed → the re-extract branch
+
+	var rejected int
+	proc := collection.NewRefetchProcessor(&collection.RefetchConfig{
+		Downloader:        dl,
+		Parser:            parser,
+		Liveness:          live,
+		Dormancy:          &fakeDormancy{},
+		Classifier:        newFakeClassifier(),
+		GateConfig:        armed, // the walk's config, veto and all
+		SourceHash:        identityHash,
+		Descriptions:      newFakeDescriptions(),
+		EnqueueExtract:    extract.enqueue,
+		StaleThreshold:    crawler.DefaultCrawlStaleThreshold,
+		DormancyThreshold: crawler.DefaultPageDormancyThreshold,
+		OnRegateRejected:  func(context.Context) { rejected++ },
+	})
+
+	seed := &crawler.CollectionSeed{URL: "https://acme.com/careers", CompanyKey: "acme.com", CareerPageID: page}
+	if err := proc.Process(t.Context(), seed); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if got := len(extract.captured()); got != 1 {
+		t.Errorf("a changed page the veto would have withheld must still re-extract, got %d enqueued", got)
+	}
+	if rejected != 0 {
+		t.Errorf("OnRegateRejected = %d, want 0: a fitted-score drop must never size the #208 Corpus-Close", rejected)
 	}
 }
 

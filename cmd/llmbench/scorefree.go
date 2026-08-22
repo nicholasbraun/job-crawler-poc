@@ -111,7 +111,7 @@ func replayFreeExtraction(ctx context.Context, path string) (rows []bench.FreeEx
 		if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
 			return nil, skipped, outOfScope, fmt.Errorf("line %d: %w", lineNo, err)
 		}
-		if rec.Stratum != "" && rec.Stratum.Drawing() != drawingStructural {
+		if outsideStructuralDrawing(rec) {
 			outOfScope++
 			continue
 		}
@@ -160,6 +160,21 @@ func replayFreeExtraction(ctx context.Context, path string) (rows []bench.FreeEx
 		return nil, skipped, outOfScope, fmt.Errorf("read %q: %w", path, err)
 	}
 	return rows, skipped, outOfScope, nil
+}
+
+// outsideStructuralDrawing reports whether a committed row lies outside the #256
+// structural drawing -- the only drawing the Free Extraction's expected extractions
+// were ever proposed over, which is why a fire outside it would be scored against
+// nothing and would turn the fidelity guard red for a row nobody ever proposed an
+// expectation for.
+//
+// A row carrying NO stratum is INSIDE it by convention, so a raw capture file still
+// replays whole. It is a PREDICATE rather than a list of the drawings named today, and
+// that is the point: outsideStructuralDrawingRows is derived from this same function,
+// so a fifth drawing is counted the day it lands rather than the day somebody
+// remembers to add it to a sum.
+func outsideStructuralDrawing(r goldRow) bool {
+	return r.Stratum != "" && r.Stratum.Drawing() != drawingStructural
 }
 
 // printFreeReport writes the free-extraction scorecard: the descriptive summary

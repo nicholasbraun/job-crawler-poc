@@ -248,6 +248,10 @@ _Avoid_: confidence score, model score, probability, ML score
 The Extract Gate's refusal to spend an extractor call on a page that carries Positive Evidence but whose Posting Score is too low. It only ever removes a call, never adds one, so all of its risk sits on the false-drop side — which is why a page it drops carries the score that dropped it.
 _Avoid_: scorer rung, model gate, ML gate, classifier
 
+**Veto Depth**:
+Of the pages the Extract Gate would extract with the Learned Veto off, the share it withholds with the veto on. It needs no labels, which is what lets it be measured over a real capture frame rather than only over the Extract Gold Set; it is the pre-registered condition on turning the rung on. The offline reading and the live dashboard panel share this denominator — every page the rung judged, its vetoes and its survivors alike — and a depth quoted over anything else is a different number. One reading is deliberately narrower and always says so: the trainer's in-sample figure over the Extract Gold Set counts only the rung's accepts that carry a **scorable** label, because the zero-`detail`-loss constraint the cut is chosen under can only be read on a labelled row; the same cut over *all* of that set's accepts has a larger denominator and is a different number. Quote either, never without its denominator — and take the figures themselves from ADR-0049's amendments, where each is dated to the run that measured it, rather than from here. Every refit moves all of them, and a definition that carries a measurement is stale the moment the Gold Set grows.
+_Avoid_: veto rate, cut rate, drop rate, savings
+
 **Score Signals**:
 What the Posting Score reads: the Structural Signals the Extract Gate already computes, taken as gradations rather than as the thresholded marks Positive Evidence collapses them into, together with the Score Vocabulary. The gradation is the whole point — every page the Learned Veto judges has already cleared Positive Evidence's thresholds, so only the degrees still separate them.
 _Avoid_: features, inputs, variables
@@ -295,7 +299,7 @@ The Extract Gate's counterpart to the Gold Set: real pages the live extract stre
 _Avoid_: extract test set, second gold set
 
 **Boundary Stratum**:
-The part of the Extract Gold Set drawn from pages where candidate gate variants disagree, rather than sampled from the stream — where a false-drop hides, and the only labels that must be human-confirmed. Its counterpart random stratum carries sampling weights instead, so stream-level numbers stay honest.
+The part of the Extract Gold Set drawn from pages where candidate gate variants disagree, rather than sampled from the stream — where a false-drop hides, and the only labels that must be human-confirmed. It may be taken as a **census** of that disagreement, whose rows all carry weight 1, or as a **stratified sample** of it, whose rows carry inverse-inclusion-probability weights; which one it is follows from how large the disagreement is against the human confirmation budget, and sampling it makes the confirmation obligation finishable rather than optional. The set may hold more than one, each defined by the pair of gate rules whose disagreement drew it and named after that pair: rows drawn under different rules describe different boundaries, so pooling them would make each unreadable, and a row's stratum is how it says which pair drew it — and, because one stratum is claimed by one design, under which inclusion probabilities.
 _Avoid_: hard cases, edge sample, review queue
 
 **Random Stratum**:

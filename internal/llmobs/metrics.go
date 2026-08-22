@@ -27,6 +27,20 @@ type Metrics struct {
 	// false-drop rate's denominator: a shed sample the counter did not record would
 	// leave that rate resting on a silently non-uniform subsample.
 	shadowDropped metric.Int64Counter
+	// postingScore is the live distribution of the Extract Gate's Posting Score over
+	// the pages the Learned Veto JUDGED -- both the ones it let through and the ones it
+	// vetoed (ADR-0049). Recording only the vetoes would show where the cut is without
+	// showing what it is cutting into, and this distribution is the drift detector: it
+	// is how a reader sees whether the live stream still resembles the Extract Gold Set
+	// the weights were fitted on. Unlabelled by design; see recordPostingScore.
+	postingScore metric.Float64Histogram
+	// vetoThreshold is the Posting Score cut the compiled-in weights chose -- the
+	// Learned Veto's operating point (ADR-0049) -- exported so nothing downstream has
+	// to write it down. It is a property of the BINARY rather than of a run or of a
+	// switch: recorded once at start-up and, under the Prometheus exporter's cumulative
+	// last-value aggregation, reported on every scrape thereafter. Unlabelled, like the
+	// histogram it annotates.
+	vetoThreshold metric.Float64Gauge
 	content       metric.Int64Counter
 	retries       metric.Int64Counter
 	deadletter    metric.Int64Counter
@@ -43,6 +57,8 @@ func NewMetrics() *Metrics {
 		gated:         counter(meter, "crawler.llm.gated"),
 		shadow:        counter(meter, "crawler.llm.shadow"),
 		shadowDropped: counter(meter, "crawler.llm.shadow.dropped"),
+		postingScore:  scoreHistogram(meter),
+		vetoThreshold: thresholdGauge(meter),
 		content:       counter(meter, "crawler.llm.content"),
 		retries:       counter(meter, "crawler.llm.retries"),
 		deadletter:    counter(meter, "crawler.llm.deadletter"),
@@ -65,6 +81,57 @@ func histogram(meter metric.Meter, name, unit string) metric.Float64Histogram {
 		slog.Error("llmobs: error setting up histogram", "err", err, "name", name)
 	}
 	return h
+}
+
+// postingScoreBuckets are the Posting Score histogram's explicit bucket boundaries:
+// twenty equal 0.05-wide bands over the score's [0,1] range. OTel's defaults run to
+// 10,000 and would file every score into the first bucket, leaving the distribution
+// unreadable -- the same reason internal/frontier/redis sets its own.
+//
+// The ladder is deliberately NOT pinned to pagegate.VetoThreshold, and this package
+// deliberately does not know that value. The threshold moves whenever the weights are
+// refitted; a boundary that moved with it would silently re-bucket every historical
+// series and destroy the one comparison this instrument exists for. A fixed ladder
+// keeps every scrape ever taken comparable, and the dashboard draws the cut as a line
+// from crawler.llm.veto.threshold instead (see SetVetoThreshold) -- the binary's own
+// operating point, not a number copied onto a panel. That is the whole division: the
+// line follows the binary, the buckets do not. The share below the cut needs no bucket
+// of its own either:
+// it is gated{reason="learned_veto"} over this histogram's count, and both are exact.
+var postingScoreBuckets = []float64{
+	0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50,
+	0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95,
+}
+
+// scoreHistogram registers the Posting Score histogram with its own bucket ladder.
+// It does not go through the shared histogram helper because that one takes a unit
+// and OTel's default boundaries; a score in [0,1] is unitless and needs the ladder
+// above to be readable at all.
+func scoreHistogram(meter metric.Meter) metric.Float64Histogram {
+	h, err := meter.Float64Histogram(
+		"crawler.llm.posting.score",
+		metric.WithDescription("Distribution of the Extract Gate's Posting Score over the pages the Learned Veto judged, accepts and vetoes alike (ADR-0049). Empty unless EXTRACT_LEARNED_VETO is on."),
+		metric.WithExplicitBucketBoundaries(postingScoreBuckets...),
+	)
+	if err != nil {
+		slog.Error("llmobs: error setting up the posting-score histogram", "err", err)
+	}
+	return h
+}
+
+// thresholdGauge registers the Learned Veto's operating-point gauge. Like
+// scoreHistogram it does not go through the shared gauge helper: that one builds an
+// Int64Gauge with no description, and this value is a fraction in the Posting Score's
+// [0,1] space whose entire purpose is to be read by a human off a panel.
+func thresholdGauge(meter metric.Meter) metric.Float64Gauge {
+	g, err := meter.Float64Gauge(
+		"crawler.llm.veto.threshold",
+		metric.WithDescription("The Posting Score at or above which the Learned Veto lets a page through, as compiled into THIS binary beside the weights (ADR-0049). Set once at start-up, whatever EXTRACT_LEARNED_VETO says. The LLM dashboard draws its cut line from this rather than from a hardcoded number, because every refit re-chooses the threshold."),
+	)
+	if err != nil {
+		slog.Error("llmobs: error setting up the veto-threshold gauge", "err", err)
+	}
+	return g
 }
 
 func gauge(meter metric.Meter, name string) metric.Int64Gauge {
@@ -123,6 +190,22 @@ func (m *Metrics) recordShadowDropped(ctx context.Context, rung string) {
 	m.shadowDropped.Add(ctx, 1, metric.WithAttributes(attribute.String("rung", rung)))
 }
 
+// recordPostingScore observes one Posting Score, with NO attributes at all, which is
+// the decision ADR-0049 makes explicitly: the score is never a label value. Shadow
+// Extraction samples ~1% of gate rejects filed BY RUNG, so bucketing the score into
+// low/mid/high series would divide those already-sparse samples several ways and
+// multiply the time to observe the veto's first false-drop -- the exact failure
+// PrimeShadow exists to prevent. The distribution's shape lives in the histogram's own
+// buckets, where it costs no series on any counter.
+//
+// It is deliberately NOT primed the way the shadow counters are. Priming a counter
+// adds a zero increment, which changes nothing; priming a histogram would mean
+// OBSERVING a value nobody measured, and a fabricated 0 is a real point in a
+// distribution.
+func (m *Metrics) recordPostingScore(ctx context.Context, score float64) {
+	m.postingScore.Record(ctx, score)
+}
+
 // PrimeShadow creates every Shadow Extraction series at zero, for each of rungs
 // crossed with each verdict, plus the shed counter per rung. Call it once at
 // start-up, before any sample can land.
@@ -150,6 +233,34 @@ func (m *Metrics) PrimeShadow(ctx context.Context, rungs []string) {
 		}
 		m.shadowDropped.Add(ctx, 0, metric.WithAttributes(attribute.String("rung", rung)))
 	}
+}
+
+// SetVetoThreshold records the Learned Veto's operating point: the Posting Score cut
+// the training run compiled in beside the weights (ADR-0049). Call it once at start-up,
+// from the composition root. The value is passed IN rather than read here for the same
+// reason PrimeShadow takes its rungs: this package knows nothing about the Extract Gate,
+// and the bucket ladder above depends on it staying that way.
+//
+// It exists because every refit re-chooses the threshold, so anything that writes the
+// number down -- a dashboard line, a runbook sentence -- is wrong from that refit
+// onward. The last one (0.605395 -> 0.165048, when the Extract Gold Set grew from 457
+// rows to 737) falsified six such places at once. A gauge cannot go stale: it states
+// what the running binary would enforce. It is also the only place besides the start-up
+// log line where a running crawl says so at all.
+//
+// ONLY THE LINE FOLLOWS THE BINARY. The Posting Score histogram's bucket ladder stays
+// fixed and deliberately unpinned from this value -- see postingScoreBuckets -- because
+// a boundary that moved with every refit would silently re-bucket every historical
+// series and destroy the drift comparison that instrument exists for. Do not "fix" the
+// buckets to line up with the cut.
+//
+// Recorded unconditionally, whatever EXTRACT_LEARNED_VETO is set to: the cut is a
+// property of the compiled artifact, not of the switch, and an operator scoring a
+// capture window BEFORE the flip needs to know which cut the offline replay will use.
+// Whether the rung is armed is the log line's `enabled` field and the score histogram's
+// emptiness, not this series' presence.
+func (m *Metrics) SetVetoThreshold(ctx context.Context, threshold float64) {
+	m.vetoThreshold.Record(ctx, threshold)
 }
 
 func (m *Metrics) recordContent(ctx context.Context, kind Kind, duplicate bool) {

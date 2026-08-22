@@ -103,6 +103,19 @@ const (
 	// DescriptionSourceStructuredData's string so an operator reading a listing's
 	// description_source and the gate reason sees one word for one mechanism.
 	ReasonStructuredData Reason = "structured_data"
+	// ReasonLearnedVeto marks an extract call the Learned Veto withheld (ADR-0049): the
+	// page carried Positive Evidence, but its Posting Score fell below the threshold the
+	// training run compiled in. It is kept OFF ReasonURLStructure deliberately -- this is
+	// the one rung a single environment variable restores, so the calls it saves have to
+	// be countable on their own rather than pooled with every structural reject, or the
+	// cost of pulling that switch cannot be read at all. Adding a value to an existing
+	// label is additive: no historical series breaks and a `by (reason)` panel picks it
+	// up. The value matches pagegate.RungLearnedVeto's string so an operator joining the
+	// saving on this counter to the false-drop rate on the shadow counter sees one word
+	// for one mechanism -- the same discipline ReasonStructuredData follows. This package
+	// still imports nothing from pagegate; a test in the walk's package holds the two
+	// equal.
+	ReasonLearnedVeto Reason = "learned_veto"
 )
 
 // Classify maps the error an LLM call returned to a coarse Outcome. A nil error

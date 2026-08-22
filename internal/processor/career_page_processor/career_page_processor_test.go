@@ -105,6 +105,10 @@ func (s *spyRecorder) Call(_ context.Context, k llmobs.Kind, o llmobs.Outcome, _
 func (s *spyRecorder) Gated(_ context.Context, k llmobs.Kind, r llmobs.Reason) {
 	s.gates = append(s.gates, recordedGate{k, r})
 }
+
+// PostingScore is inert here: only the Extract Gate's Learned Veto rung produces one
+// (ADR-0049), and this lane never runs that gate.
+func (s *spyRecorder) PostingScore(context.Context, float64)                {}
 func (s *spyRecorder) Shadow(context.Context, llmobs.ShadowVerdict, string) {}
 func (s *spyRecorder) ShadowDropped(context.Context, string)                {}
 func (s *spyRecorder) Content(_ context.Context, _ llmobs.Kind, text string) {

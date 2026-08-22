@@ -163,14 +163,31 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 	// kept out of the crawl frontier) so it is otherwise unreachable.
 	w.triggerATSEmbeds(ctx, nextURL, content)
 
-	if extract, rung := pagegate.ExtractDecision(*nextURL, content, w.gateConfig); !extract {
+	// The Extract Gate's full verdict (ADR-0044, ADR-0049): whether the page reaches
+	// the extractor, the rung that shed it, and -- when the Learned Veto rung actually
+	// ran -- the Posting Score it judged the page by.
+	verdict := pagegate.ExtractGate(*nextURL, content, w.gateConfig)
+	if verdict.Scored {
+		// Recorded for the rung's ACCEPTS as well as its vetoes, and BEFORE the branch
+		// below, so the live distribution shows what the cut is cutting into rather than
+		// only what it removed -- which is what makes it ADR-0049's drift detector
+		// against the Extract Gold Set the weights were fitted on. A page the gate keeps
+		// and the relevance filter then sheds was still judged by the veto, so the record
+		// sits above the branch rather than in one arm of it. It is recorded here at the
+		// decision, unsampled, and never on the shadow lane: that lane sees ~1% of
+		// rejects and none of the accepts, so a distribution built there would describe a
+		// population nobody is judging.
+		w.recorder.PostingScore(ctx, verdict.Score)
+	}
+	if !verdict.Extract {
 		// The Extract Gate shed this page without the LLM extractor -- a URL signal
 		// (Career Page index or reject path), a page-structure signal (ATS embed,
-		// JSON-LD openings index, or job-link saturation), or the Positive Evidence
-		// rung. rung names which, and travels with the Shadow Extraction sample so the
-		// measured false-drop rate can be split by cause.
-		w.recorder.Gated(ctx, llmobs.KindExtract, llmobs.ReasonURLStructure)
-		w.sampleShadowExtraction(ctx, nextURL, content, rung)
+		// JSON-LD openings index, or job-link saturation), the Positive Evidence rung,
+		// or the Learned Veto. The rung names which, drives the reason recorded below,
+		// and travels with the Shadow Extraction sample so the measured false-drop rate
+		// can be split by cause.
+		w.recorder.Gated(ctx, llmobs.KindExtract, gateReason(verdict.Rung))
+		w.sampleShadowExtraction(ctx, nextURL, content, verdict)
 	} else if err := w.relevanceFilter(content); err == nil {
 		slog.Info("worker: content passed relevance filter", "title", content.Title, "url", nextURL.RawURL)
 
@@ -248,7 +265,7 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 // takes whatever arrives while the stream is full. An invisible drop would leave the
 // live false-drop rate resting on a subsample nobody can characterize, so the count
 // is what makes that denominator's trustworthiness readable.
-func (w *urlWorker) sampleShadowExtraction(ctx context.Context, nextURL *crawler.URL, content *crawler.Content, rung pagegate.ExtractRung) {
+func (w *urlWorker) sampleShadowExtraction(ctx context.Context, nextURL *crawler.URL, content *crawler.Content, verdict pagegate.ExtractVerdict) {
 	if w.onShadowExtract == nil || w.shadowRate <= 0 {
 		return
 	}
@@ -259,11 +276,28 @@ func (w *urlWorker) sampleShadowExtraction(ctx context.Context, nextURL *crawler
 	}
 	if err := w.onShadowExtract(ctx, &crawler.ShadowSample{
 		RawJobListing: crawler.RawJobListing{URL: *nextURL, Content: *content},
-		Rung:          string(rung),
+		Rung:          string(verdict.Rung),
+		// The score rides along unconditionally: it is 0 for every rung but the Learned
+		// Veto's, and the rung gates the read downstream, so no presence flag has to
+		// cross the durable stream (ADR-0049).
+		Score: verdict.Score,
 	}); err != nil {
-		w.recorder.ShadowDropped(ctx, string(rung))
-		slog.Debug("worker: shadow extraction sample dropped", "err", err, "url", nextURL.RawURL, "rung", rung)
+		w.recorder.ShadowDropped(ctx, string(verdict.Rung))
+		slog.Debug("worker: shadow extraction sample dropped", "err", err, "url", nextURL.RawURL, "rung", verdict.Rung)
 	}
+}
+
+// gateReason maps the Extract Gate rung that shed a page to the reason recorded on the
+// gated counter. The Learned Veto gets its OWN reason (ADR-0049) so the calls it saves
+// are countable on their own: it is the one rung a single environment variable
+// restores, and pooling its saving with every structural reject would leave an operator
+// unable to read what pulling that switch would cost. Every other rung keeps
+// url_structure, so no existing series changes meaning.
+func gateReason(rung pagegate.ExtractRung) llmobs.Reason {
+	if rung == pagegate.RungLearnedVeto {
+		return llmobs.ReasonLearnedVeto
+	}
+	return llmobs.ReasonURLStructure
 }
 
 // triggerATSEmbeds fires an ATS Fetch for each firing ATS Embed on content whose

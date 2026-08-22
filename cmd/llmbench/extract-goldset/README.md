@@ -6,14 +6,15 @@ page URL, the extractor's original verdict, a label
 (`detail` / `hub-index` / `residue`, or `ambiguous` for a page a review could not
 settle), its sampling stratum, its sampling weight, and its label provenance.
 
-The file holds **three drawings**. They share a row format and a file; they share nothing
-else, and their weights are never pooled:
+The file holds **four drawings**, one of which is defined and not yet drawn. They share a row
+format and a file; they share nothing else, and their weights are never pooled:
 
 | drawing | strata | rows | drawn from | accept share | what it is for |
 |---|---|---:|---|---:|---|
 | **structural** (#254) | `lone-posting`, `ambiguous-posting`, `no-posting` | 149 | the July capture, 4271 deduped pages | 0.3432 | the Free Extraction's own population, sampled where the mechanism lives |
 | **random** (#262) | `random` | 120 | the August faithful frame, 5162 deduped pages | 0.0753 | a random sample of the stream, so composition, precision and cost describe production |
 | **boundary** (#263) | `boundary` | 188 | the same frame, 5042 candidates | n/a (a census) | the pages the two gate rules **disagree** on — where a false drop hides |
+| **veto-boundary** (#304) | `veto-boundary` | 0 | — (drawn during the rollout) | n/a (a stratified sample of the drop set) | the pages the **Learned Veto** would withhold the call from, sampled in three bands so the confirmation pass is finishable; see *The veto boundary (#304)* below and *Turning the Learned Veto on* in the repository README |
 
 This replaces `../extract-testdata` as the Extract Gate's **evidence base**. Those
 fixtures are synthetic — invented domains, every `detail` page carrying exactly one
@@ -560,6 +561,73 @@ Name the check for what it is: **a same-model re-read, so its agreement rate is 
 bound on label reliability, not an independent audit.** The human confirmation is the only
 thing that measures correctness.
 
+## The veto boundary (#304) — the design, before it is drawn
+
+> The population is **the pages today's shipping Extract Gate extracts that the Learned Veto
+> would withhold the call from**, over one capture frame, **minus the URLs the earlier drawings
+> already committed**. It is a **stratified sample** of that drop set, not a census of it, and a
+> weighted count over it estimates something about *that drop set* — never about the stream. Its
+> rows never enter the weighted stream scorecard.
+
+Why a sample, where the #263 boundary is a census: the capture window closed at **18,233 framed
+pages** holding a drop set of **12,036**, banded 2,025 accepted / 370 near / 9,641 deep. ADR-0043
+requires a human confirmation on **every** Boundary Stratum row, and a census would owe **2,145** —
+a pass nobody finishes, and an unfinished one blocks the refit indefinitely, because the
+confirmation ratchet can never come down. At the defaults the same frame draws **100 + 80 + 40 =
+220**. Sampling makes the obligation finishable; it does not weaken it.
+
+Three bands, which partition the drop set exactly, each with its own quota — a band without one
+leaves the draw's size a function of the frame's, which is the failure the bands exist to fix:
+
+| band | population | design | why |
+|---|---|---|---|
+| **accepted** | drop ∧ live verdict *accept* | sampled, `-accepted-rows` | the candidate false-drops, and what the recall claim is read on. Sampled *uniformly* within the band, never sub-banded by score: the band's question is a rate over the whole of it. 100 rows of 2,025 pins that rate to ±4.9pp at worst, against a bias no quota removes — the extractor's verdict decides which pages land here at all, at 0.454 precision. `0` restores the census exactly. |
+| **near** | drop ∧ live verdict *abstain* ∧ Posting Score in `[VetoThreshold − near-band, VetoThreshold)` | sampled, `-near-rows` | where the threshold is actually decided. |
+| **deep** | drop ∧ live verdict *abstain* ∧ below that | sampled, `-deep-rows` | to confirm the bottom is junk, and to reach for another **short posting publishing no structured data** — the shape ADR-0049's #304 amendment records the rung being weakest on. |
+
+Stratifying on the live verdict is **not** the filtering ADR-0049 forbids: every page keeps a
+non-zero, known inclusion probability and the weights restore the whole set, where filtering would
+give the abstained half probability zero.
+
+**The weights** are inverse selection probabilities, normalized within this drawing:
+
+```
+w_c = (N_c / n_c) × (n / N)     N_c, n_c = band population and rows drawn
+                                N, n     = their totals over the three bands
+```
+
+so the drawn weights sum to the drawn rows. One arithmetic serves all three bands: a band whose
+quota does not bind lands on `N_c/n_c = 1`, exactly the weight a census produces. They are
+deliberately **not** built through `weightsFor`: that reconstructs a verdict share from the
+capture's per-verdict caps, because the random drawing's frame is a capped stream sample; this
+population is *enumerated* by the replay and its probabilities are known exactly.
+
+**Determinism.** The draw is byte-reproducible from (capture, `-since`, `-seed`, `-near-band`,
+the three quotas, the URLs earlier drawings hold, **and the compiled weights**) — the bands are read
+off the Posting Score, so after a refit the same command yields a different sample. That is why the
+table below records the threshold, the band edge and the seed. Within a band the selection is
+ascending `sha256(seed + "\n" + url)`, the same order every other drawing uses; no RNG anywhere.
+
+**The drawing is taken once.** A second window's rows would carry a second set of inclusion
+probabilities into one stratum, and the verb refuses a second draw for that reason. A fresh window
+is a new *drawing*, declared in code as every drawing before it was.
+
+### The arithmetic — filled in when the draw happens
+
+| | |
+|---|---|
+| capture / frame (`-since`) | — |
+| framed pages / `gate extracts` / drop set | — |
+| `VetoThreshold` the cut was taken at | — |
+| `-seed` | — |
+| `-near-band` / band edge score | — |
+
+| band | population | drawn | weight |
+|---|---:|---:|---:|
+| accepted (live verdict accept) | — | — | — |
+| near | — | — | — |
+| deep | — | — | — |
+
 ## The labeling protocol
 
 `llmbench goldset-worksheet` renders the labeler's view: the page's own title, two
@@ -697,6 +765,65 @@ Note that the blanket accept **also drops two `detail` rows** (`hiring.cafe/job/
 `jobs.blooloop.com/jobs/…`) and therefore also exits 1. A hard zero has never been green
 on this file, with the rung or without it: those two are reject-rung drops that predate
 ADR-0044 entirely. See the guard below.
+
+### The same scorecard with the Learned Veto on (ADR-0049)
+
+This is what `EXTRACT_LEARNED_VETO=true` would run in production. The rung ships **off**,
+so this section is the only place the shipped weights meet the whole Gold Set with the
+veto enforcing.
+
+```bash
+echo '{"LearnedVeto": true}' > /tmp/veto.json
+go run ./cmd/llmbench score-capture -in cmd/llmbench/extract-goldset/goldset.jsonl -gate-config /tmp/veto.json
+```
+
+```
+total             457
+extract-calls     127
+extract-call-rate 0.2779  (soft, no threshold)
+overall           precision 1.0000  recall 0.9071  f1 0.9513  accuracy 0.9706
+detail     recall 0.9071  (n=140, extracted 127, skipped 13)
+hub-index  accuracy 1.0000  (n=78, skipped 78, leaked 0)
+residue    accuracy 1.0000  (n=224, skipped 224, leaked 0)
+residue-count 224, residue-extracted 0
+ambiguous         15 (excluded from scoring entirely, 0 extracted)
+
+stream-weighted estimates (random stratum, n=120, effective n=92.3)
+composition detail 0.0584 / hub-index 0.0556 / residue 0.8476
+extract-call-rate 0.0565   precision 1.0000   recall 0.9677
+
+boundary stratum (n=188, unweighted)
+count detail 37 / hub-index 62 / residue 79 / ambiguous 10
+extracted 26, skipped 162
+false-drops 11, ambiguous-skipped 10, confirmed 0 of 188
+```
+
+Run the rung-on scorecard against the same file on the same day and it reads
+**180 calls at precision 0.7175**; the veto takes that to **127 at 1.0000** — the 50
+withheld calls and the 28.2% cut ADR-0049's amendment records. (The `hub-index` /
+`residue` / `ambiguous` counts differ from the block at the top of this section, which
+was pasted before later confirmations moved labels; compare the two scorecards by
+re-running both, not against that block.)
+
+**That 1.0000 is in-sample and is not the veto's precision.** The shipped weights were
+fitted on these very 442 rows, converging to a mean log-loss of 0.0247, so a perfect
+score with zero leaks here is the memorisation ceiling of the fit rather than a forecast
+about anything. The generalisation read is ADR-0049's out-of-fold, host-grouped ladder,
+which at a comparable depth reads **0.8952 and loses 16 `detail` rows**. Read this block
+as "the cut is where the trainer said it is", never as "the veto is perfect".
+
+**Read the drop side of this scorecard with the same suspicion as the one above.** The
+capture tap sits downstream of the Extract Gate, so this file cannot measure what the
+veto would drop out of pages the gate never admitted — it has none. The number this
+override exists to show is the one that did not move: `detail` recall is **0.9071**
+either way and the thirteen drops are the **same thirteen pages**, which is exactly what
+`TestExtractGoldSetFalseDropGuardUnderTheLearnedVeto` asserts as a set comparison. The
+`false-drops 11` in the boundary block are eleven of those same thirteen, unchanged.
+
+Turning the rung on in production is a separate act with its own sequence — a capture
+window, an offline score, a Blind Confirmation of a stratified sample of the pages it
+would drop, those labels committed here, and only then the flip. It is written up under *Turning the Learned Veto
+on* in the repository `README.md`.
 
 ## The guard (#264)
 
@@ -903,6 +1030,27 @@ go run ./cmd/llmbench goldset-sample-boundary \
     -capture <repo>/capture/extract-capture.jsonl \
     -since 2026-08-07T21:13:00Z
 
+# 1d. the veto boundary (ADR-0049). WITHOUT -draw it writes nothing: it reports the
+#     veto depth over the frame -- the pre-registered go/no-go for turning rung 9 on,
+#     which needs no labels -- and previews the sampling plan the flags below describe,
+#     which is what those flags are tuned from. WITH -draw it appends a STRATIFIED
+#     SAMPLE of the pages below the cut, BOTH verdict halves: ADR-0049 forbids grading
+#     that rung against the extractor's own verdict, so the drop set may not be filtered
+#     by it. Like 1c the pair lives in goldsetboundary.go rather than behind a flag; the
+#     BANDS live there too, and only the quotas are flags -- one per band, so no band's
+#     drawn size is a function of the frame's. The draw is taken ONCE.
+go run ./cmd/llmbench goldset-sample-veto-boundary \
+    -capture <repo>/capture/veto-window.jsonl \
+    -since <the window's start, RFC3339> \
+    -accepted-rows 100 -near-rows 80 -deep-rows 40
+go run ./cmd/llmbench goldset-sample-veto-boundary \
+    -capture <repo>/capture/veto-window.jsonl \
+    -since <the window's start, RFC3339> \
+    -accepted-rows 100 -near-rows 80 -deep-rows 40 -draw
+#    -near-band is left at its default on purpose: it is derived from the compiled
+#    pagegate.VetoThreshold (a third of it), so it stays inside the legal (0, threshold)
+#    range across every refit, where a written-down width does not.
+
 # 2. the labeling view (a working artifact, never committed)
 #    -stratum / -n cut a deterministic subset: one stratum whole, or 20 rows of it
 go run ./cmd/llmbench goldset-worksheet -out /tmp/worksheet.jsonl
@@ -924,7 +1072,18 @@ go run ./cmd/llmbench goldset-apply \
 # 5. score it
 go run ./cmd/llmbench score-capture -in cmd/llmbench/extract-goldset/goldset.jsonl
 go run ./cmd/llmbench score-free
+
+# 6. after a confirmation pass: apply, recompute and rewrite the counts this record
+#    determines, refit pagegate's Posting Score weights, and run the guard suite --
+#    in one pass, with ADR-0049's pre-registered condition checked at the end. It
+#    exits non-zero when the result is not shippable, and it edits no label.
+go run ./cmd/llmbench goldset-refit
 ```
+
+`goldset-refit` owns every hard-coded count below that the record determines, and prints
+all seventeen of them, changed or not, so a rewrite lands in the diff rather than behind
+it. It does **not** own this file's own prose: the drawings table, the scorecard blocks
+and the label distributions are a human's to keep current.
 
 To **correct a label**, edit the `label` column of `labels.tsv` and run
 `goldset-apply`; it rewrites both files canonically and refuses a sheet whose stratum or
@@ -934,15 +1093,20 @@ proposed.
 
 ## Human confirmation — what is still owed
 
-**What the build asserts about confirmations.** The four confirmation counts —
+**What the build asserts about confirmations.** The five confirmation counts —
 `pendingHumanConfirmations`, `pendingExpectedConfirmations`,
-`pendingBoundaryConfirmations` and `randomSpotChecks` — are one-directional ratchets
+`pendingBoundaryConfirmations`, `pendingVetoBoundaryConfirmations` and
+`randomSpotChecks` — are one-directional ratchets
 (ADR-0048): each fails only in the direction that means a human signature *vanished*,
 and merely logs the figure in the direction that means work landed, so a productive
 confirmation pass never leaves `main` red. Two things stay pinned in **both**
-directions: the three drawings' row counts, because a drawing is a fixed act of
+directions: the four drawings' row counts, because a drawing is a fixed act of
 sampling, and `ambiguousRows`, because marking a page unresolvable is a rare,
-deliberate keystroke that changes what every confusion number is computed over. The
+deliberate keystroke that changes what every confusion number is computed over.
+Pinned means neither direction may pass *unseen*, which the two maintenance paths
+deliver differently: a hand edit of the record leaves `go test` red until the constant
+is moved, while `goldset-refit` rewrites it and prints it as `ACKNOWLEDGE: a pinned
+census moved`, so it lands in your diff rather than stopping the pass. The
 direction the ratchets gave up is asserted more sharply instead — the build requires
 that `goldset.jsonl`, `labels.tsv` and `expected.tsv` name the **same confirmer on
 every row**, and names the rows where they do not.
@@ -960,9 +1124,10 @@ awk -F'\t' '$3=="lone-posting"' cmd/llmbench/extract-goldset/labels.tsv | column
 # fix any wrong label in the `label` column, then:
 go run ./cmd/llmbench goldset-apply -confirmed-by "<your name>" -confirm-stratum lone-posting
 
-# then set pendingHumanConfirmations to 0 in cmd/llmbench/goldset_test.go and commit
-# — the build no longer forces the edit, it logs the figure (ADR-0048), so do it in
-# the same commit.
+# then refit: goldset-refit recomputes pendingHumanConfirmations in
+# cmd/llmbench/goldset_test.go and every other count this record determines, and
+# rewrites them in place. Commit them with the confirmations.
+go run ./cmd/llmbench goldset-refit
 ```
 
 ### Confirming row by row with the labelling tool (#286)
@@ -1043,11 +1208,15 @@ go run ./cmd/llmbench goldset-apply
 # pre-filled with its own ids:
 go run ./cmd/llmbench goldset-apply -confirmed-by "<your name>" -confirm-ids /tmp/263/confirmed-01.txt
 
-# lower pendingBoundaryConfirmations in cmd/llmbench/goldset_test.go by what you confirmed,
-# in the same commit. The number is printed by the apply summary (boundary pending) and
-# logged by go test -v. Update ambiguousRows, boundaryDetailRows and the recovery-ledger
-# constants if your reading moved them.
+# then refit. goldset-refit lowers pendingBoundaryConfirmations by what you confirmed and
+# recomputes ambiguousRows, boundaryDetailRows and the recovery-ledger constants your
+# reading may have moved -- all of them printed, all of them in the same commit.
+go run ./cmd/llmbench goldset-refit
 ```
+
+The verb **refuses** to raise a pending count or lower a confirmed one. That direction
+means a human signature vanished, and ADR-0048 reserves it to the person who withdraws
+the confirmation; the refusal happens before anything is written.
 
 `-confirm-ids` names exactly the rows a human read, so `labels.tsv` shows precisely which
 labels gained a confirmer and the pass can span sessions. `-confirm-stratum boundary` is
@@ -1084,8 +1253,9 @@ go run ./cmd/llmbench goldset-worksheet -stratum random -n 20 -out /tmp/spotchec
 # labels.tsv, put your name in the `confirmed_by` column of EXACTLY the rows you read:
 go run ./cmd/llmbench goldset-apply
 
-# then raise randomSpotChecks in cmd/llmbench/goldset_test.go to the "spot-checked"
-# figure the apply summary just printed (the build logs it too, under go test -v).
+# then refit: goldset-refit raises randomSpotChecks in cmd/llmbench/goldset_test.go to
+# what the record now says, and prints the figure beside every other count.
+go run ./cmd/llmbench goldset-refit
 ```
 
 Read the 40 `verdict=true` rows first if you only have time for some: 31 of them are the
@@ -1128,9 +1298,9 @@ read `remote`, 43 `unspecified`.
 ```bash
 # edit any wrong value or drop any free_ok you refuse, then:
 go run ./cmd/llmbench goldset-apply -expected-confirmed-by "<your name>"
-# then set pendingExpectedConfirmations to 0 in cmd/llmbench/goldset_test.go
-# — the build no longer forces the edit, it logs the figure (ADR-0048), so do it in
-# the same commit.
+# then refit: goldset-refit lowers pendingExpectedConfirmations in
+# cmd/llmbench/goldset_test.go to what the record now says.
+go run ./cmd/llmbench goldset-refit
 ```
 
 These acceptances rest on the labels underneath them, so confirming (a) without confirming

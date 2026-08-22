@@ -82,7 +82,9 @@ func NewProcessor(cfg *Config) *ShadowExtractionProcessor {
 // The verdict is filed under the gate RUNG the sample carries, so the false-drop
 // rate can be read per cause: a drop the Positive Evidence kill switch would undo is
 // a different failure from one it would not, and after the flip the first reading has
-// to be able to say which it is looking at.
+// to be able to say which it is looking at. The Learned Veto is the one rung whose
+// drops cannot be explained in words at all (ADR-0049), so a false-drop it caused
+// additionally carries the Posting Score that caused it onto the log line.
 func (p *ShadowExtractionProcessor) Process(ctx context.Context, workload *crawler.ShadowSample) error {
 	extraction, err := p.extractor.Extract(ctx, workload.RawJobListing)
 	if err != nil {
@@ -95,8 +97,16 @@ func (p *ShadowExtractionProcessor) Process(ctx context.Context, workload *crawl
 	verdict := llmobs.ShadowVerdictOf(err, extraction.IsJobPosting)
 	p.recorder.Shadow(ctx, verdict, rung)
 	if verdict == llmobs.ShadowAccept {
-		slog.Info("shadow extraction: the extract gate rejected a page the extractor reads as a single job posting (false-drop sample)",
-			"url", workload.URL.RawURL, "rung", rung)
+		// The Learned Veto is the one rung that cannot explain a drop in words, so a page
+		// it dropped carries the score that dropped it (ADR-0049) -- which is what makes
+		// correcting the threshold evidence-backed rather than guesswork. The score is
+		// read ONLY behind that rung: on any other rung the sample's zero means "never
+		// scored", and an entry enqueued by an older binary carries no rung at all.
+		attrs := []any{"url", workload.URL.RawURL, "rung", rung}
+		if rung == string(pagegate.RungLearnedVeto) {
+			attrs = append(attrs, "posting_score", workload.Score)
+		}
+		slog.Info("shadow extraction: the extract gate rejected a page the extractor reads as a single job posting (false-drop sample)", attrs...)
 	}
 	return nil
 }
