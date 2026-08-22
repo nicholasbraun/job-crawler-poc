@@ -16,10 +16,11 @@ import (
 // This file is the Learned Veto boundary drawing's table (ADR-0049, #304). Every
 // fixture in it is threshold-sensitive: the cases below only mean what they say while
 // the committed weights rank them where they do, so each is built through a
-// precondition guard that names the repair when a refit moves one. This is the THIRD
-// site holding fixtures of that kind, beside internal/pagegate/learned_veto_test.go
-// and internal/processor/url_processor/url_processor_test.go; the repository README's
-// rollout section lists all three.
+// precondition guard that names the repair when a refit moves one. This is the FOURTH
+// site holding fixtures of that kind, beside internal/pagegate/learned_veto_test.go,
+// internal/processor/url_processor/url_processor_test.go and
+// internal/collection/refetch_test.go; the repository README's rollout section lists all
+// four.
 
 // vetoWindowStart is the -since cutoff every capture in this file is framed at. The
 // drawing requires one, for the sibling's reason: content from a superseded parser is

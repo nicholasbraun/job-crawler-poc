@@ -249,7 +249,7 @@ The Extract Gate's refusal to spend an extractor call on a page that carries Pos
 _Avoid_: scorer rung, model gate, ML gate, classifier
 
 **Veto Depth**:
-Of the pages the Extract Gate would extract with the Learned Veto off, the share it withholds with the veto on. It needs no labels, which is what lets it be measured over a real capture frame rather than only over the Extract Gold Set; it is the pre-registered condition on turning the rung on. The offline reading and the live dashboard panel share this denominator — every page the rung judged, its vetoes and its survivors alike — and a depth quoted over anything else is a different number.
+Of the pages the Extract Gate would extract with the Learned Veto off, the share it withholds with the veto on. It needs no labels, which is what lets it be measured over a real capture frame rather than only over the Extract Gold Set; it is the pre-registered condition on turning the rung on. The offline reading and the live dashboard panel share this denominator — every page the rung judged, its vetoes and its survivors alike — and a depth quoted over anything else is a different number. One reading is deliberately narrower and always says so: the trainer's in-sample figure over the Extract Gold Set (50 of **177**, 28.2%) counts only the rung's accepts that carry a **scorable** label, because the zero-`detail`-loss constraint the cut is chosen under can only be read on a labelled row. Over all 180 of that set's accepts the same cut reads 53 of 180, 29.4%. Quote either, never without its denominator.
 _Avoid_: veto rate, cut rate, drop rate, savings
 
 **Score Signals**:

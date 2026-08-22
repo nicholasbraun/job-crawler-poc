@@ -290,6 +290,12 @@ Set — the same 442 rows the shipped weights were fitted on — the Learned Vet
 that rung's 127 `detail` rows, taking precision from 0.7175 to 1.0000. That 1.0000 is a
 memorisation ceiling, not a forecast; ADR-0049's out-of-fold ladder is the generalisation read
 and it costs 16 `detail` rows at a comparable depth.
+
+Mind the **177**. It is the rung's accepts that carry a *scorable* label, which is the population
+the zero-`detail`-loss constraint can be read on at all; the rung accepts **180** rows of this set
+in total, three of them labelled `ambiguous`. Over all 180 the same cut reads 53, **29.4%** — which
+is the like-for-like number when you compare this against a capture window's depth in step 2, since
+that one has no labels in it and therefore no narrowing.
 `TestExtractGoldSetFalseDropGuardUnderTheLearnedVeto` holds the in-sample figure page for page
 under a plain `go test ./...`. Reproduce the scorecard any time:
 
@@ -433,13 +439,17 @@ act and a human's. Three things it does not own and you still do, in the same co
 Expect the suite to name things after a confirmation pass, and expect them: `RESTANDING`
 entries in `extractGoldSetFalseDrops` are exceptions whose labels have just been confirmed,
 and ADR-0043 requires each to be re-argued rather than inherited. A "pick a weaker fixture"
-failure wants a different page, never a moved threshold — the fixtures live in three places,
+failure wants a different page, never a moved threshold — the fixtures live in four places,
 `internal/pagegate/learned_veto_test.go`,
 `internal/processor/url_processor/url_processor_test.go`, which carries its own copies because
-an external test package cannot import them, and `cmd/llmbench/goldsetvetoboundary_test.go`,
+an external test package cannot import them, `internal/collection/refetch_test.go`, whose page
+has to be one the walk's gate vetoes for the refetch lane's own exemption to mean anything, and
+`cmd/llmbench/goldsetvetoboundary_test.go`,
 whose capture fixtures have to land on a named side of the cut for the drawing's own cases to
-mean anything. That is also why the verb runs the **whole** suite rather than
-`./cmd/llmbench/... ./internal/pagegate/...`: a hand-picked list is a list that goes stale.
+mean anything. Read that list as today's, not as a closed set: any package may pin a fixture to
+a side of the cut, and the suite names the one that broke. That is also why the verb runs the
+**whole** suite rather than `./cmd/llmbench/... ./internal/pagegate/...`: a hand-picked list is
+a list that goes stale.
 
 To re-read the numbers later without refitting, `go run ./cmd/llmbench train-scorer` prints
 the same report; to re-read the scorecard, run the `score-capture` command at the top of this
@@ -493,8 +503,14 @@ The **Learned Veto (ADR-0049)** row of the LLM telemetry dashboard
 
 **What drift looks like.** The 28.2% is in-sample over a deliberately Boundary-heavy
 population, so it is *not* a prediction of the live depth — the number to compare against is
-the one step 2 measured on your own capture window. A live depth well away from it means the
-walked stream no longer looks like the frame the operating point was chosen on. Beyond the
+the one step 2 measured on your own capture window (and against 29.4%, not 28.2%, if you compare
+it to this set at all: the label-free live denominator matches the all-accepts one). A live depth
+well away from it means the walked stream no longer looks like the frame the operating point was
+chosen on. One live frame has already been read this way: ADR-0049's *Amendment: the first live
+observation* measured **49.8%** over 213 judged pages on fourteen hand-picked hosts, so a depth
+near that is a known reading to compare against rather than a fresh drift signal — and it is also
+the region where the out-of-fold ladder already loses 16 `detail` rows, whose shape that amendment
+names (short postings publishing no structured data). Beyond the
 depth: record p10/p50/p90 on flip day and watch them walk; a p50 drifting away from where it
 sat when the weights were fitted means the cut is being applied to a population nobody measured
 it on. And read the shape, not just the level — a cut sitting in a steep step of the cumulative

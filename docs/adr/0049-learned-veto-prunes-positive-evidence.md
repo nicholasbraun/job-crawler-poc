@@ -361,16 +361,26 @@ against a nearest rounding boundary 1.2e-9 away.
 ## Amendment: the first live observation (#304)
 
 Before merging, the rung was run live: the full Docker stack on the delivery branch,
-`EXTRACT_LEARNED_VETO=true`, `SHADOW_EXTRACT_RATE=1.0` so every reject was measured, and one
-Collection Cycle over fourteen Career Pages imported from hosts drawn out of the committed Extract
-Gold Set. The crawl walked 6,613 pages. This is the first time the Learned Veto has judged pages it
-was not fitted on.
+`EXTRACT_LEARNED_VETO=true`, `SHADOW_EXTRACT_RATE=1.0` so every reject was *sampled* rather than
+sub-sampled, and one Collection Cycle over fourteen Career Pages imported from hosts drawn out of
+the committed Extract Gold Set. The crawl walked 6,613 pages. This is the first time the Learned
+Veto has judged pages it was not fitted on. Sampled is not the same as measured: the Shadow
+Extraction lane is asynchronous and bounded, and 47 of the 106 vetoes had returned a verdict by the
+time the window closed.
 
 | | Gold Set (in-sample) | this live frame |
 |---|---:|---:|
 | pages reaching rung 9 | 177 | 213 |
 | vetoed | 50 | 106 |
 | **veto depth** | **28.2%** | **49.8%** |
+
+The two denominators are not quite the same population, and the difference is worth naming before
+the two numbers are compared. The live 213 is every page the rung judged. The Gold Set's 177 is
+every page the rung judged *that carries a scorable label* — the committed set's rung-8 accepts
+number 180, and three of them are labelled `ambiguous`, which the trainer excludes from both halves
+because detail loss can only be read on a labelled row. Over all 180 the in-sample depth is 53 of
+180, **29.4%** (`score-capture` reports the two arms as 180 calls and 127). The gap is three rows
+today and grows with every ambiguous label; it does not change the finding below.
 
 **Depth roughly doubles off the fitted population.** That is the finding, and it is the one the
 rollout section already anticipates when it says the 28.2% cut should not be believed past a 10%
@@ -439,9 +449,14 @@ before the first drop, so that drop read as a change rather than as a series spr
 existence; every verdict filed under the rung's own name rather than Positive Evidence's; the score
 that caused each drop travelled with the sample onto the durable stream and reached the log line,
 while the same log line for a Positive Evidence drop carried no score at all; and no Posting Score
-appeared in any metric label. On the durable stream, 7 entries carrying the Learned Veto's rung
-carried 7 non-zero scores, and all 47 entries from other rungs carried zero — the rung gating the
-read, exactly as designed, with no presence flag.
+appeared in any metric label. A read of the durable stream taken during the run held **54 entries**:
+7 carried the Learned Veto's rung and every one of those 7 carried a non-zero score, while the other
+47 — 17 `bare_or_locale_root`, 28 `positive_evidence`, 1 `career_index`, 1 `index_terminal` — carried
+zero. The rung gated the read, exactly as designed, with no presence flag.
+
+That 47 is not the 47 verdicts above, and the coincidence of size is worth stating outright: the
+lane's 47 is the window's total on one rung, while this 47 is a point-in-time snapshot of a stream
+holding entries from every rung. Both figures are correct and they count different things.
 
 Each of those is a decision taken in the "Attribution" section above, and together they are what
 made three items legible enough to be argued about at all.
