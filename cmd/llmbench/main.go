@@ -20,10 +20,16 @@
 // mix; goldset-sample-boundary (#263) APPENDS a third, drawn by replaying today's
 // blanket accept and the tiered Positive Evidence rule over the same frame and
 // taking every accepted page the two disagree on -- a census of the boundary, where
-// a false-drop hides; goldset-worksheet renders the labeler's view with the
-// structured data and the live verdict withheld; goldset-confirm-sheet renders the
-// boundary rows as ordered Markdown chunks a human confirms a chunk at a time;
-// goldset-apply folds labels and their provenance back
+// a false-drop hides; goldset-sample-veto-boundary (ADR-0049, #304) is that same
+// drawing against the Learned Veto's own pair, the veto off versus on. By default it
+// only REPORTS the veto depth over a capture frame -- of the pages today's gate
+// extracts, the share the veto would withhold -- which needs no labels and is the
+// pre-registered go/no-go for turning the rung on; -draw appends the pages below the
+// cut as the veto-boundary stratum, both halves of the disagreement, because ADR-0049
+// forbids filtering them by the extractor's own verdict. goldset-worksheet renders
+// the labeler's view with the structured data and the live verdict withheld;
+// goldset-confirm-sheet renders the boundary rows as ordered Markdown chunks a human
+// confirms a chunk at a time; goldset-apply folds labels and their provenance back
 // in. score-capture (#116) is what scores the resulting file
 // through the Extract Gate, with no network and no model. score-free (#256)
 // replays the real Free Extraction decorator over the same file with a stub in
@@ -50,6 +56,26 @@
 // the delta between them. It exits non-zero on a DISAGREEMENT between the arms, never
 // on their level: the absolute false-drop count is extract's and score-capture's to
 // guard. No network, no model.
+//
+// train-scorer (ADR-0049, #300) is the only thing that writes pagegate's Posting Score
+// weights: it fits them over the committed Extract Gold Set, emits the generated Go
+// source the gate compiles in, and reports what a Learned Veto built on them would do
+// to the pages the Positive Evidence rung accepts today -- the population where the
+// whole extract bill is spent, and the only population a figure about this rung may be
+// quoted over. It is in Go because it calls the same pagegate.Signals the gate calls,
+// which makes a difference between the rule that was measured and the rule that ships
+// unrepresentable. Deterministic: regenerating from the committed set reproduces the
+// committed file byte for byte, and a test holds that. No network, no model.
+//
+// goldset-refit (ADR-0049, #304) is step 4 of the Learned Veto's rollout as a single
+// pass: it applies the confirmed rows through goldset-apply, recomputes and rewrites the
+// counts the record determines in cmd/llmbench/goldset_test.go, re-runs the trainer
+// `go generate ./internal/pagegate` runs, then runs the repository's test suite over the
+// regenerated tree -- the one step that sees the new weights compiled, since this binary
+// compiled the previous ones in. It ends on ADR-0049's pre-registered condition, which
+// train-scorer reports and this verb ENFORCES: merging the trainer was never gated on
+// the floor, flipping the rung's default is. Exit 2 on a wiring error, 1 when the result
+// is not shippable, 0 otherwise. It stamps no provenance and edits no label.
 package main
 
 import (
@@ -84,12 +110,16 @@ func main() {
 		os.Exit(runScoreFree(rest))
 	case "score-rendering":
 		os.Exit(runScoreRendering(rest))
+	case "train-scorer":
+		os.Exit(runTrainScorer(rest))
 	case "goldset-sample":
 		os.Exit(runGoldSetSample(rest))
 	case "goldset-sample-random":
 		os.Exit(runGoldSetSampleRandom(rest))
 	case "goldset-sample-boundary":
 		os.Exit(runGoldSetSampleBoundary(rest))
+	case "goldset-sample-veto-boundary":
+		os.Exit(runGoldSetSampleVetoBoundary(rest))
 	case "goldset-worksheet":
 		os.Exit(runGoldSetWorksheet(rest))
 	case "goldset-confirm-sheet":
@@ -98,6 +128,8 @@ func main() {
 		os.Exit(runGoldSetUI(rest))
 	case "goldset-apply":
 		os.Exit(runGoldSetApply(rest))
+	case "goldset-refit":
+		os.Exit(runGoldSetRefit(rest))
 	case "diff":
 		os.Exit(runDiff(rest))
 	default:

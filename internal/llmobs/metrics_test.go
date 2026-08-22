@@ -1,6 +1,8 @@
 package llmobs_test
 
 import (
+	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/nicholasbraun/job-crawler-poc/internal/llmobs"
@@ -248,5 +250,151 @@ func TestPrimeShadowMakesTheFirstSampleVisible(t *testing.T) {
 	// reading "this rung has dropped nothing", which an absent series cannot make.
 	if got, present := value(t, "crawler.llm.shadow", "index_terminal", "accept"); !present || got != 0 {
 		t.Errorf("shadow{rung=index_terminal,verdict=accept} = %d (present=%v), want a present zero", got, present)
+	}
+}
+
+// TestMetricsPostingScoreIsAnUnlabelledHistogram pins the instrument ADR-0049 asks for
+// and the constraint it puts on it: the Posting Score is recorded as a distribution
+// and appears in NO metric label value anywhere.
+//
+// The label ban is not fastidiousness. Shadow Extraction samples ~1% of gate rejects
+// filed by rung, so bucketing the score into low/mid/high series would divide those
+// already-sparse samples several ways and multiply the time to observe the veto's
+// first false-drop — the exact failure PrimeShadow exists to prevent. A histogram's own
+// `le` boundaries are not that split: they are the instrument, and they cost no series
+// on any counter.
+//
+// The explicit bucket ladder is asserted too, because OTel's defaults run to 10,000 and
+// would file every score in [0,1] into the first bucket, leaving the distribution
+// unreadable. Non-parallel: the manual reader is the process-global meter provider and
+// instruments bind at NewMetrics.
+func TestMetricsPostingScoreIsAnUnlabelledHistogram(t *testing.T) {
+	reader := installLLMReader(t)
+	metrics := llmobs.NewMetrics()
+	rec := llmobs.NewRecorder(metrics, nil, nil, "")
+
+	ctx := t.Context()
+	scores := []float64{0.02, 0.31, 0.58, 0.61, 0.87}
+	for _, score := range scores {
+		rec.PostingScore(ctx, score)
+	}
+	// The veto's companion readings, so the attribute-key assertions below cover the
+	// counters an implementation might be tempted to hang a score band on.
+	rec.Gated(ctx, llmobs.KindExtract, llmobs.ReasonLearnedVeto)
+	rec.Shadow(ctx, llmobs.ShadowAccept, "learned_veto")
+	rec.ShadowDropped(ctx, "learned_veto")
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("collecting metrics: %v", err)
+	}
+
+	score := llmMetric(&rm, "crawler.llm.posting.score")
+	if score == nil {
+		t.Fatal("crawler.llm.posting.score instrument not found on the llm scope")
+	}
+	hist, ok := score.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("crawler.llm.posting.score: unexpected data type %T, want a float64 histogram", score.Data)
+	}
+	if len(hist.DataPoints) != 1 {
+		t.Fatalf("crawler.llm.posting.score has %d data points, want exactly 1: the score is never split into series", len(hist.DataPoints))
+	}
+	dp := hist.DataPoints[0]
+	if dp.Attributes.Len() != 0 {
+		t.Errorf("crawler.llm.posting.score carries attributes %v, want none: no Posting Score value may appear in a label", dp.Attributes)
+	}
+	if dp.Count != uint64(len(scores)) {
+		t.Errorf("crawler.llm.posting.score count = %d, want %d", dp.Count, len(scores))
+	}
+	wantBounds := []float64{
+		0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50,
+		0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95,
+	}
+	if !reflect.DeepEqual(dp.Bounds, wantBounds) {
+		t.Errorf("crawler.llm.posting.score bounds = %v, want %v: OTel's defaults would file every score into the first bucket",
+			dp.Bounds, wantBounds)
+	}
+
+	// No counter grew a score-derived label either.
+	wantKeys := map[string][]string{
+		"crawler.llm.shadow":         {"rung", "verdict"},
+		"crawler.llm.gated":          {"kind", "reason"},
+		"crawler.llm.shadow.dropped": {"rung"},
+	}
+	for name, want := range wantKeys {
+		got := attributeKeys(t, &rm, name)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s attribute keys = %v, want exactly %v: the Posting Score must not become a label on any counter", name, got, want)
+		}
+	}
+}
+
+// attributeKeys returns the sorted, de-duplicated attribute keys across every data
+// point of the named int64-sum instrument.
+func attributeKeys(t *testing.T, rm *metricdata.ResourceMetrics, name string) []string {
+	t.Helper()
+	m := llmMetric(rm, name)
+	if m == nil {
+		t.Fatalf("%s instrument not found on the llm scope", name)
+	}
+	sum, ok := m.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("%s: unexpected data type %T", name, m.Data)
+	}
+	seen := map[string]bool{}
+	for _, dp := range sum.DataPoints {
+		for _, kv := range dp.Attributes.ToSlice() {
+			seen[string(kv.Key)] = true
+		}
+	}
+	keys := make([]string, 0, len(seen))
+	for key := range seen {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// TestMetricsGatedSeparatesTheLearnedVetoFromTheStructuralReason pins the split
+// ADR-0049 requires on the gated counter: the Learned Veto's saving is its own series,
+// not pooled into url_structure. It is the one rung a single environment variable
+// restores, so what pulling that switch would cost has to be readable on its own —
+// pooled with every structural reject it is not readable at all.
+func TestMetricsGatedSeparatesTheLearnedVetoFromTheStructuralReason(t *testing.T) {
+	reader := installLLMReader(t)
+	metrics := llmobs.NewMetrics()
+	rec := llmobs.NewRecorder(metrics, nil, nil, "")
+
+	ctx := t.Context()
+	rec.Gated(ctx, llmobs.KindExtract, llmobs.ReasonLearnedVeto)
+	rec.Gated(ctx, llmobs.KindExtract, llmobs.ReasonLearnedVeto)
+	rec.Gated(ctx, llmobs.KindExtract, llmobs.ReasonURLStructure)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("collecting metrics: %v", err)
+	}
+
+	gated := llmMetric(&rm, "crawler.llm.gated")
+	if gated == nil {
+		t.Fatal("crawler.llm.gated instrument not found on the llm scope")
+	}
+	sum, ok := gated.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("crawler.llm.gated: unexpected data type %T", gated.Data)
+	}
+	byReason := map[string]int64{}
+	for _, dp := range sum.DataPoints {
+		r, present := dp.Attributes.Value("reason")
+		if !present {
+			t.Errorf("a gated data point carries no reason attribute: %v", dp.Attributes)
+			continue
+		}
+		byReason[r.Emit()] += dp.Value
+	}
+	want := map[string]int64{"learned_veto": 2, "url_structure": 1}
+	if !reflect.DeepEqual(byReason, want) {
+		t.Errorf("gated by reason = %v, want %v", byReason, want)
 	}
 }

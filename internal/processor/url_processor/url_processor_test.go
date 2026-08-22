@@ -58,16 +58,20 @@ func (f *stubFrontier) Next(ctx context.Context) (crawler.URL, error) {
 }
 func (f *stubFrontier) MarkDone(ctx context.Context, url string) error { return nil }
 
-// spyRecorder captures the gate reasons the worker records, and the rungs of the
-// Shadow Extraction samples it sheds.
+// spyRecorder captures the gate reasons the worker records, the rungs of the Shadow
+// Extraction samples it sheds, and every Posting Score it observes.
 type spyRecorder struct {
 	gates     []llmobs.Reason
 	shedRungs []string
+	scores    []float64
 }
 
 func (s *spyRecorder) Call(context.Context, llmobs.Kind, llmobs.Outcome, time.Duration) {}
 func (s *spyRecorder) Gated(_ context.Context, _ llmobs.Kind, r llmobs.Reason) {
 	s.gates = append(s.gates, r)
+}
+func (s *spyRecorder) PostingScore(_ context.Context, score float64) {
+	s.scores = append(s.scores, score)
 }
 func (s *spyRecorder) Shadow(context.Context, llmobs.ShadowVerdict, string) {}
 func (s *spyRecorder) ShadowDropped(_ context.Context, rung string) {
@@ -347,6 +351,12 @@ func TestProcessShadowSamplesGateRejectedPages(t *testing.T) {
 				// segment, which is rung 2c.
 				if got := spy.sampled[0].Rung; got != string(pagegate.RungIndexTerminal) {
 					t.Errorf("sampled rung = %q, want %q", got, pagegate.RungIndexTerminal)
+				}
+				// The Posting Score is inert on every rung but the Learned Veto's, which is
+				// exactly what makes the wire-level zero safe: the rung gates the read, so no
+				// presence flag has to cross the durable stream (ADR-0049).
+				if got := spy.sampled[0].Score; got != 0 {
+					t.Errorf("sampled Score = %v, want 0: only the Learned Veto's rung scores a page", got)
 				}
 			}
 
@@ -704,5 +714,202 @@ func TestProcessScopeFence(t *testing.T) {
 				t.Errorf("enqueued URLs = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// learnedVetoConfig builds shadowConfig's worker with the Learned Veto rung switched
+// on. The rung ships OFF (ADR-0049), so every case that is about it has to name the
+// switch, and a test that read the shipped default would be asserting about a rung
+// that never ran.
+func learnedVetoConfig(content *crawler.Content, rec *spyRecorder, on bool) *urlprocessor.Config {
+	cfg := shadowConfig(&stubFrontier{}, content, rec)
+	cfg.OnJobListing = func(context.Context, *crawler.RawJobListing) error { return nil }
+	cfg.GateConfig.LearnedVeto = on
+	return cfg
+}
+
+// richPostingContent is a page carrying the sections of a real posting: the shape the
+// Posting Score ranks highest, so it survives the Learned Veto. Copied from
+// internal/pagegate/learned_veto_test.go, which owns the fixture -- that one lives in
+// an external test package and cannot be imported.
+func richPostingContent() *crawler.Content {
+	return &crawler.Content{
+		Title: "Senior Engineer (m/w/d) gesucht",
+		MainContent: "Ihre Aufgaben. Ihr Profil. Wir bieten. Vollzeit. Ansprechpartner. " +
+			"Jetzt bewerben. Wir freuen uns auf Ihre Bewerbung. Vergütung nach Tarif. Arbeiten bei uns.",
+	}
+}
+
+// requireScoreSide fails the test unless the fixture falls on the side of
+// VetoThreshold the case needs. A retrain that moves the weights is expected to break
+// this precondition before it breaks any assertion below, and the message names the
+// repair. It mirrors the pair in internal/pagegate/learned_veto_test.go, which is not
+// importable from here.
+func requireScoreSide(t *testing.T, u crawler.URL, content *crawler.Content, wantVetoed bool) {
+	t.Helper()
+	got := pagegate.Score(u, content)
+	if wantVetoed && got >= pagegate.VetoThreshold {
+		t.Fatalf("fixture scores %.6f, at or above VetoThreshold %.6f: this case needs a page the veto drops. "+
+			"A retrain moved the weights -- pick a weaker fixture; never move the threshold to fit a test.", got, pagegate.VetoThreshold)
+	}
+	if !wantVetoed && got < pagegate.VetoThreshold {
+		t.Fatalf("fixture scores %.6f, below VetoThreshold %.6f: this case needs a page the veto keeps. "+
+			"A retrain moved the weights -- pick a stronger fixture; never move the threshold to fit a test.", got, pagegate.VetoThreshold)
+	}
+}
+
+// TestProcessRecordsThePostingScoreForEveryPageTheVetoJudged pins the population the
+// live score distribution covers (ADR-0049): the Learned Veto's ACCEPTS as well as its
+// vetoes, and nothing else. Recording only the vetoes would show where the cut is
+// without showing what it is cutting into, which is the whole reason this histogram
+// exists — it is the drift detector against the Extract Gold Set the weights were
+// fitted on. Recording a page the rung never judged would be worse: an unjudged page
+// carries a zero that is not a score, and folding those in would report a stream that
+// scores lowest of all.
+func TestProcessRecordsThePostingScoreForEveryPageTheVetoJudged(t *testing.T) {
+	tests := []struct {
+		name       string
+		url        string
+		content    *crawler.Content
+		veto       bool
+		wantScored bool
+		wantVetoed bool
+		wantReason llmobs.Reason
+	}{
+		{
+			name:       "a vetoed page is recorded",
+			url:        "https://acme.com/jobs/senior-engineer",
+			content:    &crawler.Content{},
+			veto:       true,
+			wantScored: true,
+			wantVetoed: true,
+			wantReason: llmobs.ReasonLearnedVeto,
+		},
+		{
+			name:       "a page the veto keeps is recorded too",
+			url:        "https://acme.com/o/senior-engineer",
+			content:    richPostingContent(),
+			veto:       true,
+			wantScored: true,
+		},
+		{
+			name:       "an earlier rung's reject is not recorded",
+			url:        "https://acme.com/careers",
+			content:    &crawler.Content{},
+			veto:       true,
+			wantReason: llmobs.ReasonURLStructure,
+		},
+		{
+			name:    "the veto off records nothing",
+			url:     "https://acme.com/jobs/senior-engineer",
+			content: &crawler.Content{},
+			veto:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			seed, err := crawler.NewURL(tt.url)
+			if err != nil {
+				t.Fatalf("NewURL: %v", err)
+			}
+			if tt.wantScored {
+				requireScoreSide(t, seed, tt.content, tt.wantVetoed)
+			}
+
+			rec := &spyRecorder{}
+			cfg := learnedVetoConfig(tt.content, rec, tt.veto)
+			// This case is about the histogram, not the sampling lane.
+			cfg.ShadowRate = 0
+
+			if err := urlprocessor.NewProcessor(cfg).Process(t.Context(), &seed); err != nil {
+				t.Fatalf("Process returned error: %v", err)
+			}
+
+			if !tt.wantScored {
+				if len(rec.scores) != 0 {
+					t.Errorf("recorded Posting Scores = %v, want none: this page was never judged by the Learned Veto", rec.scores)
+				}
+			} else {
+				if len(rec.scores) != 1 {
+					t.Fatalf("recorded Posting Scores = %v, want exactly one", rec.scores)
+				}
+				if want := pagegate.Score(seed, tt.content); rec.scores[0] != want {
+					t.Errorf("recorded Posting Score = %.6f, want %.6f: the histogram records the score the rung judged by",
+						rec.scores[0], want)
+				}
+			}
+
+			if tt.wantReason == "" {
+				if len(rec.gates) != 0 {
+					t.Errorf("recorded gates = %v, want none: the gate kept this page", rec.gates)
+				}
+				return
+			}
+			if !reflect.DeepEqual(rec.gates, []llmobs.Reason{tt.wantReason}) {
+				t.Errorf("recorded gates = %v, want [%q]", rec.gates, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestProcessCarriesThePostingScoreOnAVetoedSample closes the loop from the rung to
+// the durable stream: a page the Learned Veto dropped reaches the Shadow Extraction
+// lane carrying the score that dropped it (ADR-0049). The score travels WITH the
+// sample rather than being re-derived downstream, because a re-derivation could run a
+// different binary's weights and file a verdict against a score the gate never
+// computed — and this rung is the one whose drops cannot be explained in words, so
+// that number is the only account of them there is.
+func TestProcessCarriesThePostingScoreOnAVetoedSample(t *testing.T) {
+	content := &crawler.Content{}
+	seed, err := crawler.NewURL("https://acme.com/jobs/senior-engineer")
+	if err != nil {
+		t.Fatalf("NewURL: %v", err)
+	}
+	requireScoreSide(t, seed, content, true)
+
+	rec := &spyRecorder{}
+	spy := &shadowSpy{}
+	cfg := learnedVetoConfig(content, rec, true)
+	cfg.OnShadowExtract = spy.onShadow
+	cfg.ShadowRate = 1.0
+
+	if err := urlprocessor.NewProcessor(cfg).Process(t.Context(), &seed); err != nil {
+		t.Fatalf("Process returned error: %v", err)
+	}
+
+	if len(spy.sampled) != 1 {
+		t.Fatalf("shadow samples = %d, want 1", len(spy.sampled))
+	}
+	if got := spy.sampled[0].Rung; got != string(pagegate.RungLearnedVeto) {
+		t.Errorf("sampled rung = %q, want %q", got, pagegate.RungLearnedVeto)
+	}
+	want := pagegate.Score(seed, content)
+	if got := spy.sampled[0].Score; got != want {
+		t.Errorf("sampled Score = %.6f, want %.6f exactly", got, want)
+	}
+	if want <= 0 {
+		t.Errorf("the fixture's Posting Score is %.6f: a zero score would make this assertion vacuous", want)
+	}
+	// The veto's saving is counted under its OWN gated reason, so the calls it saves
+	// are readable without the structural rejects pooled in.
+	if !reflect.DeepEqual(rec.gates, []llmobs.Reason{llmobs.ReasonLearnedVeto}) {
+		t.Errorf("recorded gates = %v, want [%q]", rec.gates, llmobs.ReasonLearnedVeto)
+	}
+	if len(rec.scores) != 1 || rec.scores[0] != want {
+		t.Errorf("recorded Posting Scores = %v, want [%.6f]: the histogram and the sample must report one number", rec.scores, want)
+	}
+}
+
+// TestTheLearnedVetoGatedReasonMatchesItsRungName holds two constants equal that are
+// declared independently: llmobs knows nothing about the Extract Gate, so the reason
+// and the rung are written in two packages. Holding them equal is what lets an
+// operator join the calls the veto saved (the gated counter) to the false-drops it
+// caused (the shadow counter) — one word for one mechanism, the same discipline
+// ReasonStructuredData follows.
+func TestTheLearnedVetoGatedReasonMatchesItsRungName(t *testing.T) {
+	if string(llmobs.ReasonLearnedVeto) != string(pagegate.RungLearnedVeto) {
+		t.Errorf("gated reason %q and rung %q differ: an operator cannot join the veto's saving to its false-drop rate",
+			llmobs.ReasonLearnedVeto, pagegate.RungLearnedVeto)
 	}
 }

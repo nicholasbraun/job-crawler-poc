@@ -197,6 +197,23 @@ func main() {
 	// see it; this is the switch to pull if it does.
 	requirePositiveEvidence := ld.Bool("EXTRACT_REQUIRE_POSITIVE_EVIDENCE", true)
 
+	// EXTRACT_LEARNED_VETO is the Extract Gate's Learned Veto (ADR-0049), default
+	// FALSE -- today's gate exactly. Set it true and a page carrying Positive Evidence
+	// reaches the extractor only if its Posting Score clears the threshold the training
+	// run compiled in beside the weights. Unset restores the UNCONDITIONAL Positive
+	// Evidence accept, with no deploy, and off the score is never computed at all, so a
+	// crawl not using the rung pays nothing for it.
+	//
+	// It is a dial rather than a deploy for EXTRACT_REQUIRE_POSITIVE_EVIDENCE's reason
+	// above -- a false-drop is the permanent failure -- and one of its own: this is the
+	// only rung in the gate that is fitted rather than argued, so it cannot explain a
+	// drop in words. SHADOW_EXTRACT_RATE above is the instrument that would see it.
+	//
+	// Turning it ON is a separate act with a runbook (ADR-0049): a capture window,
+	// offline scoring, a blind confirmation of the pages it would drop, those labels
+	// committed, and only then the flip.
+	learnedVeto := ld.Bool("EXTRACT_LEARNED_VETO", false)
+
 	// PARSE_STRUCTURAL_RENDERING makes the parser keep a page's structure instead of
 	// flattening it (ADR-0046), default false: the Flattened Text it has always
 	// produced. Set true and the parser renders headings, list items, table rows,
@@ -307,7 +324,7 @@ func main() {
 	savedSearchRepository := postgres.NewSavedSearchRepository(pgPool)
 
 	factory := newFactory(crawlMaxWorkers, visitedCap, robotsCacheTTL, robotsCacheSize, llmMaxWorkers, llmConfig,
-		descriptionMaxChars, extractFromJSONLD, shadowExtractRate, requirePositiveEvidence, structuralRendering,
+		descriptionMaxChars, extractFromJSONLD, shadowExtractRate, requirePositiveEvidence, learnedVeto, structuralRendering,
 		redisClient, companyRepository, careerPageRepository, corpusRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory,
 		// One cleaner sweeps all of a run's transient Redis state on a terminal
@@ -442,6 +459,7 @@ func newFactory(
 	extractFromJSONLD bool,
 	shadowExtractRate float64,
 	requirePositiveEvidence bool,
+	learnedVeto bool,
 	structuralRendering bool,
 	redisClient *redis.Client,
 	companyRepository crawler.CompanyRepository,
@@ -522,11 +540,22 @@ func newFactory(
 	// consulting the EXTRACT Gate -- the walk's url processor and the refetch lane's
 	// changed-content re-extract -- are the ones the override below moves; the
 	// discovery processor reads the same struct for the DISCOVERY Gate, which never
-	// consults RequirePositiveEvidence. So the kill switch covers the whole extract
-	// path or none of it, and cannot touch Discovery.
+	// consults RequirePositiveEvidence or LearnedVeto. So EXTRACT_REQUIRE_POSITIVE_EVIDENCE
+	// covers the whole extract path or none of it, and it cannot touch Discovery.
+	//
+	// EXTRACT_LEARNED_VETO is deliberately NARROWER: it is a spend rule for the walk,
+	// and collection.NewRefetchProcessor clears it from its own copy (ADR-0049), so the
+	// refetch re-gate keeps asking "is this page still one posting" on every rung it
+	// runs. Setting it here still says what the crawl enforces -- the walk is where the
+	// extract bill is -- and the refetch lane's divergence is one rung, declared in the
+	// lane that owns it rather than by omission here.
 	gateConfig := crawler.DefaultLLMGateConfig()
 	gateConfig.RequirePositiveEvidence = requirePositiveEvidence
 	slog.Info("extract gate positive evidence (ADR-0044)", "enabled", requirePositiveEvidence)
+	gateConfig.LearnedVeto = learnedVeto
+	// The threshold is compiled in beside the weights, so this log line is the only
+	// place a running crawl says which operating point it is enforcing (ADR-0049).
+	slog.Info("extract gate learned veto (ADR-0049)", "enabled", learnedVeto, "threshold", pagegate.VetoThreshold)
 
 	return func(ctx context.Context, runID uuid.UUID, def crawler.CrawlDefinition, counters *runner.Counters, shouldStop func(context.Context) bool) (*runner.Engine, error) {
 		llmStats := &llmobs.Stats{}
@@ -855,7 +884,9 @@ func newFactory(
 						// certain-accepted on structure is not dormant-closed by an LLM blip —
 						// and the Extract Gate the changed-content re-extract now consults
 						// (ADR-0044). It is the SAME gateConfig the walk's url processor gets
-						// below, so the two lanes cannot diverge.
+						// below, so the two lanes cannot diverge on any rung that judges page
+						// STRUCTURE. NewRefetchProcessor clears the Learned Veto from its copy,
+						// which is the one deliberate divergence (ADR-0049).
 						GateConfig: gateConfig,
 						SourceHash: sourceHash,
 						// Legacy-summary heal (ADR-0041): rewrite a model-authored body from

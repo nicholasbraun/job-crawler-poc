@@ -8,9 +8,14 @@
 // the same Structural Signals read oppositely on the two paths: on discovery they
 // accept a hub as a Career Page, on extract they REJECT a hub as an index to
 // crawl rather than extract — with the ATS posting deterministically exempt. On
-// its final rung ShouldExtract additionally requires Positive Evidence that the
-// page IS one posting (ADR-0044, positive_evidence.go), so clearing every reject
-// rung is no longer enough to spend an extractor call.
+// its last reject-on-absence rung ShouldExtract additionally requires Positive
+// Evidence that the page IS one posting (ADR-0044, positive_evidence.go), so clearing
+// every reject rung is no longer enough to spend an extractor call. A page Positive
+// Evidence admits is then withheld anyway, on the FINAL rung, when cfg.LearnedVeto is
+// set and the page's Posting Score falls below the compiled-in VetoThreshold
+// (ADR-0049, posting_score.go) -- the one rule in this package that is fitted rather
+// than argued, and the only rung that removes a call the rest of the ladder was about
+// to pay for.
 package pagegate
 
 import (
@@ -277,23 +282,28 @@ func jobLinkSaturation(count, k int) float64 {
 // the extractor only on Positive Evidence that it IS one posting (ADR-0044): a
 // posting-shaped URL or a lone structured-data posting admits it alone, while the
 // two text marks — an apply affordance and dense posting vocabulary — admit it only
-// in agreement with each other. That final rung fires only when
+// in agreement with each other. That rung fires only when
 // cfg.RequirePositiveEvidence is set; unset, the gate keeps its previous blanket
-// accept of everything nothing rejected.
+// accept of everything nothing rejected. A page it admits is then withheld anyway
+// when cfg.LearnedVeto is set and the page's Posting Score falls below the
+// compiled-in VetoThreshold (ADR-0049) — the only rung here that removes a call the
+// rest of the ladder was about to pay for, and the only one that is fitted rather
+// than argued.
 //
-// ExtractDecision is the same decision with the rejecting rung reported; this is the
-// verdict-only reading for the callers that do not attribute.
+// ExtractDecision is the same decision with the rejecting rung reported, and
+// ExtractGate is the fullest reading of it; this is the verdict-only reading for the
+// callers that do not attribute.
 func ShouldExtract(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConfig) bool {
-	extract, _ := ExtractDecision(u, content, cfg)
-	return extract
+	return ExtractGate(u, content, cfg).Extract
 }
 
 // ExtractRung names the ShouldExtract rung that REJECTED a page. It is the
 // attribution the Shadow Extraction lane records alongside each verdict (ADR-0044):
-// a false-drop the Positive Evidence kill switch would undo (RungPositiveEvidence)
-// and one it would not (any reject rung) are different failures with different
-// remedies, and a shadow accept rate that cannot tell them apart can read high for a
-// cause the named revert does not fix.
+// a false-drop EXTRACT_REQUIRE_POSITIVE_EVIDENCE would undo (RungPositiveEvidence),
+// one EXTRACT_LEARNED_VETO would undo (RungLearnedVeto), and one neither switch
+// recovers (any reject rung) are different failures with different remedies, and a
+// shadow accept rate that cannot tell them apart can read high for a cause the named
+// revert does not fix.
 //
 // The values are metric label values, so they are stable strings: renaming one
 // breaks a dashboard query and a historical series, not a compile.
@@ -313,6 +323,7 @@ const (
 	RungOpeningsIndex     ExtractRung = "openings_index"      // rung 6
 	RungJobLinkSaturation ExtractRung = "job_link_saturation" // rung 7
 	RungPositiveEvidence  ExtractRung = "positive_evidence"   // rung 8
+	RungLearnedVeto       ExtractRung = "learned_veto"        // rung 9
 	// RungUnknown labels a Shadow Extraction whose sample carries no rung -- an entry
 	// enqueued by an older binary and redelivered after an upgrade. It is never
 	// produced by this function; it exists so such a sample is visibly unattributed
@@ -335,71 +346,142 @@ func RejectRungs() []ExtractRung {
 	return []ExtractRung{
 		RungATSBoardRoot, RungBareOrLocaleRoot, RungIndexTerminal, RungRejectPath,
 		RungCareerIndex, RungATSEmbed, RungOpeningsIndex, RungJobLinkSaturation,
-		RungPositiveEvidence, RungUnknown,
+		RungPositiveEvidence, RungLearnedVeto, RungUnknown,
 	}
 }
 
+// ExtractVerdict is one Extract Gate decision reported in full: the verdict, the
+// rung that rejected the page, and the Posting Score the Learned Veto judged it by
+// (ADR-0049). ExtractDecision and ShouldExtract are narrowings of it for the callers
+// that need less; all three run the ONE implementation, so no reading can describe a
+// different sequence than the one that ran.
+type ExtractVerdict struct {
+	// Extract is the verdict: true when the page reaches the LLM extractor.
+	Extract bool
+	// Rung is the rung that rejected the page, or RungNone on an accept.
+	Rung ExtractRung
+	// Score is the page's Posting Score, and it is MEANINGLESS unless Scored is set.
+	// A page any earlier rung rejected, an ATS posting exempt at rung 2, and every
+	// page at all on a crawl with the Learned Veto off leave it at 0 -- but 0 is also
+	// a legitimate score, so the two are indistinguishable without Scored. A reader
+	// that folded those zeros into the live score distribution would report a stream
+	// that scores lowest of all.
+	Score float64
+	// Scored reports that the Learned Veto rung actually RAN on this page: the switch
+	// was on and every rung above it admitted the page. It is exactly the population
+	// the score distribution is recorded over -- the rung's accepts AND its vetoes,
+	// which is what makes that distribution show what the cut is cutting into and not
+	// merely what it removed.
+	Scored bool
+}
+
 // ExtractDecision is ShouldExtract with the REJECTING RUNG reported alongside the
-// verdict. The two share one implementation so the attribution can never describe a
-// different sequence than the one that ran. On an accept the rung is RungNone.
+// verdict. It is a narrowing of ExtractGate for the callers that attribute a reject
+// but do not read the Posting Score. On an accept the rung is RungNone.
 func ExtractDecision(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConfig) (bool, ExtractRung) {
+	v := ExtractGate(u, content, cfg)
+	return v.Extract, v.Rung
+}
+
+// ExtractGate is ShouldExtract's decision reported in full (ADR-0049): the verdict,
+// the rejecting rung, and — for the pages the Learned Veto actually judged — the
+// Posting Score it judged them by. It is the ONE implementation the two narrower
+// readings run, so the attribution and the score can never describe a different
+// sequence than the one that ran.
+func ExtractGate(u crawler.URL, content *crawler.Content, cfg crawler.LLMGateConfig) ExtractVerdict {
 	switch catalog.Classify(u) {
 	case catalog.RoleCareerPage:
 		// rung 1: an ATS board root is an index to crawl, not a posting.
-		return false, RungATSBoardRoot
+		return ExtractVerdict{Rung: RungATSBoardRoot}
 	case catalog.RoleJobListing:
 		// rung 2: an ATS posting is deterministically a posting, so its "more
 		// openings" sidebar cannot drop it. This exemption precedes every content
-		// reject rung below.
-		return true, RungNone
+		// reject rung below. It is deliberately UNSCORED -- leaving Scored false is
+		// what keeps the exemption deterministic, since a page that is never judged
+		// cannot enter the Learned Veto's score distribution and skew it toward a
+		// population no fit ever saw (ADR-0049).
+		return ExtractVerdict{Extract: true, Rung: RungNone}
 	}
 	// rung 2b: a bare domain root (or a locale-only root like /en, /de-de) is never a
 	// single job posting -- a posting always carries a slug/id beyond the host. This
 	// sheds careers-landing and homepage pages the extractor would otherwise
 	// hallucinate a listing from, keyed to a root URL that collides in the Corpus.
 	if isBareOrLocaleRoot(u.RawURL) {
-		return false, RungBareOrLocaleRoot
+		return ExtractVerdict{Rung: RungBareOrLocaleRoot}
 	}
 	// rung 2c: a URL whose terminal path segment is a jobs index/section word
 	// (careers, jobs, openings, job-offers, search-jobs, ..., any web extension
 	// stripped) is a hub, not a posting -- even a posting-path URL like
 	// /careers/openings, which rung 4 misses because its parent is a job segment.
 	if isExtractIndexTerminal(u.RawURL) {
-		return false, RungIndexTerminal
+		return ExtractVerdict{Rung: RungIndexTerminal}
 	}
 	if pathHasSegment(u.RawURL, cfg.RejectPathSignals) {
-		return false, RungRejectPath // rung 3: a strong-negative reject path.
+		return ExtractVerdict{Rung: RungRejectPath} // rung 3: a strong-negative reject path.
 	}
 	if !isJobPostingPath(u.RawURL) && pathHasSegment(u.RawURL, cfg.CareerPathSignals) {
-		return false, RungCareerIndex // rung 4: a bare career-section index, not a posting.
+		return ExtractVerdict{Rung: RungCareerIndex} // rung 4: a bare career-section index, not a posting.
 	}
 	// Content reject rungs (ADR-0019). Self-hosted postings on a job-posting path
 	// reach here (only ATS RoleJobListing is exempt), so a /jobs/all-style hub
 	// carrying structured openings data still rejects.
 	if atsEmbed(content) {
-		return false, RungATSEmbed // rung 5: a page embedding a whole ATS board is a hub.
+		return ExtractVerdict{Rung: RungATSEmbed} // rung 5: a page embedding a whole ATS board is a hub.
 	}
 	if crawler.HasOpeningsIndex(content) {
 		// rung 6: a JSON-LD ItemList / >=2 JobPosting nodes is an openings index, read
 		// via the domain's shared structured-posting read; a lone JobPosting does not
 		// fire it.
-		return false, RungOpeningsIndex
+		return ExtractVerdict{Rung: RungOpeningsIndex}
 	}
-	if jobLinkSaturation(countJobPostingLinks(u, content), cfg.ExtractJobLinkSaturationCount) >= 1 {
+	// Counted once and carried down: rung 7 rejects on it, and rung 9 grades it. It
+	// parses every outbound link, so a page with thousands of ordinary links -- which
+	// rung 7 does not reject, because it counts only same-host JOB links -- would pay
+	// for that walk twice if the veto re-derived it.
+	jobLinks := countJobPostingLinks(u, content)
+	if jobLinkSaturation(jobLinks, cfg.ExtractJobLinkSaturationCount) >= 1 {
 		// rung 7: a page saturated with distinct same-host job links is a jobs index.
 		// Reuses both pure detectors with reject polarity; an
 		// ExtractJobLinkSaturationCount <= 0 makes jobLinkSaturation return 0, so this
 		// rung then never fires.
-		return false, RungJobLinkSaturation
+		return ExtractVerdict{Rung: RungJobLinkSaturation}
 	}
+	// The one fold of the page body rungs 8 and 9 share. Still unfolded here: rung 8's
+	// URL, structured-data and Title marks admit a page without reading the body, and
+	// with the veto off nothing below asks for it either.
+	fold := newBodyFold(content)
 	// rung 8 (ADR-0044): Positive Evidence. Every reject rung above has resolved
 	// first, so this rung only ever decides pages nothing rejected -- a hub carrying
 	// an apply affordance is already gone. When the rung is off the gate keeps its
 	// previous blanket accept, which is the kill switch.
-	if cfg.RequirePositiveEvidence && !hasPositiveEvidence(u, content) {
-		return false, RungPositiveEvidence
+	if cfg.RequirePositiveEvidence && !hasPositiveEvidence(u, fold) {
+		return ExtractVerdict{Rung: RungPositiveEvidence}
 	}
-	return true, RungNone
+	// rung 9 (ADR-0049): the Learned Veto. It sees only the pages rung 8 admitted --
+	// where 100% of the extract bill on the measured population is spent -- and it
+	// only ever REMOVES a call, so every mark ADR-0044 argues still admits exactly
+	// what it admitted. It is the one rung in this ladder that is FITTED rather than
+	// argued, which is why it carries its own switch on top of rung 8's.
+	//
+	// The switch is read BEFORE the score and returns early, so a crawl with the veto
+	// off does no signal extraction and no Score Vocabulary scan at all -- the rung
+	// costs nothing on a crawl not using it, which is the condition it ships under,
+	// and it leaves Scored false so nothing downstream records an un-judged page's
+	// zero as a Posting Score. The comparison is "<", matching the trainer's "score
+	// >= threshold survives" exactly; a page AT the threshold is kept, and that
+	// boundary is what makes the shipped cut the one that was measured.
+	//
+	// It sums scoreOf over signalsFrom rather than calling Score, so the fold and the
+	// link count above are reused rather than recomputed. Same arithmetic, same
+	// signals, same order -- Score is the standalone reading of this very path.
+	if !cfg.LearnedVeto {
+		return ExtractVerdict{Extract: true, Rung: RungNone}
+	}
+	score := scoreOf(signalsFrom(fold, jobLinks))
+	if score < VetoThreshold {
+		return ExtractVerdict{Rung: RungLearnedVeto, Score: score, Scored: true}
+	}
+	return ExtractVerdict{Extract: true, Rung: RungNone, Score: score, Scored: true}
 }
 
 // containsAny reports whether s contains any of keywords, case-insensitively.

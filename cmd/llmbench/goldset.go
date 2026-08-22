@@ -166,16 +166,35 @@ const (
 	// random stratum it is its own DRAWING, and its rows never enter the weighted
 	// stream estimates -- a census of a disagreement set describes no population.
 	stratumBoundary goldStratum = "boundary"
+	// stratumVetoBoundary is the Learned Veto's boundary (ADR-0049): the pages the
+	// Extract Gate extracts today that rung 9 would withhold the call from --
+	// computed by replaying the veto off and on over the captured content, never
+	// guessed. It is a Boundary Stratum exactly as stratumBoundary is, and a SEPARATE
+	// one because it is a different pair's disagreement over a different capture
+	// frame; the stratum is how a committed row says which pair drew it.
+	//
+	// It takes BOTH halves of the disagreement, where stratumBoundary takes the
+	// accept half only: ADR-0049 forbids grading this rung against the live
+	// extractor's verdict, so the drop set may not be filtered by it either.
+	//
+	// A census like stratumBoundary: inclusion probability 1, weight 1, its own
+	// drawing, and never pooled into a weighted stream estimate.
+	stratumVetoBoundary goldStratum = "veto-boundary"
 )
 
 // allStrata is the fixed print / iteration order for per-stratum breakdowns.
-// Mirrors bench.AllExtractLabels.
-var allStrata = []goldStratum{stratumLonePosting, stratumAmbiguousPosting, stratumNoPosting, stratumRandom, stratumBoundary}
+// Mirrors bench.AllExtractLabels. A stratum belongs here once it is DEFINED, not
+// once it has been drawn: the veto boundary ships defined and empty, because
+// drawing it needs a real capture window and is the operator's own act.
+var allStrata = []goldStratum{stratumLonePosting, stratumAmbiguousPosting, stratumNoPosting, stratumRandom, stratumBoundary, stratumVetoBoundary}
 
-// Valid reports whether s is one of the known strata.
+// Valid reports whether s is one of the known strata. It is the whole integration
+// point for a new stratum: goldset-ui, goldset-apply, goldset-worksheet and
+// goldset-confirm-sheet all take a stratum by name and validate it through here,
+// so none of them needs to learn about one.
 func (s goldStratum) Valid() bool {
 	return s == stratumLonePosting || s == stratumAmbiguousPosting || s == stratumNoPosting ||
-		s == stratumRandom || s == stratumBoundary
+		s == stratumRandom || s == stratumBoundary || s == stratumVetoBoundary
 }
 
 // goldDrawing groups strata into the DRAW they came from. A drawing is the scope a
@@ -203,6 +222,11 @@ const (
 	// which is exactly why it is a drawing of its own rather than more rows in
 	// another one.
 	drawingBoundary goldDrawing = "boundary"
+	// drawingVetoBoundary is ADR-0049's rollout draw: a census of the pages the
+	// Learned Veto would withhold the extractor call from. Its own drawing because
+	// it is its own capture frame and its own rule pair, and -- like the boundary
+	// drawing -- its weights are all 1, so there is nothing to normalize toward.
+	drawingVetoBoundary goldDrawing = "veto-boundary"
 )
 
 // Drawing returns the drawing s belongs to, or "" for a stratum-less row -- a raw,
@@ -215,6 +239,8 @@ func (s goldStratum) Drawing() goldDrawing {
 		return drawingRandom
 	case stratumBoundary:
 		return drawingBoundary
+	case stratumVetoBoundary:
+		return drawingVetoBoundary
 	default:
 		return ""
 	}
@@ -477,14 +503,26 @@ func frameSince(scan captureScan, cutoff time.Time) (captureScan, int) {
 // README rather than corrected for.
 func excludingURLs(scan captureScan, exclude map[string]struct{}) (captureScan, int) {
 	out := scan
-	out.Candidates = make([]candidate, 0, len(scan.Candidates))
+	var dropped int
+	out.Candidates, dropped = withoutURLs(scan.Candidates, exclude)
+	return out, dropped
+}
+
+// withoutURLs drops the candidates whose URL is in exclude, returning the survivors
+// and how many it dropped. It is the exclusion itself, separated from the scan it
+// usually narrows: the boundary drawings apply the same rule to a CENSUS they have
+// already computed rather than to the frame they computed it over, because a page an
+// earlier drawing sampled must not be drawn twice while still counting toward what
+// the frame's rules decide (ADR-0049).
+func withoutURLs(cands []candidate, exclude map[string]struct{}) ([]candidate, int) {
+	out := make([]candidate, 0, len(cands))
 	dropped := 0
-	for _, c := range scan.Candidates {
+	for _, c := range cands {
 		if _, skip := exclude[c.URL]; skip {
 			dropped++
 			continue
 		}
-		out.Candidates = append(out.Candidates, c)
+		out = append(out, c)
 	}
 	return out, dropped
 }

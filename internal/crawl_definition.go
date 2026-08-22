@@ -141,8 +141,9 @@ type LLMGateConfig struct {
 	// count — the escape hatch for dropping saturation entirely.
 	ExtractJobLinkSaturationCount int
 
-	// RequirePositiveEvidence turns on the Extract Gate's final rung (ADR-0044): a
-	// page that has cleared every reject rung is extracted only when it carries
+	// RequirePositiveEvidence turns on the Extract Gate's Positive Evidence rung
+	// (ADR-0044) -- its last reject-on-absence rung, with only the Learned Veto below
+	// it: a page that has cleared every reject rung is extracted only when it carries
 	// Positive Evidence of being a single posting, instead of being admitted just
 	// because nothing rejected it. False is the previous behaviour -- the blanket
 	// accept -- and is the kill switch that restores it without a deploy, wired to
@@ -158,6 +159,33 @@ type LLMGateConfig struct {
 	// It SHIPS ON since #264. See DefaultLLMGateConfig for the measurement that
 	// justified the flip and the guard that holds it.
 	RequirePositiveEvidence bool
+
+	// LearnedVeto turns on the Extract Gate's Learned Veto (ADR-0049): a page that has
+	// cleared every rung above it -- which since #264 means every reject rung and then
+	// Positive Evidence -- reaches the extractor only if its Posting Score, the
+	// learned, graded estimate that the page is one Job Listing, reaches
+	// pagegate.VetoThreshold. False is today's behaviour, the unconditional Positive
+	// Evidence accept, and is the kill switch that restores it without a deploy, wired
+	// to EXTRACT_LEARNED_VETO.
+	//
+	// Unlike RequirePositiveEvidence it reaches ONE lane, the walk. The Collection
+	// Cycle's refetch re-gate clears it from its own copy of this config
+	// (collection.NewRefetchProcessor), because a re-gate of a stored Job Listing asks
+	// whether the page is still one posting, not whether a new extract call is worth
+	// paying for — and ADR-0049's whole cost argument is the walk's extract bill.
+	//
+	// There is deliberately NO threshold field beside it. The operating point ships
+	// compiled in next to the weights the same training run produced (ADR-0049): a
+	// config-settable cut could drift away from the fit that chose it, and the gate
+	// would then be running an operating point nobody measured.
+	//
+	// It composes WITH RequirePositiveEvidence rather than nesting under it: each
+	// switch restores its own rung's prior behaviour, and pulling both restores the
+	// pre-ADR-0044 gate.
+	//
+	// It SHIPS OFF. See DefaultLLMGateConfig for what the training run measured and
+	// what flipping it is owed.
+	LearnedVeto bool
 }
 
 // DefaultLLMGateConfig returns the built-in pre-LLM gate signals. CareerPathSignals
@@ -268,6 +296,19 @@ func DefaultLLMGateConfig() LLMGateConfig {
 		// scores the rung whatever this default says, so turning it off here only
 		// desynchronizes the two.
 		RequirePositiveEvidence: true,
+
+		// Learned Veto (ADR-0049), OFF. False is today's gate exactly: the Positive
+		// Evidence rung's accepts are unconditional and the Posting Score is never
+		// computed at all. Over the committed Extract Gold Set the veto withholds 50 of
+		// the 177 scorable calls that rung makes (28.2%) while losing NONE of the 127
+		// detail rows it accepts, which meets ADR-0049's pre-registered 10% condition.
+		// That figure is IN-SAMPLE by necessity -- the false-drop guard reads the same
+		// rows the weights were fitted on -- and its out-of-fold counterpart already
+		// costs 16 detail rows at a 30% cut, so flipping this default is owed the
+		// capture-window pass ADR-0049's rollout section describes.
+		// EXTRACT_LEARNED_VETO=true is how you try it without moving this line; prefer
+		// the dial, so the benchmark guard and the shipped config cannot part company.
+		LearnedVeto: false,
 	}
 }
 
