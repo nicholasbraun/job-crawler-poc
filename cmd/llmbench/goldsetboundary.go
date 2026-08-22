@@ -30,9 +30,15 @@ const boundaryCensusWeight = 1.0
 // before ADR-0044's Positive Evidence rung. RequirePositiveEvidence is set FALSE
 // explicitly rather than left at its default so this keeps meaning "the previous
 // behaviour" after #264 flips that default on.
+//
+// LearnedVeto is pinned FALSE for the same reason (ADR-0049): the baseline is the
+// pre-ADR-0044 gate, which had no rung 9 at all, and a default flip that quietly armed
+// one here would make AuditFalseDrops attribute veto-caused drops to the baseline's
+// reject rungs.
 func boundaryBaselineConfig() crawler.LLMGateConfig {
 	cfg := crawler.DefaultLLMGateConfig()
 	cfg.RequirePositiveEvidence = false
+	cfg.LearnedVeto = false
 	return cfg
 }
 
@@ -53,9 +59,19 @@ func boundaryBaselineConfig() crawler.LLMGateConfig {
 // The rule lives HERE, in code, rather than in a -gate-config flag: a flag would let
 // a later run silently redefine the boundary, and the drawn rows would then claim a
 // boundary nobody could re-derive.
+//
+// LearnedVeto is pinned FALSE, and that pin is load-bearing beyond the draw (ADR-0049).
+// This function is also how the trainer and two guards name "the pages the Positive
+// Evidence rung accepts": rung 8's accept population is by definition PRE-veto, since
+// the veto only ever prunes it. Left at its default, the day EXTRACT_LEARNED_VETO's
+// default flips, scorerSamples would fit its operating point against the veto's own
+// survivors, TestCommittedThresholdLosesNoDetailRowThePositiveEvidenceRungAccepts would
+// become a tautology, and the subtractive-only guard's OFF arm would be a second copy
+// of its ON arm.
 func boundaryCandidateConfig() crawler.LLMGateConfig {
 	cfg := crawler.DefaultLLMGateConfig()
 	cfg.RequirePositiveEvidence = true
+	cfg.LearnedVeto = false
 	return cfg
 }
 

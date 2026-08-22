@@ -247,8 +247,9 @@ func TestExtractGoldSetFalseDropGuard(t *testing.T) {
 
 // learnedVetoConfig is the shipping Positive Evidence rule with ADR-0049's Learned
 // Veto on -- what EXTRACT_LEARNED_VETO=true runs, and what
-// `score-capture -gate-config '{"LearnedVeto": true}'` scores. Both switches are set
-// explicitly, for the reason boundaryCandidateConfig sets one: this config must keep
+// `score-capture -gate-config <file holding {"LearnedVeto": true}>` scores. The flag
+// takes a PATH, never inline JSON: loadGateConfig reads the file. Both switches are set
+// explicitly, for the reason boundaryCandidateConfig pins both: this config must keep
 // meaning "both rungs on" whatever either default later says.
 func learnedVetoConfig() crawler.LLMGateConfig {
 	cfg := boundaryCandidateConfig()

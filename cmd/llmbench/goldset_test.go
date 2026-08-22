@@ -2319,6 +2319,48 @@ func TestBoundarySampleRefusesADuplicateURL(t *testing.T) {
 	}
 }
 
+// TestBoundaryConfigsPinEveryExtractKillSwitch holds the property both boundary
+// configs exist for: what they mean must not depend on what DefaultLLMGateConfig
+// currently says. Each Extract Gate kill switch is set EXPLICITLY in both, so the day
+// one of them ships on by default (ADR-0044 did it once, ADR-0049's rollout prescribes
+// it again) the boundary, the rung-8 accept population the trainer fits against, and
+// the OFF arm of the subtractive-only guard all keep saying what they say today.
+//
+// It is written as a switch-by-switch census rather than as two equality checks so
+// that ADDING a third kill switch to LLMGateConfig and forgetting to pin it is what
+// fails here — which is the failure this test is for.
+func TestBoundaryConfigsPinEveryExtractKillSwitch(t *testing.T) {
+	tests := []struct {
+		name                    string
+		cfg                     crawler.LLMGateConfig
+		requirePositiveEvidence bool
+		learnedVeto             bool
+	}{
+		{
+			// The pre-ADR-0044 blanket accept: no Positive Evidence rung, and no rung 9
+			// either, since rung 9 did not exist.
+			name: "baseline", cfg: boundaryBaselineConfig(),
+			requirePositiveEvidence: false, learnedVeto: false,
+		},
+		{
+			// The shipping tiered rule, and NOTHING below it: rung 8's accept set is by
+			// definition pre-veto, because the veto only ever prunes it.
+			name: "candidate", cfg: boundaryCandidateConfig(),
+			requirePositiveEvidence: true, learnedVeto: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.RequirePositiveEvidence; got != tt.requirePositiveEvidence {
+				t.Errorf("RequirePositiveEvidence = %v, want %v pinned explicitly", got, tt.requirePositiveEvidence)
+			}
+			if got := tt.cfg.LearnedVeto; got != tt.learnedVeto {
+				t.Errorf("LearnedVeto = %v, want %v pinned explicitly", got, tt.learnedVeto)
+			}
+		})
+	}
+}
+
 // TestCommittedBoundaryStratumIsTheDisagreementSet is the half of this drawing's
 // provenance that is still a live guard: every committed row must be a page today's
 // BLANKET ACCEPT extracts. That is a statement about the REJECT RUNGS, which the
