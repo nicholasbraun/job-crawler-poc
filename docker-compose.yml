@@ -92,6 +92,11 @@ services:
       # works under Docker; ":-" expands an unset var to "" and env.EnvOr reads "" as
       # the built-in default (true), keeping the default defined once, in Go.
       - EXTRACT_REQUIRE_POSITIVE_EVIDENCE=${EXTRACT_REQUIRE_POSITIVE_EVIDENCE:-}
+      # Learned Veto kill switch (ADR-0049), the Extract Gate's last rung. Listed here so
+      # the flip AND the back-out are one variable under Docker -- the README's rollout
+      # runbook promises exactly that; ":-" expands an unset var to "" and env.EnvOr reads
+      # "" as the built-in default (false), keeping the default defined once, in Go.
+      - EXTRACT_LEARNED_VETO=${EXTRACT_LEARNED_VETO:-}
       # Structural Rendering kill switch (ADR-0046). Listed here so the dial works
       # under Docker; ":-" expands an unset var to "" and env.EnvOr reads "" as the
       # built-in default (false), keeping the default defined once, in Go.

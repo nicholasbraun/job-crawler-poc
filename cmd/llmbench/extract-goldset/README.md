@@ -745,6 +745,11 @@ either way and the thirteen drops are the **same thirteen pages**, which is exac
 `TestExtractGoldSetFalseDropGuardUnderTheLearnedVeto` asserts as a set comparison. The
 `false-drops 11` in the boundary block are eleven of those same thirteen, unchanged.
 
+Turning the rung on in production is a separate act with its own sequence — a capture
+window, an offline score, a Blind Confirmation of the pages it would drop, those labels
+committed here, and only then the flip. It is written up under *Turning the Learned Veto
+on* in the repository `README.md`.
+
 ## The guard (#264)
 
 The scorecards above are read by a human. The **guard** is read by CI:

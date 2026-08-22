@@ -206,7 +206,7 @@ COLLECTION_INTERVAL: must be a positive Go duration (e.g. 90s, 5m, 24h), got "da
 | `DESCRIPTION_MAX_CHARS`  | `16000`                                 | Cap (runes) on the stored Posting Body; its own knob, independent of the extractor's prompt window |
 | `EXTRACT_FROM_JSONLD`    | `true`                                  | Free Extraction kill switch (ADR-0042): read a lone structured-data posting with no model call |
 | `EXTRACT_REQUIRE_POSITIVE_EVIDENCE` | `true`                       | Extract Gate must see positive evidence a page *is* one posting, not just that nothing rejected it (ADR-0044) |
-| `EXTRACT_LEARNED_VETO`   | `false`                                 | Learned Veto (ADR-0049): the Extract Gate withholds the call from a page that carries Positive Evidence but whose Posting Score is below the threshold compiled in beside the weights. `false` — the default — is today's gate exactly, and off the score is never computed at all. Setting it `true` withheld 50 of 177 calls (28.2%) at zero `detail` loss over the committed Extract Gold Set, but that is an in-sample figure: flipping it is owed the capture-window pass in ADR-0049's rollout section |
+| `EXTRACT_LEARNED_VETO`   | `false`                                 | Learned Veto (ADR-0049): the Extract Gate withholds the call from a page that carries Positive Evidence but whose Posting Score is below the threshold compiled in beside the weights. `false` — the default — is today's gate exactly, and off the score is never computed at all. Setting it `true` withheld 50 of 177 calls (28.2%) at zero `detail` loss over the committed Extract Gold Set, but that is an in-sample figure: flipping it is owed the capture-window pass in *Turning the Learned Veto on* under [Tests](#tests) (ADR-0049) |
 | `SHADOW_EXTRACT_RATE`    | `0.01`                                  | Fraction of Extract-Gate-rejected pages extracted anyway to measure false-drops; `0` disables |
 | `PARSE_STRUCTURAL_RENDERING` | `false`                             | Parser keeps page structure — headings, list items, table rows, link targets, form controls (ADR-0046); non-model consumers still read the Flattened Text derived from it, while the classifier and extractor prompts read the rendering with link targets omitted. `false` restores today's flattened output and skips the second DOM walk. Measured by `llmbench score-rendering`: the Extract Gate decides identically under both renderings (0 flips over 116 committed pages), and at the 8000-rune budget the rendering costs 1.80% of the page words the extractor sees. **The right setting depends on the model you serve** (#289): scored online over re-fetched real postings, it left a Qwen3.5-9B's recall unchanged at 92%, but on the 83 pages that actually reach the model (i.e. excluding those Free Extraction handles with no model call) it nearly doubled a Qwen2.5-3B-Instruct's recall, 28.0%→50.6%, for ~+68% wall time — turn it on for a small local model, leave it off for a large one, and re-decide it with `extractbench` whenever `LLM_MODEL` changes |
 | `CRAWL_MAX_WORKERS`  | `50`                                        | Per-run crawl worker pool size (I/O-bound; raise for throughput) |
@@ -276,6 +276,183 @@ Structural Rendering the pipeline produces, with link targets kept, served by th
 loopback in a sandboxed, script-free frame rather than framed from the site (ADR-0047). A
 *drifted* page is shown behind a warning and a *gone* one is not shown at all; the captured
 content is the authority in every case, and the screen says so.
+
+### Turning the Learned Veto on (ADR-0049)
+
+The Extract Gate's last rung ships **off**. `EXTRACT_LEARNED_VETO=false` is today's gate
+exactly, and off the **Posting Score** is never computed at all, so a crawl that has not
+turned the rung on pays nothing for it. Turning it on is a separate act, and this is its
+runbook.
+
+The offline evidence already stands: over the committed Extract Gold Set the Learned Veto
+withholds **50 of 177** of the calls the Positive Evidence rung accepts — **28.2%** — and
+loses **none** of that rung's 127 `detail` rows, taking precision from 0.7175 to 1.0000.
+`TestExtractGoldSetFalseDropGuardUnderTheLearnedVeto` holds that page for page under a
+plain `go test ./...`. Reproduce the scorecard any time:
+
+```bash
+echo '{"LearnedVeto": true}' > /tmp/veto.json     # -gate-config takes a PATH, not inline JSON
+go run ./cmd/llmbench score-capture -in cmd/llmbench/extract-goldset/goldset.jsonl -gate-config /tmp/veto.json
+```
+
+What is missing is evidence about pages that set does not contain. That is what the flip is
+gated on.
+
+**The condition, registered in ADR-0049 before the measurement existed:** the Learned Veto
+is turned on only if it vetoes **at least 10% of the Positive Evidence rung's accepts while
+losing none of the `detail` rows that rung accepts today**. `llmbench train-scorer` reports
+both figures restricted to that population and to no other, so a number over all scorable
+rows can never be mistaken for it. The run on the committed set met the condition at 28.2%
+— but read that as in-sample: out of fold, host-grouped, the two reads agree to a 10% cut
+and diverge past it, costing 16 `detail` rows at a 30% depth. Merging the rung was never
+gated on the condition; flipping its default is.
+
+**Do not grade the Learned Veto against the extractor's own verdict, and do not add an
+observe mode to production in order to.** That verdict runs at precision **0.454** against
+human labels (0.816 on the Random Stratum) and its errors concentrate on exactly the pages
+that decide an operating point, so grading the veto against it would report the rung as safe
+precisely where it is not. The absence of an observe mode is a decision, not an omission.
+The offline path is better and cheaper: the capture tap stores the full parsed content of
+every page that reaches the extract stage, so the share a threshold would veto is computable
+over a real stream frame with **no labels involved at all**, and the pages it would drop are,
+by construction, the Boundary Stratum for this rule.
+
+**1. Run a capture window with the rung off.**
+
+```bash
+# .env, for the duration of the window
+EXTRACT_LEARNED_VETO=false                              # the window records what the rung WOULD judge
+EXTRACT_CAPTURE_PATH=<repo>/capture/veto-window.jsonl   # gitignored; mkdir the directory first
+EXTRACT_CAPTURE_MAX=0                                   # uncapped; see below
+```
+
+The tap sits downstream of the Extract Gate and fires once per completed extraction, so what
+it records is exactly the population the veto judges: the pages Positive Evidence accepted.
+Leave `EXTRACT_CAPTURE_MAX` at `0` — the default caps records *per verdict*, which makes the
+file a sampling design rather than a stream frame, and a depth computed over a capped file is
+a number about the cap. Leave `PARSE_STRUCTURAL_RENDERING` wherever production has it: the
+Posting Score reads the page's Flattened Text, so that switch cannot move it (ADR-0046). Note
+the window's start time — the drawing verbs take it as `-since` and never reconstruct it.
+Under Docker this is a gitignored `docker-compose.override.yml` carrying the two variables and
+a `./capture` bind mount, the shape #116 used.
+
+**2. Score the window offline against the shipped weights.** The number to compute is the
+**veto depth** on that frame: of the pages today's gate extracts, the share whose Posting
+Score falls below `pagegate.VetoThreshold` (`0.605395`, compiled in beside the weights). It
+needs no labels, and the pages below the cut are the drop set step 3 confirms.
+
+`llmbench goldset-sample-boundary` already computes this exact census — it replays two gate
+configs over a capture and takes every page the two disagree on — but the pair it replays is
+ADR-0044's, fixed in `cmd/llmbench/goldsetboundary.go` rather than passed as a flag, and
+deliberately so: a flag would let a later run silently redefine a boundary the committed rows
+claim. So drawing the veto's boundary is that same verb against the veto's own pair
+(`LearnedVeto` off versus on), added to that file in the commit that draws it. Nothing else
+about the drawing changes: it stays a census, append-only, weight 1.
+
+**3. Confirm the drop set blind.** The rows the draw appended carry no confirmer, so the
+confirmation surface serves them one at a time:
+
+```bash
+go run ./cmd/llmbench goldset-ui -by "<your name>" -stratum boundary
+```
+
+The label is taken **before** anything is revealed (ADR-0048), each row's **Capture Fidelity**
+is measured against a fresh fetch so a live view is admitted or refused per row (ADR-0047),
+and the captured content is the authority in every case. These confirmed rows outlive the
+decision, which is the point: label quality, not volume, is the binding constraint on
+everything in this line of work.
+
+**4. Commit the confirmed rows — and refit.** They join the Extract Gold Set through
+`goldset-apply`, with the drawing's row count and confirmation counts updated in
+`cmd/llmbench/goldset_test.go` in the same commit; `cmd/llmbench/extract-goldset/README.md`
+carries the whole maintenance sequence. Then remember what ADR-0049 makes true: **the Gold Set
+now produces part of the gate as well as scoring it.** Adding rows changes the fitted weights,
+so `TestTrainScorerReproducesTheCommittedWeights` goes red until you regenerate:
+
+```bash
+go generate ./internal/pagegate     # re-runs llmbench train-scorer over the Gold Set
+go test ./cmd/llmbench/... ./internal/pagegate/...
+```
+
+A refit re-chooses `VetoThreshold` under the same zero-`detail`-loss constraint, so the
+operating point moves with the labels rather than away from them. If a newly confirmed
+`detail` row sits in the drop set, the guard names it: re-run the trainer, never edit a label
+and never move `VetoThreshold` by hand.
+
+**5. Re-read the numbers on the artifact you are actually about to ship** — the refitted one,
+not the one step 2 measured — with the scorecard command at the top of this section, and check
+the pre-registered condition against the trainer's own report (`go generate` prints it) a
+second time.
+
+**6. Flip the default.**
+
+```bash
+# .env
+EXTRACT_LEARNED_VETO=true
+docker compose up -d crawler   # `restart` re-runs the old environment; `up -d` recreates it
+```
+
+Confirm it took from the startup line, which is the only place a running crawl says which
+operating point it is enforcing:
+
+```
+extract gate learned veto (ADR-0049) enabled=true threshold=0.605395
+```
+
+#### After the flip — what to read
+
+The **Learned Veto (ADR-0049)** row of the LLM telemetry dashboard
+(`grafana/dashboards/llm-telemetry.json`) carries all of it:
+
+- **Extract calls the Learned Veto saved** —
+  `crawler_llm_gated_total{kind="extract",reason="learned_veto"}`. Its own gated reason rather
+  than the pooled structural one, so the cost of pulling the switch is readable on its own.
+- **Veto depth** — the calls saved over `crawler_llm_posting_score_count`, i.e. every page the
+  rung judged, its vetoes and its survivors alike. This is the live counterpart of the
+  pre-registered 10% floor.
+- **Learned Veto false-drop rate** —
+  `crawler_llm_shadow_total{verdict="accept",rung="learned_veto"}` over that rung's completed
+  Shadow Extraction verdicts. This is the rung's *only* risk: it can never add a call, so all
+  of its downside sits here. The series is primed at zero, so the first false-drop is visible
+  to `increase()` rather than being absorbed as the baseline, and the matching log line carries
+  the score that caused it (`grep posting_score`). It needs `SHADOW_EXTRACT_RATE` non-zero, and
+  at 1% of the veto's drops the first sample takes a while — an empty series is "not yet
+  observed", not "none".
+- **Posting Score distribution and quantiles** — `crawler_llm_posting_score_bucket`, over the
+  rung's accepts *and* its vetoes. Recording only the vetoes would show where the cut is
+  without showing what it is cutting into. The bucket ladder is fixed and deliberately not
+  pinned to `VetoThreshold`: a boundary moving with every refit would re-bucket every
+  historical series and destroy the one comparison the instrument exists for.
+
+**What drift looks like.** The 28.2% is in-sample over a deliberately Boundary-heavy
+population, so it is *not* a prediction of the live depth — the number to compare against is
+the one step 2 measured on your own capture window. A live depth well away from it means the
+walked stream no longer looks like the frame the operating point was chosen on. Beyond the
+depth: record p10/p50/p90 on flip day and watch them walk; a p50 drifting away from where it
+sat when the weights were fitted means the cut is being applied to a population nobody measured
+it on. And read the shape, not just the level — a cut sitting in a steep step of the cumulative
+panel means small threshold moves swing spend hard. Either reading is a reason to take another
+capture window, not to nudge the threshold.
+
+One reading that is not on the row: the veto sits upstream of the extract stage, so a page it
+withholds is also a page **Free Extraction** never sees. If
+`crawler_llm_gated_total{kind="extract",reason="structured_data"}` falls sharply after the
+flip, the veto is cutting into Job Listings that were costing nothing.
+
+#### Backing it out
+
+One environment variable, no deploy — the same binary, whose compiled-in weights go inert:
+
+```bash
+# .env
+EXTRACT_LEARNED_VETO=false     # or delete the line; "" reads as the built-in default
+docker compose up -d crawler
+```
+
+That restores the unconditional Positive Evidence accept, and off, the Posting Score is not
+computed at all. The two extract switches compose independently: pulling
+`EXTRACT_REQUIRE_POSITIVE_EVIDENCE` instead restores the blanket accept, and pulling both
+restores the gate as it stood before ADR-0044.
 
 ## Project Structure
 
