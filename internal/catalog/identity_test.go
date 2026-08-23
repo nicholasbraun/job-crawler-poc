@@ -544,6 +544,10 @@ func TestIsAggregatorHost(t *testing.T) {
 		{"80000hours board on a subdomain", "https://jobs.80000hours.org/", true},
 		{"80000hours' own site folds in via eTLD+1", "https://80000hours.org/careers/", true},
 		{"globalcharityjobs board", "https://www.globalcharityjobs.com/jobs", true},
+		// One DSP board, two independent employers -- Apcore Logistics and Alpha
+		// Logistics -- so every posting path folds in, locale prefixes included.
+		{"dspjobhub posting names a third-party DSP employer", "https://dspjobhub.com/job/delivery-driver-no-cannabis-test-amazon-dsp-in-sandpoint-id-united-states-jid-4495", true},
+		{"dspjobhub locale-prefixed posting folds in", "https://dspjobhub.com/es/job/delivery-driver-24-hour-start-asap-in-plymouth-ma-united-states-jid-4509", true},
 		// A per-tenant ATS or recruiting-platform board root is a legitimate hub,
 		// not an aggregator -- its only defect is identity attribution (#46).
 		{"smartrecruiters tenant is not an aggregator", "https://jobs.smartrecruiters.com/ScalableGmbH", false},

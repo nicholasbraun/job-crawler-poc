@@ -568,6 +568,15 @@ var aggregatorHosts = map[string]struct{}{
 	// International Manager, People & Culture Operations", "NPH Belgium Board
 	// Members", "Tenure Facility Chief Operating Officer".
 	"globalcharityjobs.com": {},
+	// dspjobhub.com: a board for Amazon Delivery Service Partner roles. Each DSP is
+	// an INDEPENDENT logistics company that happens to deliver for Amazon, and the
+	// board names it on the page: the Sandpoint, ID posting carries Brand "Apcore
+	// Logistics LLC" ("a delivery service partner with Amazon"), the Plymouth, MA
+	// one Brand "Alpha Logistics Group LLC". Two employers on two pages, so the
+	// host is an Aggregator by the employer-named-on-the-page standard above, not
+	// one company's hub -- "Amazon" in the title and URL is the client, not the
+	// employer.
+	"dspjobhub.com": {},
 }
 
 // sharedHostSuffixes are registrable domains (eTLD+1) that front many INDEPENDENT
