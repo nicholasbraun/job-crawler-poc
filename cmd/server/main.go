@@ -243,6 +243,26 @@ func main() {
 	// to before the renderer existed" is true of the parser, not of the derivation.
 	structuralRendering := ld.Bool("PARSE_STRUCTURAL_RENDERING", parser.DefaultStructuralRendering)
 
+	// COLLECTION_CAREER_SURFACE_LINKS confines the Collection walk's link discovery to
+	// each page's Career Surface (ADR-0051), default TRUE. Pulling it restores today's
+	// whole-document harvest -- every link on the page, its host's entire Site Chrome
+	// included -- with no deploy. It touches the Collection walk only; the Discovery
+	// Crawl has no Career Surface and is not configurable here.
+	//
+	// This is the one kill switch that does NOT default to the behavior it replaces,
+	// deliberately. That behavior is the defect: on the measured Cycle 67.4% of the
+	// links a Career Page offers lead nowhere near an opening, and the bounded walk
+	// grew its Frontier faster than the workers emptied it (428,154 URLs added against
+	// 51,383 pages crawled). Defaulting to it would ship a walk that never converges.
+	//
+	// What the switch buys is a back-out for the risk the ADR accepts: the three rules
+	// are additive but not exhaustive, so a Company whose openings sit somewhere none
+	// of them reach becomes invisible to the walk rather than merely slower. That
+	// failure is silent -- fewer crawl-sourced Job Listings, no error anywhere -- so
+	// the validation is a live Cycle read against the baseline above, and this is what
+	// restores the old walk while it is diagnosed.
+	careerSurfaceLinks := ld.Bool("COLLECTION_CAREER_SURFACE_LINKS", urlprocessor.DefaultCareerSurfaceLinks)
+
 	// CRAWL_MAX_WORKERS sizes the per-run discovery worker pool — how many pages
 	// are downloaded and processed in parallel per run. Crawl workers are
 	// I/O-bound (blocked on network downloads), so this
@@ -325,7 +345,7 @@ func main() {
 
 	factory := newFactory(crawlMaxWorkers, visitedCap, robotsCacheTTL, robotsCacheSize, llmMaxWorkers, llmConfig,
 		descriptionMaxChars, extractFromJSONLD, shadowExtractRate, requirePositiveEvidence, learnedVeto, structuralRendering,
-		redisClient, companyRepository, careerPageRepository, corpusRepository)
+		careerSurfaceLinks, redisClient, companyRepository, careerPageRepository, corpusRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory,
 		// One cleaner sweeps all of a run's transient Redis state on a terminal
 		// status or factory error: the frontier keys and the LLM stage's streams
@@ -461,6 +481,7 @@ func newFactory(
 	requirePositiveEvidence bool,
 	learnedVeto bool,
 	structuralRendering bool,
+	careerSurfaceLinks bool,
 	redisClient *redis.Client,
 	companyRepository crawler.CompanyRepository,
 	careerPageRepository crawler.CareerPageRepository,
@@ -473,6 +494,17 @@ func newFactory(
 	httpClient := downloader.NewClient(userAgent, downloader.WithTransport(sharedTransport))
 	retryHTTPClient := downloader.NewRetryClient(httpClient)
 	htmlParser := parser.NewHTMLParser(parser.WithStructuralRendering(structuralRendering))
+	// The Collection walk's own parser: the SAME rendering as htmlParser -- so
+	// RendererID, and every capture record stamped with it, is unchanged -- plus the
+	// main-region link harvest the Career Surface is built on (ADR-0051). A second
+	// parser rather than an option on the shared one because Discovery follows the
+	// whole document and must not pay for a second walk over the region on every page
+	// it fetches. The refetch lane keeps the shared parser for the same reason: it
+	// re-gates and re-extracts pages, it never enqueues links.
+	walkParser := parser.NewHTMLParser(
+		parser.WithStructuralRendering(structuralRendering),
+		parser.WithMainRegionLinks(careerSurfaceLinks),
+	)
 
 	robotsTxtParser := temoto.NewRobotsTxtParser(userAgent)
 	robotsTxtDownloader := robotstxt.NewRobotsTxtDownloader(userAgent, sharedTransport)
@@ -498,6 +530,11 @@ func newFactory(
 	// two prompts read, so which one is running has to be legible from the log
 	// rather than inferred from the environment (ADR-0046).
 	slog.Info("structural rendering (ADR-0046)", "enabled", structuralRendering, "renderer", htmlParser.RendererID())
+	// Which walk a Cycle just ran has to be legible from the log too: the switch's
+	// failure mode is silent (fewer crawl-sourced Job Listings, no error anywhere), so
+	// the Cycle counts it is validated by are only readable against the setting that
+	// produced them (ADR-0051).
+	slog.Info("career surface links (ADR-0051)", "enabled", careerSurfaceLinks)
 
 	// The extraction-cache key (ADR-0035): ONE closure over the extractor's prompt
 	// window, handed to both the save processor that stamps it and the refetch lane
@@ -691,6 +728,20 @@ func newFactory(
 			// Career-Page dormancy). It reuses the CrawlRun machinery verbatim; only
 			// the engine wiring differs. Started via the existing startRun path against
 			// CollectionDefinitionID; pause/resume/reconcile are kind-agnostic.
+
+			// Rule 2 of the Career Surface (ADR-0051): a link is career-shaped when the
+			// crawl definition's OWN pass vocabulary already allows it. Reusing the two
+			// pass predicates the chain above is built from -- rather than minting a
+			// second, looser one -- is what makes the rule maintenance-free: it admits
+			// nothing the chain would have blocked anyway, because PassSubdomains and
+			// PassPathSegments sit before every block rule and short-circuit it with
+			// filter.ErrPass.
+			passSubdomains := urlfilter.PassSubdomains(uf.PassSubdomains...)
+			passPathSegments := urlfilter.PassPathSegments(uf.PassPathSegments...)
+			careerShaped := func(u string) bool {
+				return errors.Is(passSubdomains(u), filter.ErrPass) ||
+					errors.Is(passPathSegments(u), filter.ErrPass)
+			}
 
 			// Seed from the Catalog: every non-dormant Career Page (carrying its
 			// career_page.id) plus each Pageless Company's Website (no page, Nil id).
@@ -928,9 +979,13 @@ func newFactory(
 			urlWorkerPool := pool.NewPool(ctx, "collection_url_pool",
 				func() processor.Processor[crawler.URL] {
 					return urlprocessor.NewProcessor(&urlprocessor.Config{
-						Frontier:         boundedFrontier,
-						Downloader:       retryHTTPClient,
-						Parser:           htmlParser,
+						Frontier:   boundedFrontier,
+						Downloader: retryHTTPClient,
+						// The walk's parser, the one that harvests the main region
+						// CareerSurfaceLinks below then reads (ADR-0051). Both come off the
+						// same knob: on here with the shared parser, rule 1 would harvest
+						// nothing and the walk would follow only rules 2 and 3.
+						Parser:           walkParser,
 						ContentFilter:    contentFilter,
 						URLFilter:        urlFilter,
 						RobotsTxtChecker: robotsTxtChecker,
@@ -944,7 +999,13 @@ func newFactory(
 						// rate = off.
 						OnShadowExtract: onShadowExtract,
 						ShadowRate:      shadowExtractRate,
-						HasATSFetcher:   hasATSFetcher,
+						// The Career Surface (ADR-0051): follow only the links a page offers
+						// toward this Company's openings, not its host's whole Site Chrome.
+						// Off restores the whole-document harvest, which is what
+						// COLLECTION_CAREER_SURFACE_LINKS is for.
+						CareerSurfaceLinks: careerSurfaceLinks,
+						CareerShaped:       careerShaped,
+						HasATSFetcher:      hasATSFetcher,
 						// An ATS board embedded on a crawled page is fetched through the same
 						// deduped lane, attributed to the page's Owner, with a Nil
 						// CareerPageID (save-only: no sweep/dormancy for an embed board).

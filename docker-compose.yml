@@ -101,10 +101,32 @@ services:
       # under Docker; ":-" expands an unset var to "" and env.EnvOr reads "" as the
       # built-in default (false), keeping the default defined once, in Go.
       - PARSE_STRUCTURAL_RENDERING=${PARSE_STRUCTURAL_RENDERING:-}
+      # Career Surface kill switch (ADR-0051): the Collection walk follows only each
+      # page's Career Surface. Listed here so the back-out is one variable under Docker;
+      # ":-" expands an unset var to "" and env.EnvOr reads "" as the built-in default
+      # (true), keeping the default defined once, in Go. Set it false to restore the
+      # whole-document harvest -- every link on the page, its host's Site Chrome included.
+      - COLLECTION_CAREER_SURFACE_LINKS=${COLLECTION_CAREER_SURFACE_LINKS:-}
+      # Extract-capture tap (ADR-0043, #293): the harvest path for the Extract Gold Set,
+      # and the only way rows stamped with a second renderer are produced (ADR-0046,
+      # #281). Unset the tap is off. Point it INSIDE the ./capture mount below --
+      # EXTRACT_CAPTURE_PATH=/capture/<window>.jsonl -- or the file dies with the
+      # container. EXTRACT_CAPTURE_MAX rides along because the two are never set apart:
+      # PATH alone silently caps the file at 2000 records per verdict, which makes it a
+      # sampling design rather than the stream frame a veto-depth window needs (ADR-0049).
+      - EXTRACT_CAPTURE_PATH=${EXTRACT_CAPTURE_PATH:-}
+      - EXTRACT_CAPTURE_MAX=${EXTRACT_CAPTURE_MAX:-}
       - CRAWL_MAX_WORKERS=${CRAWL_MAX_WORKERS:-50}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DATABASE_URL=postgres://crawler:crawler@postgres:5432/crawler?sslmode=disable
       - REDIS_ADDR=redis:6379
+    volumes:
+      # Where EXTRACT_CAPTURE_PATH above must point (#293). A BIND mount, not a named
+      # volume: the captured JSONL is the input to the `llmbench goldset-*` verbs, which
+      # run on the host, so surviving `compose down` is not enough -- it has to be
+      # readable without a container. ./capture is gitignored and compose creates it if
+      # it is missing, so an unset tap costs an empty directory and nothing else.
+      - ./capture:/capture
     depends_on:
       - loki
       - postgres

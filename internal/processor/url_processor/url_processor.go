@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"strings"
 
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/catalog"
@@ -27,6 +28,15 @@ import (
 type RobotsTxtChecker interface {
 	Check(ctx context.Context, u string) error
 }
+
+// DefaultCareerSurfaceLinks is what COLLECTION_CAREER_SURFACE_LINKS defaults to:
+// the walk follows only each page's Career Surface (ADR-0051). It ships ON, which
+// inverts the usual "default a kill switch to the live behavior" convention
+// deliberately — the whole-document harvest is the defect the ADR measured (67.4% of
+// a Career Page's depth-1 links lead nowhere near an opening, and the Cycle's walk
+// never drains), so shipping it off would ship the defect. Pulling the switch
+// restores that whole-document harvest.
+const DefaultCareerSurfaceLinks = true
 
 type Config struct {
 	Frontier   frontier.Frontier
@@ -74,6 +84,27 @@ type Config struct {
 	// embed whose provider HasATSFetcher reports registered. Optional: nil disables
 	// embed-triggered fetches.
 	OnATSEmbed func(ctx context.Context, provider, tenant, owner string) error
+	// CareerSurfaceLinks confines link discovery to each page's Career Surface
+	// (ADR-0051): the page's main region, plus — wherever they sit — career-shaped
+	// links and same-path query variants. Everything else is that host's Site Chrome
+	// and is dropped before the URL filter ever sees it.
+	//
+	// The ZERO VALUE is off, which is today's whole-document harvest, so a Config that
+	// does not name it does not change. That is not the shipped default: cmd/server
+	// sets it from COLLECTION_CAREER_SURFACE_LINKS, whose default is
+	// DefaultCareerSurfaceLinks (true). It must be set from the SAME knob as the
+	// parser's WithMainRegionLinks — on here with a parser that does not populate
+	// Content.MainRegionURLs, rule 1 harvests nothing and the walk sees only rules 2
+	// and 3.
+	CareerSurfaceLinks bool
+	// CareerShaped reports whether a URL carries a career token the crawl already
+	// allows — rule 2 of the Career Surface (ADR-0051), which is what still reaches an
+	// opening a site lists only in its Site Chrome. It is the crawl definition's own
+	// PassSubdomains / PassPathSegments vocabulary rather than a second, looser one:
+	// those pass rules already short-circuit every block rule in the URL filter chain,
+	// so rule 2 admits nothing the chain would have blocked anyway. Optional: a nil
+	// predicate reports false for every URL, leaving rules 1 and 3.
+	CareerShaped func(u string) bool
 	// Recorder instruments the keyword relevance gate (pages resolved without the
 	// LLM extractor) for the ADR-0007 measurement. Optional: a nil Recorder
 	// records nothing.
@@ -96,6 +127,8 @@ type urlWorker struct {
 	shadowRate           float64
 	hasATSFetcher        func(provider string) bool
 	onATSEmbed           func(ctx context.Context, provider, tenant, owner string) error
+	careerSurfaceLinks   bool
+	careerShaped         func(u string) bool
 }
 
 func NewProcessor(cfg *Config) *urlWorker {
@@ -127,6 +160,8 @@ func NewProcessor(cfg *Config) *urlWorker {
 		shadowRate:           cfg.ShadowRate,
 		hasATSFetcher:        cfg.HasATSFetcher,
 		onATSEmbed:           cfg.OnATSEmbed,
+		careerSurfaceLinks:   cfg.CareerSurfaceLinks,
+		careerShaped:         cfg.CareerShaped,
 	}
 }
 
@@ -203,12 +238,39 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 		w.recorder.Gated(ctx, llmobs.KindExtract, llmobs.ReasonIrrelevant)
 	}
 
+	// Rule 1's membership set, built once per page. content.MainRegionURLs holds the
+	// SAME raw href strings content.URLs does — the region is a clone of the same
+	// nodes — so the Career Surface is a skip inside the one existing pass rather than
+	// a second list to resolve, merge and order (ADR-0051).
+	inMainRegion := make(map[string]bool, len(content.MainRegionURLs))
+	for _, href := range content.MainRegionURLs {
+		inMainRegion[href] = true
+	}
+
 	for _, contentURL := range content.URLs {
 		parsed, err := nextURL.Parse(contentURL)
 		if err != nil {
 			slog.Error("worker: error parsing content url", "err", err, "url", contentURL)
 			continue
 		}
+
+		// The Career Surface (ADR-0051): the Collection Crawl's walk needs exactly two
+		// things from a Career Page — that Company's Job Listings and the pagination
+		// reaching more of them — so it follows only the part of the page that leads
+		// there. The three rules are additive, any one of which puts a link on the
+		// Surface: it sits in the main region (rule 1, the lever), it is career-shaped
+		// wherever it sits (rule 2, an opening a site lists in its Site Chrome), or it
+		// differs from the page it sits on only by query string (rule 3, pagination,
+		// whose recommended markup is a <nav> that rule 1 drops). What is left is the
+		// host's Site Chrome, which is 67.4% of what a Career Page links and the reason
+		// a Cycle's bounded walk does not drain. Depth is NOT exempted for rule 3:
+		// maxDepth is the only thing keeping a faceted board's query variants finite.
+		if w.careerSurfaceLinks && !inMainRegion[contentURL] &&
+			!w.isCareerShaped(parsed.RawURL) && !samePathVariant(nextURL.RawURL, parsed.RawURL) {
+			slog.Debug("worker: url off the career surface, dropping", "url", parsed.RawURL, "page", nextURL.RawURL)
+			continue
+		}
+
 		if err := w.urlFilter(parsed.RawURL); err != nil {
 			slog.Debug("worker: url filtered out", "url", parsed.RawURL, "cause", err)
 			continue
@@ -285,6 +347,37 @@ func (w *urlWorker) sampleShadowExtraction(ctx context.Context, nextURL *crawler
 		w.recorder.ShadowDropped(ctx, string(verdict.Rung))
 		slog.Debug("worker: shadow extraction sample dropped", "err", err, "url", nextURL.RawURL, "rung", verdict.Rung)
 	}
+}
+
+// isCareerShaped applies rule 2 of the Career Surface (ADR-0051) — a career token the
+// crawl's own URL filter already allows — with a nil predicate reading as "no link is
+// career-shaped", so a Config that does not supply one falls back to rules 1 and 3
+// rather than following everything.
+func (w *urlWorker) isCareerShaped(u string) bool {
+	return w.careerShaped != nil && w.careerShaped(u)
+}
+
+// samePathVariant applies rule 3 of the Career Surface (ADR-0051): link differs from
+// the page it was found on only by query string.
+//
+// Structural by construction, which is why — unlike rule 2 — it needs no vocabulary
+// in any language: a link differing from its own page only by query string is another
+// slice of the same list. A link IDENTICAL to its page counts as a variant here and
+// is a no-op at the frontier, which already holds the page it came from.
+func samePathVariant(page, link string) bool {
+	return withoutQuery(page) == withoutQuery(link)
+}
+
+// withoutQuery returns a normalized URL up to its query string: scheme, host and
+// path. The query is the only "?"-introduced part left to cut at — a "?" inside a
+// path is escaped and crawler.URL drops the fragment. The root's trailing slash goes
+// too, because normalize leaves it optional there ("https://acme.com" and
+// "https://acme.com/?page=2" are one path, two spellings) and a Company Website
+// seeded at its root would otherwise lose its paginator to rule 3. It is the only
+// trailing slash that survives normalization, so trimming it can merge nothing else.
+func withoutQuery(u string) string {
+	path, _, _ := strings.Cut(u, "?")
+	return strings.TrimSuffix(path, "/")
 }
 
 // gateReason maps the Extract Gate rung that shed a page to the reason recorded on the

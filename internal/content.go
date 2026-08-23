@@ -16,6 +16,29 @@ type Content struct {
 	// captured row is meant to record what the parser produced.
 	MainContent string
 	URLs        []string
+	// MainRegionURLs holds the raw hrefs found inside the page's main region — the
+	// same region MainContent is read from — as a SUBSET of URLs, never a narrowing
+	// of it. It is rule 1 of the Career Surface (ADR-0051): the Collection Crawl's
+	// walk follows a link off this set, or one of the two rules it cannot cover
+	// (career-shaped, same-path variant), and leaves the rest of the host's Site
+	// Chrome out of the Frontier.
+	//
+	// URLs stays wide because two Gate rungs read it — the Career Page Confidence
+	// Score's job-link weight (ADR-0016) and the Extract Gate's job-link saturation
+	// (ADR-0019) — and every Gold Set fixture was captured under the wide harvest
+	// (ADR-0043); narrowing it in place would silently move both rungs. Keeping the
+	// sets separate is what makes ADR-0051 not a Gate change.
+	//
+	// Nil unless the parser was built with WithMainRegionLinks: only the Collection
+	// lane reads it, so the Discovery Crawl does not pay a second walk over the
+	// region on every page it fetches.
+	//
+	// omitempty — the only tag on this struct — for the reason goldRow.Renderer
+	// carries one (#281): the committed Extract Gold Set stores a Content per row and
+	// a round trip through its decoder must be the IDENTITY, or every goldset-* verb
+	// rewrites the whole substrate. Every row drawn before ADR-0051 has no main-region
+	// harvest, and an absent key is what says so.
+	MainRegionURLs []string `json:"MainRegionURLs,omitempty"`
 	// JSONLD holds the raw contents of each <script type="application/ld+json">
 	// block on the page, for structured-data-aware consumers (e.g. JobPosting
 	// extraction). Other pipelines ignore it.

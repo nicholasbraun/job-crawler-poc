@@ -213,12 +213,14 @@ COLLECTION_INTERVAL: must be a positive Go duration (e.g. 90s, 5m, 24h), got "da
 | `CRAWL_VISITED_CAP`  | `5000000`                                   | Per-run ceiling on the visited set before FIFO eviction (ADR-0027) |
 | `ROBOTS_CACHE_SIZE`  | `16384`                                     | Hosts held in the shared robots.txt rules cache (ADR-0032) |
 | `ROBOTS_CACHE_TTL`   | `1h`                                        | How long a cached robots.txt is trusted before a re-fetch |
+| `COLLECTION_CAREER_SURFACE_LINKS` | `true`                         | The Collection walk follows only each page's **Career Surface** (ADR-0051): the main region, plus — wherever they sit — links carrying a career token the crawl already allows and links differing from their own page only by query string. Everything else is Site Chrome, which was **67.4%** of the depth-1 Frontier and why a bounded Cycle's walk did not drain (428,154 URLs added against 51,383 pages crawled). This is the one kill switch that does **not** default to the behavior it replaces — that behavior is the defect. `false` restores the whole-document harvest; `Content.URLs` is unchanged either way, so no Gate rung moves |
 | `COLLECTION_ENABLED` | `true`                                      | Whether the scheduler starts Collection Cycles (manual API starts still work) |
 | `COLLECTION_INTERVAL`| `24h`                                       | Minimum time between Collection Cycle starts (ADR-0036) |
 | `DATABASE_URL`       | `postgres://crawler:crawler@localhost:5432/crawler?sslmode=disable` | Postgres DSN |
 | `REDIS_ADDR`         | `localhost:6379`                            | Redis `host:port`                    |
 | `LOG_LEVEL`          | `INFO`                                      | slog level (DEBUG/INFO/WARN/ERROR)   |
-| `EXTRACT_CAPTURE_PATH` | —                                         | When set, taps every extract decision to a JSONL file for gold-set harvesting (ADR-0043). Each record names the renderer that produced its content, so a harvest under `PARSE_STRUCTURAL_RENDERING` is distinguishable from one without it (ADR-0046) |
+| `EXTRACT_CAPTURE_PATH` | —                                         | When set, taps every extract decision to a JSONL file for gold-set harvesting (ADR-0043). Each record names the renderer that produced its content, so a harvest under `PARSE_STRUCTURAL_RENDERING` is distinguishable from one without it (ADR-0046). Under Docker, point it inside the `./capture` bind mount (`/capture/<window>.jsonl`) or the file dies with the container |
+| `EXTRACT_CAPTURE_MAX`  | `2000`                                    | Records the tap keeps **per verdict** (`0` = unbounded). Balancing per verdict keeps the ~5% positive stream from being buried under abstains, but it also makes the file a sampling design — set `0` for a window that has to be a stream frame, e.g. a veto-depth pass (ADR-0049) |
 
 Crawl tuning defaults (max depth, the baseline Discovery seed list, and the
 URL-filter lists that steer crawls toward career pages) live in Go —
@@ -342,8 +344,10 @@ file a sampling design rather than a stream frame, and a depth computed over a c
 a number about the cap. Leave `PARSE_STRUCTURAL_RENDERING` wherever production has it: the
 Posting Score reads the page's Flattened Text, so that switch cannot move it (ADR-0046). Note
 the window's start time — the drawing verbs take it as `-since` and never reconstruct it.
-Under Docker this is a gitignored `docker-compose.override.yml` carrying the two variables and
-a `./capture` bind mount, the shape #116 used.
+Under Docker both variables and the `./capture` bind mount ship in `docker-compose.yml`
+(#293), so the window is two lines in `.env` and no override file — write
+`EXTRACT_CAPTURE_PATH=/capture/veto-window.jsonl`, the container path, and read the file
+from `./capture/` on the host.
 
 **2. Score the window offline against the shipped weights.** The number to compute is the
 **veto depth** on that frame: of the pages today's gate extracts, the share whose Posting

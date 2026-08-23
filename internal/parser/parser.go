@@ -23,12 +23,22 @@ var _ Parser = &HTMLParser{}
 // it configures cannot drift apart (ADR-0045).
 const DefaultStructuralRendering = false
 
+// DefaultMainRegionLinks is the parser's shipped behavior: no main-region link
+// harvest. Off is not a preference about ADR-0051 — it is which LANE asked. Only the
+// Collection Crawl's walk reads Content.MainRegionURLs, and it turns this on
+// explicitly (ADR-0051); the Discovery Crawl keeps the whole-document harvest and
+// must not pay for a field it never reads.
+const DefaultMainRegionLinks = false
+
 type HTMLParser struct {
 	// structuralRendering makes MainContent a Structural Rendering instead of one
 	// flat run of words. Off by default: rendering walks the DOM a second time on
 	// every page the Discovery Crawl fetches, and every consumer reads the same
 	// bytes either way (crawler.FlattenedText), so nothing downstream moves.
 	structuralRendering bool
+	// mainRegionLinks populates Content.MainRegionURLs beside the whole-document
+	// Content.URLs (ADR-0051). Off by default; see DefaultMainRegionLinks.
+	mainRegionLinks bool
 }
 
 // HTMLParserOption configures an HTMLParser.
@@ -41,46 +51,79 @@ func WithStructuralRendering(on bool) HTMLParserOption {
 	return func(p *HTMLParser) { p.structuralRendering = on }
 }
 
+// WithMainRegionLinks turns the main-region link harvest on or off (ADR-0051). On,
+// Parse fills Content.MainRegionURLs beside the unchanged whole-document
+// Content.URLs; off, that field stays nil. The Collection Crawl's walk sets it; the
+// Discovery Crawl, which follows the whole document, leaves it alone.
+func WithMainRegionLinks(on bool) HTMLParserOption {
+	return func(p *HTMLParser) { p.mainRegionLinks = on }
+}
+
 func (p *HTMLParser) Parse(b []byte) (*crawler.Content, error) {
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(b))
 	if err != nil {
 		return nil, fmt.Errorf("error parsing reader %w ", err)
 	}
 
+	// The region is selected ONCE and read twice — rendered as MainContent, and
+	// harvested for its links (ADR-0051). mainRegion clones the nodes and strips
+	// them, so selecting it a second time would double that cost on every page.
+	region := mainRegion(doc)
+
 	content := &crawler.Content{
-		Title:       getTitle(doc),
-		MainContent: p.mainContent(doc),
-		URLs:        getUrls(doc),
-		JSONLD:      getJSONLD(doc),
-		SiteName:    getSiteName(doc),
-		Embeds:      getEmbeds(doc),
-		ElementIDs:  getElementIDs(doc),
+		Title:          getTitle(doc),
+		MainContent:    p.mainContent(region),
+		URLs:           getUrls(doc.Selection),
+		MainRegionURLs: p.mainRegionURLs(region),
+		JSONLD:         getJSONLD(doc),
+		SiteName:       getSiteName(doc),
+		Embeds:         getEmbeds(doc),
+		ElementIDs:     getElementIDs(doc),
 	}
 	return content, nil
 }
 
 func NewHTMLParser(opts ...HTMLParserOption) *HTMLParser {
-	p := &HTMLParser{structuralRendering: DefaultStructuralRendering}
+	p := &HTMLParser{
+		structuralRendering: DefaultStructuralRendering,
+		mainRegionLinks:     DefaultMainRegionLinks,
+	}
 	for _, opt := range opts {
 		opt(p)
 	}
 	return p
 }
 
-// mainContent renders the page's main region. Both modes take the SAME region from
-// mainRegion and differ only in how it is written down, so turning the Structural
-// Rendering on can never change which part of a page becomes content (ADR-0046).
-// With it off there is no second walk and no rendering built and thrown away: the
-// parser costs exactly what it cost before.
-func (p *HTMLParser) mainContent(doc *goquery.Document) string {
-	sel := mainRegion(doc)
-	if sel == nil {
+// mainContent renders the page's main region, or "" for a document with no body.
+// Both modes take the SAME region and differ only in how it is written down, so
+// turning the Structural Rendering on can never change which part of a page becomes
+// content (ADR-0046). With it off there is no second walk and no rendering built and
+// thrown away: the parser costs exactly what it cost before.
+func (p *HTMLParser) mainContent(region *goquery.Selection) string {
+	if region == nil {
 		return ""
 	}
 	if p.structuralRendering {
-		return renderStructural(sel)
+		return renderStructural(region)
 	}
-	return normalizeWS(sel.Text())
+	return normalizeWS(region.Text())
+}
+
+// mainRegionURLs harvests the hrefs inside the page's main region — rule 1 of the
+// Career Surface (ADR-0051) — or nil when the harvest is off or the document has no
+// body. It reads the region mainContent is rendered from, exactly as-is: chrome
+// INSIDE a semantic container is kept for the same reason mainRegion keeps it (see
+// there), and a page with no semantic container has already had its chrome dropped.
+//
+// The strings are the RAW hrefs, identical to the ones getUrls returns over the
+// whole document, because the region is a clone of the same nodes. That is what lets
+// the walk treat this as a membership set over Content.URLs instead of a second list
+// to resolve and merge.
+func (p *HTMLParser) mainRegionURLs(region *goquery.Selection) []string {
+	if !p.mainRegionLinks || region == nil {
+		return nil
+	}
+	return getUrls(region)
 }
 
 // mainRegion returns the cloned, script-stripped region the parser has always
@@ -164,10 +207,15 @@ func normalizeWS(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-func getUrls(doc *goquery.Document) []string {
+// getUrls returns the trimmed href of every link inside sel, in document order.
+// It takes a Selection rather than the Document so the same harvest serves both
+// readers: the whole document (Content.URLs) and the main region alone
+// (Content.MainRegionURLs, ADR-0051). One implementation is what guarantees the two
+// sets spell an href identically, so membership can be tested by string.
+func getUrls(sel *goquery.Selection) []string {
 	urls := []string{}
 
-	doc.Find("a[href]").Each(func(i int, s *goquery.Selection) {
+	sel.Find("a[href]").Each(func(i int, s *goquery.Selection) {
 		if url, exists := s.Attr("href"); exists {
 			// Trim surrounding whitespace/newlines: a padded href fails url.Parse
 			// ("first path segment ... cannot contain colon") downstream, so the
