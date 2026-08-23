@@ -478,7 +478,7 @@ var aggregatorHosts = map[string]struct{}{
 	// VC-portfolio board platforms.
 	"getro.com":       {}, // powers many portfolio boards; tenants on *.getro.com fold in via eTLD+1
 	"speedinvest.com": {},
-	"hv.capital":      {}, // HV Capital; ".capital" is the live gTLD domain (not hvcapital.com)
+	"hv.capital":      {}, // HV Capital on its ".capital" gTLD; hvcapital.com is live too, see below
 	// #46 audit additions -- boards and portfolio directories the discovery run
 	// (frozen definition 0b29f7f2; docs/discovery-baseline-definition.md) crawled
 	// and that minted fake host-companies. eTLD+1 match, so subdomains fold in.
@@ -577,6 +577,76 @@ var aggregatorHosts = map[string]struct{}{
 	// one company's hub -- "Amazon" in the title and URL is the client, not the
 	// employer.
 	"dspjobhub.com": {},
+
+	// Live Catalog + Corpus audit (2026-08-23). Every host below was ranked out of
+	// the stored rows -- many Job Listings on one host, all collapsed onto a single
+	// host-Company -- and then confirmed the same way as the entries above: by the
+	// employer NAMED ON THE PAGE the crawl already stored, never by host name.
+	//
+	// One white-label Stellenmarkt product, identified by the "Was? Was? Wo?" /
+	// "Jobmailer" chrome its pages share, fronts eleven publication and portal
+	// tenants. Its stored pages carry the board's own EMPLOYER FACET, so each names
+	// dozens outright: Aenova Holding, AIDA Cruises, ALBA Süd, Aptar Radolfzell,
+	// Bauerfeind (apo-karriere); Abacus Business Solutions, Abgeordnetenhaus von
+	// Berlin, ABUS Security Center, ADAC Sachsen (computerwoche, itsicherheit-online,
+	// freiepresse); DEKRA SE, AWB Köln (kes); AGRIAL Deutschland, AllDent, Arrow
+	// Global (personalwirtschaft). eTLD+1 keys the magazine or newspaper itself, so
+	// as with lto.de above the match also sheds that publisher's own openings -- the
+	// accepted trade, and it keeps a large news domain out of Discovery besides.
+	"apo-karriere.de":               {}, // pharmacy Stellenmarkt
+	"bewerbung2go.de":               {}, // posting platform's own Stellenmarkt
+	"computerwoche.de":              {}, // IT magazine
+	"freiepresse.de":                {}, // Chemnitz newspaper (meinjob.freiepresse.de)
+	"ingenieur.de":                  {}, // VDI engineering portal
+	"itsicherheit-online.com":       {}, // IT-security magazine
+	"kes-informationssicherheit.de": {}, // <kes> security magazine
+	"lohnundgehalt-magazin.de":      {}, // payroll magazine
+	"personalwirtschaft.de":         {}, // HR magazine
+	"sueddeutsche.de":               {}, // SZ Stellenmarkt
+	"tagesspiegel.de":               {}, // jobs. + studijobs. tenants
+	// Publication, trade and association career centers on their own software. Same
+	// standard, same eTLD+1 trade as the block above:
+	"shz.de":                   {}, // Schleswig-Holstein newspaper; Amt Eggebek, Stadt Eckernförde, Amt Bad Oldesloe-Land
+	"zeit.de":                  {}, // ZEIT Stellenmarkt; Universität Tübingen, Max Planck Institute, ZBW
+	"academics.com":            {}, // academic board; Universität Osnabrück, DKFZ, Universität Freiburg, IPK
+	"academics.de":             {}, // the same board's German domain
+	"crainsnewyork.com":        {}, // Crain's career center; Leo Berwick, Everytown, National Center for Youth Law
+	"modernhealthcare.com":     {}, // trade career center; Lincoln Surgical Hospital and other providers
+	"philanthropy.com":         {}, // Chronicle of Philanthropy; Caltech, amfAR, Austin Humane Society
+	"broadbandnation.org":      {}, // telecom association; Bigham Cable, Lambert's Cable Splicing
+	"drupal.org":               {}, // community board, the rubyonrails.org/vuejobs.com shape; Lullabot, Ymbra, Aten
+	"impactpool.org":           {}, // development board incl. {org}.impactpool.org tenants; UNDP, WFP, IOM, ECB
+	"hiringourheroes.org":      {}, // veterans program; catalogued at jobs.…/companies/elevance-health
+	"leibniz-gemeinschaft.de":  {}, // association of independent institutes; Senckenberg, Bergbau-Museum Bochum
+	"bio-m.org":                {}, // Bavarian biotech cluster Stellenbörse; CRELUX, Proteros biostructures, TRIGA-S
+	"studierendenwerk-bonn.de": {}, // student board unistellenmarkt.de re-hosts from; Theater Bonn, Bergfelds Biomarkt
+	// Generic and niche boards:
+	"jobblitz.de":        {}, // 137 locations in one host; Hapag-Lloyd Cruises, sea chefs, Lidea
+	"jobninja.com":       {}, // search engine with a /unternehmen/{employer} directory; Evangelische Heimstiftung Pfalz
+	"stellenanzeigen.de": {}, // one of the large German Jobbörsen, the stepstone.de/monster.de category
+	"t-online.jobs":      {}, // "Die Jobbörse von t-online"; Securitas, SOS-Kinderdorf, HT Group
+	"localjob.de":        {}, // regional Jobbörse network
+	"nrw-jobs.de":        {}, // …and its regional front, which 301s to localjob.de
+	"trainee.de":         {}, // trainee-programme board; Rhenus Automotive, Coca-Cola
+	"agrarjobboerse.de":  {}, // Landwirtschaftskammer board; Hörning, Agrargenossenschaft Bergland Clausnitz
+	"azubi-nrw.de":       {}, // apprenticeship board, the ausbildung.de shape; Stumpp and other trades
+	"bauingenieur24.de":  {}, // civil-engineering portal; Bayerischer Landtag among the employers
+	// VC and accelerator portfolio boards -- the accel/8vc/seedcamp category:
+	"menlovc.com":   {}, // jobs.menlovc.com; Anthropic, Databricks, Xaira, ShipBob
+	"hvcapital.com": {}, // jobs.hvcapital.com; Holidu, Atolls, Scalable Capital, Ashby. HV Capital runs BOTH
+	//                   this domain and the hv.capital above -- the note there that hvcapital.com is not
+	//                   the live domain was wrong, so both are needed.
+	"ffwd.org": {}, // Fast Forward, a nonprofit accelerator; CareMessage, Thorn, Callisto, GovAI
+	// Built In city siblings of builtin.com / builtinnyc.com / builtincolorado.com,
+	// catalogued at /company/{employer} paths that name the employer in the URL
+	// (Braze, Mastercard, Block, Lowe's, PwC). Note builtinchicago.org's .org.
+	"builtinaustin.com":    {},
+	"builtinboston.com":    {},
+	"builtincharlotte.com": {},
+	"builtinchicago.org":   {},
+	"builtinla.com":        {},
+	"builtinseattle.com":   {},
+	"builtinsf.com":        {},
 }
 
 // sharedHostSuffixes are registrable domains (eTLD+1) that front many INDEPENDENT
