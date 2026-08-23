@@ -110,18 +110,23 @@ type Config struct {
 	// Content.MainRegionURLs, rule 1 harvests nothing and the walk sees only rules 2
 	// and 3.
 	CareerSurfaceLinks bool
-	// CareerShaped reports whether a URL carries a career token the crawl already
-	// allows — rule 2 of the Career Surface (ADR-0051), which is what still reaches an
-	// opening a site lists only in its Site Chrome. It is the crawl definition's own
-	// PassSubdomains / PassPathSegments vocabulary rather than a second, looser one, and
-	// it admits nothing the URL filter would have blocked anyway — not because a pass
+	// CareerPath and CareerHost are the two halves of rule 2 of the Career Surface
+	// (ADR-0051) — a career token the crawl's own URL filter already allows — kept apart
+	// because the walk applies them differently. CareerPath reports a career segment in
+	// the link's PATH (`/karriere/...`); CareerHost reports a career SUBDOMAIN in the
+	// link's host (`jobs.acme.com`). Both come from the crawl definition's own
+	// PassPathSegments / PassSubdomains vocabulary rather than a second, looser one. See
+	// isCareerShaped for why only one of them is host-relative.
+	//
+	// Rule 2 admits nothing the URL filter would have blocked anyway — not because a pass
 	// rule short-circuits the chain (BlockInvalidURLs and AllowedTLDs run BEFORE the two
 	// pass rules, so a career-shaped link is not exempt from those), but because the
-	// Career Surface is a PRE-filter: a link this predicate keeps is handed straight to
-	// URLFilter below, which still gets to block it. Nothing here bypasses the chain,
-	// and no caller may skip it for a career-shaped link. Optional: a nil predicate
-	// reports false for every URL, leaving rules 1 and 3.
-	CareerShaped func(u string) bool
+	// Career Surface is a PRE-filter: a link these predicates keep is handed straight to
+	// URLFilter below, which still gets to block it. Nothing here bypasses the chain, and
+	// no caller may skip it for a career-shaped link. Optional: a nil predicate reports
+	// false for every URL, so a Config supplying neither falls back to rules 1 and 3.
+	CareerPath func(u string) bool
+	CareerHost func(u string) bool
 	// Recorder instruments the keyword relevance gate (pages resolved without the
 	// LLM extractor) for the ADR-0007 measurement. Optional: a nil Recorder
 	// records nothing.
@@ -146,7 +151,8 @@ type urlWorker struct {
 	hasATSFetcher        func(provider string) bool
 	onATSEmbed           func(ctx context.Context, provider, tenant, owner string) error
 	careerSurfaceLinks   bool
-	careerShaped         func(u string) bool
+	careerPath           func(u string) bool
+	careerHost           func(u string) bool
 }
 
 func NewProcessor(cfg *Config) *urlWorker {
@@ -196,7 +202,8 @@ func NewProcessor(cfg *Config) *urlWorker {
 		hasATSFetcher:        cfg.HasATSFetcher,
 		onATSEmbed:           cfg.OnATSEmbed,
 		careerSurfaceLinks:   cfg.CareerSurfaceLinks,
-		careerShaped:         cfg.CareerShaped,
+		careerPath:           cfg.CareerPath,
+		careerHost:           cfg.CareerHost,
 	}
 }
 
@@ -310,7 +317,7 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 			switch {
 			case inMainRegion[contentURL]:
 				w.careerSurfaceCounter.Add(ctx, 1, careerSurfaceMainRegion)
-			case w.isCareerShaped(parsed.RawURL):
+			case w.isCareerShaped(*nextURL, parsed):
 				w.careerSurfaceCounter.Add(ctx, 1, careerSurfaceCareerShaped)
 			case samePathVariant(nextURL.RawURL, parsed.RawURL):
 				w.careerSurfaceCounter.Add(ctx, 1, careerSurfaceSamePath)
@@ -401,10 +408,29 @@ func (w *urlWorker) sampleShadowExtraction(ctx context.Context, nextURL *crawler
 
 // isCareerShaped applies rule 2 of the Career Surface (ADR-0051) — a career token the
 // crawl's own URL filter already allows — with a nil predicate reading as "no link is
-// career-shaped", so a Config that does not supply one falls back to rules 1 and 3
-// rather than following everything.
-func (w *urlWorker) isCareerShaped(u string) bool {
-	return w.careerShaped != nil && w.careerShaped(u)
+// career-shaped", so a Config that supplies neither falls back to rules 1 and 3 rather
+// than following everything.
+//
+// The SUBDOMAIN half fires only ACROSS hosts, and that qualifier is what keeps rule 2
+// from switching the Career Surface off. PassSubdomains matches the LINK's host, so on
+// a seed already sitting on a career subdomain every same-host link is career-shaped —
+// the board's imprint, its language switcher, its blog — and the Surface collapses to
+// the URL filter's own allowlist, i.e. to the whole-document walk this decision exists
+// to replace. Measured on the live Catalog: 368 of 1,392 Career Pages sit on a career
+// subdomain and 289 of those are crawl-lane, so without this qualifier a fifth of the
+// seeds get no cut at all. A career subdomain is EVIDENCE precisely when the page is
+// somewhere else and its Site Chrome points at it (acme.com/about -> jobs.acme.com,
+// the case ADR-0051's miss set turned on); once the walk is already on that host the
+// signal says nothing new and rule 1 governs.
+//
+// The PATH half stays absolute, because it is segment-scoped rather than host-wide: on
+// a seed at acme.com/karriere it admits /karriere/* and /jobs/* while still dropping
+// /produkte and /solutions, which is the career subtree rather than the whole site.
+func (w *urlWorker) isCareerShaped(page, link crawler.URL) bool {
+	if w.careerPath != nil && w.careerPath(link.RawURL) {
+		return true
+	}
+	return link.Hostname != page.Hostname && w.careerHost != nil && w.careerHost(link.RawURL)
 }
 
 // samePathVariant applies rule 3 of the Career Surface (ADR-0051): link differs from

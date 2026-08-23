@@ -774,9 +774,15 @@ func newFactory(
 			// career-shaped link as an "optimization" would be a real bypass.
 			passSubdomains := urlfilter.PassSubdomains(uf.PassSubdomains...)
 			passPathSegments := urlfilter.PassPathSegments(uf.PassPathSegments...)
-			careerShaped := func(u string) bool {
-				return errors.Is(passSubdomains(u), filter.ErrPass) ||
-					errors.Is(passPathSegments(u), filter.ErrPass)
+			// Rule 2's two halves stay SEPARATE: the walk applies the subdomain one
+			// only across hosts, so folding them into one predicate here would hide
+			// the qualifier that keeps rule 2 from switching the Career Surface off on
+			// a career-subdomain seed (see isCareerShaped).
+			careerPath := func(u string) bool {
+				return errors.Is(passPathSegments(u), filter.ErrPass)
+			}
+			careerHost := func(u string) bool {
+				return errors.Is(passSubdomains(u), filter.ErrPass)
 			}
 
 			// Seed from the Catalog: every non-dormant Career Page (carrying its
@@ -1040,7 +1046,8 @@ func newFactory(
 						// Off restores the whole-document harvest, which is what
 						// COLLECTION_CAREER_SURFACE_LINKS is for.
 						CareerSurfaceLinks: careerSurfaceLinks,
-						CareerShaped:       careerShaped,
+						CareerPath:         careerPath,
+						CareerHost:         careerHost,
 						HasATSFetcher:      hasATSFetcher,
 						// An ATS board embedded on a crawled page is fetched through the same
 						// deduped lane, attributed to the page's Owner, with a Nil

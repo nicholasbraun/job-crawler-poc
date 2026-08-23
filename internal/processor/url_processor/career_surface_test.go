@@ -39,15 +39,18 @@ func careerSurfaceContent() *crawler.Content {
 	}
 }
 
-// careerShaped is rule 2's predicate built exactly as cmd/server builds it: out of
-// the crawl definition's own pass vocabulary, not a second, looser one.
-func careerShaped() func(string) bool {
-	passSubdomains := urlfilter.PassSubdomains("jobs", "karriere")
+// careerPath and careerHost are rule 2's two halves, built exactly as cmd/server
+// builds them: out of the crawl definition's own pass vocabulary, not a second,
+// looser one. They are kept apart because the walk applies the host half only across
+// hosts (see TestProcessCareerSurfaceOnACareerSubdomain).
+func careerPath() func(string) bool {
 	passPathSegments := urlfilter.PassPathSegments("jobs", "karriere")
-	return func(u string) bool {
-		return errors.Is(passSubdomains(u), filter.ErrPass) ||
-			errors.Is(passPathSegments(u), filter.ErrPass)
-	}
+	return func(u string) bool { return errors.Is(passPathSegments(u), filter.ErrPass) }
+}
+
+func careerHost() func(string) bool {
+	passSubdomains := urlfilter.PassSubdomains("jobs", "karriere")
+	return func(u string) bool { return errors.Is(passSubdomains(u), filter.ErrPass) }
 }
 
 // TestProcessCareerSurface proves the walk follows a page's Career Surface and drops
@@ -101,7 +104,8 @@ func TestProcessCareerSurface(t *testing.T) {
 				RelevanceFilter:    func(*crawler.Content) error { return errors.New("not a listing") },
 				OnJobListing:       func(context.Context, *crawler.RawJobListing) error { return nil },
 				CareerSurfaceLinks: tt.enabled,
-				CareerShaped:       careerShaped(),
+				CareerPath:         careerPath(),
+				CareerHost:         careerHost(),
 			})
 
 			page, err := crawler.NewURL(careerSurfacePage)
@@ -139,7 +143,8 @@ func TestProcessCareerSurfaceKeepsDepth(t *testing.T) {
 		RelevanceFilter:    func(*crawler.Content) error { return errors.New("not a listing") },
 		OnJobListing:       func(context.Context, *crawler.RawJobListing) error { return nil },
 		CareerSurfaceLinks: true,
-		CareerShaped:       careerShaped(),
+		CareerPath:         careerPath(),
+		CareerHost:         careerHost(),
 	})
 
 	page, err := crawler.NewURL(careerSurfacePage)
@@ -175,7 +180,8 @@ func TestProcessCareerSurfaceAtASiteRoot(t *testing.T) {
 		RelevanceFilter:    func(*crawler.Content) error { return errors.New("not a listing") },
 		OnJobListing:       func(context.Context, *crawler.RawJobListing) error { return nil },
 		CareerSurfaceLinks: true,
-		CareerShaped:       careerShaped(),
+		CareerPath:         careerPath(),
+		CareerHost:         careerHost(),
 	})
 
 	page, err := crawler.NewURL("https://acme.com")
@@ -196,9 +202,9 @@ func TestProcessCareerSurfaceAtASiteRoot(t *testing.T) {
 	}
 }
 
-// TestProcessCareerSurfaceWithoutCareerShaped pins Config.CareerShaped's documented
-// contract: a nil predicate reports false for EVERY URL, so a Config that supplies
-// none falls back to rules 1 and 3 instead of following everything. The opposite
+// TestProcessCareerSurfaceWithoutCareerShaped pins the documented contract of
+// Config.CareerPath / Config.CareerHost: a nil predicate reports false for EVERY URL,
+// so a Config that supplies neither falls back to rules 1 and 3 instead of following everything. The opposite
 // reading -- "no predicate, so nothing is excluded" -- would quietly turn the Career
 // Surface off for any caller that forgot to wire rule 2, which is the one failure
 // the switch cannot be used to diagnose: the walk would look exactly as it does with
@@ -234,6 +240,62 @@ func TestProcessCareerSurfaceWithoutCareerShaped(t *testing.T) {
 	want := []string{
 		"https://acme.com/open-roles/senior-go-engineer",
 		"https://acme.com/open-roles?page=2",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("enqueued URLs = %v, want %v", got, want)
+	}
+}
+
+// TestProcessCareerSurfaceOnACareerSubdomain pins the qualifier that keeps rule 2 from
+// switching the Career Surface off (ADR-0051). PassSubdomains matches the LINK's host,
+// so on a seed already sitting on a career subdomain EVERY same-host link is
+// career-shaped and the Surface collapses to the whole-document walk it exists to
+// replace — measured live, a fifth of the Catalog's seeds. The subdomain half therefore
+// fires only across hosts; the path half, being segment-scoped, still fires anywhere.
+func TestProcessCareerSurfaceOnACareerSubdomain(t *testing.T) {
+	const (
+		boardPage    = "https://jobs.acme.com/openings"
+		boardListing = "/openings/senior-go-engineer" // rule 1: the main region
+		boardPosting = "/jobs/4711"                   // rule 2 path half: career segment
+		otherHost    = "https://karriere.acme.com/stelle-88"
+		boardChrome  = "/impressum" // same host, no career segment: Site Chrome
+	)
+	fr := &stubFrontier{}
+	worker := urlprocessor.NewProcessor(&urlprocessor.Config{
+		Frontier:      fr,
+		Downloader:    &stubDownloader{content: []byte("<html></html>")},
+		ContentFilter: func(*crawler.Content) error { return nil },
+		Parser: &stubParser{content: &crawler.Content{
+			URLs:           []string{boardListing, boardPosting, otherHost, boardChrome},
+			MainRegionURLs: []string{boardListing},
+		}},
+		URLFilter:          func(string) error { return nil },
+		RobotsTxtChecker:   stubRobots{},
+		RelevanceFilter:    func(*crawler.Content) error { return errors.New("not a listing") },
+		OnJobListing:       func(context.Context, *crawler.RawJobListing) error { return nil },
+		CareerSurfaceLinks: true,
+		CareerPath:         careerPath(),
+		CareerHost:         careerHost(),
+	})
+
+	page, err := crawler.NewURL(boardPage)
+	if err != nil {
+		t.Fatalf("NewURL: %v", err)
+	}
+	if err := worker.Process(t.Context(), &page); err != nil {
+		t.Fatalf("Process returned error: %v", err)
+	}
+
+	got := make([]string, len(fr.added))
+	for i, u := range fr.added {
+		got[i] = u.RawURL
+	}
+	// The board's own imprint is dropped even though its host is a career subdomain;
+	// a career subdomain on ANOTHER host is still evidence and still followed.
+	want := []string{
+		"https://jobs.acme.com/openings/senior-go-engineer",
+		"https://jobs.acme.com/jobs/4711",
+		otherHost,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("enqueued URLs = %v, want %v", got, want)

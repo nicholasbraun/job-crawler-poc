@@ -32,9 +32,11 @@ Surface**. Three additive rules, any one of which puts a link on it:
 1. **The main region.** `mainRegion` already picks the region `MainContent` is read from
    (`nav, header, footer, aside` stripped from the body, or a semantic container taken
    whole); the link harvest is pointed at that same selection, exactly as-is.
-2. **Career-shaped, wherever it sits.** A link the crawl definition's own `passSubdomains`
-   / `passPathSegments` already allow — `jobs`, `karriere`, `stellenangebote`,
-   `vacancies`, `positions` and their kin.
+2. **Career-shaped.** A link carrying a career token the crawl definition's own
+   vocabulary already allows: a `passPathSegments` segment anywhere in its path
+   (`karriere`, `stellenangebote`, `vacancies`, `positions`) wherever the link sits, or —
+   **only when the link leaves the page's host** — a `passSubdomains` career subdomain
+   (`jobs.`, `karriere.`).
 3. **A same-path variant, wherever it sits.** A link that differs from the page it sits on
    only by query string.
 
@@ -46,6 +48,21 @@ comment names. Chrome is dropped for being the site tree, not for being a `<nav>
 opening a site lists in its menu is still `/karriere/...` or `jobs.acme.de`. The
 vocabulary is the one already stored on the Collection definition and already applied by
 the URL filter chain, so this rule maintains nothing new.
+
+**The subdomain half fires only across hosts, and that qualifier is load-bearing.**
+`passSubdomains` matches the *link's* host, so on a seed that already sits on a career
+subdomain every same-host link is career-shaped — the board's imprint, its language
+switcher, its blog — and the Career Surface collapses to the URL filter's own allowlist,
+which is the whole-document walk this decision exists to replace. That is not a corner:
+measured on the live Catalog, **368 of 1,392 Career Pages sit on a career subdomain, and
+289 of those are crawl-lane**, so an unqualified rule 2 would leave a fifth of the seeds
+with no cut at all. A career subdomain is evidence precisely when the page is somewhere
+else and its Site Chrome points at it (`acme.de/about` -> `jobs.acme.de`, the case this
+ADR's own miss set turned on); once the walk is already on that host the signal says
+nothing new and rule 1 governs. The path half needs no such qualifier because it is
+segment-scoped rather than host-wide: on a seed at `acme.de/karriere` it admits
+`/karriere/*` and `/jobs/*` while still dropping `/produkte` and `/solutions`, which is
+the career subtree rather than the whole site.
 
 **Rule 3 covers pagination.** `<nav aria-label="Pagination">` is the HTML spec's
 recommended markup for a paging control and what every CSS framework ships, so rule 1 on
