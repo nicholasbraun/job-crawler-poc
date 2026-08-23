@@ -23,7 +23,7 @@ The single, perpetual Crawl Definition of kind Discovery: bounded-broad, it find
 _Avoid_: spider, broad crawl
 
 **Collection Crawl**:
-The single, perpetual Crawl Definition of kind Collection: seeded from the whole Catalog, each Cycle it harvests every open Job Listing from every Career Page into the Corpus — keyword and country no longer prune at collect time, they filter at query time. Each seed stays confined to its Company by Scope. It acquires listings two ways: an ATS Fetch for a Company on a recognized ATS, otherwise by crawling and extracting posting pages.
+The single, perpetual Crawl Definition of kind Collection: seeded from the whole Catalog, each Cycle it harvests every open Job Listing from every Career Page into the Corpus — keyword and country no longer prune at collect time, they filter at query time. Each seed stays confined to its Company by Scope, and from each page the walk follows only that page's Career Surface. It acquires listings two ways: an ATS Fetch for a Company on a recognized ATS, otherwise by crawling and extracting posting pages.
 _Avoid_: keyword crawl, harvest crawl, scrape
 
 **Collection Cycle**:
@@ -189,6 +189,10 @@ _Avoid_: domain limit, allowlist, fence
 **Shared-Host Suffix**:
 A registrable domain that fronts many independent tenants on distinct subdomains (one newsletter or blog per `{tenant}.substack.com`), where the Scope fence keys on the full hostname rather than the eTLD+1 — so a seed is confined to its own subdomain instead of the whole platform, the way it otherwise would be for a self-hosted company (see Scope, ADR-0021/0039). A curated Public-Suffix-List supplement covering only the multi-tenant hosts the PSL does not already fence; a real company keeps the eTLD+1 default so its sibling subdomains stay in one Scope.
 _Avoid_: shared domain, multi-tenant host, platform domain
+
+**Career Surface**:
+The part of a crawled page whose links a Collection Crawl follows: the page's main region, plus — wherever on the page they sit — any link carrying a career token the crawl already allows (`karriere`, `vacancies`, a `jobs.` subdomain) and any link differing from the page it sits on only by query string. Site Chrome is not on it, which is what keeps a Company's whole site tree out of the Frontier. The Discovery Crawl has no Career Surface; it follows the whole document, the same asymmetry it already has in its URL filter.
+_Avoid_: main content links, content area, career section
 
 **ATS Fetch**:
 The Collection Crawl's primary acquisition of a Company's Job Listings straight from its ATS provider's board API in one call, rather than by crawling and extracting its posting pages. Available for a Company on — or embedding — a recognized ATS the crawler has an API client for; other ATS boards are crawled as a fallback. A complete Fetch is the sole trusted basis for Absence-from-Board.
