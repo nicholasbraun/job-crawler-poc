@@ -198,6 +198,10 @@ _Avoid_: board fetch, API scrape, direct ingest
 A momentary Redis disruption (a blip, failover, or dropped connection) the Frontier rides out by retrying while the Crawl Run's context is live, so the run stays Running rather than Failing. Distinct from a fatal Frontier error — a corrupt or unrecognized Redis reply — which still Fails the run.
 _Avoid_: outage, crash
 
+**Site Chrome**:
+The parts of a page that belong to the site rather than to the page — navigation, header, footer, sidebar. Repeated on every page of a host, so on a Career Page its links are that site's whole menu rather than that Company's Job Listings.
+_Avoid_: furniture, boilerplate, nav (bare)
+
 **Structural Rendering**:
 A fetched page's main content kept in the form that shows its structure — headings, list items, table rows, link text with its target, and form controls — rather than collapsed into one run of words. What the extractor and a human labeller read, because the structure is frequently what decides whether a page is one Job Listing at all: three role titles in a row are an index, the same three inside an apply form's picker are one posting. A human labeller reads it whole, link text with its target; the model reads a narrowing of it with the targets omitted, because carrying them would cost about a quarter of the prompt window at an unchanged cap.
 _Avoid_: markdown (bare), markup, rich text, HTML
