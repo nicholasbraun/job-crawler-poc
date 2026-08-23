@@ -32,7 +32,7 @@ func TestMainRegionURLs(t *testing.T) {
 </html>
 `
 	// No semantic container, so mainRegion falls back to the body with the chrome
-	// dropped (#270): the harvest is the same region, minus the same furniture.
+	// dropped (#270): the harvest is the same region, minus the same Site Chrome.
 	const noContainer = `
 <html>
 	<body>
@@ -41,7 +41,7 @@ func TestMainRegionURLs(t *testing.T) {
 	</body>
 </html>
 `
-	// The withoutChrome fallback: the page's ONLY text lives in its furniture, so the
+	// The withoutChrome fallback: the page's ONLY text lives in its Site Chrome, so the
 	// unstripped body is kept rather than dropping the page to nothing. The link
 	// harvest follows that region, which means the whole-document set.
 	const chromeOnly = `
@@ -109,4 +109,58 @@ func TestMainRegionURLs(t *testing.T) {
 			t.Errorf("URLs = %v, want the unchanged whole-document harvest %v", content.URLs, want)
 		}
 	})
+}
+
+// TestMainRegionURLsUnderBothRenderers pins the combination ADR-0051 newly makes
+// possible: hoisting mainRegion out of mainContent gave one *goquery.Selection two
+// readers -- the renderer that writes MainContent, and the harvest that fills
+// MainRegionURLs. A renderer that mutated those nodes in place would corrupt the
+// link set of whichever reader ran second, silently and only on the Collection
+// lane, so the harvest is asserted identical under both renderers. The renderings
+// themselves are asserted to DIFFER, or the first assertion would hold vacuously
+// with the Structural Rendering never running at all.
+func TestMainRegionURLsUnderBothRenderers(t *testing.T) {
+	const page = `
+<html>
+	<body>
+		<nav><a href="/solutions">solutions</a></nav>
+		<main>
+			<h2>Open roles</h2>
+			<ul>
+				<li><a href="/jobs/senior-go-engineer">Senior Go Engineer</a></li>
+				<li><a href="/jobs/platform-engineer">Platform Engineer</a></li>
+			</ul>
+			<nav aria-label="Pagination"><a href="/jobs?page=2">2</a></nav>
+		</main>
+	</body>
+</html>
+`
+	want := []string{"/jobs/senior-go-engineer", "/jobs/platform-engineer", "/jobs?page=2"}
+
+	flattened, err := parser.NewHTMLParser(parser.WithMainRegionLinks(true)).Parse([]byte(page))
+	if err != nil {
+		t.Fatalf("Parse (flattened): %v", err)
+	}
+	structural, err := parser.NewHTMLParser(
+		parser.WithMainRegionLinks(true),
+		parser.WithStructuralRendering(true),
+	).Parse([]byte(page))
+	if err != nil {
+		t.Fatalf("Parse (structural): %v", err)
+	}
+
+	if !slices.Equal(flattened.MainRegionURLs, want) {
+		t.Errorf("flattened MainRegionURLs = %v, want %v", flattened.MainRegionURLs, want)
+	}
+	if !slices.Equal(structural.MainRegionURLs, flattened.MainRegionURLs) {
+		t.Errorf("MainRegionURLs differ by renderer: structural %v, flattened %v",
+			structural.MainRegionURLs, flattened.MainRegionURLs)
+	}
+	if !slices.Equal(structural.URLs, flattened.URLs) {
+		t.Errorf("URLs differ by renderer: structural %v, flattened %v", structural.URLs, flattened.URLs)
+	}
+	if structural.MainContent == flattened.MainContent {
+		t.Fatalf("both renderers produced the same MainContent (%q), so this fixture proves nothing about sharing the region",
+			structural.MainContent)
+	}
 }

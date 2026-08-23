@@ -195,3 +195,47 @@ func TestProcessCareerSurfaceAtASiteRoot(t *testing.T) {
 		t.Errorf("enqueued URLs = %v, want %v", got, want)
 	}
 }
+
+// TestProcessCareerSurfaceWithoutCareerShaped pins Config.CareerShaped's documented
+// contract: a nil predicate reports false for EVERY URL, so a Config that supplies
+// none falls back to rules 1 and 3 instead of following everything. The opposite
+// reading -- "no predicate, so nothing is excluded" -- would quietly turn the Career
+// Surface off for any caller that forgot to wire rule 2, which is the one failure
+// the switch cannot be used to diagnose: the walk would look exactly as it does with
+// COLLECTION_CAREER_SURFACE_LINKS pulled.
+func TestProcessCareerSurfaceWithoutCareerShaped(t *testing.T) {
+	fr := &stubFrontier{}
+	worker := urlprocessor.NewProcessor(&urlprocessor.Config{
+		Frontier:         fr,
+		Downloader:       &stubDownloader{content: []byte("<html></html>")},
+		Parser:           &stubParser{content: careerSurfaceContent()},
+		ContentFilter:    func(*crawler.Content) error { return nil },
+		URLFilter:        func(string) error { return nil },
+		RobotsTxtChecker: stubRobots{},
+		RelevanceFilter:  func(*crawler.Content) error { return errors.New("not a listing") },
+		OnJobListing:     func(context.Context, *crawler.RawJobListing) error { return nil },
+		// Rule 2 left unwired, which is what this test is about.
+		CareerSurfaceLinks: true,
+	})
+
+	page, err := crawler.NewURL(careerSurfacePage)
+	if err != nil {
+		t.Fatalf("NewURL: %v", err)
+	}
+	if err := worker.Process(t.Context(), &page); err != nil {
+		t.Fatalf("Process returned error: %v", err)
+	}
+
+	got := make([]string, len(fr.added))
+	for i, u := range fr.added {
+		got[i] = u.RawURL
+	}
+	// The career-shaped chrome link is gone with rule 2; rules 1 and 3 still hold.
+	want := []string{
+		"https://acme.com/open-roles/senior-go-engineer",
+		"https://acme.com/open-roles?page=2",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("enqueued URLs = %v, want %v", got, want)
+	}
+}

@@ -505,6 +505,38 @@ func newFactory(
 		parser.WithStructuralRendering(structuralRendering),
 		parser.WithMainRegionLinks(careerSurfaceLinks),
 	)
+	// Two startup guards on the pairing above. Both cover failures that are otherwise
+	// SILENT -- no error anywhere, only data that reads wrong months later -- and
+	// cmd/server has no test file, so the two wiring lines are all that prevent them.
+	//
+	// 1. The walk's parser must actually harvest the main region whenever the walk is
+	//    told to read it (ADR-0051). On here with a parser that does not populate
+	//    Content.MainRegionURLs, rule 1 finds nothing and the walk drops to rules 2 and
+	//    3 -- fewer crawl-sourced Job Listings and nothing to see, which is exactly the
+	//    recall risk COLLECTION_CAREER_SURFACE_LINKS is the back-out for, so an operator
+	//    reading the Cycle could not tell the two apart. Probed rather than asserted on
+	//    the option: one parse of a constant document whose only in-<main> link must
+	//    come back, which keeps the guard true of the parser's BEHAVIOUR rather than of
+	//    the field it is wired from today.
+	// 2. The two parsers must name the same renderer. extractcapture.FromEnv stamps
+	//    htmlParser.RendererID() on the collection extract stage, and that stage is fed
+	//    by BOTH parsers -- walkParser from the walk, htmlParser from the refetch lane.
+	//    Give one a rendering the other does not have and captured rows carry the wrong
+	//    renderer, mixing two renderings inside one Gold Set drawing: the exact failure
+	//    the stamp was built to prevent (ADR-0046, #281).
+	if careerSurfaceLinks {
+		const probe = `<html><body><nav><a href="/chrome">chrome</a></nav><main><a href="/jobs/role">role</a></main></body></html>`
+		probed, err := walkParser.Parse([]byte(probe))
+		if err != nil || len(probed.MainRegionURLs) == 0 {
+			log.Fatalf("collection walk parser harvests no main-region links while COLLECTION_CAREER_SURFACE_LINKS is on "+
+				"(ADR-0051 rule 1 would silently find nothing): %v", err)
+		}
+	}
+	if walkParser.RendererID() != htmlParser.RendererID() {
+		log.Fatalf("parsers disagree on the renderer (walk %q, shared %q): the extract-capture tap stamps ONE of them on "+
+			"every captured row, and two renderings must never mix inside one Gold Set drawing (ADR-0046, #281)",
+			walkParser.RendererID(), htmlParser.RendererID())
+	}
 
 	robotsTxtParser := temoto.NewRobotsTxtParser(userAgent)
 	robotsTxtDownloader := robotstxt.NewRobotsTxtDownloader(userAgent, sharedTransport)
@@ -732,10 +764,14 @@ func newFactory(
 			// Rule 2 of the Career Surface (ADR-0051): a link is career-shaped when the
 			// crawl definition's OWN pass vocabulary already allows it. Reusing the two
 			// pass predicates the chain above is built from -- rather than minting a
-			// second, looser one -- is what makes the rule maintenance-free: it admits
-			// nothing the chain would have blocked anyway, because PassSubdomains and
-			// PassPathSegments sit before every block rule and short-circuit it with
-			// filter.ErrPass.
+			// second, looser one -- is what makes the rule maintenance-free, and it
+			// admits nothing the chain would have blocked anyway. Not because a pass rule
+			// short-circuits the chain: BlockInvalidURLs and AllowedTLDs run BEFORE both
+			// pass rules, so a career-shaped link is not exempt from those. Because the
+			// Career Surface is a PRE-filter -- a link this predicate keeps is handed
+			// straight to the SAME urlFilter chain, which still gets to block it. Nothing
+			// bypasses the chain, and nothing may be allowed to: skipping urlFilter for a
+			// career-shaped link as an "optimization" would be a real bypass.
 			passSubdomains := urlfilter.PassSubdomains(uf.PassSubdomains...)
 			passPathSegments := urlfilter.PassPathSegments(uf.PassPathSegments...)
 			careerShaped := func(u string) bool {

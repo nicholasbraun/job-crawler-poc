@@ -114,12 +114,22 @@ switch restores today's whole-document harvest.
 
 ## Consequences
 
-- **The as-is carve-out limits the risk, not the benefit.** On a page with a semantic
-  container `mainRegion` takes it whole, chrome inside included — but a site's `<nav>` is a
-  *sibling* of `<main>`, not a child, so selecting the container already excludes the
-  global menu. Only breadcrumbs, an in-content sidebar and an `<aside>` inside the
-  container survive. Stripping those too was considered and dropped: it buys little and can
-  empty a compact Career Page whose roles sit in an in-`<main>` sidebar.
+- **The as-is carve-out limits the risk, not the benefit — where there is a container.**
+  On a page with a semantic container `mainRegion` takes it whole, chrome inside included —
+  but a site's `<nav>` is a *sibling* of `<main>`, not a child, so selecting the container
+  already excludes the global menu. Only breadcrumbs, an in-content sidebar and an
+  `<aside>` inside the container survive. Stripping those too was considered and dropped:
+  it buys little and can empty a compact Career Page whose roles sit in an in-`<main>`
+  sidebar.
+- **On a page with NO semantic container, that carve-out does not apply, and rule 1 can
+  lose a sidebar of roles.** There `mainRegion` falls back to `withoutChrome`, which
+  strips `nav, header, footer, aside` from the body outright; its emptiness guard restores
+  them only when the chrome was the page's *only* text. So a compact Career Page carrying
+  a hero paragraph plus an `<aside>` of role links keeps the paragraph and loses the roles
+  from rule 1 — the guard does not fire, because the paragraph is text. Rule 2 recovers
+  whichever of those links carry a career token; the flat-slug ones
+  (`cooledmotors.com/senior-mechanical-design-engineer`, above) it does not. That is accepted risk, not a
+  case the three rules cover, and it is part of what the kill switch backs out.
 - **Faceted navigation is rule 3's accepted cost.** A board with `?dept=`, `?loc=`,
   `?remote=` filters hands the walk a combinatorial set of query variants off one path, and
   rule 3 follows all of them. `blockedQueryParams` catches only session and cache traps
@@ -131,15 +141,34 @@ switch restores today's whole-document harvest.
   depth 2, so the bound rarely bites; a `Next`-only paginator chains one hop per page and
   dies at eight. Lowering `max_depth` is therefore no longer only a Frontier-volume knob,
   which the next person to move it (migration 0024 already took it 10 -> 7) should know.
-- **Rule 2 admits nothing the URL filter would have blocked anyway.** `PassSubdomains` and
-  `PassPathSegments` sit *before* every block rule in the chain and short-circuit it
-  (`filter.ErrPass`), so a career-shaped link already bypasses the blocklists today. Rule 2
-  reuses that predicate rather than adding a second, looser one.
+- **Rule 2 admits nothing the URL filter would have blocked anyway** — because the Career
+  Surface is a *pre-filter*, not because a pass rule short-circuits the chain. A link rule 2
+  keeps is handed straight to the same `urlFilter` chain, which still gets to block it;
+  nothing here bypasses the chain, and nothing may be made to (skipping `urlFilter` for a
+  career-shaped link as an optimization would be a real bypass). The short-circuit reading
+  is wrong on the ordering anyway: `PassSubdomains` / `PassPathSegments` do short-circuit
+  the block rules *after* them, but `BlockInvalidURLs` and `AllowedTLDs` run first, so a
+  career-shaped link is not exempt from those. Rule 2 reuses that predicate rather than
+  adding a second, looser one.
 - **Validation is a live Cycle, not an offline replay.** With the measurement dropped, the
-  acceptance check is two numbers off `crawl_run` and one SQL count after one Cycle: URLs
-  added to the Frontier against pages crawled, read against the 428,154 / 51,383 baseline,
-  and new `source='crawl'` Job Listings in the window against the previous Cycle's. If the
-  walk still does not converge, rule 3's facet exposure is the first suspect and Frontier
+  acceptance check after one Cycle is three numbers — and only one of them is a `crawl_run`
+  column, which carries just `pages_crawled` and `listings_found`:
+  - **Pages crawled**: `crawl_run.pages_crawled` (51,383 on the baseline run).
+  - **URLs added to the Frontier**: the per-run Prometheus gauge
+    `crawler_frontier_visited_size{run_id}` (428,154), plotted by the frontier dashboard's
+    visited-vs-cap panel. *Caveat*: it is the **post-eviction** cardinality of the visited
+    ZSET, so it is bounded by `CRAWL_VISITED_CAP` — 5,000,000 by default, three orders above
+    the baseline, so today it reads as a true count. A Cycle that crossed the cap would
+    understate it, and `crawler_frontier_visited_evicted_total{run_id}` is nonzero exactly
+    then; read it beside the gauge.
+  - **New crawl-sourced Job Listings**: one SQL count of `source='crawl'` rows in the
+    window, against the previous Cycle's.
+
+  The walk also attributes every link to the rule that admitted it, or to `dropped`
+  (`crawler_url_career_surface_total{rule}`), so the Frontier delta splits between rule 1
+  and the two fallbacks without DEBUG-logging a 51k-page Cycle — which is what makes "rule 1
+  harvests nothing on these hosts" distinguishable from "the walk is working". If the walk
+  still does not converge, rule 3's facet exposure is the first suspect and Frontier
   ordering is the next lever.
 - This does **not** fix #270. It reuses that machinery for a different consumer; page
   classification still reads chrome exactly as it does today.

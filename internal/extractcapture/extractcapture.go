@@ -74,7 +74,11 @@ var (
 //
 // renderer is parser.RendererID from the parser that produces the captured
 // content. Like the sink and the file it is bound by the FIRST call and memoized
-// with it, which is correct because a process runs one parser configuration.
+// with it, so ONE renderer is stamped on every row of a capture file. A process may
+// build several parsers (cmd/server builds one per crawl lane, ADR-0051), and the
+// caller owes this the id they agree on -- cmd/server asserts that agreement at
+// startup, because a stamp naming a renderer that did not produce the bytes is the
+// mixed-rendering drawing the stamp exists to prevent.
 func FromEnv(renderer string) Hook {
 	once.Do(func() {
 		path := os.Getenv(pathEnv)
@@ -138,7 +142,8 @@ type sink struct {
 	accepts       int
 	abstains      int
 	// renderer is stamped on every record this sink writes; it is fixed for the
-	// file's lifetime because a process runs one parser configuration (#281).
+	// file's lifetime, so every row of one file is attributable to one renderer and
+	// the caller owes it a renderer every parser feeding this sink agrees on (#281).
 	renderer string
 }
 

@@ -36,8 +36,12 @@ type Content struct {
 	// omitempty — the only tag on this struct — for the reason goldRow.Renderer
 	// carries one (#281): the committed Extract Gold Set stores a Content per row and
 	// a round trip through its decoder must be the IDENTITY, or every goldset-* verb
-	// rewrites the whole substrate. Every row drawn before ADR-0051 has no main-region
-	// harvest, and an absent key is what says so.
+	// rewrites the whole substrate. An absent key therefore says no more than "this row
+	// records no main-region harvest": a row drawn before ADR-0051 and a page whose
+	// main region simply held no links encode identically, since the harvest of a
+	// link-free region is an EMPTY slice and omitempty drops that too. Nothing reads
+	// the difference — both decode to nil, and the walk treats nil and empty as the
+	// same membership set.
 	MainRegionURLs []string `json:"MainRegionURLs,omitempty"`
 	// JSONLD holds the raw contents of each <script type="application/ld+json">
 	// block on the page, for structured-data-aware consumers (e.g. JobPosting

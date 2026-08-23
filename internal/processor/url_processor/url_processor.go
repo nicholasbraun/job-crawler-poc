@@ -20,6 +20,7 @@ import (
 	"github.com/nicholasbraun/job-crawler-poc/internal/pagegate"
 	"github.com/nicholasbraun/job-crawler-poc/internal/parser"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -37,6 +38,18 @@ type RobotsTxtChecker interface {
 // never drains), so shipping it off would ship the defect. Pulling the switch
 // restores that whole-document harvest.
 const DefaultCareerSurfaceLinks = true
+
+// The Career Surface verdict on one link, one pre-built attribute set per outcome
+// (ADR-0051). Built once at package scope because this sits on the PER-LINK path — a
+// Cycle walks hundreds of thousands of them — and a MeasurementOption is immutable,
+// so sharing the four allocates nothing per link. Three rules plus the drop, never a
+// URL or a host: the series has to stay four points wide whatever the crawl reaches.
+var (
+	careerSurfaceMainRegion   = metric.WithAttributes(attribute.String("rule", "main_region"))
+	careerSurfaceCareerShaped = metric.WithAttributes(attribute.String("rule", "career_shaped"))
+	careerSurfaceSamePath     = metric.WithAttributes(attribute.String("rule", "same_path"))
+	careerSurfaceDropped      = metric.WithAttributes(attribute.String("rule", "dropped"))
+)
 
 type Config struct {
 	Frontier   frontier.Frontier
@@ -100,10 +113,14 @@ type Config struct {
 	// CareerShaped reports whether a URL carries a career token the crawl already
 	// allows — rule 2 of the Career Surface (ADR-0051), which is what still reaches an
 	// opening a site lists only in its Site Chrome. It is the crawl definition's own
-	// PassSubdomains / PassPathSegments vocabulary rather than a second, looser one:
-	// those pass rules already short-circuit every block rule in the URL filter chain,
-	// so rule 2 admits nothing the chain would have blocked anyway. Optional: a nil
-	// predicate reports false for every URL, leaving rules 1 and 3.
+	// PassSubdomains / PassPathSegments vocabulary rather than a second, looser one, and
+	// it admits nothing the URL filter would have blocked anyway — not because a pass
+	// rule short-circuits the chain (BlockInvalidURLs and AllowedTLDs run BEFORE the two
+	// pass rules, so a career-shaped link is not exempt from those), but because the
+	// Career Surface is a PRE-filter: a link this predicate keeps is handed straight to
+	// URLFilter below, which still gets to block it. Nothing here bypasses the chain,
+	// and no caller may skip it for a career-shaped link. Optional: a nil predicate
+	// reports false for every URL, leaving rules 1 and 3.
 	CareerShaped func(u string) bool
 	// Recorder instruments the keyword relevance gate (pages resolved without the
 	// LLM extractor) for the ADR-0007 measurement. Optional: a nil Recorder
@@ -122,6 +139,7 @@ type urlWorker struct {
 	gateConfig           crawler.LLMGateConfig
 	recorder             llmobs.Recorder
 	urlsProcessedCounter metric.Int64Counter
+	careerSurfaceCounter metric.Int64Counter
 	onJobListing         func(ctx context.Context, jobListing *crawler.RawJobListing) error
 	onShadowExtract      func(ctx context.Context, sample *crawler.ShadowSample) error
 	shadowRate           float64
@@ -135,6 +153,22 @@ func NewProcessor(cfg *Config) *urlWorker {
 	meter := otel.Meter("url_worker")
 	name := "crawler.url.processed"
 	urlsProcessedCounter, err := meter.Int64Counter(name)
+	if err != nil {
+		slog.Error("url_worker: error setting up metrics", "err", err, "name", name)
+	}
+
+	// Why the Career Surface is counted and not just logged: ADR-0051 names the live
+	// Cycle as the WHOLE validation for the change, and the drop is otherwise a
+	// slog.Debug on a path that runs hundreds of thousands of times a Cycle — LOG_LEVEL
+	// defaults to INFO, so attributing the Frontier delta would mean turning DEBUG on
+	// across ~51k pages. Splitting the kept links by the rule that admitted them is what
+	// makes that reading possible: rule 1's share against rules 2 and 3 separates "the
+	// main region is carrying the walk" from "rule 1 harvests nothing here and only the
+	// two fallbacks fire", which is exactly the silent recall loss
+	// COLLECTION_CAREER_SURFACE_LINKS is the back-out for.
+	name = "crawler.url.career_surface"
+	careerSurfaceCounter, err := meter.Int64Counter(name, metric.WithDescription(
+		"Links a Collection walk judged against the page's Career Surface, by the rule that admitted the link (main_region, career_shaped, same_path) or dropped (ADR-0051)."))
 	if err != nil {
 		slog.Error("url_worker: error setting up metrics", "err", err, "name", name)
 	}
@@ -155,6 +189,7 @@ func NewProcessor(cfg *Config) *urlWorker {
 		gateConfig:           cfg.GateConfig,
 		recorder:             recorder,
 		urlsProcessedCounter: urlsProcessedCounter,
+		careerSurfaceCounter: careerSurfaceCounter,
 		onJobListing:         cfg.OnJobListing,
 		onShadowExtract:      cfg.OnShadowExtract,
 		shadowRate:           cfg.ShadowRate,
@@ -265,10 +300,25 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 		// host's Site Chrome, which is 67.4% of what a Career Page links and the reason
 		// a Cycle's bounded walk does not drain. Depth is NOT exempted for rule 3:
 		// maxDepth is the only thing keeping a faceted board's query variants finite.
-		if w.careerSurfaceLinks && !inMainRegion[contentURL] &&
-			!w.isCareerShaped(parsed.RawURL) && !samePathVariant(nextURL.RawURL, parsed.RawURL) {
-			slog.Debug("worker: url off the career surface, dropping", "url", parsed.RawURL, "page", nextURL.RawURL)
-			continue
+		//
+		// Every link is counted by the rule that admitted it, or as a drop: the ADR's
+		// acceptance check is a live Cycle, and this is what makes that reading
+		// attributable to rule 1 against rules 2 and 3 without DEBUG logging the whole
+		// walk. The rules are tried in the order they are argued, so a link on more than
+		// one is counted under the first — rule 1's share is the lever's share.
+		if w.careerSurfaceLinks {
+			switch {
+			case inMainRegion[contentURL]:
+				w.careerSurfaceCounter.Add(ctx, 1, careerSurfaceMainRegion)
+			case w.isCareerShaped(parsed.RawURL):
+				w.careerSurfaceCounter.Add(ctx, 1, careerSurfaceCareerShaped)
+			case samePathVariant(nextURL.RawURL, parsed.RawURL):
+				w.careerSurfaceCounter.Add(ctx, 1, careerSurfaceSamePath)
+			default:
+				w.careerSurfaceCounter.Add(ctx, 1, careerSurfaceDropped)
+				slog.Debug("worker: url off the career surface, dropping", "url", parsed.RawURL, "page", nextURL.RawURL)
+				continue
+			}
 		}
 
 		if err := w.urlFilter(parsed.RawURL); err != nil {
