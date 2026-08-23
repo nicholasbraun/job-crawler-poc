@@ -79,7 +79,7 @@ A crawl's live observation of a Company or Career Page, refreshing its fields an
 _Avoid_: visit, touch, refresh
 
 **Aggregator**:
-A multi-company job board, VC-portfolio board, or professional network — never a single Company's Career Page. Rejected at the Gate by host: it is structurally indistinguishable from a legitimate multi-tenant ATS (both serve many companies under `/{slug}` paths), so only a curated host list can tell them apart. Because the verdict is that list and not a reading of the page, it is the Gate's one *certain* reject — so adding a host retroactively closes the Catalog rows and Job Listings it already minted, via the Collection Crawl's dormancy probe, rather than waiting on the Catalog Doctor.
+A multi-company job board, VC-portfolio board, professional network, or staffing agency — never a single Company's Career Page. What unites them is that the openings on the page are not the host's own: a board carries employers it names, an agency carries clients it withholds (ADR-0052). Rejected at the Gate by host: it is structurally indistinguishable from a legitimate multi-tenant ATS (both serve many companies under `/{slug}` paths), so only a curated host list can tell them apart. Because the verdict is that list and not a reading of the page, it is the Gate's one *certain* reject — so adding a host retroactively closes the Catalog rows and Job Listings it already minted, via the Collection Crawl's dormancy probe, rather than waiting on the Catalog Doctor.
 _Avoid_: job board, directory, portal
 
 **Catalog Doctor**:

@@ -605,6 +605,21 @@ func TestIsAggregatorHost(t *testing.T) {
 		{"builtin la sibling", "https://builtinla.com/company/block-inc/jobs", true},
 		{"builtin seattle sibling", "https://builtinseattle.com/company/artera", true},
 		{"builtin sf sibling", "https://builtinsf.com/company/headway", true},
+		// Staffing agencies -- the second qualifying shape (ADR-0052). No employer is
+		// named on these pages; the disqualifier is one host absorbing client roles
+		// without bound.
+		{"gi group country subdomain folds in via eTLD+1", "https://uk.gigroup.com/jobs/class-1-driver", true},
+		{"another gi group country subdomain", "https://br.gigroup.com/vagas", true},
+		{"gi group's German domain is a separate eTLD+1", "https://jobs.gigroup.de/stellenangebote", true},
+		{"baumlink Personalberatung", "https://www.baumlink.com/jobs/bi-architekt-m-w-d", true},
+		{"zenjob temp-staffing platform", "https://www.zenjob.com/en/jobs", true},
+		{"thryve talent recruiting firm", "https://www.thryvetalent.com/job-results", true},
+		{"growe talents recruiting agency", "https://growetalents.com/vacancies", true},
+		{"lightning travel recruitment agency", "https://lightningtravelrecruitment.com/jobs", true},
+		// A consultancy that staffs its own employees onto client projects is a normal
+		// employer, not an agency -- "our clients" on the page is not the test (ADR-0052).
+		{"a consultancy with client projects is not an agency", "https://job.deloitte.com/careers", false},
+		{"another consultancy stays a real hub", "https://career.avenga.com/jobs", false},
 		// A per-tenant ATS or recruiting-platform board root is a legitimate hub,
 		// not an aggregator -- its only defect is identity attribution (#46).
 		{"smartrecruiters tenant is not an aggregator", "https://jobs.smartrecruiters.com/ScalableGmbH", false},

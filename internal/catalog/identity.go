@@ -445,13 +445,17 @@ func subdomainLabel(host, suffix string) (string, bool) {
 
 // aggregatorHosts are registrable domains (eTLD+1) that are never a single
 // company's Career Page hub: multi-company job boards, job aggregators,
-// professional networks, and VC-portfolio board platforms. Cataloguing them
+// professional networks, VC-portfolio board platforms, and staffing agencies. Cataloguing them
 // pollutes the Catalog with non-hub pages (#45) and, downstream, mints a fake
 // Company that swallows many real employers (#46). A per-tenant ATS or
 // recruiting-platform host (e.g. smartrecruiters, join.com/companies) is
 // deliberately absent -- those are legitimate single-company hubs whose only
 // defect is identity attribution, canonicalized separately in #46. Matched on
 // eTLD+1, so every subdomain (de.linkedin.com, jobsinvc.getro.com) folds in.
+// Two shapes qualify, and an entry's comment must say which (ADR-0052): the page
+// names an employer that is NOT the host (a board -- every listing mis-attributed
+// by construction), or it names no employer at all while one host absorbs an
+// unbounded stream of client roles (an agency -- the Company is real and useless).
 // This is a curated denylist, extended as the gold-set harness (#44) surfaces
 // more.
 var aggregatorHosts = map[string]struct{}{
@@ -647,6 +651,29 @@ var aggregatorHosts = map[string]struct{}{
 	"builtinla.com":        {},
 	"builtinseattle.com":   {},
 	"builtinsf.com":        {},
+
+	// Staffing and recruitment agencies -- the SECOND qualifying shape (ADR-0052),
+	// so the employer-named-on-the-page standard above does NOT apply and these
+	// entries must not be read against it. Their pages name no employer beyond the
+	// agency ("we are currently recruiting for a Butcher, for our client in Leighton
+	// Buzzard"), while one host absorbs client roles without bound: gigroup.com held
+	// 701 open Job Listings across 20 country subdomains and 351 locations, all
+	// collapsed onto one Company. Attributing those to the agency is not even wrong
+	// -- in temp work it is the employer of record -- but it answers "who is hiring?"
+	// with a middleman for 701 jobs at 700 workplaces, which breaks the same Catalog
+	// invariant a job board breaks: a Career Page's openings are its Company's own.
+	//
+	// The line is the AGENCY, not the client relationship. A consultancy that staffs
+	// its own employees onto client projects (Deloitte, Materna, Avenga) is a normal
+	// employer and stays -- its postings say "our clients" too, so that phrase is not
+	// the test. The test is whether the host's openings are its own.
+	"gigroup.com":                    {}, // 20 country subdomains fold in via eTLD+1
+	"gigroup.de":                     {}, // jobs.gigroup.de -- a separate registrable domain, so listed separately
+	"baumlink.com":                   {}, // Personalberatung; "im Auftrag eines Kunden aus dem Bereich..."
+	"zenjob.com":                     {}, // temp-staffing platform for student shifts
+	"thryvetalent.com":               {}, // tech recruiting firm; clients undisclosed on the board
+	"growetalents.com":               {}, // recruiting agency; clients undisclosed on the board
+	"lightningtravelrecruitment.com": {}, // travel/hospitality recruitment agency
 }
 
 // sharedHostSuffixes are registrable domains (eTLD+1) that front many INDEPENDENT
