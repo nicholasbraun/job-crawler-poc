@@ -6,15 +6,16 @@ page URL, the extractor's original verdict, a label
 (`detail` / `hub-index` / `residue`, or `ambiguous` for a page a review could not
 settle), its sampling stratum, its sampling weight, and its label provenance.
 
-The file holds **four drawings**, one of which is defined and not yet drawn. They share a row
-format and a file; they share nothing else, and their weights are never pooled:
+The file holds **five drawings**. They share a row format and a file; they share nothing
+else, and their weights are never pooled:
 
 | drawing | strata | rows | drawn from | accept share | what it is for |
 |---|---|---:|---|---:|---|
 | **structural** (#254) | `lone-posting`, `ambiguous-posting`, `no-posting` | 149 | the July capture, 4271 deduped pages | 0.3432 | the Free Extraction's own population, sampled where the mechanism lives |
 | **random** (#262) | `random` | 120 | the August faithful frame, 5162 deduped pages | 0.0753 | a random sample of the stream, so composition, precision and cost describe production |
 | **boundary** (#263) | `boundary` | 188 | the same frame, 5042 candidates | n/a (a census) | the pages the two gate rules **disagree** on — where a false drop hides |
-| **veto-boundary** (#304) | `veto-boundary` | 0 | — (drawn during the rollout) | n/a (a stratified sample of the drop set) | the pages the **Learned Veto** would withhold the call from, sampled in three bands so the confirmation pass is finishable; see *The veto boundary (#304)* below and *Turning the Learned Veto on* in the repository README |
+| **veto-boundary** (#304) | `veto-boundary` | 280 | the closed 18,233-page August window, drop set 12,036 | n/a (a stratified sample of the drop set) | the pages the **Learned Veto** would withhold the call from, sampled in three bands so the confirmation pass is finishable; see *The veto boundary (#304)* below and *Turning the Learned Veto on* in the repository README |
+| **host-breadth** (ADR-0050) | `host-breadth` | 900 | the closed 2026-08-22 window, 23,591 pages on 1,733 host clusters | n/a (a cluster sample of hosts) | **hosts**, which is what the fit is short of: one page per host, stratified on the live verdict and on nothing the previous fit produced. See *The host-breadth drawing (ADR-0050)* below |
 
 This replaces `../extract-testdata` as the Extract Gate's **evidence base**. Those
 fixtures are synthetic — invented domains, every `detail` page carrying exactly one
@@ -628,6 +629,94 @@ is a new *drawing*, declared in code as every drawing before it was.
 | near | — | — | — |
 | deep | — | — | — |
 
+## The host-breadth drawing (ADR-0050)
+
+> The population is **the hosts the Collection Crawl walked in one closed capture window,
+> each represented by one of its pages** — minus the URLs the earlier drawings already
+> committed. A weighted count over it estimates something about *that set of hosts*, never
+> about the stream of pages, in which a host publishing 900 of them counts 900 times and
+> here counts once. Its rows never enter the weighted stream scorecard.
+
+### Why hosts
+
+The Posting Score's cross-validation is host-grouped and its leakage guard bans the host
+words of the fit population, so both read **hosts**. At 737 rows the set stood on 546 hosts
+against an artifact carrying 517 weighted entries; a thousand rows from twenty hosts buy
+far less than two hundred from two hundred (`docs/improving-the-posting-score.md`, *New
+hosts, not just new rows*).
+
+So the sampling unit is a host. The frame is reduced to at most one page per
+`(hostname, verdict)` — the page with the lowest `sha256(seed + "\n" + url)`, the same
+deterministic order every drawing here selects in — and the quotas are applied to those
+representatives. `hostname` and not eTLD+1, because `hostname` is exactly the key the fit's
+fold assignment groups on. The cluster is `(hostname, verdict)` and not `hostname`, so a
+host publishing both an accepted and an abstained page represents itself once in each cell
+and the two cells' quotas stay independent.
+
+### What it deliberately does not read
+
+Not the Posting Score, not `pagegate.VetoThreshold`, not a band derived from either.
+
+The 280-row `veto-boundary` drawing was banded at `VetoThreshold` 0.605395; refitting over
+it moved the threshold to 0.165048, and **not one of those 280 rows has been confirmed by a
+human**. Re-banding the drop set now would mean two consecutive refits drawing their
+training data from a threshold the previous refit chose with no human in between — the
+circular selection `docs/improving-the-posting-score.md` names as this loop's
+characteristic failure, one level up from the extractor-verdict trap ADR-0049 refused.
+
+Stratifying on the **live extractor verdict** is not that: it is an outside fact about the
+frame, ADR-0049 permits it explicitly, and every page keeps a non-zero known inclusion
+probability where filtering would give one half probability zero. Reading no score also
+makes this drawing byte-reproducible across every future refit, where a banded draw is not.
+
+Stated cost: this buys host breadth and volume. It does **not** buy "rows the model gets
+wrong". Those are worth drawing next — after a confirmation pass has put an outside fact
+back in the loop.
+
+### One renderer, fenced on the stamp
+
+Every earlier drawing fenced its renderer with `-since` (ADR-0046). That cannot work here:
+`-since` is a floor, and this window flipped `PARSE_STRUCTURAL_RENDERING` at its **end**,
+leaving 557 `structural-v2` rows after 23,591 `flattened-v1` ones. The verb therefore fences
+on the stamp itself, `-renderer`, defaulting to the renderer today's parser writes — read
+off a parser instance rather than written down, so it follows the kill switch's default.
+A row carrying **no** stamp is dropped too: unstamped means unknown, not equal.
+
+### The arithmetic
+
+| | |
+|---|---|
+| capture / frame (`-since`) | `capture/veto-window.jsonl`, `2026-08-22T16:40:00Z` |
+| capture lines / oversized dropped | 24,188 / 40 (raw line > 512 KB) |
+| dropped for renderer (ADR-0046) | 557 (`structural-v2`) |
+| candidate frame | **23,591** (`flattened-v1`) |
+| minus the URLs earlier drawings hold | 304 |
+| host clusters `(hostname, verdict)` | **1,723** |
+| `-seed` | `extract-goldset-host-breadth-v1` |
+
+| cell | host population | drawn | weight |
+|---|---:|---:|---:|
+| live verdict **accept** | 633 | 500 | 0.6613 |
+| live verdict **abstain** | 1,090 | 400 | 1.4234 |
+| **total** | **1,723** | **900** | Σ = 900 |
+
+The weights are inverse selection probabilities normalized within this drawing,
+`w_c = (N_c/n_c) x (n/N)` — the same arithmetic the veto boundary's bands use, and for the
+same reason: this population is enumerated by the scan, so its probabilities are known
+exactly. `weightsFor` is deliberately not used; it exists to undo the tap's per-verdict caps
+on a drawing whose frame is a capped stream sample, and this frame is not one.
+
+**The drawing is taken once**, and the verb refuses a second draw. A fresh window is a new
+drawing, declared in code as every drawing before it was.
+
+### What it owes
+
+All 900 rows carry a **Proposed Label** and no confirmer. `pendingHostBreadthConfirmations`
+holds that debt and only falls as a human signs for rows. This is not a Boundary Stratum, so
+ADR-0043's every-row rule does not reach it — the debt is counted anyway, because what makes
+an unconfirmed row expensive is not which drawing it came from. Confirm through
+`goldset-ui -stratum host-breadth`, exactly as the random stratum was.
+
 ## The labeling protocol
 
 `llmbench goldset-worksheet` renders the labeler's view: the page's own title, two
@@ -778,44 +867,45 @@ go run ./cmd/llmbench score-capture -in cmd/llmbench/extract-goldset/goldset.jso
 ```
 
 ```
-total             457
-extract-calls     127
-extract-call-rate 0.2779  (soft, no threshold)
-overall           precision 1.0000  recall 0.9071  f1 0.9513  accuracy 0.9706
-detail     recall 0.9071  (n=140, extracted 127, skipped 13)
-hub-index  accuracy 1.0000  (n=78, skipped 78, leaked 0)
-residue    accuracy 1.0000  (n=224, skipped 224, leaked 0)
-residue-count 224, residue-extracted 0
-ambiguous         15 (excluded from scoring entirely, 0 extracted)
+total             1637
+extract-calls     644
+extract-call-rate 0.3934  (soft, no threshold)
+overall           precision 0.8480  recall 0.9761  f1 0.9076  accuracy 0.9320
+detail     recall 0.9761  (n=543, extracted 530, skipped 13)
+hub-index  accuracy 0.9367  (n=221, skipped 207, leaked 14)
+residue    accuracy 0.9018  (n=825, skipped 744, leaked 81)
+residue-count 825, residue-extracted 81
+ambiguous         48 (excluded from scoring entirely, 19 extracted)
 
 stream-weighted estimates (random stratum, n=120, effective n=92.3)
 composition detail 0.0584 / hub-index 0.0556 / residue 0.8476
-extract-call-rate 0.0565   precision 1.0000   recall 0.9677
+extract-call-rate 0.0565   precision 1.0000
 
 boundary stratum (n=188, unweighted)
 count detail 37 / hub-index 62 / residue 79 / ambiguous 10
-extracted 26, skipped 162
+extracted 28, skipped 160
 false-drops 11, ambiguous-skipped 10, confirmed 0 of 188
 ```
 
 Run the rung-on scorecard against the same file on the same day and it reads
-**180 calls at precision 0.7175**; the veto takes that to **127 at 1.0000** — the 50
-withheld calls and the 28.2% cut ADR-0049's amendment records. (The `hub-index` /
-`residue` / `ambiguous` counts differ from the block at the top of this section, which
-was pasted before later confirmations moved labels; compare the two scorecards by
-re-running both, not against that block.)
+**1,360 calls at precision 0.4003**; the veto takes that to **644 at 0.8480** — 716
+withheld calls, **52.6%** of the bill, at `detail` recall **0.9761 either way**. Re-run
+both to compare them; never compare against a block pasted on a different day.
 
-**That 1.0000 is in-sample and is not the veto's precision.** The shipped weights were
-fitted on these very 442 rows, converging to a mean log-loss of 0.0247, so a perfect
-score with zero leaks here is the memorisation ceiling of the fit rather than a forecast
-about anything. The generalisation read is ADR-0049's out-of-fold, host-grouped ladder,
-which at a comparable depth reads **0.8952 and loses 16 `detail` rows**. Read this block
-as "the cut is where the trainer said it is", never as "the veto is perfect".
+**That 0.8480 is in-sample and is not the veto's precision.** The shipped weights were
+fitted on these very 1,589 scorable rows. It is worth reading beside what the same line
+said one drawing ago: at 442 rows it was **1.0000**, which was the memorisation ceiling of
+a fit carrying 517 weighted entries over 442 rows, not a forecast. ADR-0050's 900 rows
+pushed the fit toward generalising and the in-sample number came down to something a
+model could actually mean. The generalisation read is still ADR-0049's out-of-fold,
+host-grouped ladder, which at a comparable depth now reads **0.7193 and loses 53 of 527
+`detail` rows (10.1%)** — against 15% at the previous fit. Read this block as "the cut is
+where the trainer said it is", never as "the veto is this good".
 
 **Read the drop side of this scorecard with the same suspicion as the one above.** The
 capture tap sits downstream of the Extract Gate, so this file cannot measure what the
 veto would drop out of pages the gate never admitted — it has none. The number this
-override exists to show is the one that did not move: `detail` recall is **0.9071**
+override exists to show is the one that did not move: `detail` recall is **0.9761**
 either way and the thirteen drops are the **same thirteen pages**, which is exactly what
 `TestExtractGoldSetFalseDropGuardUnderTheLearnedVeto` asserts as a set comparison. The
 `false-drops 11` in the boundary block are eleven of those same thirteen, unchanged.

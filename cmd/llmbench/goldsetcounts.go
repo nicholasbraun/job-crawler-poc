@@ -21,6 +21,8 @@ import (
 	"strconv"
 
 	"github.com/nicholasbraun/job-crawler-poc/cmd/llmbench/bench"
+	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
+	"github.com/nicholasbraun/job-crawler-poc/internal/catalog"
 )
 
 // defaultCountsPath is the source file carrying the counts the committed record
@@ -150,6 +152,11 @@ var derivedCounts = []derivedCount{
 		Value: func(s recordSnapshot) int { return rowsInDrawing(s, drawingVetoBoundary) },
 	},
 	{
+		Name: "hostBreadthStratumRows", Direction: countPinned,
+		Why:   "rows in ADR-0050's host-breadth drawing (a count of hosts represented, not of stream pages)",
+		Value: func(s recordSnapshot) int { return rowsInDrawing(s, drawingHostBreadth) },
+	},
+	{
 		Name: "outsideStructuralDrawingRows", Direction: countPinned,
 		Why: "rows outside the #256 structural drawing (the Free Extraction ground truth's scope)",
 		Value: func(s recordSnapshot) int {
@@ -184,6 +191,28 @@ var derivedCounts = []derivedCount{
 		Name: "pendingVetoBoundaryConfirmations", Direction: countMayFall,
 		Why:   "Learned Veto boundary rows still awaiting a human confirmation",
 		Value: func(s recordSnapshot) int { return pendingIn(s, stratumVetoBoundary) },
+	},
+	{
+		Name: "pendingHostBreadthConfirmations", Direction: countMayFall,
+		Why:   "host-breadth rows still awaiting a human confirmation",
+		Value: func(s recordSnapshot) int { return pendingIn(s, stratumHostBreadth) },
+	},
+	{
+		Name: "atsExemptRows", Direction: countPinned,
+		Why: "rows the gate returns on at rung 2, never reaching the rung the Learned Veto prunes (ADR-0049)",
+		Value: func(s recordSnapshot) int {
+			n := 0
+			for _, row := range s.Rows {
+				u, err := crawler.NewURL(row.URL)
+				if err != nil {
+					continue
+				}
+				if catalog.Classify(u) == catalog.RoleJobListing {
+					n++
+				}
+			}
+			return n
+		},
 	},
 	{
 		Name: "ambiguousRows", Direction: countPinned,

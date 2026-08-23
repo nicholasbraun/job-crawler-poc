@@ -28,6 +28,12 @@ human at ④ and the model is choosing its own training set from its own beliefs
 the extractor-verdict trap ADR-0049 documents, one level up: there the *labels* came from a model,
 here the *sampling frame* does.
 
+**Cutting the dotted edge.** A draw does not have to read the threshold. ADR-0050's `host-breadth`
+drawing stratifies on the live extractor verdict — an outside fact about the frame — and on nothing
+the previous fit produced, which severs that edge entirely: the same command yields the same sample
+after any refit. It buys hosts and volume rather than the rows the model gets wrong, so it is the
+turn you can take *without* a human at ④, and it does not excuse you from taking one.
+
 ## What actually improves it
 
 In rough order of value per unit of effort.
@@ -53,6 +59,10 @@ The rows that teach are the misclassified ones: real Job Listings scoring low, a
 scoring high. `-accepted-rows` / `-near-rows` / `-deep-rows` exist so a draw can be pointed at them
 rather than spread evenly. Point them at the failure mode you actually observed.
 
+This is the lever that costs a human. Pointing a draw at the score's own mistakes means reading the
+score, and reading the score is the dotted edge — so this one is only honest *after* a confirmation
+pass, never twice in a row without one.
+
 ### 3. New hosts, not just new rows
 
 Cross-validation is host-grouped and the leakage guard is keyed on host words, so both read
@@ -60,6 +70,11 @@ Cross-validation is host-grouped and the leakage guard is keyed on host words, s
 hundred. A capture window over a different slice of the Catalog adds distribution; a deeper crawl of
 the same hosts mostly adds depth, and deep pages are systematically unlike the ones near a Career
 Page root.
+
+`llmbench goldset-sample-host-breadth` is the instrument for this (ADR-0050): it makes the sampling
+unit a **host**, reducing the frame to one page per `(hostname, verdict)` before the quotas apply,
+so N rows are N hosts. Read its report mode first — the host-cluster count, not the page count, is
+the number that says whether a window is worth drawing from.
 
 ### 4. More rows, while the fit is still overparameterised
 
@@ -70,6 +85,7 @@ words + 17 structural Score Signals). Against that:
 |---|---:|---:|---:|
 | 457 rows | 442 | 357 | 0.0247 |
 | 737 rows | 692 | 516 | 0.0421 |
+| 1,637 rows | 1,589 | 1,074 | 0.0812 |
 
 Log-loss rising is the *good* direction: at 442 rows against 517 weights the model could largely
 memorise its training set, and it did. More rows pushed it toward generalising, and the calibration
@@ -104,12 +120,46 @@ population, as ADR-0049 says of itself. The held-out frame is the stream. **For 
 turn this on", quote the stream; for "how fragile is this fit", quote out-of-fold.** Never quote
 either without saying which.
 
+### The second turn — hosts, drawn without reading the fit
+
+**Before** (737 rows, 516 hosts): `VetoThreshold` 0.165048, in-sample precision after the
+veto 0.9626, out-of-fold `detail` loss at ~50% depth **27 of 180 (15%)**.
+
+**After** (1,637 rows, 1,074 hosts): ADR-0050's `host-breadth` drawing added 900 rows, one
+page per host, over the closed 2026-08-22 window. `VetoThreshold` **0.136551**. In-sample
+Veto Depth 699 of 1,319 scorable rung-8 accepts (**52.99%**) at zero `detail` lost. Over the
+whole file: **1,360 calls at precision 0.4003 without the veto, 644 at 0.8480 with it** —
+52.6% of the bill withheld, `detail` recall 0.9761 either way, the same thirteen drops.
+
+| | 737 rows | 1,637 rows |
+|---|---:|---:|
+| in-sample precision after the veto | 0.9626 | **0.8500** |
+| out-of-fold `detail` lost at ~50% depth | 27 of 180 (15%) | **53 of 527 (10.1%)** |
+
+**Read those two rows together or not at all.** In-sample precision fell and the honest
+out-of-fold read improved by a third. That is the shape of a model that stopped memorising:
+517 weighted entries over 692 rows could largely fit the training set, and 900 rows from 900
+new hosts took that away. It is the clearest evidence so far that **hosts are the binding
+constraint**, not rows — the same 900 rows drawn from the hosts already in the set would
+have moved the fold assignment and the leakage guard hardly at all.
+
+**No held-out reading was taken.** The 300-page frame quoted above was labelled against the
+0.165048 fit; it is not a valid read on this one. In-sample and out-of-fold are what this
+turn has, and they are labelled as such. A fresh stream number needs a fresh window.
+
+**What the turn cost.** 900 more unconfirmed rows. 1,180 of 1,637 rows now carry a
+proposer's label nobody has read, so the shipped operating point is derived mostly from
+machine labels. That is the debt ① exists to retire, and it is now also the precondition for
+the *next* turn: a draw pointed at the model's mistakes has to read the model, and that is
+only honest with a human confirmation in between.
+
 ## The hazards
 
 **Circular selection.** Never let two consecutive refits draw their training data from a threshold
 the previous refit chose, with no human confirmation in between. If you must iterate quickly, keep
 the *frame* fixed and vary only what you sample from it — the frame is then an outside fact rather
-than the model's opinion.
+than the model's opinion. Better still, draw on a rule that never reads the fit at all: that is what
+ADR-0050's host-breadth drawing is for, and why it stratifies on the live verdict and stops there.
 
 **Machine labels compounding.** Every unconfirmed row makes the shipped gate more a product of a
 model and less of the record. Watch `pendingVetoBoundaryConfirmations`: it is the count of rows the

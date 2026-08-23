@@ -134,6 +134,12 @@ const (
 	// that rise, which is the point (ADR-0048) -- and moves stratumVetoBoundary into
 	// drawnStrata, all in the same diff.
 	vetoBoundaryStratumRows = 280
+	// hostBreadthStratumRows is ADR-0050's drawing: a cluster sample of the HOSTS in one
+	// closed capture window, one page each. It is pinned like its three neighbours and
+	// for the same reason -- a drawing is a fixed act of sampling -- but what it pins is
+	// a count of HOSTS represented, not of stream pages sampled, which is why its rows
+	// never enter a weighted stream estimate.
+	hostBreadthStratumRows = 900
 	// outsideStructuralDrawingRows is how many committed rows lie OUTSIDE the #256
 	// structural drawing. TestCommittedGoldSetFreeExtractionFidelity reads it to hold
 	// that every later drawing is out of the Free Extraction ground truth's scope, and
@@ -145,7 +151,18 @@ const (
 	// fifth drawing lands, then goes silently wrong with nothing for goldset-refit to
 	// recompute and nothing for it to print. This one moves when a drawing does, and
 	// the refit says so.
-	outsideStructuralDrawingRows = 588
+	outsideStructuralDrawingRows = 1488
+	// atsExemptRows is how many committed rows the Extract Gate returns on at RUNG 2 --
+	// a recognized ATS posting URL, which the gate extracts without ever reaching the
+	// Positive Evidence rung the Learned Veto prunes (ADR-0049). It is the exact size of
+	// the gap between "the extract bill" and "the population ADR-0049 quotes figures over".
+	//
+	// It was an asserted ZERO until ADR-0050's host-breadth drawing landed: sampling one
+	// page per host reached iCIMS tenant subdomains, join.com and an ATS vendor's own
+	// marketing site, hosts no earlier drawing had touched. Pinned in BOTH directions, like
+	// ambiguousRows -- a row gaining or losing the exemption changes what ADR-0049's
+	// population covers, and neither direction may pass unseen.
+	atsExemptRows = 5
 	// randomStreamAcceptRate is the accept share the random drawing's weights were
 	// built on -- #261's census measurement of the live extract stream, not the
 	// capture file's own mix. TestCommittedRandomStratumIsWeightedToTheStream
@@ -201,6 +218,22 @@ const (
 	// (confirmationFloor, ADR-0048): a rise fails the build, a fall is logged with the
 	// number to lower it to.
 	pendingVetoBoundaryConfirmations = 280
+	// pendingHostBreadthConfirmations is the same ratchet on ADR-0050's host-breadth
+	// drawing. That drawing is NOT a Boundary Stratum -- it is not drawn from where two
+	// rules disagree, and no hard-zero false-drop guard is decided on it -- so ADR-0043's
+	// every-row rule does not reach it. The debt is counted anyway, because what makes an
+	// unconfirmed row expensive is not which drawing it came from: these rows are in the
+	// FIT population, so the shipped Posting Score is derived from labels nobody has read,
+	// and a number nobody keeps is a debt that stops being visible.
+	//
+	// RATCHET in ONE direction (confirmationFloor, ADR-0048): a rise fails the build, a
+	// fall is logged with the number to lower it to. extract-goldset/README.md says how
+	// the confirmation pass runs.
+	//
+	// It ships at the full stratum count: the labels were proposed in sixty 15-row batches
+	// and nobody has read them yet. goldset-refit REFUSED this rise, which is the point --
+	// the number is raised here by hand, in the same commit as the drawing that owes it.
+	pendingHostBreadthConfirmations = 900
 	// ambiguousRows is how many rows carry the ambiguous label -- pages a reading
 	// could not settle, recorded rather than forced into a class. Pinned in BOTH
 	// directions: an ambiguity that appears, or one that quietly resolves, changes
@@ -219,7 +252,7 @@ const (
 	// pages a human read and could not settle, each carrying a note saying what the
 	// tension was. That is the guard working -- the rise was seen and acknowledged
 	// here, in the same commit as the confirmations that produced it.
-	ambiguousRows = 45
+	ambiguousRows = 48
 	// boundaryDetailRows is how many Boundary Stratum rows are labelled detail. Until
 	// #257 that was also how many Job Listings the Positive Evidence rule dropped
 	// here, because the stratum was DRAWN as the pages that rule skipped; #257 widened
@@ -1305,7 +1338,7 @@ func TestWorksheetWithholdsTheStructuredData(t *testing.T) {
 // drawnStrata is the subset of allStrata the committed file actually holds rows in.
 // It is a test-local list rather than a property of goldStratum because "has been
 // drawn" is a fact about this artifact at this commit, not about the type.
-var drawnStrata = []goldStratum{stratumLonePosting, stratumAmbiguousPosting, stratumNoPosting, stratumRandom, stratumBoundary}
+var drawnStrata = []goldStratum{stratumLonePosting, stratumAmbiguousPosting, stratumNoPosting, stratumRandom, stratumBoundary, stratumVetoBoundary, stratumHostBreadth}
 
 // isCensusStratum reports whether s's rows are a CENSUS -- inclusion probability 1,
 // so weight exactly 1. Only ADR-0043's boundary is one: the Learned Veto's boundary is
@@ -1345,14 +1378,17 @@ func TestCommittedGoldSetIsWellFormed(t *testing.T) {
 	if got := len(byDrawing[drawingVetoBoundary]); got != vetoBoundaryStratumRows {
 		t.Errorf("the veto-boundary drawing has %d rows, want %d", got, vetoBoundaryStratumRows)
 	}
-	if want := structuralStratumRows + randomStratumRows + boundaryStratumRows + vetoBoundaryStratumRows; len(rows) != want {
-		t.Errorf("gold set has %d rows, want %d (the four drawings and nothing else)", len(rows), want)
+	if got := len(byDrawing[drawingHostBreadth]); got != hostBreadthStratumRows {
+		t.Errorf("the host-breadth drawing has %d rows, want %d", got, hostBreadthStratumRows)
+	}
+	if want := structuralStratumRows + randomStratumRows + boundaryStratumRows + vetoBoundaryStratumRows + hostBreadthStratumRows; len(rows) != want {
+		t.Errorf("gold set has %d rows, want %d (the five drawings and nothing else)", len(rows), want)
 	}
 	// Per drawing AND file-wide. A weight normalizes within its drawing, so the
 	// per-drawing balance is the real invariant; the file-wide one holds only because
 	// each drawing's weights sum to its own row count, and asserting both catches a
 	// drawing that borrowed mass from the other.
-	for _, d := range []goldDrawing{drawingStructural, drawingRandom, drawingBoundary, drawingVetoBoundary} {
+	for _, d := range []goldDrawing{drawingStructural, drawingRandom, drawingBoundary, drawingVetoBoundary, drawingHostBreadth} {
 		if !weightsBalanced(byDrawing[d], 1e-6) {
 			t.Errorf("the %s drawing's weights sum to %.6f over %d rows, want equal", d, weightSum(byDrawing[d]), len(byDrawing[d]))
 		}
@@ -1517,6 +1553,37 @@ func TestCommittedGoldSetHumanConfirmation(t *testing.T) {
 		constant: "pendingHumanConfirmations",
 		counts:   "lone-posting rows await human confirmation (see extract-goldset/README.md)",
 		current:  len(pending), recorded: pendingHumanConfirmations,
+	}.assert(t)
+}
+
+// TestCommittedHostBreadthConfirmation is the ratchet on ADR-0050's drawing. It is not
+// a Boundary Stratum, so ADR-0043's every-row rule does not reach it and this test does
+// not demand zero -- but its rows ARE in the fit population, so the count of them nobody
+// has read is what the shipped Posting Score's provenance actually rests on, and it is
+// asserted in one direction (confirmationFloor, ADR-0048) so a vanished signature fails
+// the build while a confirmation pass never turns it red. A machine confirmer is refused
+// outright, so the gap can never be closed by the tooling that opened it.
+func TestCommittedHostBreadthConfirmation(t *testing.T) {
+	rows := loadCommittedGoldSet(t)
+
+	pending := []string{}
+	for _, row := range rows {
+		if row.Stratum != stratumHostBreadth {
+			continue
+		}
+		prov := row.LabelProvenance
+		if machineName(prov.ConfirmedBy) {
+			t.Errorf("%s: confirmed_by %q is a machine; a confirmation must come from a human", row.URL, prov.ConfirmedBy)
+		}
+		if prov.ConfirmedBy == "" {
+			pending = append(pending, row.URL)
+		}
+	}
+
+	confirmationFloor{
+		constant: "pendingHostBreadthConfirmations",
+		counts:   "host-breadth rows await human confirmation (see extract-goldset/README.md)",
+		current:  len(pending), recorded: pendingHostBreadthConfirmations,
 	}.assert(t)
 }
 

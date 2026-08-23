@@ -257,15 +257,34 @@ func TestCurveSizesAlwaysCarriesTheRunsOwnVocabularySize(t *testing.T) {
 	}
 }
 
-// TestThePositiveEvidenceRungSpendsTheWholeExtractBill holds the claim ADR-0049's
-// population rests on: no gold-set row takes the ATS exemption, so every extract call
-// on this population is rung 8's and a rule that prunes rung 8's accepts is the only
-// rule with a bill attached. The day that changes, "restricted to the rows Positive
-// Evidence accepts" means something else.
-func TestThePositiveEvidenceRungSpendsTheWholeExtractBill(t *testing.T) {
+// TestThePositiveEvidenceRungSpendsNEARLYTheWholeExtractBill holds the claim ADR-0049's
+// population rests on, as a PINNED CENSUS rather than as the hard zero it was until
+// ADR-0050's drawing landed.
+//
+// The original claim was that NO gold-set row takes the ATS exemption, so every extract
+// call on this population is rung 8's and a rule pruning rung 8's accepts is the only
+// rule with a bill attached. Its own doc comment named the day that would change, and the
+// host-breadth drawing is that day: sampling one page per host reached iCIMS tenant
+// subdomains, join.com and an ATS vendor's own marketing site, none of which any earlier
+// drawing had touched. Five rows now take the exemption against 1,355 rung-8 accepts, so
+// the claim is 99.6% true rather than 100% -- close enough that ADR-0049's figures still
+// describe the bill, and far enough that the number has to be stated instead of assumed.
+//
+// It is pinned in BOTH directions, like ambiguousRows and unlike the confirmation
+// ratchets: a row gaining or losing the exemption changes what "restricted to the rows
+// Positive Evidence accepts" covers, and both directions must be seen in a diff. Growth
+// here is the signal to watch -- if the exemption ever takes a real share of the
+// population, ADR-0049's population needs redefining, not this constant re-pinning.
+func TestThePositiveEvidenceRungSpendsNEARLYTheWholeExtractBill(t *testing.T) {
 	_, census := replayPositiveEvidenceAccepts(t)
-	if census.ATSExempt != 0 {
-		t.Errorf("%d gold-set rows are ATS postings exempted at rung 2; ADR-0049's population is no longer the whole extract bill", census.ATSExempt)
+	if census.ATSExempt != atsExemptRows {
+		t.Errorf("%d gold-set rows take the ATS exemption at rung 2, recorded %d (atsExemptRows). "+
+			"Set it to the new figure in the same commit as whatever moved it, and say in ADR-0049 what the rows are: "+
+			"ADR-0049's population is every extract call MINUS these, and a number nobody restates is a claim nobody checked.",
+			census.ATSExempt, atsExemptRows)
+	}
+	if census.Accepts == 0 {
+		t.Fatal("no row is a rung-8 accept at all; a gate change would turn this guard into a silent pass")
 	}
 	t.Logf("%d rows: %d rung-8 accepts, %d ats-exempt, %d ambiguous set aside, %d unlabelled",
 		census.Rows, census.Accepts, census.ATSExempt, census.Ambiguous, census.Skipped)

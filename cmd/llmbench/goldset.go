@@ -189,13 +189,31 @@ const (
 	// than weight 1. Like every Boundary Stratum it is its own drawing and never
 	// pooled into a weighted stream estimate: a drop set is not a stream.
 	stratumVetoBoundary goldStratum = "veto-boundary"
+	// stratumHostBreadth is ADR-0050's host-breadth drawing: a cluster sample of the
+	// HOSTS in one closed capture window, each selected host represented by exactly one
+	// of its pages. It is the only drawing whose sampling unit is a host rather than a
+	// page, and the reason is the fit rather than the stream -- the Posting Score's
+	// cross-validation is host-grouped and its leakage guard is keyed on host words
+	// (ADR-0049), so both read hosts, and hosts are what the fit is short of.
+	//
+	// It conditions on the LIVE EXTRACTOR VERDICT and on nothing else. It reads neither
+	// the Posting Score nor pagegate.VetoThreshold, so unlike a Boundary Stratum it is
+	// not re-drawn into a different shape by every refit, and a second turn of the
+	// improvement loop cannot select its training set from the previous turn's beliefs.
+	//
+	// Its weights are inverse selection probabilities normalized to its own row count,
+	// and what they estimate is "the hosts in that window, one page each" -- never a
+	// stream of pages, in which a host publishing 900 of them counts 900 times and here
+	// counts once. Its rows therefore stay out of the weighted stream scorecard, exactly
+	// as a Boundary Stratum's do.
+	stratumHostBreadth goldStratum = "host-breadth"
 )
 
 // allStrata is the fixed print / iteration order for per-stratum breakdowns.
 // Mirrors bench.AllExtractLabels. A stratum belongs here once it is DEFINED, not
 // once it has been drawn: the veto boundary ships defined and empty, because
 // drawing it needs a real capture window and is the operator's own act.
-var allStrata = []goldStratum{stratumLonePosting, stratumAmbiguousPosting, stratumNoPosting, stratumRandom, stratumBoundary, stratumVetoBoundary}
+var allStrata = []goldStratum{stratumLonePosting, stratumAmbiguousPosting, stratumNoPosting, stratumRandom, stratumBoundary, stratumVetoBoundary, stratumHostBreadth}
 
 // Valid reports whether s is one of the known strata. It is the whole integration
 // point for a new stratum: goldset-ui, goldset-apply, goldset-worksheet and
@@ -203,7 +221,8 @@ var allStrata = []goldStratum{stratumLonePosting, stratumAmbiguousPosting, strat
 // so none of them needs to learn about one.
 func (s goldStratum) Valid() bool {
 	return s == stratumLonePosting || s == stratumAmbiguousPosting || s == stratumNoPosting ||
-		s == stratumRandom || s == stratumBoundary || s == stratumVetoBoundary
+		s == stratumRandom || s == stratumBoundary || s == stratumVetoBoundary ||
+		s == stratumHostBreadth
 }
 
 // goldDrawing groups strata into the DRAW they came from. A drawing is the scope a
@@ -238,6 +257,11 @@ const (
 	// row carries the inverse of its own selection probability and this drawing is the
 	// scope those weights normalize over.
 	drawingVetoBoundary goldDrawing = "veto-boundary"
+	// drawingHostBreadth is ADR-0050's draw: a cluster sample of hosts, one page each,
+	// over a closed capture window. Its own drawing because it is its own frame and its
+	// own sampling unit -- its weights count hosts where every other drawing's count
+	// pages, so pooling them would add two different denominators together.
+	drawingHostBreadth goldDrawing = "host-breadth"
 )
 
 // Drawing returns the drawing s belongs to, or "" for a stratum-less row -- a raw,
@@ -252,6 +276,8 @@ func (s goldStratum) Drawing() goldDrawing {
 		return drawingBoundary
 	case stratumVetoBoundary:
 		return drawingVetoBoundary
+	case stratumHostBreadth:
+		return drawingHostBreadth
 	default:
 		return ""
 	}
@@ -347,6 +373,11 @@ const (
 	// defaultVetoBoundarySeed keys the Learned Veto boundary's within-band selection
 	// (ADR-0049). A DISTINCT seed for the same reason defaultRandomSeed is one.
 	defaultVetoBoundarySeed = "extract-goldset-veto-boundary-v1"
+	// defaultHostBreadthSeed keys ADR-0050's host-breadth drawing -- both the choice of
+	// each host's representative page and the within-cell selection, which share a seed
+	// because they are one two-stage draw. A DISTINCT seed for the same reason
+	// defaultRandomSeed is one.
+	defaultHostBreadthSeed = "extract-goldset-host-breadth-v1"
 	// captureScanBuffer bounds one capture line. Captured lines carry the full
 	// parsed MainContent; the largest observed is ~757 KB.
 	captureScanBuffer = 8 * 1024 * 1024
@@ -364,10 +395,11 @@ const (
 // 87 MB capture is stratified without ever holding a whole page in a row struct
 // beyond the current line.
 type captureHead struct {
-	URL     string `json:"url"`
-	Verdict bool   `json:"verdict"`
-	TS      string `json:"ts"`
-	Content struct {
+	URL      string `json:"url"`
+	Verdict  bool   `json:"verdict"`
+	TS       string `json:"ts"`
+	Renderer string `json:"renderer"`
+	Content  struct {
 		JSONLD []string `json:"JSONLD"`
 	} `json:"content"`
 }
@@ -379,7 +411,13 @@ type candidate struct {
 	URL     string
 	Verdict bool
 	TS      string
-	Stratum goldStratum
+	// Renderer is the capture record's renderer stamp (parser.RendererID, #281), EMPTY
+	// on a record written before the stamp existed. A drawing fences on it because a
+	// window a crawl flipped PARSE_STRUCTURAL_RENDERING part-way through holds rows from
+	// two parsers, and mixing them inside one drawing samples no single thing
+	// (ADR-0046).
+	Renderer string
+	Stratum  goldStratum
 	// Line is the 1-based capture line the candidate won, so the emit pass picks
 	// the exact same record the dedupe chose.
 	Line int
@@ -450,11 +488,12 @@ func scanCapture(path string) (captureScan, error) {
 			out.Timeline = append(out.Timeline, tsVerdict{TS: ts, Verdict: head.Verdict})
 		}
 		cand := candidate{
-			URL:     head.URL,
-			Verdict: head.Verdict,
-			TS:      head.TS,
-			Stratum: stratumOf(head.Content.JSONLD),
-			Line:    out.Lines,
+			URL:      head.URL,
+			Verdict:  head.Verdict,
+			TS:       head.TS,
+			Renderer: head.Renderer,
+			Stratum:  stratumOf(head.Content.JSONLD),
+			Line:     out.Lines,
 		}
 		if prev, dup := byURL[head.URL]; dup {
 			out.Duplicates++

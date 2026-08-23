@@ -32,7 +32,14 @@
 // deep-reject band, each row carrying the inverse of its selection probability. A census
 // does not survive this rung -- the drop set is most of the stream, and every Boundary
 // Stratum row owes a human confirmation -- and neither does a band without a quota, which
-// leaves the draw's size a function of the frame's. goldset-worksheet renders the
+// leaves the draw's size a function of the frame's. goldset-sample-host-breadth
+// (ADR-0050) is the drawing that reads none of that: a cluster sample of the HOSTS in
+// one closed window, each selected host represented by one of its pages, stratified on
+// the live verdict alone. It exists because the fit's cross-validation is host-grouped
+// and its leakage guard is keyed on host words, so both read hosts rather than rows --
+// and because a drawing banded on the threshold the last refit chose would select its
+// next training set from its own beliefs. Like the veto boundary it REPORTS by default
+// and draws only under -draw. goldset-worksheet renders the
 // labeler's view with the structured data and the live verdict withheld;
 // goldset-confirm-sheet renders the boundary rows as ordered Markdown chunks a human
 // confirms a chunk at a time; goldset-apply folds labels and their provenance back
@@ -126,6 +133,8 @@ func main() {
 		os.Exit(runGoldSetSampleBoundary(rest))
 	case "goldset-sample-veto-boundary":
 		os.Exit(runGoldSetSampleVetoBoundary(rest))
+	case "goldset-sample-host-breadth":
+		os.Exit(runGoldSetSampleHostBreadth(rest))
 	case "goldset-worksheet":
 		os.Exit(runGoldSetWorksheet(rest))
 	case "goldset-confirm-sheet":

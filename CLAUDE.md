@@ -113,6 +113,10 @@ go run ./cmd/llmbench goldset-sample-veto-boundary -capture <capture.jsonl> -sin
                                                 #    sampling plan preview; -draw appends a stratified sample of the
                                                 #    drop set in bands (-near-band, then a quota per band:
                                                 #    -accepted-rows/-near-rows/-deep-rows)
+go run ./cmd/llmbench goldset-sample-host-breadth -capture <capture.jsonl> -since <RFC3339>
+                                                #    host clusters in a capture frame and the sampling plan preview
+                                                #    (ADR-0050; reads no Posting Score, so no circular selection);
+                                                #    -draw appends one page per host, stratified on the live verdict
 go run ./cmd/llmbench train-scorer               # refit the Posting Score over the Extract Gold Set and rewrite
                                                 #    pagegate's weights (must reproduce the committed file byte for byte)
 go run ./cmd/llmbench goldset-refit              # after a confirmation pass: apply, rewrite the derived

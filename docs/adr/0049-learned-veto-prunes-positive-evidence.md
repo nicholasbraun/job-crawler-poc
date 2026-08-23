@@ -718,3 +718,74 @@ the binary: the Posting Score histogram's bucket ladder stays fixed and unpinned
 threshold, for the reason the *Attribution* section gives — a boundary moving with every
 refit would silently re-bucket every historical series and destroy the drift comparison
 the histogram exists for.
+
+## Amendment: a second refit, on hosts rather than on the boundary (ADR-0050)
+
+The Extract Gold Set went from 737 rows to **1,637** — the 900 new rows are ADR-0050's
+`host-breadth` drawing, a cluster sample of the hosts in one closed capture window, one
+page each. It was drawn that way *because* of the debt the amendment above records: 280 of
+the 737 rows were an unconfirmed proposer's, and re-banding the drop set at the threshold
+those rows had just chosen would have been the circular selection
+`docs/improving-the-posting-score.md` names. This drawing reads no score and no threshold.
+
+    VetoThreshold   0.165048  ->  0.136551
+
+| | 457 rows | 737 rows | 1,637 rows |
+|---|---:|---:|---:|
+| scorable rows / hosts | 442 / 357 | 692 / 516 | **1,589 / 1,074** |
+| mean log-loss | 0.0247 | 0.0421 | **0.0812** |
+| `VetoThreshold` | 0.605395 | 0.165048 | **0.136551** |
+| in-sample Veto Depth (scorable rung-8 accepts) | 50 of 177 (28.2%) | 240 of 427 (56.21%) | **699 of 1,319 (52.99%)** |
+| `detail` lost, in sample | 0 | 0 | **0** |
+| in-sample precision after the veto | 1.0000 | 0.9626 | **0.8500** |
+| out-of-fold `detail` lost at ~50% depth | — | 27 of 180 (15%) | **53 of 527 (10.1%)** |
+
+**Log-loss rose again, and again that is the good direction.** The two numbers that matter
+are the last two rows. In-sample precision fell from 0.9626 to 0.8500 while out-of-fold
+`detail` loss fell from 15% to 10.1% — the fit stopped memorising and started
+generalising, which is exactly what doubling the host count buys and what more rows from
+the *same* hosts would not have. The whole-file scorecard reads **1,360 calls at precision
+0.4003 without the veto, 644 at 0.8480 with it**: 52.6% of the bill withheld at `detail`
+recall 0.9761 either way, the same thirteen drops both ways.
+
+**No new held-out reading.** The 300-page held-out frame the amendment above quotes was
+labelled against the 0.165048 fit and is not a valid read on this one; the honest figures
+here are in-sample and out-of-fold, and they are marked as such. A fresh stream reading
+needs a fresh window.
+
+**The debt grew.** 1,180 of the 1,637 rows now carry a proposer's label and no human
+confirmer — the 280 veto-boundary rows, the 188 boundary rows, and all 900 of ADR-0050's.
+The shipped operating point is derived mostly from labels nobody has read.
+`pendingHostBreadthConfirmations` holds the new 900 and `goldset-refit` refused to raise it
+on its own, which is the mechanism working: the number was raised by hand, in the drawing's
+own commit. Confirming rows the set already holds is still the highest-value work available
+(`docs/improving-the-posting-score.md`, *Confirmed labels, not more labels*), and it is now
+also the precondition for the next *banded* draw.
+
+### Correction: rung 8 spends nearly, not quite, the whole extract bill
+
+`TestThePositiveEvidenceRungSpendsTheWholeExtractBill` asserted that **no** gold-set row
+takes the ATS exemption at rung 2, which is what let this record say "restricted to the
+rows Positive Evidence accepts" and mean "the whole extract bill". Its own doc comment
+named the day that would change. ADR-0050's drawing is that day: sampling one page per host
+reached hosts no earlier drawing had, and **five** rows now take the exemption against
+1,355 rung-8 accepts.
+
+The claim is therefore 99.6% true rather than 100%, which is close enough that every figure
+in this record still describes the bill, and far enough that the number is now a **pinned
+census** (`atsExemptRows`) rather than an asserted zero — a move either way must be seen in
+a diff. If the exemption ever takes a real share of the population, this record's
+population needs redefining rather than the constant re-pinning.
+
+Two of the five are worth naming, because they are not ATS postings at all:
+
+- `https://careers-jamsadr.icims.com/jobs/1714/case-coordinator/job?apply=yes&…` — an
+  **apply form**, labelled `residue`, classified as a Job Listing on its path.
+- `https://www.bamboohr.com/hr-software/paid-time-off` — an ATS vendor's own **marketing
+  page**, labelled `residue`, classified as a Job Listing because it sits on a recognised
+  ATS host.
+
+Neither is fixed here: `catalog.Classify` is production identity used far beyond this rung,
+and narrowing it is its own decision with its own blast radius. They are recorded because a
+rung-2 exemption extracts *without* any gate rung reading the page, so a page that reaches
+it wrongly is a call nothing can veto.
