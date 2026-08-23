@@ -789,3 +789,51 @@ Neither is fixed here: `catalog.Classify` is production identity used far beyond
 and narrowing it is its own decision with its own blast radius. They are recorded because a
 rung-2 exemption extracts *without* any gate rung reading the page, so a page that reaches
 it wrongly is a call nothing can veto.
+
+## Amendment: the URL was measured into the score, and it bought nothing
+
+`posting_score.go` records a posting-shaped URL as deliberately absent, and says of the
+claim: *"It is one line plus a retrain if the within-accepts curve disappoints."* The curve
+has now been computed, on the 1,637-row set. It disappoints.
+
+**What was tried** — richer than the `postingURL` boolean that note is about: a fourth
+vocabulary namespace, `path:`, tokenized from the URL's **path and query only** with the
+host excluded by construction and digit runs folded to one `numseg` token. The host-word
+ban was extended to cover it (`vocabularyWordOf` learned the prefix), so an employer's name
+appearing in its own path is banned exactly as it is in the body.
+
+**There is real signal, and it is not host-concentrated.** Over the 1,324 rung-8 accepts on
+876 hosts, path tokens separate `detail` from the rest well above the 0.4003 base rate —
+`engineer` 89.7% (68 rows, 64 hosts), `senior` 88.6%, `manager` 78.8%, `stellenangebote`
+69.4%, against `en` 17.4% and `ausbildung` 22.6%. **Zero** of the 24 tokens with df ≥ 25
+draw their rows from three hosts or fewer, so the "handful of hosts" hazard that motivated
+the exclusion is much weaker at 1,074 hosts than it was at 357. Twenty-three path entries
+earned a place in the 500-word vocabulary, and every one is a generic path or job-title
+token — `numseg` +0.66, `stellenangebote` +0.49, `job` +0.48, `careers` +0.47, against `en`
+−0.60, `id` −0.53, `career` −0.30. No employer name among them.
+
+**And it does not generalise.** Out-of-fold `detail` rows lost at 50% veto depth, four fold
+seeds:
+
+| `-seed` | without `path:` | with `path:` |
+|---|---:|---:|
+| `posting-score-v1` | 53 | 44 |
+| `posting-score-v2` | 42 | 43 |
+| `posting-score-v3` | 44 | 42 |
+| `posting-score-v4` | 44 | 44 |
+| **mean** | **45.75** | **43.25** |
+
+At 40% depth the means are 26.00 and 26.25 — the URL arm is *worse*. The first seed read as
+a 17% improvement and that reading was a **fold artifact**: `v1` is the baseline's own worst
+seed, and the between-arm difference is smaller than the spread within either arm. Anyone
+who reports a gate change off one fold assignment will report this one.
+
+**Why it was predictable in hindsight.** The strongest path tokens are slugified job titles,
+and a posting's `<title>` carries the same words — which the score already reads in its own
+namespace. The genuinely non-redundant part is thin: `numseg`, and the locale and section
+prefixes that mark a landing page. Rungs 1–7 have also already rejected on URL structure, so
+every page this rung judges arrived with a posting-shaped path.
+
+**The decision stands, now measured rather than argued.** The URL stays out of the Posting
+Score, read only as the base for the same-host job-link count. Do not re-open this without a
+new population — a Gold Set several times larger, or a fit where the Title is unavailable.

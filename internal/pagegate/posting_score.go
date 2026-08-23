@@ -125,8 +125,16 @@ const lonePostingSignal = structuralSignalPrefix + "lone_posting"
 // A posting-shaped URL: ADR-0049 enumerates the Score Signals and postingURL is not
 // among them. Inside the rung-8 accept set it is a strong-tier ADMITTING mark rather
 // than something that separates those accepts (the probe's "URL alone 0.614" was
-// measured over all scorable rows, not over the accepts). It is one line plus a
-// retrain if the within-accepts curve disappoints.
+// measured over all scorable rows, not over the accepts).
+//
+// The within-accepts curve HAS now been computed, on the 1,637-row set, and it
+// disappoints -- not just for the boolean but for a full URL path-and-query vocabulary,
+// which is the richer thing anyone reaching for this would try next. Out-of-fold detail
+// loss at 50% veto depth over four fold seeds: 45.75 without it, 43.25 with it, and
+// WORSE at 40%. The signal is real and is not host-concentrated; it is simply redundant
+// with the Title the score already reads, because a posting slug is a slugified title.
+// ADR-0049's amendment "the URL was measured into the score, and it bought nothing"
+// carries the numbers. Do not re-open this without a new population.
 
 // scoreTextMaxBytes bounds the text the Score Vocabulary scan reads. The gate runs on
 // every walked page and this score sees every page Positive Evidence admits, while the
