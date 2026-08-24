@@ -204,8 +204,11 @@ func hasErrorLevel(t *testing.T, buf *bytes.Buffer) bool {
 
 // A max-depth rejection from the frontier is an expected client-side outcome, so
 // discovery must not log it at ERROR — a deep hub page would otherwise flood the
-// logs with thousands of identical lines. Any other AddURL error still logs at
-// ERROR. Mirrors url_processor's TestProcessAddURLRejections.
+// logs with thousands of identical lines. A Scope Budget rejection (ADR-0053) is
+// the second expected client-side outcome, handled the same way even though a
+// Discovery Crawl's URLs carry no Scope and so cannot trigger it in practice. Any
+// other AddURL error still logs at ERROR. Mirrors url_processor's
+// TestProcessAddURLRejections.
 func TestDiscoveryProcessorAddURLRejections(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -213,6 +216,7 @@ func TestDiscoveryProcessorAddURLRejections(t *testing.T) {
 		wantErrorLog bool
 	}{
 		{name: "max depth is not an error", addErr: frontier.ErrMaxDepth, wantErrorLog: false},
+		{name: "scope budget is not an error", addErr: frontier.ErrScopeBudget, wantErrorLog: false},
 		{name: "unexpected error is logged at error", addErr: errors.New("boom"), wantErrorLog: true},
 	}
 

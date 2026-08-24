@@ -10,8 +10,9 @@
 // A Cycle runs two lanes over the Catalog seeds: RouteSeeds partitions them into
 // crawl seeds (walked + extracted, then refetched for liveness) and ATS FetchTasks
 // (pulled straight from the provider board API). The pure, testable pieces —
-// RouteSeeds, the Career-Page Attributor, the status classifier, and the refetch
-// processor — live here; cmd/server composes them into a runner.Engine.
+// RouteSeeds, the Scope Budget derivation, the Career-Page Attributor, the status
+// classifier, and the refetch processor — live here; cmd/server composes them into
+// a runner.Engine.
 package collection
 
 import (
@@ -43,8 +44,20 @@ type VisitedSeeder interface {
 // idempotent (MarkVisited is ZADD NX), so a resumed Cycle re-runs it harmlessly.
 // Per-page errors are joined and returned so the caller can log them; a partial
 // failure never aborts the pre-pass. A page with no Open listings is skipped.
-func SeedVisited(ctx context.Context, seeder VisitedSeeder, open crawler.CorpusLivenessRepository, pages []crawler.CollectionSeed) error {
+//
+// It returns how many URLs it seeded, which is the half of ADR-0053's ceiling
+// argument that has to be COUNTED rather than derived: the Scope Budget bounds what
+// the walk admits, while the pre-pass grows with the Corpus and nothing in the
+// Catalog-derived denominator bounds it. ScopeBudget.AnnouncePrePass measures this
+// number against the seen-memory the budgets left unclaimed.
+//
+// The count is an upper bound on the entries the seeding adds — MarkVisited is
+// ZADD NX, so one URL under two Career Pages, or one a resumed Cycle re-seeds, is
+// one entry and two counts — which errs toward warning early, the safe direction. A
+// page whose seeding failed is not counted; its error is in the returned error.
+func SeedVisited(ctx context.Context, seeder VisitedSeeder, open crawler.CorpusLivenessRepository, pages []crawler.CollectionSeed) (int, error) {
 	var errs error
+	seeded := 0
 	for _, page := range pages {
 		listings, err := open.ListOpen(ctx, page.CareerPageID)
 		if err != nil {
@@ -60,7 +73,9 @@ func SeedVisited(ctx context.Context, seeder VisitedSeeder, open crawler.CorpusL
 		}
 		if err := seeder.MarkVisited(ctx, urls); err != nil {
 			errs = errors.Join(errs, fmt.Errorf("collection: marking visited for page %q: %w", page.CareerPageID, err))
+			continue
 		}
+		seeded += len(urls)
 	}
-	return errs
+	return seeded, errs
 }

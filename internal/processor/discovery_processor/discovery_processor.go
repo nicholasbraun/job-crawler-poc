@@ -149,6 +149,13 @@ func (w *discoveryWorker) Process(ctx context.Context, nextURL *crawler.URL) err
 			// identical ERROR lines (mirrors url_processor).
 			slog.Debug("discovery_worker: max depth reached, dropping url", "url", parsed.RawURL)
 			continue
+		case errors.Is(err, frontier.ErrScopeBudget):
+			// Unreachable in practice on this lane — a Discovery Crawl's URLs carry no
+			// Scope, which switches the budget off inside the add script (ADR-0053) —
+			// but kept so the two processors' frontier-error tables stay identical and a
+			// scoped URL reaching this lane is dropped, not flagged.
+			slog.Debug("discovery_worker: scope budget spent, dropping url", "url", parsed.RawURL, "scope", parsed.Scope)
+			continue
 		case err != nil:
 			slog.Error("discovery_worker: error adding url", "err", err, "url", parsed.RawURL)
 			continue

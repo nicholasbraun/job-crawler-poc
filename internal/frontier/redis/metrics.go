@@ -73,10 +73,13 @@ func newDomainsSizeGauge() metric.Int64Gauge {
 // cardinality caveat applies — one series accrues per run_id the process has ever
 // popped (bounded for this crawler's perpetual-Discovery-plus-Keyword shape);
 // evicting a finished run's series in DeleteRun is the same deferred hardening.
+// MarkVisited records it too, from the same post-eviction ZCARD its own script returns
+// (the ADR-0035 pre-pass), so the seeding's claim on the ceiling lands on the same
+// series as the walk's.
 func newVisitedSizeGauge() metric.Int64Gauge {
 	g, err := otel.Meter("frontier").Int64Gauge(
 		"crawler.frontier.visited.size",
-		metric.WithDescription("Post-eviction cardinality of the Frontier visited ZSET after each NEW insert, by run_id (ADR-0027)."),
+		metric.WithDescription("Post-eviction cardinality of the Frontier visited ZSET, recorded after each NEW insert and after each visited pre-pass chunk, by run_id (ADR-0027)."),
 	)
 	if err != nil {
 		slog.Error("frontier: error setting up visited-size gauge", "err", err)
@@ -121,4 +124,50 @@ func newVisitedEvictedCounter() metric.Int64Counter {
 		slog.Error("frontier: error setting up visited-evicted counter", "err", err)
 	}
 	return c
+}
+
+// newScopeTruncatedCounter registers crawler.frontier.scope.truncated, the count
+// of Scopes that have DROPPED AT LEAST ONE LINK because their Scope Budget is
+// spent in a run (ADR-0053), labeled by run_id ONLY. It increments once per Scope,
+// on that Scope's first dropped link, which the add script claims as a
+// per-(run, Scope) marker — so it is once per Scope however the derived budget
+// moves across a resume, and never once per rejected URL, which under a trap would
+// be dominated by re-sees of the same rejected URLs and would measure link-graph
+// density rather than Scope Truncation. A Scope that spends its last budget unit
+// and never drops a link truncated nothing and is not counted.
+//
+// A Scope label is deliberately absent: the Catalog grows perpetually, so it
+// would mint a metric series per Company. The Scope's NAME goes to a single WARN
+// log instead. run_id carries the same bounded-cardinality argument as
+// visited.evicted (ADR-0026/0027). Across a mid-Cycle restart the marker is what
+// both the counter and the log continue from, so a Scope announced before the
+// restart is not announced again and the post-restart series counts only the
+// Scopes truncated since — the counter and the WARN log stay exactly 1:1.
+func newScopeTruncatedCounter() metric.Int64Counter {
+	c, err := otel.Meter("frontier").Int64Counter(
+		"crawler.frontier.scope.truncated",
+		metric.WithDescription("Scopes truncated — dropped at least one link because their Scope Budget is spent — by run_id (ADR-0053). Each increment is one Scope, on its first dropped link."),
+	)
+	if err != nil {
+		slog.Error("frontier: error setting up scope-truncated counter", "err", err)
+	}
+	return c
+}
+
+// newScopeBudgetGauge registers crawler.frontier.scope.budget, the effective
+// per-run Scope Budget (the Frontier's configured scopeBudget), labeled by
+// run_id. It mirrors visited.cap so a dashboard panel can align "how many Scopes
+// hit it" with "what the number was" and with the seen-memory ceiling the number
+// was derived from. The value is static for a run, so re-recording it on every
+// NEW insert only refreshes the last-value; 0 means the budget is off (every
+// Discovery run, and any Cycle with the kill switch pulled).
+func newScopeBudgetGauge() metric.Int64Gauge {
+	g, err := otel.Meter("frontier").Int64Gauge(
+		"crawler.frontier.scope.budget",
+		metric.WithDescription("Effective per-run Scope Budget (configured scopeBudget), by run_id (ADR-0053). 0 means disabled."),
+	)
+	if err != nil {
+		slog.Error("frontier: error setting up scope-budget gauge", "err", err)
+	}
+	return g
 }

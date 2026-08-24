@@ -116,6 +116,7 @@ func TestProcessAddURLRejections(t *testing.T) {
 		wantErrorLog bool
 	}{
 		{name: "max depth is not an error", addErr: frontier.ErrMaxDepth, wantErrorLog: false},
+		{name: "scope budget is not an error", addErr: frontier.ErrScopeBudget, wantErrorLog: false},
 		{name: "unexpected error is logged at error", addErr: errors.New("boom"), wantErrorLog: true},
 	}
 

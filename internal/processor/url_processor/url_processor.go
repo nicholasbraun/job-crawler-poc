@@ -358,6 +358,13 @@ func (w *urlWorker) Process(ctx context.Context, nextURL *crawler.URL) error {
 			// normal crawling, not an error worth flagging per URL.
 			slog.Debug("worker: max depth reached, dropping url", "url", parsed.RawURL)
 			continue
+		case errors.Is(err, frontier.ErrScopeBudget):
+			// The Scope has spent its Scope Budget (ADR-0053): an expected client-side
+			// drop for the rest of the Cycle, not an error. The Frontier already named
+			// the Scope once at WARN, so per-URL noise here would only re-measure the
+			// link graph's density.
+			slog.Debug("worker: scope budget spent, dropping url", "url", parsed.RawURL, "scope", parsed.Scope)
+			continue
 		case err != nil:
 			slog.Error("worker: error adding url", "err", err, "url", parsed.RawURL)
 			continue

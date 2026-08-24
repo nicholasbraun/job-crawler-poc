@@ -713,6 +713,11 @@ func (h *Handler) addSeed(w http.ResponseWriter, r *http.Request) {
 // non-terminal Run, if one exists. The one-active-run index (ADR-0017) bounds
 // this to at most one Run, so it injects into at most one Frontier. A nil
 // FrontierSeeder or Runs repo, or no non-terminal Run, makes it a no-op.
+//
+// It does not itself check the Definition's Kind: its only caller, addSeed, has
+// already refused a non-Discovery Definition, so a Collection Cycle's Frontier is
+// never a seed-injection target. ADR-0053's ceiling argument depends on that — an
+// injected Seed carries no Scope, so it would be admitted against no Scope Budget.
 func (h *Handler) injectSeed(ctx context.Context, definitionID uuid.UUID, seed crawler.URL) error {
 	if h.cfg.FrontierSeeder == nil || h.cfg.Runs == nil {
 		return nil

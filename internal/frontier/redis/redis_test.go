@@ -403,6 +403,46 @@ func TestRedisFrontier(t *testing.T) {
 		}
 	})
 
+	t.Run("VisitedSize reports the seen-memory a later process adopts", func(t *testing.T) {
+		runID := uuid.New()
+
+		// A run with no keys reports 0 — a Cycle deriving its budget from scratch.
+		if n, err := redisfrontier.VisitedSize(t.Context(), client, runID); err != nil {
+			t.Fatalf("VisitedSize empty: %v", err)
+		} else if n != 0 {
+			t.Errorf("fresh run: want 0, got %d", n)
+		}
+
+		f := redisfrontier.New(client, runID)
+		for _, u := range []crawler.URL{url("a", "http://a/1", 0), url("a", "http://a/2", 0)} {
+			if err := f.AddURL(t.Context(), u); err != nil {
+				t.Fatalf("AddURL: %v", err)
+			}
+		}
+		// The ADR-0035 pre-pass claims the same seen-memory and must be counted too.
+		if err := f.MarkVisited(t.Context(), []string{"http://a/3"}); err != nil {
+			t.Fatalf("MarkVisited: %v", err)
+		}
+
+		// The shape of an adopt across a restart: a later process reads what the run
+		// already remembers before it hands its Frontier a freshly derived budget.
+		if n, err := redisfrontier.VisitedSize(t.Context(), client, runID); err != nil {
+			t.Fatalf("VisitedSize carried: %v", err)
+		} else if n != 3 {
+			t.Errorf("two admissions + one seeded url: want 3, got %d", n)
+		}
+
+		// A re-seen URL is a DUP, so the reading counts entries, not adds.
+		if err := redisfrontier.New(client, runID).AddURL(t.Context(), url("a", "http://a/1", 0)); err != nil {
+			t.Fatalf("AddURL dup: %v", err)
+		}
+		if n, err := redisfrontier.VisitedSize(t.Context(), client, runID); err != nil {
+			t.Fatalf("VisitedSize after dup: %v", err)
+		} else if n != 3 {
+			t.Errorf("after a duplicate add: want 3, got %d", n)
+		}
+	})
+
 	t.Run("provenance survives add then next", func(t *testing.T) {
 		f := redisfrontier.New(client, uuid.New())
 		want := crawler.URL{

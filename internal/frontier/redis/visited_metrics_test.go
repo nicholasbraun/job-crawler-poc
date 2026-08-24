@@ -177,6 +177,43 @@ func TestVisitedMetrics(t *testing.T) {
 		}
 	})
 
+	t.Run("the visited pre-pass records size and cap, run_id-labeled", func(t *testing.T) {
+		// The ADR-0035 pre-pass is the OTHER claim on the ADR-0027 seen-memory ceiling
+		// (ADR-0053), and it lands before the walk admits anything. Without this
+		// recording its footprint is invisible on every panel: visited.size and
+		// visited.evicted are otherwise fed only from the add script.
+		runID := uuid.New()
+		const wantCap = 1_000_000
+		f := redisfrontier.New(client, runID, redisfrontier.WithVisitedCap(wantCap))
+		if err := f.MarkVisited(t.Context(), []string{"http://a.com/1", "http://a.com/2"}); err != nil {
+			t.Fatalf("MarkVisited: %v", err)
+		}
+
+		rm := collectFrontier(t, reader)
+		if v, ok := visitedSizeValue(t, rm, runID.String()); !ok || v != 2 {
+			t.Errorf("visited.size after the pre-pass: got %d (ok=%v), want 2", v, ok)
+		}
+		if v, ok := visitedCapValue(t, rm, runID.String()); !ok || v != wantCap {
+			t.Errorf("visited.cap after the pre-pass: got %d (ok=%v), want %d", v, ok, wantCap)
+		}
+	})
+
+	t.Run("a pre-pass past the ceiling reads pinned at the cap", func(t *testing.T) {
+		// The shape an operator sees when the pre-pass ALONE overflows the seen-memory:
+		// the script's own FIFO eviction happens inside Lua and never touches
+		// visited.evicted, so the gauge pinned at the cap is the only trace on the panel.
+		runID := uuid.New()
+		f := redisfrontier.New(client, runID, redisfrontier.WithVisitedCap(2))
+		if err := f.MarkVisited(t.Context(), []string{"http://b.com/1", "http://b.com/2", "http://b.com/3"}); err != nil {
+			t.Fatalf("MarkVisited: %v", err)
+		}
+
+		rm := collectFrontier(t, reader)
+		if v, ok := visitedSizeValue(t, rm, runID.String()); !ok || v != 2 {
+			t.Errorf("visited.size after an overflowing pre-pass: got %d (ok=%v), want 2 (pinned at the cap)", v, ok)
+		}
+	})
+
 	t.Run("cap gauge reflects the configured per-run cap, run_id-labeled", func(t *testing.T) {
 		// A non-default cap proves the gauge tracks the effective per-run visitedCap
 		// rather than the fixed DefaultVisitedCap the dashboard used to hard-code.

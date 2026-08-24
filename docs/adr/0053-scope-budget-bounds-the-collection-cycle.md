@@ -53,6 +53,10 @@ Cycle's Frontier — and once spent, further links from that Scope are dropped
   saturates anyway, and the ceiling argument collapses while the budget appears to work.
   Gating first leaves a rejected URL with no trace, so
   `ZCARD visited ≤ Σ_scopes budget + the ADR-0035 visited pre-pass` holds by construction.
+  The sole exception is the truncation marker below, written at most once per Scope on the
+  reject path — safe because the marker is keyed on Scope, whose count is fixed at cycle
+  start, not on URL, so a trap cannot grow it; a rejection still touches nothing URL-keyed,
+  and the bound is unchanged.
 
 - **A spent budget hard-drops the link**, surfaced as `frontier.ErrScopeBudget` exactly
   as `ErrMaxDepth` already is: an expected client-side rejection both processors log at
@@ -72,12 +76,22 @@ Cycle's Frontier — and once spent, further links from that Scope are dropped
 
 - **Observability names Scopes, never labels by them.** A
   `crawler.frontier.scope.truncated` counter (`run_id`-labeled) increments **once** per
-  Scope, on the exact transition the add script detects when the charge lands on the
-  budget; the Scope's *name* goes to a single WARN log. A per-URL drop counter would be
-  dominated by re-sees of the same rejected URLs and would measure link-graph density
-  rather than truncation; a Scope label would mint a series per Company. A
-  `crawler.frontier.scope.budget` gauge carries the effective derived number, mirroring
-  `visited.cap` so a panel can align the two.
+  Scope, on that Scope's **first actually-dropped link**, which the add script detects by
+  claiming a per-`(run, Scope)` marker field with `HSETNX`; the Scope's *name* goes to a
+  single WARN log. A per-URL drop counter would be dominated by re-sees of the same
+  rejected URLs and would measure link-graph density rather than truncation; a Scope label
+  would mint a series per Company. A `crawler.frontier.scope.budget` gauge carries the
+  effective derived number, mirroring `visited.cap` so a panel can align the two.
+
+  The transition must **not** be derived from the charge landing on the budget. The spend
+  lives per run in Redis while the number is re-derived per process from a growing Catalog
+  (the run factory re-derives on every resume and adopt), so a restart that *shrinks* it
+  skips the announcement forever — the charge path is never reached again once
+  `spent ≥ budget` — and one that *grows* it announces the same Scope twice. Keyed on the
+  Scope, the announcement is once per Scope per run however the number moves, and it also
+  survives a transient retry re-running the script. Announcing on the first dropped link
+  rather than on the last admission is deliberate: that is what Scope Truncation *is*
+  (`CONTEXT.md`), and a Scope whose budget runs out on its final link truncated nothing.
 
 ## Considered options
 
@@ -99,7 +113,10 @@ Cycle's Frontier — and once spent, further links from that Scope are dropped
   `CRAWL_MAX_WORKERS` workers give an effective budget of N × the intended one, and it is
   lost on restart — a resumed Cycle would restart every budget at zero, defeating the
   per-Cycle bound precisely when it matters. `AddURL` is also the only choke point all four
-  admission paths share.
+  admission paths share — seeding, the walk, discovery, and the runtime Seed injection of
+  ADR-0018. That fourth one is outside the budget rather than under it: `addSeed` refuses a
+  Seed for any non-Discovery Definition, so an injected Seed only ever reaches a Discovery
+  Crawl's Frontier and carries no Scope for the gate to charge.
 
 - **Gate after the `visited` insert.** The natural reading, since the dedup short-circuit
   is the script's cheapest exit. Rejected — see the invariant above; it silently forfeits
@@ -170,6 +187,27 @@ Cycle's Frontier — and once spent, further links from that Scope are dropped
   Company's contribution and the ceiling of 10,000 below the observed 100k–800k traps;
   both should be re-pinned against that read.
 
+- **The headroom the derivation reserves is measured, not assumed.** `budget = cap × 0.8`
+  leaves a fifth for the ADR-0035 visited pre-pass, which seeds every Open Job Listing under
+  every crawl-lane Career Page — a quantity that grows with the Corpus, not with the Catalog,
+  so nothing in the derivation bounds it. The Cycle therefore counts what the pre-pass seeded
+  and states once, right after it runs, whether it still fits the seen-memory the budgets left
+  UNCLAIMED (`cap − scopes × budget`, not the flat fifth: a small Catalog clamped at 10,000
+  leaves far more than a fifth, and warning on the flat share would cry wolf). Past it a second
+  WARN names the ceiling that would restore the guarantee — a fixed point, `pre-pass ÷ 0.2`
+  while the division binds and `pre-pass + 10,000 × scopes` once it clamps, because raising the
+  ceiling also raises the budgets divided out of it — and never less than the floor's own
+  required ceiling, since both halves have to hold. It can only be said AFTER the pre-pass: the
+  count does not exist before it, and the pre-pass needs the Frontier the derived number
+  configures. It is still preventive for the walk, which has admitted nothing yet; the single
+  case it cannot get ahead of is a pre-pass that alone exceeds the whole ceiling, whose
+  evictions have already happened when the line is written. `MarkVisited` also records the
+  post-eviction `ZCARD visited` its script already returned and discarded onto `visited.size`,
+  so the pre-pass's claim on the ceiling is visible on the same panel as the admissions' —
+  without it the pre-pass's own FIFO eviction shows up nowhere, `visited.evicted` being fed
+  only from the add script. Counting the pre-pass's evictions on that counter too would mean
+  changing the add-adjacent Lua's reply shape, and is deliberately left out.
+
 - **This does not close #310.** It removes the *cause* of the saturation, but #310's
   request to surface eviction as a run-level signal remains the right backstop for the
   derivation being wrong — including the case above where the floor overrides it. #310
@@ -187,13 +225,23 @@ Cycle's Frontier — and once spent, further links from that Scope are dropped
 - **A resumed Cycle shares the budget it had already spent**, because the counter lives
   under the run's Frontier namespace. That is the intended reading: the budget belongs to
   the Cycle, not to the process. The derived number may shift across a resume if the
-  Catalog changed; the spend does not.
+  Catalog changed; the spend does not, and nothing may key off the number's exact value —
+  the truncation announcement is keyed on the Scope for exactly this reason.
 
 - **Validation is a live Cycle, not a benchmark.** The load-bearing unit test is that a
-  truncated admission mutates *nothing* — `ZCARD visited` unchanged — which is what catches
-  a regression of the ordering invariant. Live, against run `8f4e231e`'s baseline:
+  truncated admission mutates *nothing* URL-keyed — `ZCARD visited` unchanged — which is
+  what catches a regression of the ordering invariant; the second is that a Scope truncated
+  across a resume that re-derives a *different* budget is still named exactly once. Live, against run `8f4e231e`'s baseline:
   `crawler_frontier_visited_evicted_total` stays at **0** (the direct test of the
   derivation, and #310's symptom gone), the pending peak falls far below 3.5M, crawl-lane
   new Job Listings hold near 13,877, and the WARN log names roughly the eight known
   offenders. The listing count cannot be A/B'd for the reason given above; what is testable
-  is the one-sided claim that the Frontier collapses while the yield does not.
+  is the one-sided claim that the Frontier collapses while the yield does not. The eviction
+  reading is taken against the first Cycle that STARTS after the deploy. A Cycle already in
+  flight when this ships is adopted with its pre-deploy seen-memory — pinned at the cap and
+  already evicting — and an empty `scope_spend`, so it re-derives a full allowance on top of
+  entries no budget ever charged and keeps evicting: that Cycle measures the old unbounded
+  walk, not the derivation. Let it reach a terminal status before deploying, or delete its
+  `frontier:{runID}:*` keys once. Which Cycle is which is legible at cycle start — the
+  derivation's own line reports the `seen_memory` the run already holds, 0 for a Cycle that
+  started fresh.

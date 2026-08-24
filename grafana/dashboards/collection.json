@@ -398,6 +398,99 @@
           "refId": "B"
         }
       ]
+    },
+    {
+      "type": "row",
+      "id": 103,
+      "title": "Scope Budget (ADR-0053)",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 }
+    },
+    {
+      "type": "timeseries",
+      "id": 10,
+      "title": "Scopes truncated (vs the effective budget)",
+      "description": "Scopes truncated (crawler.frontier.scope.truncated): Scopes that have dropped at least one link because their Scope Budget is spent — one increment per Scope, on its first dropped link, not per dropped URL — against the effective per-Scope budget the Cycle derived (crawler.frontier.scope.budget, dashed, right axis). The Scope NAMES are in the WARN log, never on the metric: a label would mint a series per Company (ADR-0053). A Discovery run's series stays flat at 0 — its URLs carry no Scope, so the budget is inert there. A budget of 0 means the gate is off (COLLECTION_SCOPE_BUDGET_ENABLED pulled).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisPlacement": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "budget" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } },
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } },
+              { "id": "custom.fillOpacity", "value": 0 },
+              { "id": "custom.axisPlacement", "value": "right" }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["max", "lastNotNull"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (run_id) (crawler_frontier_scope_truncated_total)",
+          "legendFormat": "{{run_id}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "max(crawler_frontier_scope_budget)",
+          "legendFormat": "budget",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 11,
+      "title": "Seen-memory evictions under a Scope Budget (must stay 0)",
+      "description": "Per-run visited-ZSET FIFO evictions (crawler.frontier.visited.evicted), restricted to runs that actually carry a Scope Budget (crawler.frontier.scope.budget > 0) — i.e. Collection Cycles running under ADR-0053. Repeated from the Frontier dashboard because it is the DIRECT test of the Scope Budget derivation: if the budgets sum under the seen-memory ceiling, a Cycle never forgets a URL it has already crawled and this stays flat at 0 for the Cycle's run_id. Anything above 0 is Re-admission, and a Cycle that re-admits cannot drain (#310). A concurrent Discovery Crawl is filtered OUT on purpose: its URLs carry no Scope, so its budget reads 0, and ADR-0027 has it evict BY DESIGN once its own seen-memory saturates (506,555 evictions in the measured baseline) — a series that would otherwise climb into the hundreds of thousands under this panel's title. The panel therefore goes EMPTY when no run carries a budget (COLLECTION_SCOPE_BUDGET_ENABLED pulled, or a Cycle with no scoped Seeds); the budget line on the panel to the left is where that is read, and the Frontier dashboard's 'Visited eviction rate by run' still shows every run unfiltered. One caveat on reading 0 as proof: the ADR-0035 visited pre-pass's own evictions are deliberately not fed to this counter, so the cycle-start pre-pass WARN is the other half of the check (ADR-0053).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisPlacement": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["max", "lastNotNull"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (run_id) (crawler_frontier_visited_evicted_total) and on (run_id) (max by (run_id) (crawler_frontier_scope_budget) > 0)",
+          "legendFormat": "{{run_id}}",
+          "refId": "A"
+        }
+      ]
     }
   ]
 }
