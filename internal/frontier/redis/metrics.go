@@ -122,3 +122,43 @@ func newVisitedEvictedCounter() metric.Int64Counter {
 	}
 	return c
 }
+
+// newScopeTruncatedCounter registers crawler.frontier.scope.truncated, the count
+// of Scopes that have spent their Scope Budget in a run (ADR-0053), labeled by
+// run_id ONLY. It increments once per Scope, on the exact transition the add
+// script detects when the charge lands on the budget — never once per rejected
+// URL, which under a trap would be dominated by re-sees of the same rejected
+// URLs and would measure link-graph density rather than Scope Truncation.
+//
+// A Scope label is deliberately absent: the Catalog grows perpetually, so it
+// would mint a metric series per Company. The Scope's NAME goes to a single WARN
+// log instead. run_id carries the same bounded-cardinality argument as
+// visited.evicted (ADR-0026/0027).
+func newScopeTruncatedCounter() metric.Int64Counter {
+	c, err := otel.Meter("frontier").Int64Counter(
+		"crawler.frontier.scope.truncated",
+		metric.WithDescription("Scopes that have spent their Scope Budget, by run_id (ADR-0053). Each increment is one Scope truncated."),
+	)
+	if err != nil {
+		slog.Error("frontier: error setting up scope-truncated counter", "err", err)
+	}
+	return c
+}
+
+// newScopeBudgetGauge registers crawler.frontier.scope.budget, the effective
+// per-run Scope Budget (the Frontier's configured scopeBudget), labeled by
+// run_id. It mirrors visited.cap so a dashboard panel can align "how many Scopes
+// hit it" with "what the number was" and with the seen-memory ceiling the number
+// was derived from. The value is static for a run, so re-recording it on every
+// NEW insert only refreshes the last-value; 0 means the budget is off (every
+// Discovery run, and any Cycle with the kill switch pulled).
+func newScopeBudgetGauge() metric.Int64Gauge {
+	g, err := otel.Meter("frontier").Int64Gauge(
+		"crawler.frontier.scope.budget",
+		metric.WithDescription("Effective per-run Scope Budget (configured scopeBudget), by run_id (ADR-0053). 0 means disabled."),
+	)
+	if err != nil {
+		slog.Error("frontier: error setting up scope-budget gauge", "err", err)
+	}
+	return g
+}

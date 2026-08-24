@@ -20,6 +20,13 @@ var ErrDone = errors.New("frontier: no urls left to crawl. work is done")
 // ErrMaxDepth indicates that the crawl depth for this domain has been reached.
 var ErrMaxDepth = errors.New("frontier: max depth reached")
 
+// ErrScopeBudget indicates the URL's Scope has spent its Scope Budget for this
+// run, so the Frontier admits no more of that Scope's URLs (ADR-0053). Like
+// ErrMaxDepth it is an expected client-side rejection rather than a failure:
+// callers log it at debug and skip the URL. It is deliberately distinct from
+// ErrMaxDepth so a caller can tell a depth drop from a Scope Truncation.
+var ErrScopeBudget = errors.New("frontier: scope budget spent")
+
 // Mode controls how Next behaves once the frontier drains.
 type Mode int
 

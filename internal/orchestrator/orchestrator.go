@@ -64,7 +64,15 @@ func (o *Orchestrator) Run(ctx context.Context, seeds []crawler.Seed) error {
 
 		// AddURL dedups internally now, so no separate visited check is needed.
 		err = o.frontier.AddURL(ctx, parsed)
-		if err != nil {
+		switch {
+		case errors.Is(err, frontier.ErrScopeBudget):
+			// A resumed Cycle re-seeding a Scope that already spent its Scope Budget
+			// (ADR-0053). The budget belongs to the Cycle, not to the process, so
+			// dropping the seed is the intended reading — an expected client-side drop,
+			// and the Scope was already named at WARN when it truncated.
+			slog.Debug("seed url dropped: scope budget spent", "url", parsed.RawURL, "scope", parsed.Scope)
+			continue
+		case err != nil:
 			slog.Error("error adding seed url", "err", err)
 			continue
 		}
