@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"errors"
+	"sort"
 	"strconv"
 	"sync"
 	"testing"
@@ -38,6 +39,19 @@ func spend(t *testing.T, client *redis.Client, prefix, scope string) int64 {
 		t.Fatalf("parsing scope spend %q: %v", v, err)
 	}
 	return n
+}
+
+// truncationMarks returns the Scopes this run has announced as truncated — the
+// fields of the run's truncation-marker hash. One field per Scope, never per URL:
+// that bound is what makes writing it on the reject path safe (ADR-0053).
+func truncationMarks(t *testing.T, client *redis.Client, prefix string) []string {
+	t.Helper()
+	got, err := client.HKeys(t.Context(), prefix+"scope_truncated").Result()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		t.Fatalf("reading truncation marks: %v", err)
+	}
+	sort.Strings(got)
+	return got
 }
 
 // TestScopeBudget covers the per-Scope admission budget the Frontier enforces
@@ -110,6 +124,10 @@ func TestScopeBudget(t *testing.T) {
 		// minting unbounded distinct URLs saturates the ADR-0027 cap anyway, the Cycle
 		// starts forgetting, and the ceiling collapses while the budget still looks
 		// like it works. Nothing else in the suite catches that.
+		//
+		// The other half of the invariant: a rejection may write the truncation marker
+		// and nothing else, and it may write it at most once per Scope — five distinct
+		// rejected URLs leave ONE field, because the hash is keyed on Scope, not URL.
 		ctx := t.Context()
 		id := uuid.New()
 		f := redisfrontier.New(client, id, redisfrontier.WithScopeBudget(2))
@@ -147,6 +165,10 @@ func TestScopeBudget(t *testing.T) {
 		if got := spend(t, client, prefix, "trap.example"); got != wantSpend {
 			t.Errorf("scope spend after rejections = %d, want unchanged %d", got, wantSpend)
 		}
+		got := truncationMarks(t, client, prefix)
+		if len(got) != 1 || got[0] != "trap.example" {
+			t.Errorf("truncation marks = %v, want exactly [trap.example] (one field per Scope, not per rejected URL)", got)
+		}
 	})
 
 	t.Run("an empty Scope is never gated", func(t *testing.T) {
@@ -169,6 +191,9 @@ func TestScopeBudget(t *testing.T) {
 		}
 		if got := client.Exists(ctx, prefix+"scope_spend").Val(); got != 0 {
 			t.Errorf("scope_spend key exists (n=%d); the gate must be inert, not merely permissive", got)
+		}
+		if got := client.Exists(ctx, prefix+"scope_truncated").Val(); got != 0 {
+			t.Errorf("scope_truncated key exists (n=%d); the gate must be inert, not merely permissive", got)
 		}
 	})
 
@@ -199,6 +224,9 @@ func TestScopeBudget(t *testing.T) {
 				}
 				if got := client.Exists(ctx, prefix+"scope_spend").Val(); got != 0 {
 					t.Errorf("scope_spend key exists (n=%d); a disabled budget must charge nothing", got)
+				}
+				if got := client.Exists(ctx, prefix+"scope_truncated").Val(); got != 0 {
+					t.Errorf("scope_truncated key exists (n=%d); a disabled budget must announce nothing", got)
 				}
 			})
 		}
@@ -301,14 +329,22 @@ func TestScopeBudget(t *testing.T) {
 	t.Run("DeleteRun removes the budget state", func(t *testing.T) {
 		ctx := t.Context()
 		id := uuid.New()
-		f := redisfrontier.New(client, id, redisfrontier.WithScopeBudget(2))
+		f := redisfrontier.New(client, id, redisfrontier.WithScopeBudget(1))
 		prefix := "frontier:" + id.String() + ":"
 
 		if err := f.AddURL(ctx, scopedURL("acme.com", "http://acme.com/1", "acme.com", 0)); err != nil {
 			t.Fatalf("AddURL: %v", err)
 		}
+		// One rejection past the budget, so the truncation marker exists too: both keys
+		// are transient per-run state and both must go with the run.
+		if err := f.AddURL(ctx, scopedURL("acme.com", "http://acme.com/2", "acme.com", 0)); !errors.Is(err, frontier.ErrScopeBudget) {
+			t.Fatalf("AddURL past budget err = %v, want ErrScopeBudget", err)
+		}
 		if got := client.Exists(ctx, prefix+"scope_spend").Val(); got != 1 {
 			t.Fatalf("scope_spend exists = %d, want 1 before DeleteRun", got)
+		}
+		if got := client.Exists(ctx, prefix+"scope_truncated").Val(); got != 1 {
+			t.Fatalf("scope_truncated exists = %d, want 1 before DeleteRun", got)
 		}
 
 		if err := redisfrontier.DeleteRun(ctx, client, id); err != nil {
@@ -316,6 +352,9 @@ func TestScopeBudget(t *testing.T) {
 		}
 		if got := client.Exists(ctx, prefix+"scope_spend").Val(); got != 0 {
 			t.Errorf("scope_spend exists = %d after DeleteRun, want 0", got)
+		}
+		if got := client.Exists(ctx, prefix+"scope_truncated").Val(); got != 0 {
+			t.Errorf("scope_truncated exists = %d after DeleteRun, want 0", got)
 		}
 		if got := client.Exists(ctx, prefix+"visited").Val(); got != 0 {
 			t.Errorf("visited exists = %d after DeleteRun, want 0", got)
@@ -377,6 +416,11 @@ func TestScopeBudget(t *testing.T) {
 		// rejections left no visited entries behind.
 		if got := client.ZCard(ctx, prefix+"visited").Val(); got != budget {
 			t.Errorf("visited ZCard = %d, want %d", got, budget)
+		}
+		// 180 rejections race on the marker and exactly one claims it, because the
+		// HSETNX runs inside the same atomic script as the gate.
+		if got := truncationMarks(t, client, prefix); len(got) != 1 || got[0] != "acme.com" {
+			t.Errorf("truncation marks = %v, want exactly [acme.com]", got)
 		}
 	})
 }

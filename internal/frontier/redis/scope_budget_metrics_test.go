@@ -154,12 +154,16 @@ func TestScopeBudgetMetrics(t *testing.T) {
 			t.Errorf("scope.truncated after one truncated Scope: got %d (ok=%v), want 1", v, ok)
 		}
 
-		// A second Scope spending its budget in the same run is the second increment.
+		// A second Scope dropping a link in the same run is the second increment.
 		for i := 0; i < 2; i++ {
 			raw := "http://beta.example/" + strconv.Itoa(i)
 			if err := f.AddURL(t.Context(), scopedURL("beta.example", raw, "beta.example", 0)); err != nil {
 				t.Fatalf("AddURL %s: %v", raw, err)
 			}
+		}
+		// Spending the budget is not yet Scope Truncation: this first DROPPED link is.
+		if err := f.AddURL(t.Context(), scopedURL("beta.example", "http://beta.example/deep", "beta.example", 0)); !errors.Is(err, frontier.ErrScopeBudget) {
+			t.Fatalf("AddURL beta.example/deep err = %v, want ErrScopeBudget", err)
 		}
 		if v, ok := scopeTruncatedValue(t, collectFrontier(t, reader), runID.String()); !ok || v != 2 {
 			t.Errorf("scope.truncated after two truncated Scopes: got %d (ok=%v), want 2", v, ok)
@@ -188,7 +192,8 @@ func TestScopeBudgetMetrics(t *testing.T) {
 
 		var buf bytes.Buffer
 		captureLogs(t, &buf, func() {
-			// The admission that lands on the budget is the transition.
+			// The admission that spends the budget announces nothing; the FIRST rejected
+			// link below is the transition.
 			if err := f.AddURL(t.Context(), admitted); err != nil {
 				t.Fatalf("AddURL: %v", err)
 			}
@@ -208,6 +213,106 @@ func TestScopeBudgetMetrics(t *testing.T) {
 		got := warnScopeNames(t, &buf)
 		if len(got) != 1 || got[0] != "beck.de" {
 			t.Errorf("WARN scopes = %v, want exactly [beck.de]; logs:\n%s", got, buf.String())
+		}
+	})
+
+	t.Run("a Scope that spends its budget without dropping a link is not announced", func(t *testing.T) {
+		// Scope Truncation is a walk stopping SHORT (CONTEXT.md). A Scope whose budget
+		// runs out on the very last link it ever offers dropped nothing, so naming it
+		// would dilute the operator's read of which Companies actually paid the price.
+		runID := uuid.New()
+		f := redisfrontier.New(client, runID, redisfrontier.WithScopeBudget(2))
+
+		var buf bytes.Buffer
+		captureLogs(t, &buf, func() {
+			for i := 0; i < 2; i++ {
+				raw := "http://acme.com/" + strconv.Itoa(i)
+				if err := f.AddURL(t.Context(), scopedURL("acme.com", raw, "acme.com", 0)); err != nil {
+					t.Fatalf("AddURL %s: %v", raw, err)
+				}
+			}
+		})
+
+		if got := warnScopeNames(t, &buf); len(got) != 0 {
+			t.Errorf("WARN scopes = %v, want none; logs:\n%s", got, buf.String())
+		}
+		// The series still exists at 0 (a NEW insert recorded it), so "nothing
+		// truncated" is observable rather than merely absent.
+		if v, ok := scopeTruncatedValue(t, collectFrontier(t, reader), runID.String()); !ok || v != 0 {
+			t.Errorf("scope.truncated: got %d (ok=%v), want 0", v, ok)
+		}
+	})
+
+	t.Run("a shrunken budget across a resume still names the truncated Scope once", func(t *testing.T) {
+		// The mid-Cycle restart whose Catalog grew, so the re-derived per-Scope number
+		// is SMALLER than what this Scope already spent. The charge path is unreachable
+		// for it from here on (the gate rejects at spent >= budget), so an announcement
+		// keyed on "the charge landed on the budget" could never fire again and the
+		// truncation would be silent. Keyed on the Scope, the first dropped link names it.
+		runID := uuid.New()
+
+		var buf bytes.Buffer
+		captureLogs(t, &buf, func() {
+			f1 := redisfrontier.New(client, runID, redisfrontier.WithScopeBudget(4))
+			for i := 0; i < 3; i++ {
+				raw := "http://beck.de/" + strconv.Itoa(i)
+				if err := f1.AddURL(t.Context(), scopedURL("beck.de", raw, "beck.de", 0)); err != nil {
+					t.Fatalf("AddURL %s: %v", raw, err)
+				}
+			}
+
+			f2 := redisfrontier.New(client, runID, redisfrontier.WithScopeBudget(2))
+			for i := 0; i < 3; i++ {
+				raw := "http://beck.de/resumed" + strconv.Itoa(i)
+				if err := f2.AddURL(t.Context(), scopedURL("beck.de", raw, "beck.de", 0)); !errors.Is(err, frontier.ErrScopeBudget) {
+					t.Fatalf("AddURL %s err = %v, want ErrScopeBudget", raw, err)
+				}
+			}
+		})
+
+		got := warnScopeNames(t, &buf)
+		if len(got) != 1 || got[0] != "beck.de" {
+			t.Errorf("WARN scopes = %v, want exactly [beck.de]; logs:\n%s", got, buf.String())
+		}
+		if v, ok := scopeTruncatedValue(t, collectFrontier(t, reader), runID.String()); !ok || v != 1 {
+			t.Errorf("scope.truncated: got %d (ok=%v), want 1", v, ok)
+		}
+	})
+
+	t.Run("a grown budget across a resume does not name the Scope twice", func(t *testing.T) {
+		// The mirror case: the re-derived number is LARGER, so the spend passes through
+		// it a second time. An announcement keyed on that arithmetic fires twice for one
+		// Scope; the per-(run, Scope) marker fires once.
+		runID := uuid.New()
+
+		var buf bytes.Buffer
+		captureLogs(t, &buf, func() {
+			f1 := redisfrontier.New(client, runID, redisfrontier.WithScopeBudget(2))
+			for i := 0; i < 2; i++ {
+				raw := "http://acme.com/" + strconv.Itoa(i)
+				if err := f1.AddURL(t.Context(), scopedURL("acme.com", raw, "acme.com", 0)); err != nil {
+					t.Fatalf("AddURL %s: %v", raw, err)
+				}
+			}
+
+			f2 := redisfrontier.New(client, runID, redisfrontier.WithScopeBudget(4))
+			for i := 0; i < 2; i++ {
+				raw := "http://acme.com/resumed" + strconv.Itoa(i)
+				if err := f2.AddURL(t.Context(), scopedURL("acme.com", raw, "acme.com", 0)); err != nil {
+					t.Fatalf("AddURL %s: %v", raw, err)
+				}
+			}
+			if err := f2.AddURL(t.Context(), scopedURL("acme.com", "http://acme.com/dropped", "acme.com", 0)); !errors.Is(err, frontier.ErrScopeBudget) {
+				t.Fatalf("AddURL acme.com/dropped err = %v, want ErrScopeBudget", err)
+			}
+		})
+
+		got := warnScopeNames(t, &buf)
+		if len(got) != 1 || got[0] != "acme.com" {
+			t.Errorf("WARN scopes = %v, want exactly [acme.com]; logs:\n%s", got, buf.String())
+		}
+		if v, ok := scopeTruncatedValue(t, collectFrontier(t, reader), runID.String()); !ok || v != 1 {
+			t.Errorf("scope.truncated: got %d (ok=%v), want 1", v, ok)
 		}
 	})
 }

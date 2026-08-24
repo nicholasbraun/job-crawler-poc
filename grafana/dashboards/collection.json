@@ -410,7 +410,7 @@
       "type": "timeseries",
       "id": 10,
       "title": "Scopes truncated (vs the effective budget)",
-      "description": "Scopes that have spent their Scope Budget (crawler.frontier.scope.truncated) — one increment per Scope, not per dropped URL — against the effective per-Scope budget the Cycle derived (crawler.frontier.scope.budget, dashed, right axis). The Scope NAMES are in the WARN log, never on the metric: a label would mint a series per Company (ADR-0053). A Discovery run's series stays flat at 0 — its URLs carry no Scope, so the budget is inert there. A budget of 0 means the gate is off (COLLECTION_SCOPE_BUDGET_ENABLED pulled).",
+      "description": "Scopes truncated (crawler.frontier.scope.truncated): Scopes that have dropped at least one link because their Scope Budget is spent — one increment per Scope, on its first dropped link, not per dropped URL — against the effective per-Scope budget the Cycle derived (crawler.frontier.scope.budget, dashed, right axis). The Scope NAMES are in the WARN log, never on the metric: a label would mint a series per Company (ADR-0053). A Discovery run's series stays flat at 0 — its URLs carry no Scope, so the budget is inert there. A budget of 0 means the gate is off (COLLECTION_SCOPE_BUDGET_ENABLED pulled).",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
       "fieldConfig": {

@@ -865,6 +865,10 @@ func newFactory(
 			// A pulled kill switch leaves it 0, which disables the gate inside the add
 			// script: the unbounded walk exactly as before. The switch already stated
 			// itself once at startup, and the scope.budget gauge reads 0 for the run.
+			// This runs again on every resume and adopt, so the same run can be handed a
+			// different number than a previous process derived; that is safe by design --
+			// the spend is a plain per-run count and the truncation announcement is
+			// claimed once per Scope, not when the count meets the number (ADR-0053).
 			scopeBudget := 0
 			if scopeBudgetEnabled {
 				derived := collection.DeriveScopeBudget(visitedCap, crawlSeeds)

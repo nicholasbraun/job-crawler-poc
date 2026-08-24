@@ -21,8 +21,9 @@
 // Scope may contribute at most scopeBudget URLs to the run, held as a monotonic
 // per-Scope count in Redis, so the Cycle's visited set never has to forget and
 // the walk can finish. The gate runs BEFORE the visited insert, so a rejected
-// URL leaves no trace at all. It is inert for the Discovery Crawl, whose URLs
-// carry no Scope.
+// URL leaves no trace in the seen-memory, the domain schedule, or any queue; the
+// one thing a rejection may write is a per-Scope truncation marker, at most once
+// per Scope. It is inert for the Discovery Crawl, whose URLs carry no Scope.
 package redis
 
 import (
@@ -61,46 +62,75 @@ const DefaultVisitedCap = 5_000_000
 
 // addScript fuses the Scope Budget gate with dedup and enqueue. KEYS: visited (a
 // hashed ZSET, member = 8-byte xxhash64(RawURL), score = insertion ms), domains,
-// scopeSpend (a HASH of Scope -> admissions charged this run). ARGV: queuePrefix,
-// domain, member, visitedKey(8-byte xxhash64), now(ms), cap, scope, scopeBudget.
+// scopeSpend (a HASH of Scope -> admissions charged this run), scopeTruncated (a
+// HASH of Scope -> 1: one field per Scope this run has already announced as
+// truncated; the value is never read, only the field's existence). ARGV:
+// queuePrefix, domain, member, visitedKey(8-byte xxhash64), now(ms), cap, scope,
+// scopeBudget.
 //
-// The Scope Budget gate (ADR-0053) runs first and returns bare BUDGET with NO
-// mutation. Dedup is then ZADD NX, so an already-resident URL short-circuits as
-// DUP with no further work. On a NEW insert it charges the Scope's budget, then
-// FIFO-evicts by rank down to cap (ADR-0027), pinning visited at the cap with no
-// overshoot. Returns bare DUP, bare BUDGET, or the table
-// {'NEW', evicted, size, truncated} — the count this insert FIFO-evicted, the
-// post-eviction ZCARD visited (feeding visited.size / visited.evicted, #162), and
-// 1 exactly on the admission whose charge lands on the Scope Budget (feeding the
-// once-per-Scope scope.truncated counter and WARN log), else 0.
+// The Scope Budget gate (ADR-0053) runs first and rejects having touched nothing
+// but the scopeTruncated marker. Dedup is then ZADD NX, so an already-resident URL
+// short-circuits as DUP with no further work. On a NEW insert it charges the
+// Scope's budget, then FIFO-evicts by rank down to cap (ADR-0027), pinning visited
+// at the cap with no overshoot. Returns bare DUP; the table {'BUDGET', announce},
+// where announce is 1 only on the FIRST link this run drops for this Scope — the
+// once-per-Scope transition the scope.truncated counter and the WARN log key off;
+// or the table {'NEW', evicted, size} — the count this insert FIFO-evicted and the
+// post-eviction ZCARD visited (feeding visited.size / visited.evicted, #162).
 var addScript = redis.NewScript(`
-local visited     = KEYS[1]
-local domains     = KEYS[2]
-local scopeSpend  = KEYS[3]
-local queuePrefix = ARGV[1]
-local domain      = ARGV[2]
-local member      = ARGV[3]
-local visitedKey  = ARGV[4]   -- 8-byte xxhash64(RawURL), binary; never parsed
-local now         = tonumber(ARGV[5])
-local cap         = tonumber(ARGV[6])
-local scope       = ARGV[7]            -- empty on a Discovery Crawl (ADR-0021)
-local budget      = tonumber(ARGV[8])  -- <= 0 disables the gate
+local visited        = KEYS[1]
+local domains        = KEYS[2]
+local scopeSpend     = KEYS[3]
+local scopeTruncated = KEYS[4]
+local queuePrefix    = ARGV[1]
+local domain         = ARGV[2]
+local member         = ARGV[3]
+local visitedKey     = ARGV[4]   -- 8-byte xxhash64(RawURL), binary; never parsed
+local now            = tonumber(ARGV[5])
+local cap            = tonumber(ARGV[6])
+local scope          = ARGV[7]            -- empty on a Discovery Crawl (ADR-0021)
+local budget         = tonumber(ARGV[8])  -- <= 0 disables the gate
 
 -- Scope Budget gate (ADR-0053). THE ORDER HERE IS A CORRECTNESS INVARIANT, not a
--- micro-optimisation: this must stay ABOVE the ZADD NX below. Gate after the
--- dedup insert and a rejected URL still consumes a visited slot, so a trap
--- minting unbounded distinct URLs saturates the ADR-0027 cap anyway, the Cycle
--- starts forgetting, and the ceiling argument collapses while the budget appears
--- to work. Gating first leaves a rejection with NO trace, so
+-- micro-optimisation: this must stay ABOVE the ZADD NX below. Gate after the dedup
+-- insert and a rejected URL still consumes a visited slot, so a trap minting
+-- unbounded distinct URLs saturates the ADR-0027 cap anyway, the Cycle starts
+-- forgetting, and the ceiling argument collapses while the budget appears to work.
+-- Gating first leaves a rejection with no trace in ANY URL-keyed structure -- not
+-- the visited ZSET, not the domain schedule, not a queue -- so
 -- ZCARD visited <= sum(Scope Budgets) + the ADR-0035 visited pre-pass holds by
--- construction. An empty scope (Discovery) or a budget <= 0 switches the gate off
--- with no second code path, mirroring the cap's own "<= 0 disables" fail-safe.
+-- construction.
+--
+-- The ONE thing a rejection may write is the scopeTruncated marker, and only via
+-- HSETNX, which adds at most one field per Scope. That is safe precisely because
+-- the marker is keyed on SCOPE -- a count fixed at cycle start from the Catalog,
+-- the same bounded denominator the budget divides -- and NOT on URL: a trap
+-- minting a million distinct links creates the field once and re-reads it a
+-- million times. Never add a URL-keyed write to this branch; that is the mutation
+-- the ceiling argument above forbids.
+--
+-- The marker, not arithmetic, is what makes the announcement once-per-Scope.
+-- Detecting the transition as "the charge landed exactly on the budget" looks
+-- equivalent and is not: the spend lives per RUN in Redis while the budget is
+-- re-derived per PROCESS from a Catalog that keeps growing (cmd/server's run
+-- factory runs again on every resume and adopt). A restart that shrinks the number
+-- skips the transition forever -- the charge path is never reached again -- and one
+-- that grows it fires a second time for the same Scope. Keyed on the Scope, the
+-- announcement survives both, and survives a transient retry re-running this
+-- script.
+--
+-- An empty scope (Discovery) or a budget <= 0 switches the gate off with no second
+-- code path, mirroring the cap's own "<= 0 disables" fail-safe.
 local budgeted = scope ~= '' and budget > 0
 if budgeted then
-  -- HGET is a read: the rejection path below mutates nothing whatsoever.
   local spent = tonumber(redis.call('HGET', scopeSpend, scope)) or 0
   if spent >= budget then
-    return 'BUDGET'
+    -- Announced on the FIRST link actually dropped, which is what Scope Truncation
+    -- IS (a walk stopping short) -- not on the admission that spent the last unit:
+    -- a Scope whose budget runs out on its very last link truncates nothing.
+    -- HSETNX reports 1 only when it created the field, so this is exactly once per
+    -- (run, Scope) however the derived number moves.
+    return {'BUDGET', redis.call('HSETNX', scopeTruncated, scope, 1)}
   end
 end
 
@@ -114,15 +144,12 @@ end
 -- Charge the Scope Budget, and ONLY for a genuinely new admission: the dedup
 -- short-circuit above means a re-sighting never reaches here, and lease reclaim /
 -- member push-back live in the pop script, so queue churn cannot charge either.
--- Never decremented — a counter that pops give back is a concurrency window a
--- trap refills forever, not a budget. HINCRBY steps by one, so the charge lands
--- exactly ON the budget exactly once: that is the once-per-Scope transition the
--- truncation counter and the WARN log key off.
-local truncated = 0
+-- Never decremented -- a counter that pops give back is a concurrency window a
+-- trap refills forever, not a budget. The charge is a plain count and nothing keys
+-- off its exact value: the truncation announcement is claimed on the Scope in the
+-- gate above, deliberately NOT from this number.
 if budgeted then
-  if redis.call('HINCRBY', scopeSpend, scope, 1) == budget then
-    truncated = 1
-  end
+  redis.call('HINCRBY', scopeSpend, scope, 1)
 end
 
 -- Make the domain eligible immediately; NX so an active cooldown is not reset.
@@ -146,7 +173,7 @@ if cap > 0 then
     evicted = over
   end
 end
-return {'NEW', evicted, card - evicted, truncated}
+return {'NEW', evicted, card - evicted}
 `)
 
 // markVisitedScript adds members to the visited ZSET without enqueuing them, so a
@@ -460,7 +487,10 @@ func WithVisitedCap(n int) Option {
 // URLs carrying a given Scope are admitted for the life of the run, and further
 // ones are rejected with frontier.ErrScopeBudget (ADR-0053). The count is
 // monotonic, held in Redis under the run's Frontier namespace, so it survives a
-// pause and resume that reuse the run and is swept by DeleteRun.
+// pause and resume that reuse the run and is swept by DeleteRun. n may legitimately
+// differ from the number an earlier process derived for the same run — the Catalog
+// grows between derivations — so nothing keys off its exact value: the spend is a
+// plain count, and the truncation announcement is claimed once per Scope (ADR-0053).
 //
 // The number is derived per Collection Cycle from the seen-memory ceiling and
 // the Cycle's Seeds and handed in already computed; deriving it is deliberately
@@ -581,15 +611,16 @@ func Len(ctx context.Context, client *redis.Client, runID uuid.UUID) (int64, err
 // URL is a silent no-op (returns nil). Returns frontier.ErrMaxDepth if the URL is
 // too deep, or frontier.ErrScopeBudget if its Scope has spent this run's Scope
 // Budget (ADR-0053) — both expected client-side rejections, not failures. A
-// budget rejection is decided inside the script before any mutation, so it leaves
-// no trace in the visited set. Seeds are charged against their own Scope like any
-// other admission; there is deliberately no depth-0 exemption.
+// budget rejection is decided inside the script before any URL-keyed mutation, so
+// it leaves no trace in the visited set, the domain schedule, or any queue. Seeds
+// are charged against their own Scope like any other admission; there is
+// deliberately no depth-0 exemption.
 func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 	if url.Depth > f.maxDepth {
 		return frontier.ErrMaxDepth
 	}
 
-	keys := []string{f.key("visited"), f.key("domains"), f.key("scope_spend")}
+	keys := []string{f.key("visited"), f.key("domains"), f.key("scope_spend"), f.key("scope_truncated")}
 	// At-least-once safe: addScript is one atomic Lua script whose first mutation
 	// is ZADD NX visited. If a prior attempt fully applied but its reply was lost
 	// to a transient blip, the retry sees ZADD NX -> 0 and returns DUP, so LPUSH
@@ -599,11 +630,16 @@ func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 	// a current domain-eligibility timestamp into ZADD domains NX; a fully-applied
 	// retry short-circuits at ZADD NX -> DUP and never reaches that ZADD.
 	//
-	// The gate-first ordering also makes the retry safe at the budget boundary: if
-	// a prior attempt applied and its reply was lost, the retry either
-	// short-circuits at ZADD NX -> DUP (no second charge) or, when that attempt's
-	// charge landed exactly on the budget, is rejected as BUDGET — a URL that is in
-	// fact already enqueued, so the caller's debug-and-skip loses nothing.
+	// The gate-first ordering also makes the retry safe at the budget boundary: if a
+	// prior attempt applied and its reply was lost, the retry either short-circuits
+	// at ZADD NX -> DUP (no second charge) or, when that attempt's charge landed on
+	// the budget, is rejected as BUDGET — a URL that is in fact already enqueued, so
+	// the caller's debug-and-skip loses nothing, and the truncation announcement is
+	// not lost with it: the retry claims the Scope's marker instead (ADR-0053). One
+	// window remains: if the reply of the rejection that CLAIMED the marker is itself
+	// lost, the retry sees HSETNX -> 0 and the WARN is never written. That is one call
+	// per Scope out of the thousands a truncated Scope rejects, against the
+	// every-restart loss of keying the announcement on the budget's exact value.
 	res, err := f.withRetry(ctx, opAdd, func() (any, error) {
 		return addScript.Run(ctx, f.client, keys,
 			f.queuePrefix, url.Hostname, encodeMember(url), visitedMember(url.RawURL),
@@ -616,60 +652,67 @@ func (f *Frontier) AddURL(ctx context.Context, url crawler.URL) error {
 
 	switch r := res.(type) {
 	case string:
-		switch r {
-		case "DUP":
+		if r == "DUP" {
 			// Bare short-circuit: the hot duplicate path records nothing.
 			return nil
-		case "BUDGET":
-			// The Scope has spent its Scope Budget (ADR-0053): a hard drop of the newly
-			// discovered link, shaped exactly like ErrMaxDepth so both processors handle
-			// it through the path they already have. Returned bare (not wrapped) for the
-			// same reason. Nothing was mutated — see addScript's ordering invariant.
-			return frontier.ErrScopeBudget
 		}
 		return fmt.Errorf("frontier: unexpected add result %v", res)
 	case []interface{}:
-		// NEW reply: {"NEW", evicted, size, truncated}. Record the visited and Scope
-		// Budget instruments only here — the dup path above records nothing (#162).
-		// Recording the gauge unconditionally on every NEW satisfies "gauge reflects
-		// ZCARD visited"; Add(evicted) with evicted==0 under the cap still creates the
-		// run_id series at 0, so a run that never evicts is observably at zero.
-		if len(r) != 4 || fmt.Sprint(r[0]) != "NEW" {
-			return fmt.Errorf("frontier: unexpected add result %v", res)
-		}
 		attrs := metric.WithAttributes(attribute.String("run_id", f.runID))
-		if size, perr := strconv.ParseInt(fmt.Sprint(r[2]), 10, 64); perr == nil {
-			f.visitedSize.Record(ctx, size, attrs)
-		}
-		if evicted, perr := strconv.ParseInt(fmt.Sprint(r[1]), 10, 64); perr == nil {
-			f.visitedEvicted.Add(ctx, evicted, attrs)
-		}
-		// The effective per-run cap is static, so re-recording it on every NEW
-		// only refreshes the last-value; recording it here (never on the DUP
-		// path) pins it to the same NEW cadence and run_id series as
-		// visited.size, so the vs-cap panel always has both to align.
-		f.visitedCapG.Record(ctx, int64(f.visitedCap), attrs)
-		// Scope Budget instruments (ADR-0053), on the same NEW cadence and run_id
-		// series as visited.cap so a panel can align the budget with the ceiling it is
-		// derived from. run_id is the ONLY label on either: a Scope label would mint a
-		// metric series per Company as the Catalog grows.
-		f.scopeBudgetG.Record(ctx, int64(f.scopeBudget), attrs)
-		if truncated, perr := strconv.ParseInt(fmt.Sprint(r[3]), 10, 64); perr == nil {
-			// Adding 0 on every other NEW insert creates the run_id series at zero, so a
-			// run that truncates nothing is observably at zero rather than absent — the
-			// same reasoning as visited.evicted. The script sets 1 only on the
-			// transition, so this is once per Scope, never once per rejected URL.
-			f.scopeTruncated.Add(ctx, truncated, attrs)
-			if truncated == 1 {
+		switch {
+		case len(r) == 2 && fmt.Sprint(r[0]) == "BUDGET":
+			// The Scope has spent its Scope Budget (ADR-0053): a hard drop of the newly
+			// discovered link, shaped exactly like ErrMaxDepth so both processors handle
+			// it through the path they already have. Returned bare (not wrapped) for the
+			// same reason. Nothing URL-keyed was mutated — see addScript's ordering
+			// invariant.
+			//
+			// r[1] is 1 only on the FIRST link this run dropped for this Scope: the
+			// script claims a per-(run, Scope) marker with HSETNX, so the announcement is
+			// keyed on the Scope, never on the budget's exact value. That is what keeps
+			// it once per Scope across a resume that re-derives a different number — the
+			// run factory re-derives on every resume and adopt, and the Catalog it
+			// divides keeps growing.
+			if announce, perr := strconv.ParseInt(fmt.Sprint(r[1]), 10, 64); perr == nil && announce == 1 {
+				f.scopeTruncated.Add(ctx, 1, attrs)
 				// Named once, at WARN: Scope Truncation is the accepted price of a Cycle
 				// that ends, and the operator has to be able to read WHICH Companies paid
 				// it, not merely how many. Once per Scope per run, so a trap host cannot
 				// flood the log.
-				slog.Warn("frontier: scope budget spent, truncating this scope for the rest of the run",
+				slog.Warn("frontier: scope budget spent, truncating this scope: its links are dropped for the rest of the run",
 					"scope", url.Scope, "budget", f.scopeBudget, "run_id", f.runID)
 			}
+			return frontier.ErrScopeBudget
+		case len(r) == 3 && fmt.Sprint(r[0]) == "NEW":
+			// NEW reply: {"NEW", evicted, size}. Record the visited and Scope Budget
+			// instruments only here — the dup path above records nothing (#162).
+			// Recording the gauge unconditionally on every NEW satisfies "gauge reflects
+			// ZCARD visited"; Add(evicted) with evicted==0 under the cap still creates the
+			// run_id series at 0, so a run that never evicts is observably at zero.
+			if size, perr := strconv.ParseInt(fmt.Sprint(r[2]), 10, 64); perr == nil {
+				f.visitedSize.Record(ctx, size, attrs)
+			}
+			if evicted, perr := strconv.ParseInt(fmt.Sprint(r[1]), 10, 64); perr == nil {
+				f.visitedEvicted.Add(ctx, evicted, attrs)
+			}
+			// The effective per-run cap is static, so re-recording it on every NEW
+			// only refreshes the last-value; recording it here (never on the DUP
+			// path) pins it to the same NEW cadence and run_id series as
+			// visited.size, so the vs-cap panel always has both to align.
+			f.visitedCapG.Record(ctx, int64(f.visitedCap), attrs)
+			// Scope Budget instruments (ADR-0053), on the same NEW cadence and run_id
+			// series as visited.cap so a panel can align the budget with the ceiling it is
+			// derived from. run_id is the ONLY label on either: a Scope label would mint a
+			// metric series per Company as the Catalog grows.
+			f.scopeBudgetG.Record(ctx, int64(f.scopeBudget), attrs)
+			// Adding 0 on every NEW insert creates the run_id series at zero, so a run
+			// that truncates nothing is observably at zero rather than absent — the same
+			// reasoning as visited.evicted. The nonzero increments come from the BUDGET
+			// branch above, once per truncated Scope.
+			f.scopeTruncated.Add(ctx, 0, attrs)
+			return nil
 		}
-		return nil
+		return fmt.Errorf("frontier: unexpected add result %v", res)
 	default:
 		return fmt.Errorf("frontier: unexpected add result %v", res)
 	}

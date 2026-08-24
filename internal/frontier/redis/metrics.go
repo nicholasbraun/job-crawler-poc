@@ -124,20 +124,26 @@ func newVisitedEvictedCounter() metric.Int64Counter {
 }
 
 // newScopeTruncatedCounter registers crawler.frontier.scope.truncated, the count
-// of Scopes that have spent their Scope Budget in a run (ADR-0053), labeled by
-// run_id ONLY. It increments once per Scope, on the exact transition the add
-// script detects when the charge lands on the budget — never once per rejected
-// URL, which under a trap would be dominated by re-sees of the same rejected
-// URLs and would measure link-graph density rather than Scope Truncation.
+// of Scopes that have DROPPED AT LEAST ONE LINK because their Scope Budget is
+// spent in a run (ADR-0053), labeled by run_id ONLY. It increments once per Scope,
+// on that Scope's first dropped link, which the add script claims as a
+// per-(run, Scope) marker — so it is once per Scope however the derived budget
+// moves across a resume, and never once per rejected URL, which under a trap would
+// be dominated by re-sees of the same rejected URLs and would measure link-graph
+// density rather than Scope Truncation. A Scope that spends its last budget unit
+// and never drops a link truncated nothing and is not counted.
 //
 // A Scope label is deliberately absent: the Catalog grows perpetually, so it
 // would mint a metric series per Company. The Scope's NAME goes to a single WARN
 // log instead. run_id carries the same bounded-cardinality argument as
-// visited.evicted (ADR-0026/0027).
+// visited.evicted (ADR-0026/0027). Across a mid-Cycle restart the marker is what
+// both the counter and the log continue from, so a Scope announced before the
+// restart is not announced again and the post-restart series counts only the
+// Scopes truncated since — the counter and the WARN log stay exactly 1:1.
 func newScopeTruncatedCounter() metric.Int64Counter {
 	c, err := otel.Meter("frontier").Int64Counter(
 		"crawler.frontier.scope.truncated",
-		metric.WithDescription("Scopes that have spent their Scope Budget, by run_id (ADR-0053). Each increment is one Scope truncated."),
+		metric.WithDescription("Scopes truncated — dropped at least one link because their Scope Budget is spent — by run_id (ADR-0053). Each increment is one Scope, on its first dropped link."),
 	)
 	if err != nil {
 		slog.Error("frontier: error setting up scope-truncated counter", "err", err)

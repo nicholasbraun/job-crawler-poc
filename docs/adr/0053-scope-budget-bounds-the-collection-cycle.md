@@ -53,6 +53,10 @@ Cycle's Frontier — and once spent, further links from that Scope are dropped
   saturates anyway, and the ceiling argument collapses while the budget appears to work.
   Gating first leaves a rejected URL with no trace, so
   `ZCARD visited ≤ Σ_scopes budget + the ADR-0035 visited pre-pass` holds by construction.
+  The sole exception is the truncation marker below, written at most once per Scope on the
+  reject path — safe because the marker is keyed on Scope, whose count is fixed at cycle
+  start, not on URL, so a trap cannot grow it; a rejection still touches nothing URL-keyed,
+  and the bound is unchanged.
 
 - **A spent budget hard-drops the link**, surfaced as `frontier.ErrScopeBudget` exactly
   as `ErrMaxDepth` already is: an expected client-side rejection both processors log at
@@ -72,12 +76,22 @@ Cycle's Frontier — and once spent, further links from that Scope are dropped
 
 - **Observability names Scopes, never labels by them.** A
   `crawler.frontier.scope.truncated` counter (`run_id`-labeled) increments **once** per
-  Scope, on the exact transition the add script detects when the charge lands on the
-  budget; the Scope's *name* goes to a single WARN log. A per-URL drop counter would be
-  dominated by re-sees of the same rejected URLs and would measure link-graph density
-  rather than truncation; a Scope label would mint a series per Company. A
-  `crawler.frontier.scope.budget` gauge carries the effective derived number, mirroring
-  `visited.cap` so a panel can align the two.
+  Scope, on that Scope's **first actually-dropped link**, which the add script detects by
+  claiming a per-`(run, Scope)` marker field with `HSETNX`; the Scope's *name* goes to a
+  single WARN log. A per-URL drop counter would be dominated by re-sees of the same
+  rejected URLs and would measure link-graph density rather than truncation; a Scope label
+  would mint a series per Company. A `crawler.frontier.scope.budget` gauge carries the
+  effective derived number, mirroring `visited.cap` so a panel can align the two.
+
+  The transition must **not** be derived from the charge landing on the budget. The spend
+  lives per run in Redis while the number is re-derived per process from a growing Catalog
+  (the run factory re-derives on every resume and adopt), so a restart that *shrinks* it
+  skips the announcement forever — the charge path is never reached again once
+  `spent ≥ budget` — and one that *grows* it announces the same Scope twice. Keyed on the
+  Scope, the announcement is once per Scope per run however the number moves, and it also
+  survives a transient retry re-running the script. Announcing on the first dropped link
+  rather than on the last admission is deliberate: that is what Scope Truncation *is*
+  (`CONTEXT.md`), and a Scope whose budget runs out on its final link truncated nothing.
 
 ## Considered options
 
@@ -187,11 +201,13 @@ Cycle's Frontier — and once spent, further links from that Scope are dropped
 - **A resumed Cycle shares the budget it had already spent**, because the counter lives
   under the run's Frontier namespace. That is the intended reading: the budget belongs to
   the Cycle, not to the process. The derived number may shift across a resume if the
-  Catalog changed; the spend does not.
+  Catalog changed; the spend does not, and nothing may key off the number's exact value —
+  the truncation announcement is keyed on the Scope for exactly this reason.
 
 - **Validation is a live Cycle, not a benchmark.** The load-bearing unit test is that a
-  truncated admission mutates *nothing* — `ZCARD visited` unchanged — which is what catches
-  a regression of the ordering invariant. Live, against run `8f4e231e`'s baseline:
+  truncated admission mutates *nothing* URL-keyed — `ZCARD visited` unchanged — which is
+  what catches a regression of the ordering invariant; the second is that a Scope truncated
+  across a resume that re-derives a *different* budget is still named exactly once. Live, against run `8f4e231e`'s baseline:
   `crawler_frontier_visited_evicted_total` stays at **0** (the direct test of the
   derivation, and #310's symptom gone), the pending peak falls far below 3.5M, crawl-lane
   new Job Listings hold near 13,877, and the WARN log names roughly the eight known
