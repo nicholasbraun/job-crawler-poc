@@ -619,6 +619,14 @@ var aggregatorHosts = map[string]struct{}{
 	"personalwirtschaft.de":         {}, // HR magazine
 	"sueddeutsche.de":               {}, // SZ Stellenmarkt
 	"tagesspiegel.de":               {}, // jobs. + studijobs. tenants
+	// Rheinische Post Mediengruppe runs ONE board platform behind two hosts -- both
+	// mint the same SDE-{id} listing path, so they are one decision, two entries.
+	"rp-online.de": {}, // jobs.rp-online.de; employer is in the URL (/firma/transdev-instandhaltung-gmbh,
+	//                    /firma/media-central-...), and the titles span Pferdepfleger, Machinist and
+	//                    Legal Counsel -- no single employer hires across that range
+	"kalaydo.de": {}, // regional classifieds portal, jobs section; the posting names Kreisverwaltung
+	//                   Ahrweiler while "Weitere interessante Jobs" offers EHI Retail Institute, and
+	//                   Apply hands off to zfm-bonn.de/jobboerse
 	// Publication, trade and association career centers on their own software. Same
 	// standard, same eTLD+1 trade as the block above:
 	"shz.de":                   {}, // Schleswig-Holstein newspaper; Amt Eggebek, Stadt Eckernförde, Amt Bad Oldesloe-Land
@@ -640,12 +648,18 @@ var aggregatorHosts = map[string]struct{}{
 	"jobninja.com":       {}, // search engine with a /unternehmen/{employer} directory; Evangelische Heimstiftung Pfalz
 	"stellenanzeigen.de": {}, // one of the large German Jobbörsen, the stepstone.de/monster.de category
 	"t-online.jobs":      {}, // "Die Jobbörse von t-online"; Securitas, SOS-Kinderdorf, HT Group
-	"localjob.de":        {}, // regional Jobbörse network
-	"nrw-jobs.de":        {}, // …and its regional front, which 301s to localjob.de
-	"trainee.de":         {}, // trainee-programme board; Rhenus Automotive, Coca-Cola
-	"agrarjobboerse.de":  {}, // Landwirtschaftskammer board; Hörning, Agrargenossenschaft Bergland Clausnitz
-	"azubi-nrw.de":       {}, // apprenticeship board, the ausbildung.de shape; Stumpp and other trades
-	"bauingenieur24.de":  {}, // civil-engineering portal; Bayerischer Landtag among the employers
+	"yourfirm.de":        {}, // "Stellenangebote & Jobs im Mittelstand"; the employer is a path segment on
+	//                           every listing -- /job/securitas-holding-gmbh/, /job/theo-steil-gmbh/,
+	//                           /job/bestattungsinstitut-denk-trauerhilfe-gmbh/, /job/big-bau/
+	"aerzteblatt.de": {}, // Deutsches Ärzteblatt's aerztestellen. board, the beck-stellenmarkt.de/lto.de
+	//                      shape: a professional publication's Stellenmarkt carrying Oberarzt and Facharzt
+	//                      roles for many unrelated clinics, with an /apply-external hand-off
+	"localjob.de":       {}, // regional Jobbörse network
+	"nrw-jobs.de":       {}, // …and its regional front, which 301s to localjob.de
+	"trainee.de":        {}, // trainee-programme board; Rhenus Automotive, Coca-Cola
+	"agrarjobboerse.de": {}, // Landwirtschaftskammer board; Hörning, Agrargenossenschaft Bergland Clausnitz
+	"azubi-nrw.de":      {}, // apprenticeship board, the ausbildung.de shape; Stumpp and other trades
+	"bauingenieur24.de": {}, // civil-engineering portal; Bayerischer Landtag among the employers
 	// VC and accelerator portfolio boards -- the accel/8vc/seedcamp category:
 	"menlovc.com":   {}, // jobs.menlovc.com; Anthropic, Databricks, Xaira, ShipBob
 	"hvcapital.com": {}, // jobs.hvcapital.com; Holidu, Atolls, Scalable Capital, Ashby. HV Capital runs BOTH
@@ -662,6 +676,29 @@ var aggregatorHosts = map[string]struct{}{
 	"builtinla.com":        {},
 	"builtinseattle.com":   {},
 	"builtinsf.com":        {},
+
+	// A career-site vendor's shared STAGING estate. Radancy builds and hosts employer
+	// career sites, and its pre-production copies live on one registrable domain, one
+	// customer per subdomain: munichrestage.runmytests.eu is Munich Re's, and the
+	// sibling cargillmigration.runmytests.com is Cargill's. Nothing on the page says
+	// so -- no noindex, no canonical, no JSON-LD -- and robots.txt disallows only
+	// /search-jobs/, so a staging mirror is fully crawlable and looks exactly like the
+	// live site it copies.
+	//
+	// It is the FIRST shape (ADR-0052) despite carrying one customer per subdomain:
+	// the page names an employer that is not the host, so every listing is
+	// mis-attributed by construction. The Catalog held one Company keyed
+	// runmytests.eu but NAMED "ERGO" (a Munich Re subsidiary, taken off the seed page
+	// /en/ergo-opportunities) holding 683 open Munich Re Job Listings, 351 of which
+	// duplicated the correctly-attributed munichre.com Company's own 578 rows.
+	//
+	// eTLD+1 match is what makes this work: the shed side is only ever staging copies
+	// of sites the crawl reaches on their live hosts anyway, so the trade is entirely
+	// one-sided. Any other vendor test estate found later belongs here, not on
+	// sharedHostSuffixes -- fencing a mirror to its own subdomain would still mint the
+	// junk Company and still duplicate the Corpus.
+	"runmytests.eu":  {},
+	"runmytests.com": {}, // the same estate's .com sibling (cargillmigration.…), a separate eTLD+1
 
 	// Staffing and recruitment agencies -- the SECOND qualifying shape (ADR-0052),
 	// so the employer-named-on-the-page standard above does NOT apply and these

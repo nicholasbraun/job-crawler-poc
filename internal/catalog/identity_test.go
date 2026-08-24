@@ -618,6 +618,27 @@ func TestIsAggregatorHost(t *testing.T) {
 		{"thryve talent recruiting firm", "https://www.thryvetalent.com/job-results", true},
 		{"growe talents recruiting agency", "https://growetalents.com/vacancies", true},
 		{"lightning travel recruitment agency", "https://lightningtravelrecruitment.com/jobs", true},
+		// 2026-08-24 audit -- one per added denylist host. Each was decided on the
+		// employer named on the page plus the URL path, not the host name.
+		{"rp-online Stellenmarkt names the employer in the path", "https://jobs.rp-online.de/firma/transdev-instandhaltung-gmbh", true},
+		{"rp-online SDE listing path", "https://jobs.rp-online.de/jobs/sde-64800/machinist_united_states", true},
+		{"kalaydo classifieds portal, the same SDE platform", "https://www.kalaydo.de/jobs/SDE-111707/Fachbereichsleitung_Jugend_Soziales_und_Gesundhei/", true},
+		{"yourfirm names the employer in the path", "https://www.yourfirm.de/job/securitas-holding-gmbh/meister-fuer-schutz", true},
+		{"aerzteblatt Stellenmarkt on its aerztestellen subdomain", "https://aerztestellen.aerzteblatt.de/web_html/378503/8615715.htm", true},
+		// A career-site vendor's staging estate: one customer per subdomain, but the
+		// page names an employer that is not the host, so it is the first shape.
+		{"radancy staging mirror folds in via eTLD+1", "https://munichrestage.runmytests.eu/en/job/london/senior-project-manager/3342/41186128448", true},
+		{"another tenant on the same staging estate", "https://munichrestage.runmytests.eu/en/ergo-opportunities", true},
+		{"the estate's .com sibling is a separate eTLD+1", "https://cargillmigration.runmytests.com/en/produccion-HN", true},
+		// ...while the live site the mirror copies is a real single-company hub and
+		// must survive: denying the mirror may not cost the employer its own Catalog row.
+		{"the canonical career site the mirror copies stays", "https://www.munichre.com/en/job/munich/internship-actuary/3342/43268062016", false},
+		// An accelerator that hires its OWN staff is a normal employer. startplatz.de
+		// reads like a portfolio board and is not one: all 22 distinct titles under it
+		// are its own team (Founders Associate, Office Management, Community Management,
+		// Program Manager KI Accelerator NRW). Cleared twice; pinned here so a third
+		// audit does not re-flag it.
+		{"an accelerator hiring its own team is not a portfolio board", "https://www.startplatz.de/jobs/447", false},
 		// A consultancy that staffs its own employees onto client projects is a normal
 		// employer, not an agency -- "our clients" on the page is not the test (ADR-0052).
 		{"a consultancy with client projects is not an agency", "https://job.deloitte.com/careers", false},
