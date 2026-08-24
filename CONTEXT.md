@@ -175,7 +175,7 @@ The set of URLs a Crawl Run still has to fetch, scheduled per Politeness Domain 
 _Avoid_: queue, backlog
 
 **Re-admission**:
-A URL the Frontier had already seen being crawled again because its seen-memory is finite: a perpetual Discovery Crawl caps that memory and forgets the oldest URLs first, so one re-linked afterwards is treated as new. Accepted as the price of a bounded Frontier — politeness and correctness are unaffected; only a repeat LLM classify can result, and only when the re-crawled page also re-passes the Gate.
+A URL the Frontier had already seen being crawled again because its seen-memory is finite: a perpetual Discovery Crawl caps that memory and forgets the oldest URLs first, so one re-linked afterwards is treated as new. Accepted as the price of a bounded Frontier — politeness and correctness are unaffected; only a repeat LLM classify can result, and only when the re-crawled page also re-passes the Gate. A Collection Cycle cannot afford it — forgetting what it has already crawled would cost the Cycle its end — so a Cycle bounds what each Scope may contribute instead of relying on forgetting.
 _Avoid_: re-crawl, re-visit, duplicate
 
 **Seed**:
@@ -185,6 +185,14 @@ _Avoid_: entry point, root URL
 **Scope**:
 The Company-identity boundary a Collection Crawl stays within: a crawl seeded from one Career Page follows links only into that same Company — its own site and subdomains, or its single ATS tenant — never onto unrelated hosts. Derived from the seed's URL so any discovered link can be tested against it. The Discovery Crawl has no Scope; roaming is its job.
 _Avoid_: domain limit, allowlist, fence
+
+**Scope Budget**:
+The number of URLs one Scope may contribute to a Collection Cycle's Frontier. Derived per Cycle by dividing the Frontier's seen-memory ceiling among the Scopes the Catalog supplies, so the whole Cycle stays small enough to finish; never a figure anyone picks.
+_Avoid_: enqueue cap, per-scope limit, quota
+
+**Scope Truncation**:
+A Scope's walk stopping short of its whole Career Surface because its Scope Budget is spent, so the Cycle stops following that Company's links for the rest of the Cycle. The accepted price of a Cycle that ends, and the reason a truncated Scope is always named in the logs rather than merely counted.
+_Avoid_: capping, throttling, cut-off
 
 **Shared-Host Suffix**:
 A registrable domain that fronts many independent tenants on distinct subdomains (one newsletter or blog per `{tenant}.substack.com`), where the Scope fence keys on the full hostname rather than the eTLD+1 — so a seed is confined to its own subdomain instead of the whole platform, the way it otherwise would be for a self-hosted company (see Scope, ADR-0021/0039). A curated Public-Suffix-List supplement covering only the multi-tenant hosts the PSL does not already fence; a real company keeps the eTLD+1 default so its sibling subdomains stay in one Scope.
