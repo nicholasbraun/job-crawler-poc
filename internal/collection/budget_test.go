@@ -290,3 +290,126 @@ func TestScopeBudgetAnnounce(t *testing.T) {
 		}
 	})
 }
+
+// TestScopeBudgetAnnouncePrePass pins the SECOND Cycle-start announcement of ADR-0053 —
+// the half of the ceiling argument that is measured rather than derived. TestDeriveScopeBudget
+// cannot cover it (the derivation is pure and by design never learns the pre-pass size) and
+// neither can TestScopeBudgetAnnounce (Announce never sees a pre-pass number), so without
+// this table a Cycle whose ADR-0035 pre-pass has outgrown the headroom the budgets left it
+// saturates its seen-memory in silence. The literals cross-pin the two package constants
+// against each other: the headroom comes from 0.8 and the required ceiling from 0.2, in the
+// same asserted line, so drift between them fails a row.
+func TestScopeBudgetAnnouncePrePass(t *testing.T) {
+	runID := uuid.New()
+
+	tests := []struct {
+		name       string
+		budget     collection.ScopeBudget
+		visitedCap int
+		prePass    int
+		wantLevel  string
+		wantAttrs  map[string]float64
+		// absentAttrs must not appear at all: a Cycle whose pre-pass still fits names no
+		// fix for a problem it does not have.
+		absentAttrs []string
+	}{
+		{
+			name:       "a pre-pass that fits is announced at INFO",
+			budget:     collection.DeriveScopeBudget(5_000_000, scopeSeeds(1100)),
+			visitedCap: 5_000_000,
+			prePass:    1_000_000,
+			wantLevel:  "INFO",
+			// 5,000,000 − 1,100 × 3,636: what the budgets left UNCLAIMED, which is more
+			// than the flat fifth the derivation reserved.
+			wantAttrs:   map[string]float64{"pre_pass": 1_000_000, "headroom": 1_000_400},
+			absentAttrs: []string{"required_visited_cap"},
+		},
+		{
+			name:       "a pre-pass past the headroom warns and names the ceiling that restores the guarantee",
+			budget:     collection.DeriveScopeBudget(5_000_000, scopeSeeds(1100)),
+			visitedCap: 5_000_000,
+			prePass:    1_200_000,
+			wantLevel:  "WARN",
+			// 1,200,000 ÷ 0.2: the fixed point, not 5,000,000 + the 199,600 overshoot,
+			// which would hand four fifths of the raise back to the admissions.
+			wantAttrs: map[string]float64{"pre_pass": 1_200_000, "headroom": 1_000_400, "required_visited_cap": 6_000_000},
+		},
+		{
+			name: "a clamped Catalog's ceiling grows by the budgets, not by five",
+			// 100 Scopes are clamped at maxScopeBudget, so raising the ceiling does not
+			// raise what the budgets claim: 4,500,000 + 100 × 10,000.
+			budget:     collection.DeriveScopeBudget(5_000_000, scopeSeeds(100)),
+			visitedCap: 5_000_000,
+			prePass:    4_500_000,
+			wantLevel:  "WARN",
+			wantAttrs:  map[string]float64{"pre_pass": 4_500_000, "headroom": 4_000_000, "required_visited_cap": 5_500_000},
+		},
+		{
+			name: "a disabled seen-memory ceiling cannot evict, so it does not warn",
+			// The ADR-0027 fail-safe: a non-positive cap disables capping, so the
+			// seen-memory never forgets however large the pre-pass is. The
+			// misconfiguration itself is Announce's WARN, not this one.
+			budget:      collection.DeriveScopeBudget(0, scopeSeeds(1100)),
+			visitedCap:  0,
+			prePass:     9_000_000,
+			wantLevel:   "INFO",
+			wantAttrs:   map[string]float64{"pre_pass": 9_000_000},
+			absentAttrs: []string{"required_visited_cap"},
+		},
+		{
+			name: "with no budget at all only the whole ceiling bounds the pre-pass",
+			// The kill switch pulled: nothing is claimed by admissions, so the only
+			// question left is whether the pre-pass alone overflows the seen-memory.
+			budget:     collection.ScopeBudget{},
+			visitedCap: 5_000_000,
+			prePass:    6_000_000,
+			wantLevel:  "WARN",
+			wantAttrs:  map[string]float64{"pre_pass": 6_000_000, "headroom": 5_000_000, "required_visited_cap": 6_000_000},
+		},
+		{
+			name: "a lapsed floor takes the larger of the two ceilings",
+			// Both halves of the argument have to hold, so Announce's 12,500,000 wins over
+			// this check's own 500,000. The headroom is negative because the floor already
+			// overrode the derivation.
+			budget:     collection.DeriveScopeBudget(5_000_000, scopeSeeds(20_000)),
+			visitedCap: 5_000_000,
+			prePass:    100_000,
+			wantLevel:  "WARN",
+			wantAttrs:  map[string]float64{"pre_pass": 100_000, "headroom": -5_000_000, "required_visited_cap": 12_500_000},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			captureLogs(t, &buf, func() { tt.budget.AnnouncePrePass(runID, tt.visitedCap, tt.prePass) })
+
+			lines := logLines(t, &buf)
+			if len(lines) != 1 {
+				t.Fatalf("AnnouncePrePass wrote %d lines, want exactly 1; logs:\n%s", len(lines), buf.String())
+			}
+			got := lines[0]
+			if got["level"] != tt.wantLevel {
+				t.Errorf("level = %v, want %s; logs:\n%s", got["level"], tt.wantLevel, buf.String())
+			}
+			if got["run_id"] != runID.String() {
+				t.Errorf("run_id = %v, want %s", got["run_id"], runID)
+			}
+			for key, want := range tt.wantAttrs {
+				v, ok := got[key].(float64)
+				if !ok {
+					t.Errorf("attribute %q missing or not a number: %v; logs:\n%s", key, got[key], buf.String())
+					continue
+				}
+				if v != want {
+					t.Errorf("attribute %q = %v, want %v", key, v, want)
+				}
+			}
+			for _, key := range tt.absentAttrs {
+				if _, ok := got[key]; ok {
+					t.Errorf("attribute %q present but must not be; logs:\n%s", key, buf.String())
+				}
+			}
+		})
+	}
+}

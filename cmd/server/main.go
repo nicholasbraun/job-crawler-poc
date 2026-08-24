@@ -869,9 +869,10 @@ func newFactory(
 			// different number than a previous process derived; that is safe by design --
 			// the spend is a plain per-run count and the truncation announcement is
 			// claimed once per Scope, not when the count meets the number (ADR-0053).
+			var derived collection.ScopeBudget
 			scopeBudget := 0
 			if scopeBudgetEnabled {
-				derived := collection.DeriveScopeBudget(visitedCap, crawlSeeds)
+				derived = collection.DeriveScopeBudget(visitedCap, crawlSeeds)
 				derived.Announce(runID)
 				scopeBudget = derived.URLsPerScope
 			}
@@ -888,9 +889,16 @@ func newFactory(
 			// run's visited set so the walk surfaces only NEW postings; the refetch lane
 			// owns liveness of the known ones. Idempotent, so a resumed Cycle re-runs it
 			// harmlessly. Best-effort: a seeding error is logged, never fatal.
-			if err := collection.SeedVisited(ctx, boundedFrontier, corpusRepository, refetchPages); err != nil {
+			prePass, err := collection.SeedVisited(ctx, boundedFrontier, corpusRepository, refetchPages)
+			if err != nil {
 				slog.Error("collection: seeding visited set", "err", err, "run_id", runID)
 			}
+			// The other half of ADR-0053's ceiling argument, and the only half that is
+			// measured rather than derived. It has to be said HERE and not beside the
+			// derivation above: the count does not exist until the pre-pass has run, and
+			// the pre-pass needs the Frontier the derived number configures. It is still
+			// ahead of the walk, which has admitted nothing yet.
+			derived.AnnouncePrePass(runID, visitedCap, prePass)
 
 			cycleStart := time.Now()
 

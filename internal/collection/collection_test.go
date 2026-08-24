@@ -2,6 +2,8 @@ package collection_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -383,4 +385,157 @@ func TestCollectionHealsLegacySummaryOncePerListing(t *testing.T) {
 	if !corpus.isOpen("c-legacy") {
 		t.Error("cycle 2: the healed listing must stay open (unchanged, alive)")
 	}
+}
+
+// prePassSeeder is a recording crawler VisitedSeeder: it keeps every URL it was
+// handed and can fail a whole batch, so a test can tell what actually reached the
+// seen-memory apart from what SeedVisited claims it seeded.
+type prePassSeeder struct {
+	marked []string
+	calls  int
+	failOn string // when a batch contains this URL, the whole batch fails
+}
+
+func (s *prePassSeeder) MarkVisited(_ context.Context, urls []string) error {
+	s.calls++
+	if s.failOn != "" {
+		for _, u := range urls {
+			if u == s.failOn {
+				return errors.New("seeder: batch rejected")
+			}
+		}
+	}
+	s.marked = append(s.marked, urls...)
+	return nil
+}
+
+// openStub is a crawler.CorpusLivenessRepository serving a fixed set of Open Job
+// Listings per Career Page, with an injectable ListOpen failure. stubCorpus cannot
+// stand in: its ListOpen never fails, and the partial-failure rows are exactly what
+// pins the count to what actually reached the seen-memory.
+type openStub struct {
+	byPage map[uuid.UUID][]*crawler.JobListing
+	errOn  uuid.UUID
+}
+
+func (o *openStub) ListOpen(_ context.Context, page uuid.UUID) ([]*crawler.JobListing, error) {
+	if page == o.errOn {
+		return nil, errors.New("corpus: listing open failed")
+	}
+	return o.byPage[page], nil
+}
+
+func (o *openStub) CloseAbsent(context.Context, uuid.UUID, time.Time, bool) (int, error) {
+	return 0, nil
+}
+
+func (o *openStub) ApplyCrawlProbe(context.Context, string, crawler.ProbeOutcome, int) (crawler.LifecycleState, error) {
+	return crawler.LifecycleState{}, nil
+}
+
+// openListings builds n Open Job Listings under page, URL-keyed by prefix.
+func openListings(page uuid.UUID, prefix string, n int) []*crawler.JobListing {
+	out := []*crawler.JobListing{}
+	for i := range n {
+		out = append(out, &crawler.JobListing{
+			URL:          fmt.Sprintf("https://%s/jobs/%d", prefix, i),
+			CanonicalURL: fmt.Sprintf("https://%s/jobs/%d", prefix, i),
+			CareerPageID: page,
+		})
+	}
+	return out
+}
+
+// TestSeedVisited pins what the ADR-0035 visited pre-pass reports back: the number of
+// URLs it actually put into the seen-memory. That number is the measured half of
+// ADR-0053's ceiling argument — the derivation bounds only the Cycle's admissions — so
+// a count that over-reports a failed page would understate the pre-pass's claim on the
+// ceiling and let a Cycle saturate silently. The partial-failure rows are the ones that
+// matter: a page that never reached the seeder must not be counted, while the pages
+// after it still must be.
+func TestSeedVisited(t *testing.T) {
+	pageA, pageB := uuid.New(), uuid.New()
+	pages := []crawler.CollectionSeed{
+		{URL: "https://a.example/careers", CompanyKey: "a.example", CareerPageID: pageA},
+		{URL: "https://b.example/careers", CompanyKey: "b.example", CareerPageID: pageB},
+	}
+
+	t.Run("the count is every Open Job Listing it seeded", func(t *testing.T) {
+		open := &openStub{byPage: map[uuid.UUID][]*crawler.JobListing{
+			pageA: openListings(pageA, "a.example", 2),
+			pageB: openListings(pageB, "b.example", 3),
+		}}
+		seeder := &prePassSeeder{}
+
+		got, err := collection.SeedVisited(t.Context(), seeder, open, pages)
+		if err != nil {
+			t.Fatalf("SeedVisited: %v", err)
+		}
+		if got != 5 {
+			t.Errorf("seeded = %d, want 5", got)
+		}
+		if len(seeder.marked) != 5 {
+			t.Errorf("the seeder saw %d URLs, want 5: %v", len(seeder.marked), seeder.marked)
+		}
+	})
+
+	t.Run("a page with no Open Job Listings contributes nothing", func(t *testing.T) {
+		open := &openStub{byPage: map[uuid.UUID][]*crawler.JobListing{
+			pageB: openListings(pageB, "b.example", 2),
+		}}
+		seeder := &prePassSeeder{}
+
+		got, err := collection.SeedVisited(t.Context(), seeder, open, pages)
+		if err != nil {
+			t.Fatalf("SeedVisited: %v", err)
+		}
+		if got != 2 {
+			t.Errorf("seeded = %d, want 2", got)
+		}
+		// An empty board is skipped outright, not handed to the seen-memory as an
+		// empty batch.
+		if seeder.calls != 1 {
+			t.Errorf("MarkVisited called %d times, want 1", seeder.calls)
+		}
+	})
+
+	t.Run("a page whose listing lookup fails is not counted and the rest still are", func(t *testing.T) {
+		open := &openStub{
+			byPage: map[uuid.UUID][]*crawler.JobListing{
+				pageA: openListings(pageA, "a.example", 4),
+				pageB: openListings(pageB, "b.example", 2),
+			},
+			errOn: pageA,
+		}
+		seeder := &prePassSeeder{}
+
+		got, err := collection.SeedVisited(t.Context(), seeder, open, pages)
+		if err == nil {
+			t.Fatal("SeedVisited returned no error, want the failed page's error")
+		}
+		if got != 2 {
+			t.Errorf("seeded = %d, want 2 (only the page that was reached)", got)
+		}
+	})
+
+	t.Run("a page whose seeding fails is not counted and the rest still are", func(t *testing.T) {
+		open := &openStub{byPage: map[uuid.UUID][]*crawler.JobListing{
+			pageA: openListings(pageA, "a.example", 2),
+			pageB: openListings(pageB, "b.example", 3),
+		}}
+		seeder := &prePassSeeder{failOn: "https://a.example/jobs/0"}
+
+		got, err := collection.SeedVisited(t.Context(), seeder, open, pages)
+		if err == nil {
+			t.Fatal("SeedVisited returned no error, want the rejected batch's error")
+		}
+		// The number reports what actually reached the seen-memory, never what was
+		// offered to it.
+		if got != 3 {
+			t.Errorf("seeded = %d, want 3 (the rejected page's URLs never landed)", got)
+		}
+		if len(seeder.marked) != 3 {
+			t.Errorf("the seeder kept %d URLs, want 3: %v", len(seeder.marked), seeder.marked)
+		}
+	})
 }

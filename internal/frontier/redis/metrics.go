@@ -73,10 +73,13 @@ func newDomainsSizeGauge() metric.Int64Gauge {
 // cardinality caveat applies — one series accrues per run_id the process has ever
 // popped (bounded for this crawler's perpetual-Discovery-plus-Keyword shape);
 // evicting a finished run's series in DeleteRun is the same deferred hardening.
+// MarkVisited records it too, from the same post-eviction ZCARD its own script returns
+// (the ADR-0035 pre-pass), so the seeding's claim on the ceiling lands on the same
+// series as the walk's.
 func newVisitedSizeGauge() metric.Int64Gauge {
 	g, err := otel.Meter("frontier").Int64Gauge(
 		"crawler.frontier.visited.size",
-		metric.WithDescription("Post-eviction cardinality of the Frontier visited ZSET after each NEW insert, by run_id (ADR-0027)."),
+		metric.WithDescription("Post-eviction cardinality of the Frontier visited ZSET, recorded after each NEW insert and after each visited pre-pass chunk, by run_id (ADR-0027)."),
 	)
 	if err != nil {
 		slog.Error("frontier: error setting up visited-size gauge", "err", err)

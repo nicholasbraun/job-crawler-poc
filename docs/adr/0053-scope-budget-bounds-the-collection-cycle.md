@@ -184,6 +184,27 @@ Cycle's Frontier — and once spent, further links from that Scope are dropped
   Company's contribution and the ceiling of 10,000 below the observed 100k–800k traps;
   both should be re-pinned against that read.
 
+- **The headroom the derivation reserves is measured, not assumed.** `budget = cap × 0.8`
+  leaves a fifth for the ADR-0035 visited pre-pass, which seeds every Open Job Listing under
+  every crawl-lane Career Page — a quantity that grows with the Corpus, not with the Catalog,
+  so nothing in the derivation bounds it. The Cycle therefore counts what the pre-pass seeded
+  and states once, right after it runs, whether it still fits the seen-memory the budgets left
+  UNCLAIMED (`cap − scopes × budget`, not the flat fifth: a small Catalog clamped at 10,000
+  leaves far more than a fifth, and warning on the flat share would cry wolf). Past it a second
+  WARN names the ceiling that would restore the guarantee — a fixed point, `pre-pass ÷ 0.2`
+  while the division binds and `pre-pass + 10,000 × scopes` once it clamps, because raising the
+  ceiling also raises the budgets divided out of it — and never less than the floor's own
+  required ceiling, since both halves have to hold. It can only be said AFTER the pre-pass: the
+  count does not exist before it, and the pre-pass needs the Frontier the derived number
+  configures. It is still preventive for the walk, which has admitted nothing yet; the single
+  case it cannot get ahead of is a pre-pass that alone exceeds the whole ceiling, whose
+  evictions have already happened when the line is written. `MarkVisited` also records the
+  post-eviction `ZCARD visited` its script already returned and discarded onto `visited.size`,
+  so the pre-pass's claim on the ceiling is visible on the same panel as the admissions' —
+  without it the pre-pass's own FIFO eviction shows up nowhere, `visited.evicted` being fed
+  only from the add script. Counting the pre-pass's evictions on that counter too would mean
+  changing the add-adjacent Lua's reply shape, and is deliberately left out.
+
 - **This does not close #310.** It removes the *cause* of the saturation, but #310's
   request to surface eviction as a run-level signal remains the right backstop for the
   derivation being wrong — including the case above where the floor overrides it. #310

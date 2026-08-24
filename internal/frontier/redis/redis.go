@@ -211,11 +211,15 @@ const markVisitedChunk = 1000
 // 8-byte visited member AddURL uses, ZADDed NX under the same FIFO cap, so a later
 // AddURL of the same URL returns DUP. Idempotent (ZADD NX) and wrapped in withRetry
 // like AddURL, so a resumed Cycle re-seeds harmlessly. A no-op for an empty slice.
+// It records visited.size and visited.cap from the script's post-eviction
+// cardinality, so the pre-pass's claim on the ADR-0027 ceiling is visible on the same
+// panel as the admissions' (ADR-0053).
 func (f *Frontier) MarkVisited(ctx context.Context, rawURLs []string) error {
 	if len(rawURLs) == 0 {
 		return nil
 	}
 	keys := []string{f.key("visited")}
+	attrs := metric.WithAttributes(attribute.String("run_id", f.runID))
 	for start := 0; start < len(rawURLs); start += markVisitedChunk {
 		end := start + markVisitedChunk
 		if end > len(rawURLs) {
@@ -226,10 +230,22 @@ func (f *Frontier) MarkVisited(ctx context.Context, rawURLs []string) error {
 		for _, u := range rawURLs[start:end] {
 			args = append(args, visitedMember(u))
 		}
-		if _, err := f.withRetry(ctx, opAdd, func() (any, error) {
+		res, err := f.withRetry(ctx, opAdd, func() (any, error) {
 			return markVisitedScript.Run(ctx, f.client, keys, args...).Result()
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("frontier: mark visited: %w", err)
+		}
+		// The reply is the post-eviction ZCARD visited, recorded onto the same gauge (and
+		// beside the same cap gauge) AddURL feeds: the pre-pass is the OTHER claim on the
+		// seen-memory ceiling (ADR-0053), and without this a Cycle that seeds more than
+		// the ceiling has room for is invisible — this script's own FIFO eviction happens
+		// inside Lua, and visited.evicted is fed only from the add script. Both are
+		// recorded together so the vs-cap panel always has the pair; chunked, so a long
+		// pre-pass refreshes the last-value as it runs.
+		if size, perr := strconv.ParseInt(fmt.Sprint(res), 10, 64); perr == nil {
+			f.visitedSize.Record(ctx, size, attrs)
+			f.visitedCapG.Record(ctx, int64(f.visitedCap), attrs)
 		}
 	}
 	return nil

@@ -14,6 +14,15 @@ import (
 // before the walk starts, so those entries must not come out of the Scopes' share.
 const scopeBudgetHeadroom float64 = 0.8
 
+// prePassShare is the share of the seen-memory ceiling left for the ADR-0035 visited
+// pre-pass — the complement of scopeBudgetHeadroom, and the assumption the whole
+// derivation rests on. The two must sum to 1; that is what makes the ceiling argument
+// add up. It is spelled as its own decimal rather than as 1 - scopeBudgetHeadroom
+// because that subtraction on a typed float64 constant yields 0.19999999999999996,
+// which would push every ceiling computed from it one URL past the number the
+// derivation actually needs.
+const prePassShare float64 = 0.2
+
 // minScopeBudget is the floor on a derived Scope Budget: below it a Company's walk
 // fails outright rather than merely truncating, so the floor wins over the division
 // even though that forfeits the ceiling (ADR-0053, which reports the forfeit through
@@ -154,5 +163,80 @@ func (b ScopeBudget) Announce(runID uuid.UUID) {
 	default:
 		slog.Info("collection: scope budget derived for this cycle (ADR-0053)",
 			"run_id", runID, "scopes", b.Scopes, "budget", b.URLsPerScope)
+	}
+}
+
+// requiredVisitedCapForPrePass returns the smallest seen-memory ceiling under which a
+// pre-pass of prePass URLs and the Scope Budgets this Cycle would RE-DERIVE at that
+// ceiling both fit. It is a fixed point, not prePass + today's budgets: raising
+// CRAWL_VISITED_CAP also raises the share the budgets are divided out of
+// (budget = ceiling × scopeBudgetHeadroom), so a ceiling that merely adds the overshoot
+// hands four fifths of the raise straight back to the admissions and comes up short
+// again — the same trap ADR-0053 already avoids by rounding the floor's required
+// ceiling up.
+//
+// Two branches, because the budgets stop growing with the ceiling once the division
+// clamps at maxScopeBudget:
+//
+//	clamped:  ceiling = prePass + maxScopeBudget × scopes  (the budgets are fixed)
+//	dividing: ceiling = ceil(prePass ÷ prePassShare)       (the pre-pass gets the
+//	                                                        complement of the headroom)
+//
+// The clamped branch is taken only when its own answer really would still clamp, which
+// also covers scopes == 0 — nothing to divide, so the ceiling need only hold the
+// pre-pass — with no special case.
+func requiredVisitedCapForPrePass(scopes, prePass int) int {
+	claimed := maxScopeBudget * scopes
+	if clamped := prePass + claimed; float64(clamped)*scopeBudgetHeadroom >= float64(claimed) {
+		return clamped
+	}
+	return int(math.Ceil(float64(prePass) / prePassShare))
+}
+
+// AnnouncePrePass writes the OTHER half of ADR-0053's ceiling argument to the log,
+// exactly once, right after the ADR-0035 visited pre-pass has run. The derivation can
+// only claim that the Cycle's ADMISSIONS fit under the seen-memory ceiling; the
+// pre-pass — every Open Job Listing under every crawl-lane Career Page, seeded before
+// the walk so the Cycle surfaces only new ones — claims the rest of that ceiling, and
+// it is measured, not derived: it grows with the Corpus, and nothing in the
+// Catalog-derived denominator bounds it. Unchecked it is the one assumption standing
+// between the derivation and a silent failure — the budgets fit, the Cycle announces a
+// budget that holds the ceiling, and the seen-memory saturates anyway, bringing
+// ADR-0027's eviction and Re-admission back and costing the Cycle its end (#310).
+//
+// prePass is how many URLs SeedVisited seeded; visitedCap is the ceiling the derivation
+// divided. The headroom prePass is measured against is what the budgets leave
+// UNCLAIMED — visitedCap − Scopes × URLsPerScope — not the flat scopeBudgetHeadroom
+// share: a small Catalog is clamped at maxScopeBudget and leaves far more than a fifth,
+// and warning on the flat share would cry wolf for every Cycle with room to spare. It
+// can go negative once the floor has overridden the derivation, which Announce has
+// already warned about.
+//
+// This can only be said AFTER the pre-pass: the count does not exist before it, and the
+// pre-pass needs the Frontier the derived number configures. It is still preventive for
+// the walk, which has not admitted a URL yet, and it is the only preventive signal
+// there is. The one case it cannot get ahead of is a pre-pass that alone exceeds the
+// whole ceiling and has already evicted by the time this runs; the same WARN names it.
+func (b ScopeBudget) AnnouncePrePass(runID uuid.UUID, visitedCap, prePass int) {
+	headroom := visitedCap - b.Scopes*b.URLsPerScope
+
+	switch {
+	case visitedCap <= 0:
+		// Checked FIRST: a non-positive ceiling DISABLES capping in the Frontier (the
+		// ADR-0027 fail-safe), so the seen-memory never forgets and no pre-pass, however
+		// large, can cost the Cycle its end. The misconfiguration itself is Announce's
+		// WARN, not this one.
+		slog.Info("collection: the seen-memory ceiling is disabled, so the visited pre-pass cannot cost this cycle its end (ADR-0053)",
+			"run_id", runID, "pre_pass", prePass)
+	case prePass > headroom:
+		slog.Warn("collection: the visited pre-pass no longer fits the seen-memory this cycle's scope budgets leave it, so the cycle's seen-memory can saturate and its walk may never drain; raise CRAWL_VISITED_CAP to required_visited_cap to restore the guarantee (ADR-0053)",
+			"run_id", runID, "pre_pass", prePass, "headroom", headroom,
+			// Both halves of the argument have to hold, so the ceiling that restores the
+			// guarantee is the larger of the two: a Cycle whose floor already overrode the
+			// derivation needs Announce's number as well as this one.
+			"required_visited_cap", max(requiredVisitedCapForPrePass(b.Scopes, prePass), b.RequiredVisitedCap))
+	default:
+		slog.Info("collection: the visited pre-pass fits the seen-memory this cycle's scope budgets leave it (ADR-0053)",
+			"run_id", runID, "pre_pass", prePass, "headroom", headroom)
 	}
 }
