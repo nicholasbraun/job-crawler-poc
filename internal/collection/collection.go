@@ -10,8 +10,9 @@
 // A Cycle runs two lanes over the Catalog seeds: RouteSeeds partitions them into
 // crawl seeds (walked + extracted, then refetched for liveness) and ATS FetchTasks
 // (pulled straight from the provider board API). The pure, testable pieces —
-// RouteSeeds, the Career-Page Attributor, the status classifier, and the refetch
-// processor — live here; cmd/server composes them into a runner.Engine.
+// RouteSeeds, the Scope Budget derivation, the Career-Page Attributor, the status
+// classifier, and the refetch processor — live here; cmd/server composes them into
+// a runner.Engine.
 package collection
 
 import (
