@@ -643,6 +643,17 @@ func TestIsAggregatorHost(t *testing.T) {
 		// employer, not an agency -- "our clients" on the page is not the test (ADR-0052).
 		{"a consultancy with client projects is not an agency", "https://job.deloitte.com/careers", false},
 		{"another consultancy stays a real hub", "https://career.avenga.com/jobs", false},
+		// Catalog-import audit -- one per added denylist host. Each was named as one
+		// Company's own careers_url by an imported company list, then confirmed by the
+		// employers named on the board itself.
+		{"karriere.at Jobbörse", "https://www.karriere.at/jobs", true},
+		{"karriere.at employer page names the employer in the path", "https://www.karriere.at/arbeitgeber/neoh", true},
+		{"powerus trades platform", "https://powerus.de/", true},
+		{"powerus employer page folds in", "https://powerus.de/arbeitgeber/tawo-gmbh", true},
+		{"bitcoinerjobs niche board", "https://bitcoinerjobs.com", true},
+		{"workatastartup is YC's portfolio board on its own eTLD+1", "https://www.workatastartup.com/jobs", true},
+		{"welcometothejungle platform", "https://www.welcometothejungle.com/en/jobs", true},
+		{"welcometothejungle app subdomain folds in via eTLD+1", "https://app.welcometothejungle.com/companies/Karla/jobs", true},
 		// A per-tenant ATS or recruiting-platform board root is a legitimate hub,
 		// not an aggregator -- its only defect is identity attribution (#46).
 		{"smartrecruiters tenant is not an aggregator", "https://jobs.smartrecruiters.com/ScalableGmbH", false},

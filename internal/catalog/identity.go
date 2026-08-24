@@ -700,6 +700,36 @@ var aggregatorHosts = map[string]struct{}{
 	"runmytests.eu":  {},
 	"runmytests.com": {}, // the same estate's .com sibling (cargillmigration.…), a separate eTLD+1
 
+	// Catalog-import audit (2026-08-24). A DACH company list of 4,071 companies
+	// carried a self-declared careers_url per company, and five of those pointed at
+	// a board rather than the company's own hub -- the list naming a host as one
+	// Company's Career Page is what surfaced them. Each was then confirmed the usual
+	// way, by the employers NAMED ON THE BOARD, so all five are the FIRST shape
+	// (ADR-0052): the page names an employer that is not the host.
+	"karriere.at": {}, // large Austrian Jobbörse; one /jobs page named Autohaus Toyota Toyfl,
+	//                    Schneider Electric Austria, Fabasoft, hobex AG, Motto Catering and nine
+	//                    more. The employer is also a path segment on every employer page
+	//                    (/arbeitgeber/{employer}), the yourfirm.de / jobninja.com shape above.
+	"powerus.de": {}, // "Deutschlands größte auf das Handwerk spezialisierte Jobplattform",
+	//                   6,000+ openings from many employers -- MNB Wärmetechnik, OMS Prüfservice,
+	//                   Enpal Heat, Klimaten, Andre Bannikow CNC-Dreh & Frästechnik -- under the
+	//                   same /arbeitgeber/{employer}/jobs shape as karriere.at.
+	"bitcoinerjobs.com": {}, // niche Bitcoin/crypto board, the vuejobs.com / drupal.org community-board
+	//                          shape; its front page names Swan Bitcoin, Synonym and Braiins, and the
+	//                          listing template carries a per-posting company_name field.
+	"workatastartup.com": {}, // Y Combinator's portfolio board ("Software Engineer jobs at Y Combinator
+	//                           startups"), the same firm and category as ycombinator.com above -- a
+	//                           second registrable domain, so it needs its own entry.
+	// welcometothejungle.com is the ONE entry here that could instead have been a
+	// pathRule: app.welcometothejungle.com/companies/{employer}/jobs is exactly the
+	// join.com/companies/{slug} shape, and the list's own preamble says a per-tenant
+	// recruiting platform is deliberately absent. It is denied rather than slugged
+	// because the platform fronts 4,500 companies behind a cross-employer search
+	// (/en/jobs) that no tenant owns, and no evidence yet says which of its paths a
+	// crawl actually lands on. Revisit as a pathRule if the shed turns out to cost
+	// real Career Pages.
+	"welcometothejungle.com": {},
+
 	// Staffing and recruitment agencies -- the SECOND qualifying shape (ADR-0052),
 	// so the employer-named-on-the-page standard above does NOT apply and these
 	// entries must not be read against it. Their pages name no employer beyond the
