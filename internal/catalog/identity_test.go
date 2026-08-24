@@ -505,6 +505,8 @@ func TestIsAggregatorHost(t *testing.T) {
 		{"indeed aggregator", "https://de.indeed.com/jobs?q=go", true},
 		{"stepstone job board", "https://www.stepstone.de/jobs/acme", true},
 		{"crunchboard job board", "https://www.crunchboard.com/jobs/123", true},
+		{"freelancer gig marketplace", "https://www.freelancer.com", true},
+		{"freelancer locale subdomain folds in via eTLD+1", "https://www.tr.freelancer.com/jobs/replit", true},
 		// #46 audit additions -- one per added denylist host.
 		{"eu-startups directory", "https://www.eu-startups.com/directory/", true},
 		{"schuelerkarriere student board", "https://schuelerkarriere.de/jobs", true},

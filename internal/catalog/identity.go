@@ -474,6 +474,17 @@ var aggregatorHosts = map[string]struct{}{
 	"remoteok.com":         {}, // remote-work job aggregator (multi-company)
 	"beck-stellenmarkt.de": {}, // legal job board
 	"lto.de":               {}, // legal news site job board
+	// Freelance/gig marketplaces -- the FIRST qualifying shape (ADR-0052): the
+	// openings are third parties' projects, so every one is mis-attributed to the
+	// platform by construction. Confirmed on the stored rows, not on the host name:
+	// the Catalog holds www.freelancer.com as a Company literally named "Freelancer"
+	// (company_key freelancer.com), and the 4 Job Listings under it are ONE gig
+	// ("Long-term remote assistant...") stored four times, once per locale subdomain
+	// -- www.{tr,fi,my,fr}.freelancer.com/jobs/replit. That row names no employer but
+	// the platform, and the host absorbs client gigs without bound, which is the
+	// Catalog invariant this list exists to hold: a Career Page's openings are its
+	// Company's own. eTLD+1 match, so every locale subdomain folds in.
+	"freelancer.com": {},
 	// Professional networks and employer-review sites.
 	"linkedin.com": {},
 	"linkedin.de":  {},
