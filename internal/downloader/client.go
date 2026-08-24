@@ -33,15 +33,34 @@ var ErrNoHTML = errors.New("content type is not 'text/html'")
 //
 // RetryAfter holds the delay requested by the server's Retry-After header, or 0
 // when the header is absent, malformed, or points to the past. RetryClient
-// honors this hint in place of its exponential backoff.
+// honors this hint in place of its exponential backoff, subject to its own
+// maxBackoff ceiling.
 type StatusError struct {
 	StatusCode int
 	Retryable  bool
 	RetryAfter time.Duration
+	// RetryAfterHeader is the server's Retry-After value verbatim, or "" when
+	// the header was absent. It is kept alongside the parsed RetryAfter so a
+	// throttle can be diagnosed from a single log line: a host that sent no
+	// hint and one whose hint we discarded as malformed or already past both
+	// leave RetryAfter at 0, and only the raw value tells them apart.
+	RetryAfterHeader string
 }
 
+// Error renders the status, plus the server's throttle hint when it sent one.
+// The hint is appended only when present, so the message is unchanged for the
+// overwhelming majority of failures that carry no Retry-After. It reports what
+// the server asked for, not what RetryClient will actually wait — the two
+// differ whenever the request exceeds the client's maxBackoff ceiling.
 func (e *StatusError) Error() string {
-	return fmt.Sprintf("downloader: unexpected http status %d", e.StatusCode)
+	switch {
+	case e.RetryAfter > 0:
+		return fmt.Sprintf("downloader: unexpected http status %d (retry-after %q = %s)", e.StatusCode, e.RetryAfterHeader, e.RetryAfter)
+	case e.RetryAfterHeader != "":
+		return fmt.Sprintf("downloader: unexpected http status %d (retry-after %q unusable)", e.StatusCode, e.RetryAfterHeader)
+	default:
+		return fmt.Sprintf("downloader: unexpected http status %d", e.StatusCode)
+	}
 }
 
 // retryableStatus reports whether a non-2xx status is transient. Throttles
@@ -217,10 +236,12 @@ func (c *Client) Get(ctx context.Context, u string) (*Response, error) {
 	// a 404 "page not found") must never flow downstream as a real page.
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		c.downloadTimeHistogram.Record(ctx, downloadTime, metric.WithAttributes(attribute.String("status", strconv.Itoa(res.StatusCode))))
+		retryAfterHeader := res.Header.Get("Retry-After")
 		return nil, &StatusError{
-			StatusCode: res.StatusCode,
-			Retryable:  retryableStatus(res.StatusCode),
-			RetryAfter: parseRetryAfter(res.Header.Get("Retry-After")),
+			StatusCode:       res.StatusCode,
+			Retryable:        retryableStatus(res.StatusCode),
+			RetryAfter:       parseRetryAfter(retryAfterHeader),
+			RetryAfterHeader: retryAfterHeader,
 		}
 	}
 

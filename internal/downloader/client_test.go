@@ -194,7 +194,46 @@ func TestGetRetryAfter(t *testing.T) {
 		if statusErr.RetryAfter != 0 {
 			t.Errorf("RetryAfter = %v, want 0", statusErr.RetryAfter)
 		}
+		if statusErr.RetryAfterHeader != "soon" {
+			t.Errorf("RetryAfterHeader = %q, want %q", statusErr.RetryAfterHeader, "soon")
+		}
 	})
+}
+
+// TestStatusErrorMessage pins the throttle hint into the error text. The
+// message is the only place a 429 surfaces in the logs, so a hint that is
+// parsed but not rendered leaves an operator unable to tell a host that asked
+// us to wait from one that said nothing.
+func TestStatusErrorMessage(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *downloader.StatusError
+		want string
+	}{
+		{
+			name: "absent header renders the bare status",
+			err:  &downloader.StatusError{StatusCode: 429, Retryable: true},
+			want: "downloader: unexpected http status 429",
+		},
+		{
+			name: "parsed hint renders the raw value and its delay",
+			err:  &downloader.StatusError{StatusCode: 429, Retryable: true, RetryAfter: 2 * time.Minute, RetryAfterHeader: "120"},
+			want: `downloader: unexpected http status 429 (retry-after "120" = 2m0s)`,
+		},
+		{
+			name: "unusable hint is still reported, so it is not mistaken for an absent one",
+			err:  &downloader.StatusError{StatusCode: 503, Retryable: true, RetryAfterHeader: "soon"},
+			want: `downloader: unexpected http status 503 (retry-after "soon" unusable)`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.Error(); got != tt.want {
+				t.Errorf("Error() = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestRetry(t *testing.T) {
