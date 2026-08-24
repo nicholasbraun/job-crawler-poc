@@ -1,8 +1,10 @@
 package collection
 
 import (
+	"log/slog"
 	"math"
 
+	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 )
 
@@ -26,6 +28,15 @@ const minScopeBudget int = 500
 // more, and it sits far below the 100k-800k contributions of the observed traps
 // (ADR-0053). PROVISIONAL for the same reason as minScopeBudget.
 const maxScopeBudget int = 10_000
+
+// DefaultScopeBudgetEnabled is what COLLECTION_SCOPE_BUDGET_ENABLED defaults to:
+// every Collection Cycle runs under a derived Scope Budget (ADR-0053). It ships ON,
+// the ordinary kill-switch convention — the budget IS the live behaviour once this
+// ships. Pulling the switch restores the unbounded walk: no Scope is bounded, the
+// Cycle's seen-memory can saturate and start forgetting, and the Cycle may never
+// drain. That is the pre-ADR-0053 behaviour, kept reachable with no deploy so the
+// budget can be ruled out as a cause if crawl-lane Job Listings drop unexpectedly.
+const DefaultScopeBudgetEnabled = true
 
 // ScopeBudget is one Cycle's derived Scope Budget together with the facts the
 // derivation rests on (ADR-0053). It is returned, never logged from inside, so the
@@ -118,4 +129,30 @@ func countDistinctScopes(seeds []crawler.Seed) int {
 		seen[s.Scope] = struct{}{}
 	}
 	return len(seen)
+}
+
+// Announce writes this Cycle's Scope Budget to the log exactly once, at cycle start
+// (ADR-0053). It lives beside the derivation because the two readings a derived number
+// can carry are not legible from the number itself: a budget that still holds the
+// seen-memory ceiling is routine, while one the floor had to override means ADR-0036's
+// termination guarantee has lapsed for this Cycle — a WARN that must name the
+// seen-memory ceiling which would restore it, so the fix is a stated number rather than
+// a diagnosis the operator has to perform. Exactly one line either way, so a Cycle's
+// start reads as one grep.
+func (b ScopeBudget) Announce(runID uuid.UUID) {
+	switch {
+	case !b.HoldsCeiling:
+		// Checked FIRST: a Cycle with Scopes but no derivable budget (a non-positive
+		// seen-memory ceiling) reads URLsPerScope 0 AND HoldsCeiling false, and that is
+		// the alarming reading, not the "nothing to bound" one below.
+		slog.Warn("collection: the scope budget floor overrides the derivation, so this cycle's seen-memory can saturate and its walk may never drain; raise CRAWL_VISITED_CAP to required_visited_cap to restore the guarantee (ADR-0053)",
+			"run_id", runID, "scopes", b.Scopes, "budget", b.URLsPerScope,
+			"required_visited_cap", b.RequiredVisitedCap)
+	case b.URLsPerScope <= 0:
+		slog.Info("collection: no scoped crawl seeds, so no scope budget applies to this cycle (ADR-0053)",
+			"run_id", runID, "scopes", b.Scopes)
+	default:
+		slog.Info("collection: scope budget derived for this cycle (ADR-0053)",
+			"run_id", runID, "scopes", b.Scopes, "budget", b.URLsPerScope)
+	}
 }

@@ -398,6 +398,99 @@
           "refId": "B"
         }
       ]
+    },
+    {
+      "type": "row",
+      "id": 103,
+      "title": "Scope Budget (ADR-0053)",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 }
+    },
+    {
+      "type": "timeseries",
+      "id": 10,
+      "title": "Scopes truncated (vs the effective budget)",
+      "description": "Scopes that have spent their Scope Budget (crawler.frontier.scope.truncated) — one increment per Scope, not per dropped URL — against the effective per-Scope budget the Cycle derived (crawler.frontier.scope.budget, dashed, right axis). The Scope NAMES are in the WARN log, never on the metric: a label would mint a series per Company (ADR-0053). A Discovery run's series stays flat at 0 — its URLs carry no Scope, so the budget is inert there. A budget of 0 means the gate is off (COLLECTION_SCOPE_BUDGET_ENABLED pulled).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisPlacement": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "budget" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } },
+              { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } },
+              { "id": "custom.fillOpacity", "value": 0 },
+              { "id": "custom.axisPlacement", "value": "right" }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["max", "lastNotNull"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (run_id) (crawler_frontier_scope_truncated_total)",
+          "legendFormat": "{{run_id}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "max(crawler_frontier_scope_budget)",
+          "legendFormat": "budget",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 11,
+      "title": "Seen-memory evictions (must stay 0)",
+      "description": "Per-run visited-ZSET FIFO evictions (crawler.frontier.visited.evicted), repeated from the Frontier dashboard because it is the DIRECT test of the Scope Budget derivation (ADR-0053): if the budgets sum under the seen-memory ceiling, a Cycle never forgets a URL it has already crawled and this stays flat at 0 for the Cycle's run_id. Anything above 0 is Re-admission, and a Cycle that re-admits cannot drain (#310).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisPlacement": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["max", "lastNotNull"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (run_id) (crawler_frontier_visited_evicted_total)",
+          "legendFormat": "{{run_id}}",
+          "refId": "A"
+        }
+      ]
     }
   ]
 }

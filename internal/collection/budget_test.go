@@ -1,9 +1,14 @@
 package collection_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	crawler "github.com/nicholasbraun/job-crawler-poc/internal"
 	"github.com/nicholasbraun/job-crawler-poc/internal/collection"
 )
@@ -148,4 +153,140 @@ func TestDeriveScopeBudget(t *testing.T) {
 			}
 		})
 	}
+}
+
+// captureLogs installs a JSON slog handler writing into buf for the duration of fn,
+// then restores the previous default logger. Mirrors the frontier package's helper.
+func captureLogs(t *testing.T, buf *bytes.Buffer, fn func()) {
+	t.Helper()
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	slog.SetDefault(slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	fn()
+}
+
+// logLines parses buf as one JSON object per line, so a test can assert an
+// announcement's level and attributes without matching message text.
+func logLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	lines := []map[string]any{}
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("could not parse log line %q: %v", line, err)
+		}
+		lines = append(lines, entry)
+	}
+	return lines
+}
+
+// TestScopeBudgetAnnounce pins the Cycle-start announcement of ADR-0053: one line per
+// Cycle start, at the level that matches what the derivation returned, carrying the
+// numbers an operator has to act on. "Exactly one line" is a real assertion rather than
+// decoration -- a start that both warned and informed would make the record of which
+// Cycles ran with a lapsed guarantee ambiguous. The attribute KEYS are load-bearing:
+// they are what a log search for a lapsed guarantee matches on.
+func TestScopeBudgetAnnounce(t *testing.T) {
+	runID := uuid.New()
+
+	tests := []struct {
+		name      string
+		budget    collection.ScopeBudget
+		wantLevel string
+		wantAttrs map[string]float64
+		// absentAttrs must not appear at all: a healthy Cycle that named a
+		// required_visited_cap would be reporting a fix for a problem it does not have.
+		absentAttrs []string
+	}{
+		{
+			name:      "a derived budget that holds the ceiling is announced at INFO",
+			budget:    collection.ScopeBudget{URLsPerScope: 3636, Scopes: 1100, HoldsCeiling: true},
+			wantLevel: "INFO",
+			wantAttrs: map[string]float64{"scopes": 1100, "budget": 3636},
+			// A healthy Cycle names no fix.
+			absentAttrs: []string{"required_visited_cap"},
+		},
+		{
+			name:      "a lapsed guarantee is announced at WARN naming the ceiling that would restore it",
+			budget:    collection.ScopeBudget{URLsPerScope: 500, Scopes: 20_000, HoldsCeiling: false, RequiredVisitedCap: 12_500_000},
+			wantLevel: "WARN",
+			wantAttrs: map[string]float64{"scopes": 20_000, "budget": 500, "required_visited_cap": 12_500_000},
+		},
+		{
+			name:      "a Cycle with no scoped Seeds says no budget applies, and does not warn",
+			budget:    collection.ScopeBudget{HoldsCeiling: true},
+			wantLevel: "INFO",
+			wantAttrs: map[string]float64{"scopes": 0},
+		},
+		{
+			name: "a Cycle with Scopes but no derivable ceiling warns",
+			// URLsPerScope 0 AND HoldsCeiling false: the switch must read the lapse,
+			// not the benign "nothing to bound".
+			budget:    collection.ScopeBudget{URLsPerScope: 0, Scopes: 1100, HoldsCeiling: false, RequiredVisitedCap: 687_500},
+			wantLevel: "WARN",
+			wantAttrs: map[string]float64{"scopes": 1100, "budget": 0, "required_visited_cap": 687_500},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			captureLogs(t, &buf, func() { tt.budget.Announce(runID) })
+
+			lines := logLines(t, &buf)
+			if len(lines) != 1 {
+				t.Fatalf("Announce wrote %d lines, want exactly 1; logs:\n%s", len(lines), buf.String())
+			}
+			got := lines[0]
+			if got["level"] != tt.wantLevel {
+				t.Errorf("level = %v, want %s; logs:\n%s", got["level"], tt.wantLevel, buf.String())
+			}
+			if got["run_id"] != runID.String() {
+				t.Errorf("run_id = %v, want %s", got["run_id"], runID)
+			}
+			for key, want := range tt.wantAttrs {
+				v, ok := got[key].(float64)
+				if !ok {
+					t.Errorf("attribute %q missing or not a number: %v; logs:\n%s", key, got[key], buf.String())
+					continue
+				}
+				if v != want {
+					t.Errorf("attribute %q = %v, want %v", key, v, want)
+				}
+			}
+			for _, key := range tt.absentAttrs {
+				if _, ok := got[key]; ok {
+					t.Errorf("attribute %q present but must not be; logs:\n%s", key, buf.String())
+				}
+			}
+		})
+	}
+
+	t.Run("the announcement carries the derivation's own numbers", func(t *testing.T) {
+		// Derived, never hand-built: ADR-0053's 20,000-Scope row, where the floor
+		// overrides the division and the guarantee lapses. This is what stops the WARN
+		// from naming a number the derivation would never produce.
+		b := collection.DeriveScopeBudget(5_000_000, scopeSeeds(20_000))
+
+		var buf bytes.Buffer
+		captureLogs(t, &buf, func() { b.Announce(runID) })
+
+		lines := logLines(t, &buf)
+		if len(lines) != 1 {
+			t.Fatalf("Announce wrote %d lines, want exactly 1; logs:\n%s", len(lines), buf.String())
+		}
+		got := lines[0]
+		if got["level"] != "WARN" {
+			t.Errorf("level = %v, want WARN; logs:\n%s", got["level"], buf.String())
+		}
+		if got["budget"] != float64(500) {
+			t.Errorf("budget = %v, want 500", got["budget"])
+		}
+		if got["required_visited_cap"] != float64(12_500_000) {
+			t.Errorf("required_visited_cap = %v, want 12500000", got["required_visited_cap"])
+		}
+	})
 }

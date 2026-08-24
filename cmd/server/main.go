@@ -276,6 +276,19 @@ func main() {
 	// regardless of which Frontier performs the AddURL.
 	visitedCap := ld.PositiveInt("CRAWL_VISITED_CAP", redisfrontier.DefaultVisitedCap)
 
+	// COLLECTION_SCOPE_BUDGET_ENABLED is the Scope Budget kill switch (ADR-0053),
+	// default TRUE: every Collection Cycle divides the CRAWL_VISITED_CAP above among
+	// the Scopes its Catalog Seeds supply and admits at most that many URLs per Scope,
+	// so the Cycle's seen-memory never has to forget and the walk can finish. Pulling
+	// it restores the unbounded walk exactly as it was before ADR-0053: nothing is
+	// bounded per Scope, the seen-memory saturates and starts evicting, and the Cycle
+	// may never drain (#310). This is the kill-switch class deliberately -- the
+	// mechanism silently truncates a Company's walk at scale -- and it is the switch to
+	// pull if crawl-lane Job Listings drop unexpectedly after this ships. There is no
+	// knob for the budget VALUE: it is derived, and a knob would invite tuning it
+	// against a yield curve that cannot honestly be measured while Cycles do not drain.
+	scopeBudgetEnabled := ld.Bool("COLLECTION_SCOPE_BUDGET_ENABLED", collection.DefaultScopeBudgetEnabled)
+
 	// ROBOTS_CACHE_SIZE / ROBOTS_CACHE_TTL bound the shared robots.txt Rules cache
 	// (ADR-0032): how many hosts' parsed rules are held and for how long before a
 	// re-fetch, so the cache cannot grow without limit across a discovery crawl
@@ -345,7 +358,7 @@ func main() {
 
 	factory := newFactory(crawlMaxWorkers, visitedCap, robotsCacheTTL, robotsCacheSize, llmMaxWorkers, llmConfig,
 		descriptionMaxChars, extractFromJSONLD, shadowExtractRate, requirePositiveEvidence, learnedVeto, structuralRendering,
-		careerSurfaceLinks, redisClient, companyRepository, careerPageRepository, corpusRepository)
+		careerSurfaceLinks, scopeBudgetEnabled, redisClient, companyRepository, careerPageRepository, corpusRepository)
 	crawlRunner := runner.New(runRepository, defRepository, factory,
 		// One cleaner sweeps all of a run's transient Redis state on a terminal
 		// status or factory error: the frontier keys and the LLM stage's streams
@@ -482,6 +495,7 @@ func newFactory(
 	learnedVeto bool,
 	structuralRendering bool,
 	careerSurfaceLinks bool,
+	scopeBudgetEnabled bool,
 	redisClient *redis.Client,
 	companyRepository crawler.CompanyRepository,
 	careerPageRepository crawler.CareerPageRepository,
@@ -567,6 +581,10 @@ func newFactory(
 	// the Cycle counts it is validated by are only readable against the setting that
 	// produced them (ADR-0051).
 	slog.Info("career surface links (ADR-0051)", "enabled", careerSurfaceLinks)
+	// Whether a Cycle ran bounded has to be legible from the log: the budget's cost is
+	// Scope Truncation, and the Job Listing counts a Cycle is judged by are only
+	// readable against the setting that produced them (ADR-0053).
+	slog.Info("collection scope budget (ADR-0053)", "enabled", scopeBudgetEnabled)
 
 	// The extraction-cache key (ADR-0035): ONE closure over the extractor's prompt
 	// window, handed to both the save processor that stamps it and the refetch lane
@@ -667,6 +685,13 @@ func newFactory(
 			// waiting for URLs discovered later. It ends only on a desired-state
 			// stop. The Catalog (company + career_page) is filled by the
 			// career-page pool.
+			//
+			// Deliberately no WithScopeBudget: the Scope Budget bounds a Collection Cycle
+			// (ADR-0053), and a perpetual crawl has no end to protect -- a monotonic
+			// per-key budget on Discovery is a slow-motion shutdown whose failure is
+			// indistinguishable from the web running out of Career Pages. Discovery's
+			// URLs carry no Scope in any case, so the gate would be inert even if a
+			// number were passed. Do not harmonize the two construction sites.
 			discoveryFrontier := redisfrontier.New(redisClient, runID,
 				redisfrontier.WithMaxDepth(def.MaxDepth),
 				redisfrontier.WithMode(frontier.Perpetual),
@@ -828,11 +853,31 @@ func newFactory(
 			}
 			attributor := collection.NewAttributor(pages, companyKeyByID)
 
+			// Scope Budget (ADR-0053): derived once per Cycle from the seen-memory ceiling
+			// and this Cycle's OWN crawl Seeds -- both already in hand here, so the Scope
+			// count is exact and costs no extra query. A Cycle's Seeds are a one-shot read
+			// taken above, so the denominator cannot grow underneath the running Cycle,
+			// which is what makes the ceiling an exact bound rather than a projection.
+			// crawlSeeds, NOT allSeeds: the routed ATS tenants never enter the Frontier
+			// (ADR-0022), so counting them would shrink every walked Scope's share for
+			// Scopes that can never spend it. The Frontier receives only the finished
+			// number -- deriving it is deliberately not a lane-agnostic component's job.
+			// A pulled kill switch leaves it 0, which disables the gate inside the add
+			// script: the unbounded walk exactly as before. The switch already stated
+			// itself once at startup, and the scope.budget gauge reads 0 for the run.
+			scopeBudget := 0
+			if scopeBudgetEnabled {
+				derived := collection.DeriveScopeBudget(visitedCap, crawlSeeds)
+				derived.Announce(runID)
+				scopeBudget = derived.URLsPerScope
+			}
+
 			// Bounded frontier: a Cycle finishes when the walk drains (unlike the
 			// perpetual Discovery frontier).
 			boundedFrontier := redisfrontier.New(redisClient, runID,
 				redisfrontier.WithMaxDepth(def.MaxDepth),
 				redisfrontier.WithVisitedCap(visitedCap),
+				redisfrontier.WithScopeBudget(scopeBudget),
 			)
 
 			// Visited pre-pass (ADR-0035): seed every known-open posting URL into the
