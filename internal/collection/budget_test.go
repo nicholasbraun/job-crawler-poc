@@ -188,53 +188,84 @@ func logLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
 // numbers an operator has to act on. "Exactly one line" is a real assertion rather than
 // decoration -- a start that both warned and informed would make the record of which
 // Cycles ran with a lapsed guarantee ambiguous. The attribute KEYS are load-bearing:
-// they are what a log search for a lapsed guarantee matches on.
+// they are what a log search for a lapsed guarantee matches on. The line also carries the
+// seen-memory the run's Frontier ALREADY holds, which is what distinguishes a Cycle adopted
+// onto a populated Frontier from one that started fresh.
 func TestScopeBudgetAnnounce(t *testing.T) {
 	runID := uuid.New()
 
 	tests := []struct {
-		name      string
-		budget    collection.ScopeBudget
-		wantLevel string
-		wantAttrs map[string]float64
+		name   string
+		budget collection.ScopeBudget
+		// seenMemory is what the run's Frontier already holds; -1 means the reading
+		// was unavailable, which must omit the attribute rather than report a 0.
+		seenMemory int
+		wantLevel  string
+		wantAttrs  map[string]float64
 		// absentAttrs must not appear at all: a healthy Cycle that named a
 		// required_visited_cap would be reporting a fix for a problem it does not have.
 		absentAttrs []string
 	}{
 		{
-			name:      "a derived budget that holds the ceiling is announced at INFO",
-			budget:    collection.ScopeBudget{URLsPerScope: 3636, Scopes: 1100, HoldsCeiling: true},
-			wantLevel: "INFO",
-			wantAttrs: map[string]float64{"scopes": 1100, "budget": 3636},
+			name:       "a derived budget that holds the ceiling is announced at INFO",
+			budget:     collection.ScopeBudget{URLsPerScope: 3636, Scopes: 1100, HoldsCeiling: true},
+			seenMemory: 0,
+			wantLevel:  "INFO",
+			wantAttrs:  map[string]float64{"scopes": 1100, "budget": 3636, "seen_memory": 0},
 			// A healthy Cycle names no fix.
 			absentAttrs: []string{"required_visited_cap"},
 		},
 		{
-			name:      "a lapsed guarantee is announced at WARN naming the ceiling that would restore it",
-			budget:    collection.ScopeBudget{URLsPerScope: 500, Scopes: 20_000, HoldsCeiling: false, RequiredVisitedCap: 12_500_000},
-			wantLevel: "WARN",
-			wantAttrs: map[string]float64{"scopes": 20_000, "budget": 500, "required_visited_cap": 12_500_000},
+			name:       "a lapsed guarantee is announced at WARN naming the ceiling that would restore it",
+			budget:     collection.ScopeBudget{URLsPerScope: 500, Scopes: 20_000, HoldsCeiling: false, RequiredVisitedCap: 12_500_000},
+			seenMemory: 0,
+			wantLevel:  "WARN",
+			wantAttrs:  map[string]float64{"scopes": 20_000, "budget": 500, "required_visited_cap": 12_500_000},
 		},
 		{
-			name:      "a Cycle with no scoped Seeds says no budget applies, and does not warn",
-			budget:    collection.ScopeBudget{HoldsCeiling: true},
-			wantLevel: "INFO",
-			wantAttrs: map[string]float64{"scopes": 0},
+			name:       "a Cycle with no scoped Seeds says no budget applies, and does not warn",
+			budget:     collection.ScopeBudget{HoldsCeiling: true},
+			seenMemory: 0,
+			wantLevel:  "INFO",
+			wantAttrs:  map[string]float64{"scopes": 0},
 		},
 		{
 			name: "a Cycle with Scopes but no derivable ceiling warns",
 			// URLsPerScope 0 AND HoldsCeiling false: the switch must read the lapse,
 			// not the benign "nothing to bound".
-			budget:    collection.ScopeBudget{URLsPerScope: 0, Scopes: 1100, HoldsCeiling: false, RequiredVisitedCap: 687_500},
-			wantLevel: "WARN",
-			wantAttrs: map[string]float64{"scopes": 1100, "budget": 0, "required_visited_cap": 687_500},
+			budget:     collection.ScopeBudget{URLsPerScope: 0, Scopes: 1100, HoldsCeiling: false, RequiredVisitedCap: 687_500},
+			seenMemory: 0,
+			wantLevel:  "WARN",
+			wantAttrs:  map[string]float64{"scopes": 1100, "budget": 0, "required_visited_cap": 687_500},
+		},
+		{
+			// Reported, never judged: a resumed Cycle legitimately carries its spend
+			// along with its seen-memory (ADR-0053), so a non-zero reading must not
+			// change the level — warning here would fire on every restart of a healthy
+			// Cycle. The number exists to tell an adopted Cycle from a fresh one at
+			// cycle start, which is what makes an adopted run's evictions legible.
+			name:       "an adopted Cycle reports the seen-memory it carries and still announces at INFO",
+			budget:     collection.ScopeBudget{URLsPerScope: 3636, Scopes: 1100, HoldsCeiling: true},
+			seenMemory: 5_000_000,
+			wantLevel:  "INFO",
+			wantAttrs:  map[string]float64{"scopes": 1100, "budget": 3636, "seen_memory": 5_000_000},
+		},
+		{
+			// An unavailable reading is omitted, never rendered as 0: a fresh-looking 0
+			// on a run that carries five million entries is the one wrong answer here.
+			name:        "an unreadable seen-memory is omitted rather than reported as a fresh 0",
+			budget:      collection.ScopeBudget{URLsPerScope: 3636, Scopes: 1100, HoldsCeiling: true},
+			seenMemory:  -1,
+			wantLevel:   "INFO",
+			wantAttrs:   map[string]float64{"scopes": 1100, "budget": 3636},
+			absentAttrs: []string{"seen_memory"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			captureLogs(t, &buf, func() { tt.budget.Announce(runID) })
+			captureLogs(t, &buf, func() { tt.budget.Announce(runID, tt.seenMemory) })
 
 			lines := logLines(t, &buf)
 			if len(lines) != 1 {
@@ -272,7 +303,7 @@ func TestScopeBudgetAnnounce(t *testing.T) {
 		b := collection.DeriveScopeBudget(5_000_000, scopeSeeds(20_000))
 
 		var buf bytes.Buffer
-		captureLogs(t, &buf, func() { b.Announce(runID) })
+		captureLogs(t, &buf, func() { b.Announce(runID, 0) })
 
 		lines := logLines(t, &buf)
 		if len(lines) != 1 {

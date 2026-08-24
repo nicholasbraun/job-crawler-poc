@@ -148,21 +148,40 @@ func countDistinctScopes(seeds []crawler.Seed) int {
 // seen-memory ceiling which would restore it, so the fix is a stated number rather than
 // a diagnosis the operator has to perform. Exactly one line either way, so a Cycle's
 // start reads as one grep.
-func (b ScopeBudget) Announce(runID uuid.UUID) {
+//
+// seenMemory is how many entries the run's Frontier ALREADY holds at cycle start (ZCARD
+// visited, the quantity behind the crawler.frontier.visited.size gauge). It belongs on
+// this line because the budget is derived per PROCESS while the seen-memory it is granted
+// against is per RUN: one Cycle is one CrawlRun (ADR-0036) and only a terminal status
+// sweeps its Frontier keys, so a Cycle adopted or resumed across a restart re-derives a
+// full allowance against entries earlier processes already admitted. It is REPORTED, never
+// judged: for an ordinary resume that carry is ADR-0053's intended reading (the spend
+// carries with it, so the ceiling still holds), and warning on a non-zero reading would
+// fire on every restart of a healthy Cycle. What it is FOR is telling an adopted Cycle
+// from a fresh one at cycle start — the one reading whose entries may have been admitted
+// under no budget at all is a Cycle adopted across the deploy that first enabled it, and
+// the deploy note in README says what to do about that. A negative seenMemory means the
+// reading was unavailable (the caller logs why); the attribute is then omitted rather than
+// reported as 0, which would read as a fresh Frontier.
+func (b ScopeBudget) Announce(runID uuid.UUID, seenMemory int) {
+	attrs := []any{"run_id", runID, "scopes", b.Scopes}
+	if seenMemory >= 0 {
+		attrs = append(attrs, "seen_memory", seenMemory)
+	}
+
 	switch {
 	case !b.HoldsCeiling:
 		// Checked FIRST: a Cycle with Scopes but no derivable budget (a non-positive
 		// seen-memory ceiling) reads URLsPerScope 0 AND HoldsCeiling false, and that is
 		// the alarming reading, not the "nothing to bound" one below.
 		slog.Warn("collection: the scope budget floor overrides the derivation, so this cycle's seen-memory can saturate and its walk may never drain; raise CRAWL_VISITED_CAP to required_visited_cap to restore the guarantee (ADR-0053)",
-			"run_id", runID, "scopes", b.Scopes, "budget", b.URLsPerScope,
-			"required_visited_cap", b.RequiredVisitedCap)
+			append(attrs, "budget", b.URLsPerScope, "required_visited_cap", b.RequiredVisitedCap)...)
 	case b.URLsPerScope <= 0:
 		slog.Info("collection: no scoped crawl seeds, so no scope budget applies to this cycle (ADR-0053)",
-			"run_id", runID, "scopes", b.Scopes)
+			attrs...)
 	default:
 		slog.Info("collection: scope budget derived for this cycle (ADR-0053)",
-			"run_id", runID, "scopes", b.Scopes, "budget", b.URLsPerScope)
+			append(attrs, "budget", b.URLsPerScope)...)
 	}
 }
 

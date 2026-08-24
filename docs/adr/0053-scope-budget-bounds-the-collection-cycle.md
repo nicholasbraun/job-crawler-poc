@@ -113,7 +113,10 @@ Cycle's Frontier — and once spent, further links from that Scope are dropped
   `CRAWL_MAX_WORKERS` workers give an effective budget of N × the intended one, and it is
   lost on restart — a resumed Cycle would restart every budget at zero, defeating the
   per-Cycle bound precisely when it matters. `AddURL` is also the only choke point all four
-  admission paths share.
+  admission paths share — seeding, the walk, discovery, and the runtime Seed injection of
+  ADR-0018. That fourth one is outside the budget rather than under it: `addSeed` refuses a
+  Seed for any non-Discovery Definition, so an injected Seed only ever reaches a Discovery
+  Crawl's Frontier and carries no Scope for the gate to charge.
 
 - **Gate after the `visited` insert.** The natural reading, since the dedup short-circuit
   is the script's cheapest exit. Rejected — see the invariant above; it silently forfeits
@@ -233,4 +236,12 @@ Cycle's Frontier — and once spent, further links from that Scope are dropped
   derivation, and #310's symptom gone), the pending peak falls far below 3.5M, crawl-lane
   new Job Listings hold near 13,877, and the WARN log names roughly the eight known
   offenders. The listing count cannot be A/B'd for the reason given above; what is testable
-  is the one-sided claim that the Frontier collapses while the yield does not.
+  is the one-sided claim that the Frontier collapses while the yield does not. The eviction
+  reading is taken against the first Cycle that STARTS after the deploy. A Cycle already in
+  flight when this ships is adopted with its pre-deploy seen-memory — pinned at the cap and
+  already evicting — and an empty `scope_spend`, so it re-derives a full allowance on top of
+  entries no budget ever charged and keeps evicting: that Cycle measures the old unbounded
+  walk, not the derivation. Let it reach a terminal status before deploying, or delete its
+  `frontier:{runID}:*` keys once. Which Cycle is which is legible at cycle start — the
+  derivation's own line reports the `seen_memory` the run already holds, 0 for a Cycle that
+  started fresh.

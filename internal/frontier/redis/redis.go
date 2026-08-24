@@ -623,6 +623,22 @@ func Len(ctx context.Context, client *redis.Client, runID uuid.UUID) (int64, err
 	return total + inflight, nil
 }
 
+// VisitedSize reports how many entries a run's seen-memory already holds: the
+// cardinality of the visited ZSET (ADR-0027), the same quantity the
+// crawler.frontier.visited.size gauge carries. It mirrors Len and DeleteRun as a
+// package function because its caller does not have a Frontier yet: a Collection
+// Cycle reads it while deriving the Scope Budget its Frontier is then CONSTRUCTED
+// with (ADR-0053). A run with no keys reports 0, and the read mutates nothing —
+// in particular it records no instrument, so visited.size keeps the two recording
+// sites metrics.go documents.
+func VisitedSize(ctx context.Context, client *redis.Client, runID uuid.UUID) (int64, error) {
+	n, err := client.ZCard(ctx, "frontier:"+runID.String()+":visited").Result()
+	if err != nil {
+		return 0, fmt.Errorf("frontier: measuring visited set: %w", err)
+	}
+	return n, nil
+}
+
 // AddURL dedups and enqueues a URL in a single atomic script. An already-seen
 // URL is a silent no-op (returns nil). Returns frontier.ErrMaxDepth if the URL is
 // too deep, or frontier.ErrScopeBudget if its Scope has spent this run's Scope

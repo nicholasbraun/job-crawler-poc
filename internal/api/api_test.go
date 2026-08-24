@@ -1215,26 +1215,31 @@ func TestAddSeed(t *testing.T) {
 	})
 
 	t.Run("non-discovery definition is refused", func(t *testing.T) {
-		// Adding a seed to any non-discovery definition is refused; the kind value
-		// is immaterial so long as it is not "discovery".
-		def := &crawler.CrawlDefinition{ID: uuid.New(), Kind: crawler.CrawlKind("test")}
-		defs := &fakeDefRepo{get: def}
-		var seededRun []uuid.UUID
-		seeder := func(ctx context.Context, runID uuid.UUID, u crawler.URL) error {
-			seededRun = append(seededRun, runID)
-			return nil
-		}
-		srv := newHandler(api.Config{Definitions: defs, FrontierSeeder: seeder})
+		// Adding a Seed to any non-discovery definition is refused; the kind value is
+		// immaterial so long as it is not "discovery". CrawlKindCollection is named
+		// explicitly, not because the guard treats it specially, but because ADR-0053's
+		// ceiling argument rests on it: a Cycle's Frontier is never a seed-injection
+		// target, so the injecting Frontier needs no Scope Budget.
+		for _, kind := range []crawler.CrawlKind{crawler.CrawlKind("test"), crawler.CrawlKindCollection} {
+			def := &crawler.CrawlDefinition{ID: uuid.New(), Kind: kind}
+			defs := &fakeDefRepo{get: def}
+			var seededRun []uuid.UUID
+			seeder := func(ctx context.Context, runID uuid.UUID, u crawler.URL) error {
+				seededRun = append(seededRun, runID)
+				return nil
+			}
+			srv := newHandler(api.Config{Definitions: defs, FrontierSeeder: seeder})
 
-		rec := post(t, srv, def.ID, "https://newdir.example.com")
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("status: got %d, want 400; body=%s", rec.Code, rec.Body)
-		}
-		if len(defs.appended) != 0 {
-			t.Errorf("non-discovery definition must not append a seed; got %v", defs.appended)
-		}
-		if len(seededRun) != 0 {
-			t.Errorf("non-discovery definition must not inject a seed; got %v", seededRun)
+			rec := post(t, srv, def.ID, "https://newdir.example.com")
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("kind %q: status got %d, want 400; body=%s", kind, rec.Code, rec.Body)
+			}
+			if len(defs.appended) != 0 {
+				t.Errorf("kind %q: non-discovery definition must not append a seed; got %v", kind, defs.appended)
+			}
+			if len(seededRun) != 0 {
+				t.Errorf("kind %q: non-discovery definition must not inject a seed; got %v", kind, seededRun)
+			}
 		}
 	})
 

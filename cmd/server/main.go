@@ -427,6 +427,17 @@ func main() {
 		// (ADR-0018). Mirrors FrontierSizer to keep the api package off Redis: a
 		// fresh redisfrontier for the run shares its Redis keys, so the depth-0
 		// add lands in the same Frontier the orchestrator pops from.
+		//
+		// Deliberately built with NO Scope Budget, and that is not a hole in
+		// ADR-0053's ceiling: this closure can only ever reach a DISCOVERY Crawl's
+		// Frontier, because addSeed refuses a Seed for any non-Discovery Definition
+		// before it calls injectSeed, and injectSeed targets only a Run of that same
+		// Definition. A Discovery URL carries no Scope (ADR-0021), so the gate in the
+		// add script is inert for it either way. If that guard is ever relaxed so a
+		// Collection Cycle's Definition can take a runtime Seed, this construction
+		// site must derive and pass the Cycle's budget too -- an injected Seed would
+		// otherwise be admitted against no budget, and its descendants, carrying no
+		// Scope, would be neither fenced nor charged.
 		FrontierSeeder: func(ctx context.Context, runID uuid.UUID, u crawler.URL) error {
 			return redisfrontier.New(redisClient, runID, redisfrontier.WithVisitedCap(visitedCap)).AddURL(ctx, u)
 		},
@@ -873,7 +884,21 @@ func newFactory(
 			scopeBudget := 0
 			if scopeBudgetEnabled {
 				derived = collection.DeriveScopeBudget(visitedCap, crawlSeeds)
-				derived.Announce(runID)
+				// What the budget is granted AGAINST, read before the pre-pass adds to it: a
+				// run's Frontier keeps its seen-memory until the run reaches a terminal status
+				// (ADR-0036), so a Cycle adopted or resumed across a restart re-derives a full
+				// allowance on top of what earlier processes already admitted. Announced beside
+				// the number so an adopted, already-populated Cycle is legible at cycle start
+				// instead of being diagnosed from an eviction graph hours later. Best-effort:
+				// the reading is a diagnostic, so its failure must not stop a Cycle -- a
+				// negative reading tells Announce to omit the attribute rather than report a
+				// fresh-looking 0.
+				seenMemory, serr := redisfrontier.VisitedSize(ctx, redisClient, runID)
+				if serr != nil {
+					slog.Error("collection: error reading the seen-memory this cycle carries", "err", serr, "run_id", runID)
+					seenMemory = -1
+				}
+				derived.Announce(runID, int(seenMemory))
 				scopeBudget = derived.URLsPerScope
 			}
 
