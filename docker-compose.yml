@@ -123,6 +123,15 @@ services:
       - EXTRACT_CAPTURE_PATH=${EXTRACT_CAPTURE_PATH:-}
       - EXTRACT_CAPTURE_MAX=${EXTRACT_CAPTURE_MAX:-}
       - CRAWL_MAX_WORKERS=${CRAWL_MAX_WORKERS:-50}
+      # Per-run ceiling on the visited ZSET (ADR-0027) and, since ADR-0053, the single
+      # scaling lever behind the Scope Budget: a Cycle divides this number among the
+      # Scopes its Catalog supplies, and both cycle-start WARNs that report a lapsed
+      # termination guarantee name the required_visited_cap to raise it to. Listed here
+      # so acting on that WARN is one variable and a restart -- unlisted, an operator who
+      # sets it in .env changes nothing and gets no signal why. ":-" expands an unset var
+      # to "" and env.Loader reads "" as the built-in default (5,000,000), keeping the
+      # default defined once, in Go.
+      - CRAWL_VISITED_CAP=${CRAWL_VISITED_CAP:-}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DATABASE_URL=postgres://crawler:crawler@postgres:5432/crawler?sslmode=disable
       - REDIS_ADDR=redis:6379

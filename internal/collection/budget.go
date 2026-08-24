@@ -40,9 +40,13 @@ const maxScopeBudget int = 10_000
 
 // DefaultScopeBudgetEnabled is what COLLECTION_SCOPE_BUDGET_ENABLED defaults to:
 // every Collection Cycle runs under a derived Scope Budget (ADR-0053). It ships ON,
-// the ordinary kill-switch convention — the budget IS the live behaviour once this
-// ships. Pulling the switch restores the unbounded walk: no Scope is bounded, the
-// Cycle's seen-memory can saturate and start forgetting, and the Cycle may never
+// which inverts CLAUDE.md's "default a kill switch to the live behavior" convention
+// deliberately: the live behaviour here is the unbounded walk, and that walk is the
+// defect ADR-0053 measured — seen-memory pinned at its ceiling, 506,555 entries
+// forgotten, the Cycle never draining — so defaulting the switch off would ship the
+// defect. ADR-0051's COLLECTION_CAREER_SURFACE_LINKS takes the same exception for the
+// same reason. Pulling the switch restores that unbounded walk: no Scope is bounded,
+// the Cycle's seen-memory can saturate and start forgetting, and the Cycle may never
 // drain. That is the pre-ADR-0053 behaviour, kept reachable with no deploy so the
 // budget can be ruled out as a cause if crawl-lane Job Listings drop unexpectedly.
 const DefaultScopeBudgetEnabled = true

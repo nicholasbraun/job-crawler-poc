@@ -460,8 +460,8 @@
     {
       "type": "timeseries",
       "id": 11,
-      "title": "Seen-memory evictions (must stay 0)",
-      "description": "Per-run visited-ZSET FIFO evictions (crawler.frontier.visited.evicted), repeated from the Frontier dashboard because it is the DIRECT test of the Scope Budget derivation (ADR-0053): if the budgets sum under the seen-memory ceiling, a Cycle never forgets a URL it has already crawled and this stays flat at 0 for the Cycle's run_id. Anything above 0 is Re-admission, and a Cycle that re-admits cannot drain (#310).",
+      "title": "Seen-memory evictions under a Scope Budget (must stay 0)",
+      "description": "Per-run visited-ZSET FIFO evictions (crawler.frontier.visited.evicted), restricted to runs that actually carry a Scope Budget (crawler.frontier.scope.budget > 0) — i.e. Collection Cycles running under ADR-0053. Repeated from the Frontier dashboard because it is the DIRECT test of the Scope Budget derivation: if the budgets sum under the seen-memory ceiling, a Cycle never forgets a URL it has already crawled and this stays flat at 0 for the Cycle's run_id. Anything above 0 is Re-admission, and a Cycle that re-admits cannot drain (#310). A concurrent Discovery Crawl is filtered OUT on purpose: its URLs carry no Scope, so its budget reads 0, and ADR-0027 has it evict BY DESIGN once its own seen-memory saturates (506,555 evictions in the measured baseline) — a series that would otherwise climb into the hundreds of thousands under this panel's title. The panel therefore goes EMPTY when no run carries a budget (COLLECTION_SCOPE_BUDGET_ENABLED pulled, or a Cycle with no scoped Seeds); the budget line on the panel to the left is where that is read, and the Frontier dashboard's 'Visited eviction rate by run' still shows every run unfiltered. One caveat on reading 0 as proof: the ADR-0035 visited pre-pass's own evictions are deliberately not fed to this counter, so the cycle-start pre-pass WARN is the other half of the check (ADR-0053).",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
       "fieldConfig": {
@@ -486,7 +486,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (run_id) (crawler_frontier_visited_evicted_total)",
+          "expr": "sum by (run_id) (crawler_frontier_visited_evicted_total) and on (run_id) (max by (run_id) (crawler_frontier_scope_budget) > 0)",
           "legendFormat": "{{run_id}}",
           "refId": "A"
         }

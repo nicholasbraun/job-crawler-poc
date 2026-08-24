@@ -249,8 +249,9 @@ func main() {
 	// included -- with no deploy. It touches the Collection walk only; the Discovery
 	// Crawl has no Career Surface and is not configurable here.
 	//
-	// This is the one kill switch that does NOT default to the behavior it replaces,
-	// deliberately. That behavior is the defect: on the measured Cycle 67.4% of the
+	// This kill switch does NOT default to the behavior it replaces, deliberately;
+	// COLLECTION_SCOPE_BUDGET_ENABLED below takes the same exception, for the same
+	// reason. That behavior is the defect: on the measured Cycle 67.4% of the
 	// links a Career Page offers lead nowhere near an opening, and the bounded walk
 	// grew its Frontier faster than the workers emptied it (428,154 URLs added against
 	// 51,383 pages crawled). Defaulting to it would ship a walk that never converges.
