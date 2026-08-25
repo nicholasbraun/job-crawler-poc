@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -314,8 +315,9 @@ func TestBambooHREmptyBoard(t *testing.T) {
 
 func TestBambooHRLocationFallback(t *testing.T) {
 	// `location` and `atsLocation` are ALTERNATES, not parts of one address: across 51
-	// live postings exactly one of the two is ever populated. So the composer prefers
-	// `location` and falls back to `atsLocation`, never merging the two.
+	// live postings they are never both populated (35 fill `location`, 11 fill
+	// `atsLocation`, 5 fill neither). So the composer prefers `location` and falls back
+	// to `atsLocation`, never merging the two.
 	cases := []struct {
 		name        string
 		detail      string
@@ -390,8 +392,8 @@ func bhDetailWith(locationJSON, locationType string) string {
 func TestBambooHRWorkArrangement(t *testing.T) {
 	// BambooHR's own board renderer appends "Remote" for locationType 1 and "(Hybrid)"
 	// for 2, but prints NO arrangement word for 0 — the provider itself declines to
-	// characterise it. ADR-0030: a source that does not positively state the mode is
-	// unspecified, never onsite.
+	// characterise it, on all 51 postings of the five reachable tenants. ADR-0030: a
+	// source that does not positively state the mode is unspecified, never onsite.
 	cases := []struct {
 		locationType string
 		want         crawler.WorkArrangement
@@ -510,12 +512,41 @@ func TestBambooHRListNon200ReturnsErrBoardStatus(t *testing.T) {
 	}
 }
 
+// bhMarketingHost is BambooHR's own marketing site — where a nonexistent tenant's 302
+// lands, and the only landing host the fetcher's dead-tenant guard accepts.
+const bhMarketingHost = "www.bamboohr.com"
+
+// bhRoutingClient returns an HTTP client whose dialer sends any connection for a host
+// in routes to the local address it maps to. That lets a test drive a REAL redirect
+// between REAL hostnames through local servers — necessary because the dead-tenant
+// guard matches on the response's final HOST, which a bare httptest URL (127.0.0.1)
+// can never carry.
+func bhRoutingClient(routes map[string]string) *http.Client {
+	dialer := &net.Dialer{}
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if host, _, err := net.SplitHostPort(addr); err == nil {
+					if target, ok := routes[host]; ok {
+						addr = target
+					}
+				}
+				return dialer.DialContext(ctx, network, addr)
+			},
+		},
+	}
+}
+
 func TestBambooHRRedirectOffBoardHostIsDeadBoard(t *testing.T) {
 	// A nonexistent or deactivated tenant does not 404: BambooHR 302s to its marketing
-	// site, which then answers a non-JSON page. Without the off-host guard that would
+	// site, which then answers a non-JSON page. Without the dead-tenant guard that would
 	// read as a status/decode error → ProbeInconclusive, so a genuinely dead board
 	// would never tip its Career Page dormant and its Open listings would never Close
 	// (ADR-0035). The guard reports it as 404 → ProbeDead.
+	//
+	// The redirect runs through a routing dialer rather than a bare httptest URL because
+	// the guard keys on the landing HOST being the marketing one — the two tests below
+	// pin what a redirect elsewhere must NOT do.
 	marketing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=UTF-8")
 		w.WriteHeader(http.StatusForbidden)
@@ -523,10 +554,17 @@ func TestBambooHRRedirectOffBoardHostIsDeadBoard(t *testing.T) {
 	}))
 	t.Cleanup(marketing.Close)
 	board := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, marketing.URL+"/", http.StatusFound)
+		http.Redirect(w, r, "http://"+bhMarketingHost+"/", http.StatusFound)
 	}))
 	t.Cleanup(board.Close)
-	fetcher := ats.NewBambooHRFetcher(ats.WithBambooHRBaseURL(board.URL), ats.WithBambooHRDetailDelay(0))
+	fetcher := ats.NewBambooHRFetcher(
+		ats.WithBambooHRBaseURL("http://{tenant}.bamboohr.com"),
+		ats.WithBambooHRHTTPClient(bhRoutingClient(map[string]string{
+			"nosuchtenant.bamboohr.com": board.Listener.Addr().String(),
+			bhMarketingHost:             marketing.Listener.Addr().String(),
+		})),
+		ats.WithBambooHRDetailDelay(0),
+	)
 
 	got, err := fetcher.Fetch(t.Context(), "nosuchtenant")
 	if err == nil {
@@ -541,6 +579,73 @@ func TestBambooHRRedirectOffBoardHostIsDeadBoard(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("listings = %v, want nil for a dead board", got)
+	}
+}
+
+func TestBambooHRRedirectOffHostServingJSONIsNotADeadBoard(t *testing.T) {
+	// The dead-tenant inference is narrow ON PURPOSE: only a NON-2xx landing on the
+	// marketing host counts. A healthy off-host redirect — the regional
+	// <tenant>.bamboohr.com → <tenant>.eu.bamboohr.com BambooHR could introduce
+	// vendor-wide overnight — must fetch normally and completely. Reading it as dead
+	// would report EVERY directly-catalogued BambooHR Career Page dead on the same
+	// Cycle, and after crawler.DefaultPageDormancyThreshold of them each would go
+	// dormant and Close its remaining Open Job Listings (ADR-0035): a correlated,
+	// vendor-wide false dormancy.
+	rec := bhGiottoRecorder()
+	regional := httptest.NewServer(rec.handler())
+	t.Cleanup(regional.Close)
+	board := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://giottoai.eu.bamboohr.com"+r.URL.Path, http.StatusFound)
+	}))
+	t.Cleanup(board.Close)
+	fetcher := ats.NewBambooHRFetcher(
+		ats.WithBambooHRBaseURL("http://{tenant}.bamboohr.com"),
+		ats.WithBambooHRHTTPClient(bhRoutingClient(map[string]string{
+			"giottoai.bamboohr.com":    board.Listener.Addr().String(),
+			"giottoai.eu.bamboohr.com": regional.Listener.Addr().String(),
+		})),
+		ats.WithBambooHRDetailDelay(0),
+	)
+
+	got, err := fetcher.Fetch(t.Context(), "giottoai")
+	if err != nil {
+		t.Fatalf("Fetch: %v — a 200 JSON board reached through a redirect is a live board", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d listings, want all 3 postings of the redirected-to board", len(got))
+	}
+	if got[0].Description == "" {
+		t.Error("Description is empty, want the detail calls to have followed the redirect too")
+	}
+}
+
+func TestBambooHRSameHostRedirectIsNotADeadBoard(t *testing.T) {
+	// A redirect WITHIN the board host — a trailing slash, a locale or path prefix — is
+	// an ordinary hop, not a dead tenant. Nothing else in this file would notice a guard
+	// that compared the final URL instead of its host, and such a guard would Close the
+	// Open Job Listings of perfectly live boards after
+	// crawler.DefaultPageDormancyThreshold Cycles (ADR-0035).
+	rec := bhGiottoRecorder()
+	inner := rec.handler()
+	fetcher := newBambooHRFetcher(t, func(w http.ResponseWriter, r *http.Request) {
+		const prefix = "/board"
+		if !strings.HasPrefix(r.URL.Path, prefix) {
+			http.Redirect(w, r, prefix+r.URL.Path, http.StatusFound)
+			return
+		}
+		r.URL.Path = strings.TrimPrefix(r.URL.Path, prefix)
+		inner(w, r)
+	})
+
+	got, err := fetcher.Fetch(t.Context(), "giottoai")
+	if err != nil {
+		t.Fatalf("Fetch: %v — a same-host redirect is not a dead board", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d listings, want all 3 postings", len(got))
+	}
+	if got[0].Description == "" {
+		t.Error("Description is empty, want the detail calls to have followed the redirect too")
 	}
 }
 
@@ -641,6 +746,153 @@ func TestBambooHRIncompleteOnCountMismatch(t *testing.T) {
 	}
 }
 
+func TestBambooHRAbsentMetaIsNeverComplete(t *testing.T) {
+	// meta.totalCount is the ONLY completeness oracle this board offers, so a response
+	// that omits it cannot prove the open set whole — and "cannot prove" is
+	// ErrBoardIncomplete, never complete (ADR-0035). Were totalCount a plain int rather
+	// than a pointer, an absent meta would decode to 0 and the empty-result case below
+	// would read as a complete board with nothing open: CloseAbsent would then close
+	// every Open Job Listing of a live tenant on the strength of a response that never
+	// stated a count at all.
+	cases := []struct {
+		name         string
+		list         string
+		wantListings int
+	}{
+		{"no meta key at all", `{"result":[{"id":"1","jobOpeningName":"Role","location":{},"atsLocation":{}}]}`, 1},
+		{"meta present but empty", `{"meta":{},"result":[{"id":"1","jobOpeningName":"Role","location":{},"atsLocation":{}}]}`, 1},
+		{"totalCount explicitly null", `{"meta":{"totalCount":null},"result":[{"id":"1","jobOpeningName":"Role","location":{},"atsLocation":{}}]}`, 1},
+		// The dangerous one: nothing to sweep against and nothing said about how much
+		// there should be. Contrast TestBambooHREmptyBoard, where the board DOES state
+		// totalCount 0 and the empty result is therefore provably the whole open set.
+		{"no meta and an empty result", `{"result":[]}`, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &bhRecorder{
+				list:    tc.list,
+				details: map[string]string{"1": bhDetailWith(`"location":{},"atsLocation":{}`, "0")},
+			}
+			fetcher := newBambooHRFetcher(t, rec.handler())
+
+			got, err := fetcher.Fetch(t.Context(), "acme")
+			if !errors.Is(err, ats.ErrBoardIncomplete) {
+				t.Fatalf("err = %v, want ErrBoardIncomplete when the board states no totalCount", err)
+			}
+			if len(got) != tc.wantListings {
+				t.Fatalf("got %d listings, want the %d the board delivered (kept as a presence sample)", len(got), tc.wantListings)
+			}
+			if got == nil {
+				t.Error("listings = nil, want the presence sample alongside ErrBoardIncomplete")
+			}
+		})
+	}
+}
+
+func TestBambooHRIncompleteWhenDeliveredRowsDisagreeWithTotal(t *testing.T) {
+	// The cross-check runs against the RAW list page as well as the mapped count. Here
+	// totalCount says 1 and two rows arrive, both mapping cleanly: the post-mapping
+	// comparison (len(listings) < totalCount) sees 2 < 1 and is happy, so only the raw
+	// comparison can call the board unproven. That is the direction that matters for a
+	// server-side cap which keeps reporting a total the delivered page contradicts.
+	rec := &bhRecorder{
+		list: `{"meta":{"totalCount":1},"result":[
+			{"id":"1","jobOpeningName":"One","location":{},"atsLocation":{}},
+			{"id":"2","jobOpeningName":"Two","location":{},"atsLocation":{}}
+		]}`,
+		details: map[string]string{
+			"1": bhDetailWith(`"location":{},"atsLocation":{}`, "0"),
+			"2": bhDetailWith(`"location":{},"atsLocation":{}`, "0"),
+		},
+	}
+	fetcher := newBambooHRFetcher(t, rec.handler())
+
+	got, err := fetcher.Fetch(t.Context(), "acme")
+	if !errors.Is(err, ats.ErrBoardIncomplete) {
+		t.Fatalf("err = %v, want ErrBoardIncomplete when the delivered row count disagrees with totalCount", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("got %d listings, want the 2 the board actually delivered", len(got))
+	}
+}
+
+func TestBambooHRTolerantScalarEncodings(t *testing.T) {
+	// id and locationType are QUOTED on all six tenants probed — but six tenants are a
+	// sample of the encoding, not a contract. A tenant serving either as a bare number
+	// must not fail the whole list decode: that board would yield nothing forever, and
+	// silently, since a hard error classifies ProbeInconclusive and so never even
+	// signals dormancy (ADR-0035). Same tolerance as softgarden's identifier.value.
+	cases := []struct {
+		name       string
+		listID     string // raw JSON for the list row's id
+		listType   string // raw JSON for the list row's locationType
+		detailType string // raw JSON for the detail's locationType
+		want       crawler.WorkArrangement
+	}{
+		{"quoted, as every probed tenant serves them", `"36"`, `"1"`, `"1"`, crawler.WorkArrangementRemote},
+		{"bare numbers on the list and the detail", `36`, `1`, `1`, crawler.WorkArrangementRemote},
+		{"a bare number on the detail still upgrades the list", `36`, `"0"`, `2`, crawler.WorkArrangementHybrid},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &bhRecorder{
+				list: `{"meta":{"totalCount":1},"result":[{"id":` + tc.listID +
+					`,"jobOpeningName":"Role","locationType":` + tc.listType +
+					`,"location":{},"atsLocation":{}}]}`,
+				details: map[string]string{
+					"36": `{"meta":{},"result":{"jobOpening":{"jobOpeningName":"Role",` +
+						`"description":"<p>Body.</p>","datePosted":"2026-07-21",` +
+						`"location":{},"atsLocation":{},"locationType":` + tc.detailType + `}}}`,
+				},
+			}
+			fetcher := newBambooHRFetcher(t, rec.handler())
+
+			got, err := fetcher.Fetch(t.Context(), "acme")
+			if err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("got %d listings, want 1", len(got))
+			}
+			if got[0].SourceID != "36" {
+				t.Errorf("SourceID = %q, want %q whichever way the id is encoded", got[0].SourceID, "36")
+			}
+			if got[0].URL != "https://acme.bamboohr.com/careers/36" {
+				t.Errorf("URL = %q, want the canonical URL built from the id", got[0].URL)
+			}
+			if got[0].WorkArrangement != tc.want {
+				t.Errorf("WorkArrangement = %q, want %q", got[0].WorkArrangement, tc.want)
+			}
+			if got[0].Description != "Body." {
+				t.Errorf("Description = %q, want the detail to have been reached at the right id", got[0].Description)
+			}
+		})
+	}
+}
+
+func TestBambooHROddIDShapeSkipsOnlyThatRow(t *testing.T) {
+	// The tolerant decode never errors, so an id of an unsupported shape degrades to an
+	// empty one — the row is skipped for want of an upsert key, exactly like a missing
+	// id, and the shortfall is reported. The rest of the board is unaffected: one odd
+	// value must not cost every posting on it (ADR-0035).
+	rec := &bhRecorder{
+		list: `{"meta":{"totalCount":2},"result":[
+			{"id":{"nested":1},"jobOpeningName":"Odd","location":{},"atsLocation":{}},
+			{"id":"2","jobOpeningName":"Fine","location":{},"atsLocation":{}}
+		]}`,
+		details: map[string]string{"2": bhDetailWith(`"location":{},"atsLocation":{}`, "0")},
+	}
+	fetcher := newBambooHRFetcher(t, rec.handler())
+
+	got, err := fetcher.Fetch(t.Context(), "acme")
+	if !errors.Is(err, ats.ErrBoardIncomplete) {
+		t.Fatalf("err = %v, want ErrBoardIncomplete when a row is dropped for an unusable id", err)
+	}
+	if len(got) != 1 || got[0].SourceID != "2" {
+		t.Fatalf("got %v, want only the posting whose id decoded", got)
+	}
+}
+
 func TestBambooHRSkipsPostingWithoutID(t *testing.T) {
 	// The canonical URL is constructed from the id, so a row without one has no upsert
 	// key and cannot be saved. The count cross-check reports the resulting shortfall.
@@ -668,7 +920,24 @@ func TestBambooHRSkipsPostingWithoutID(t *testing.T) {
 func TestBambooHRTruncatedBodyIsHardError(t *testing.T) {
 	// A body cut mid-JSON surfaces as a decode error, never a silent partial and never
 	// ErrBoardIncomplete: truncation is a hard failure (ADR-0035).
-	fetcher := newBambooHRFetcher(t, serveJSON(`{"meta":{"totalCount":2},"result":[{"id":"1"`))
+	//
+	// The body served here is VALID JSON when whole and oversized on purpose, so the
+	// only thing that can make it fail to parse is io.LimitReader cutting the read at
+	// maxBoardBytes. Serving malformed JSON instead would fail identically with the
+	// limiter deleted, pinning the decoder rather than the cap.
+	const oversize = 12 << 20 // comfortably past the shared maxBoardBytes ceiling
+	handler := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"meta":{"totalCount":1},"result":[{"id":"1","jobOpeningName":"`)
+		chunk := strings.Repeat("x", 64<<10)
+		for written := 0; written < oversize; written += len(chunk) {
+			if _, err := io.WriteString(w, chunk); err != nil {
+				break // the client stopped reading at the cap and closed the connection
+			}
+		}
+		_, _ = io.WriteString(w, `","location":{},"atsLocation":{}}]}`)
+	}
+	fetcher := newBambooHRFetcher(t, handler)
 
 	got, err := fetcher.Fetch(t.Context(), "acme")
 	if err == nil {
@@ -908,6 +1177,54 @@ func TestBambooHRDetailBudget(t *testing.T) {
 	}
 	if got[2].URL != "https://acme.bamboohr.com/careers/3" {
 		t.Errorf("URL = %q, want the list-derived canonical URL past the budget", got[2].URL)
+	}
+}
+
+func TestBambooHRDetailWindowBoundsTheDetailPhase(t *testing.T) {
+	// The call budget bounds CALLS, not wall-clock time: 500 calls × (the pacing
+	// interval + the client timeout) is hours if the board hangs on every one, all of it
+	// holding one ingest-pool worker. The window is the second, independent ceiling, and
+	// it degrades exactly as the call budget does — every posting still emitted from its
+	// list row, only the fetch's completeness forfeited (ADR-0035).
+	//
+	// The pacing interval is set to outlast the window, so the phase is provably over
+	// budget by the third posting however slow the machine is.
+	const window = 20 * time.Millisecond
+	rec := &bhRecorder{
+		list: `{"meta":{"totalCount":3},"result":[
+			{"id":"1","jobOpeningName":"One","location":{"city":"Berlin"},"atsLocation":{}},
+			{"id":"2","jobOpeningName":"Two","location":{"city":"Berlin"},"atsLocation":{}},
+			{"id":"3","jobOpeningName":"Three","location":{"city":"Berlin"},"atsLocation":{}}
+		]}`,
+		details: map[string]string{
+			"1": bhDetailWith(`"location":{"city":"Berlin"},"atsLocation":{}`, "0"),
+			"2": bhDetailWith(`"location":{"city":"Berlin"},"atsLocation":{}`, "0"),
+			"3": bhDetailWith(`"location":{"city":"Berlin"},"atsLocation":{}`, "0"),
+		},
+	}
+	srv := httptest.NewServer(rec.handler())
+	t.Cleanup(srv.Close)
+	fetcher := ats.NewBambooHRFetcher(
+		ats.WithBambooHRBaseURL(srv.URL),
+		ats.WithBambooHRDetailDelay(2*window),
+		ats.WithBambooHRDetailWindow(window),
+	)
+
+	got, err := fetcher.Fetch(t.Context(), "acme")
+	if !errors.Is(err, ats.ErrBoardIncomplete) {
+		t.Fatalf("err = %v, want ErrBoardIncomplete once the detail window is spent", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d listings, want 3 — the window costs enrichment, never a posting", len(got))
+	}
+	if calls := rec.detailCalls(); calls >= 3 {
+		t.Errorf("detail calls = %d, want the window to have stopped enrichment short of 3", calls)
+	}
+	if got[2].Description != "" {
+		t.Errorf("Description = %q, want empty for a posting past the window", got[2].Description)
+	}
+	if got[2].URL != "https://acme.bamboohr.com/careers/3" {
+		t.Errorf("URL = %q, want the list-derived canonical URL past the window", got[2].URL)
 	}
 }
 

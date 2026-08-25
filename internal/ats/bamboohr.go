@@ -42,6 +42,12 @@ const (
 	// rule: the URL is a real-world identity, not an API address.
 	bambooHRPostingHost = "bamboohr.com"
 
+	// bambooHRMarketingHost is the provider's own marketing site — where a nonexistent
+	// tenant's 302 lands (verified live 2026-08-25). It is the ONE landing host the
+	// dead-tenant inference in getInto accepts; see the comment there for why that
+	// inference is kept this narrow.
+	bambooHRMarketingHost = "www.bamboohr.com"
+
 	// bambooHRDefaultDetailDelay paces successive per-posting detail calls (#140).
 	// atsingest.HostLimiter cannot do this job — it paces once per TASK, before
 	// Fetch, and internal/atsingest already imports internal/ats — so the N+1 owns its
@@ -50,13 +56,26 @@ const (
 	// unpaced sequential details at 200 with no throttling (verified 2026-08-25).
 	bambooHRDefaultDetailDelay = 250 * time.Millisecond
 
-	// bambooHRDefaultMaxDetails bounds the per-posting detail calls one board may
-	// spend. At bambooHRDefaultDetailDelay a 5,000-posting tenant would hold a pool
-	// worker for ~21 minutes; the budget caps that at ~2 minutes. Exceeding it never
-	// loses a posting — the list-derived listing (identity, URL, title, location) is
-	// still emitted, only its Posting Body is missing — but it does mark the fetch
-	// ErrBoardIncomplete so the absence-sweep is skipped (ADR-0035).
+	// bambooHRDefaultMaxDetails bounds the NUMBER of per-posting detail calls one board
+	// may spend. It bounds calls, not wall-clock time: 500 calls cost ~125s of pacing at
+	// bambooHRDefaultDetailDelay if the board answers instantly, but up to 500 × (250ms
+	// + the 15s client timeout) ≈ 2 hours if every call hangs to its timeout — all of it
+	// holding one ingest-pool worker. bambooHRDefaultDetailWindow is the bound on that
+	// second axis; neither subsumes the other.
+	//
+	// Exceeding either never loses a posting — the list-derived listing (identity, URL,
+	// title, location) is still emitted, only its Posting Body is missing — but it does
+	// mark the fetch ErrBoardIncomplete so the absence-sweep is skipped (ADR-0035).
 	bambooHRDefaultMaxDetails = 500
+
+	// bambooHRDefaultDetailWindow bounds the WALL-CLOCK time the detail phase may run,
+	// whatever the per-call latency. 5 minutes leaves ample room for a full 500-call
+	// budget against a healthy board (~125s of pacing plus response time) while capping
+	// a hanging one at minutes rather than the ~2 hours the call budget alone allows.
+	// The largest board found live is 23 postings (~6s of pacing), so this never binds
+	// in practice — it is a seatbelt on the pathological case, deliberately NOT a
+	// cross-provider policy on failure ratios (that is #140's).
+	bambooHRDefaultDetailWindow = 5 * time.Minute
 
 	// bambooHRRemoteLocationType / bambooHRHybridLocationType are the two locationType
 	// codes BambooHR positively characterises. See bambooHRWorkArrangement.
@@ -79,8 +98,9 @@ const (
 // always taken from the LIST row, so a failed detail costs enrichment, never the
 // posting's URL or dedup key.
 //
-// The N+1 is the #140 shape, so it is both paced (detailDelay between successive
-// detail calls, context-aware) and budgeted (maxDetails), and it distinguishes a
+// The N+1 is the #140 shape, so it is paced (detailDelay between successive detail
+// calls, context-aware) and bounded on both axes — maxDetails caps the number of
+// detail calls, detailWindow the wall-clock time they may take — and it distinguishes a
 // genuine 404/410 — that posting is gone, drop it rather than upsert it back Open
 // past ADR-0035's reopen-in-place rule — from a 429/5xx/transport/decode failure,
 // where the posting is NOT known gone and its list-derived form is kept.
@@ -97,6 +117,11 @@ type BambooHRFetcher struct {
 	// postings are emitted list-derived and the fetch is marked ErrBoardIncomplete.
 	// Defaults to bambooHRDefaultMaxDetails.
 	maxDetails int
+	// detailWindow is the wall-clock ceiling on the whole detail phase, timed from the
+	// moment the list response is in hand (so the list's own latency is not charged to
+	// it); once it is spent the remaining postings degrade exactly as they do past
+	// maxDetails. Zero disables the ceiling. Defaults to bambooHRDefaultDetailWindow.
+	detailWindow time.Duration
 }
 
 // BambooHRFetcherOption configures a BambooHRFetcher at construction.
@@ -139,14 +164,24 @@ func WithBambooHRMaxDetails(n int) BambooHRFetcherOption {
 	}
 }
 
+// WithBambooHRDetailWindow overrides the wall-clock ceiling on the detail phase
+// (default bambooHRDefaultDetailWindow). Zero disables it, leaving only the call
+// budget; chiefly a test knob.
+func WithBambooHRDetailWindow(d time.Duration) BambooHRFetcherOption {
+	return func(b *BambooHRFetcher) {
+		b.detailWindow = d
+	}
+}
+
 // NewBambooHRFetcher builds a BambooHRFetcher pointed at the hosted careers site's
 // public JSON endpoints with a default-timeout HTTP client, overridable via options.
 func NewBambooHRFetcher(opts ...BambooHRFetcherOption) *BambooHRFetcher {
 	b := &BambooHRFetcher{
-		baseURL:     bambooHRDefaultBaseURL,
-		httpClient:  &http.Client{Timeout: bambooHRDefaultTimeout},
-		detailDelay: bambooHRDefaultDetailDelay,
-		maxDetails:  bambooHRDefaultMaxDetails,
+		baseURL:      bambooHRDefaultBaseURL,
+		httpClient:   &http.Client{Timeout: bambooHRDefaultTimeout},
+		detailDelay:  bambooHRDefaultDetailDelay,
+		maxDetails:   bambooHRDefaultMaxDetails,
+		detailWindow: bambooHRDefaultDetailWindow,
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -165,8 +200,9 @@ func NewBambooHRFetcher(opts ...BambooHRFetcherOption) *BambooHRFetcher {
 //
 // Completeness (ADR-0035): Fetch returns the collected slice with ErrBoardIncomplete
 // — never a nil slice — whenever the result cannot be proven to be the whole open
-// board: the mapped count falls short of meta.totalCount (also catching a row
-// dropped for a missing id), any detail call failed, or the detail budget was spent.
+// board: meta.totalCount is absent, the delivered row count disagrees with it, the
+// mapped count falls short of it (also catching a row dropped for a missing id or a
+// 404'd detail), any detail call failed, or the detail budget or window was spent.
 // A truncated body is caught by io.LimitReader and surfaces as a decode error (a
 // hard failure with a nil slice), never a silent partial. A cancelled context
 // surfaces as a hard context error with a nil slice, ahead of the incomplete verdict.
@@ -191,6 +227,13 @@ func (b *BambooHRFetcher) Fetch(ctx context.Context, tenant string) ([]*crawler.
 	detailFailed := false
 	budgetSpent := false
 	detailCalls := 0
+	// detailDeadline is the wall-clock ceiling on the whole detail phase (zero = none),
+	// started now that the list is in hand: the list request has its own timeout, and
+	// charging its latency to the detail phase would shorten the phase unpredictably.
+	var detailDeadline time.Time
+	if b.detailWindow > 0 {
+		detailDeadline = time.Now().Add(b.detailWindow)
+	}
 	listings := []*crawler.JobListing{}
 	for _, item := range list.Result {
 		// Abort (rather than skip every remaining posting) on a cancelled context, so a
@@ -202,14 +245,17 @@ func (b *BambooHRFetcher) Fetch(ctx context.Context, tenant string) ([]*crawler.
 		// id has no URL / dedup key and cannot be saved — skip it (the greenhouse/
 		// SmartRecruiters/Manatal "no upsert key → skip" rule). The count cross-check
 		// below reports the resulting shortfall.
-		if item.ID == "" {
+		if item.ID.String() == "" {
 			continue
 		}
 		// Build from the LIST row first: identity, URL, title, department, location and
 		// work arrangement never depend on the detail call succeeding.
 		listing := mapBambooHRListItem(item, tenant)
 
-		if detailCalls >= b.maxDetails {
+		// Two independent ceilings on the N+1: the call budget and the wall-clock window
+		// (see bambooHRDefaultMaxDetails). Past either, the posting is still emitted from
+		// its list row and only the fetch's completeness is forfeited.
+		if detailCalls >= b.maxDetails || (!detailDeadline.IsZero() && !time.Now().Before(detailDeadline)) {
 			budgetSpent = true
 			listings = append(listings, listing)
 			continue
@@ -224,7 +270,7 @@ func (b *BambooHRFetcher) Fetch(ctx context.Context, tenant string) ([]*crawler.
 		detailCalls++
 
 		var detail bambooHRDetailResponse
-		if err := b.getInto(ctx, board+"/careers/"+url.PathEscape(item.ID)+"/detail", &detail); err != nil {
+		if err := b.getInto(ctx, board+"/careers/"+url.PathEscape(item.ID.String())+"/detail", &detail); err != nil {
 			// A failed detail is posting-level, but a cancelled context is board-level:
 			// surface it rather than degrade the run into a silently partial board. The
 			// top-of-loop guard misses a cancellation landing during THIS iteration's call
@@ -251,27 +297,41 @@ func (b *BambooHRFetcher) Fetch(ctx context.Context, tenant string) ([]*crawler.
 		listings = append(listings, listing)
 	}
 
-	// Completeness contract (ADR-0035): the sweep may run only on a provably complete
-	// snapshot. The count cross-check (len(listings) < meta.totalCount) uniformly
-	// catches a row dropped for a missing id, a posting dropped for a 404 detail, and
-	// any server-side list cap should one ever appear (none observed live, and
-	// limit/offset/page/size/perPage are all ignored — so the cap, if it exists,
-	// degrades to skip-the-sweep rather than mass-closing a board).
-	if len(listings) < list.Meta.TotalCount || detailFailed || budgetSpent {
+	// Completeness contract (ADR-0035): the sweep may run only on a PROVABLY complete
+	// snapshot, so every route to "cannot prove it" ends here rather than at err == nil.
+	//
+	// meta.totalCount is the only oracle the board offers, so an absent meta (or an
+	// absent totalCount within it) is not complete — it is unprovable. Declaring it a
+	// *int rather than an int is what makes that distinction reachable: a plain int
+	// would decode an absent key to 0, sail through both comparisons, and hand
+	// CloseAbsent a board whose size was never checked.
+	//
+	// Two comparisons run against it. len(list.Result) != totalCount checks the RAW
+	// list page, so a server-side cap that still reports the uncapped total is caught;
+	// len(listings) < totalCount checks after mapping, catching a row dropped for a
+	// missing id and a posting dropped for a 404'd detail. What the pair does NOT prove
+	// is the absence of a cap: no capped BambooHR board has ever been observed (the
+	// largest reachable is 23 postings, and limit/offset/page/size/perPage are all
+	// ignored), so how meta would behave under one is unknown — a cap that also capped
+	// totalCount would make the two agree and read complete.
+	total := list.Meta.TotalCount
+	if total == nil || len(list.Result) != *total || len(listings) < *total || detailFailed || budgetSpent {
 		return listings, fmt.Errorf("ats: bamboohr tenant %q: %w", tenant, ErrBoardIncomplete)
 	}
 	return listings, nil
 }
 
-// getInto issues a GET for endpoint and decodes a size-capped, non-200-guarded,
-// on-host body into dst. It sends only an Accept header and NO Authorization/token
+// getInto issues a GET for endpoint and decodes a size-capped, non-200-guarded body
+// into dst. It sends only an Accept header and NO Authorization/token
 // header: /careers/list and /careers/<id>/detail are the zero-auth endpoints the
 // hosted careers site itself reads, while the credentialed
 // api.bamboohr.com/api/gateway.php/<company>/v1/... (HTTP Basic, API key) is the
 // dual-API trap this fetcher deliberately avoids
 // (docs/research/ats-providers.md §BambooHR). A non-200 wraps ErrBoardStatus so
-// callers can errors.Is it. A truncated body surfaces as a decode error via
-// io.LimitReader (the ADR-0035 truncation-as-hard-error guarantee).
+// callers can errors.Is it — reported as a 404 when, and only when, it is the
+// provider's dead-tenant redirect (see the guard below). A body longer than
+// maxBoardBytes is cut by io.LimitReader and surfaces as a decode error (the ADR-0035
+// truncation-as-hard-error guarantee), never as a short-but-plausible board.
 func (b *BambooHRFetcher) getInto(ctx context.Context, endpoint string, dst any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -285,20 +345,35 @@ func (b *BambooHRFetcher) getInto(ctx context.Context, endpoint string, dst any)
 	}
 	defer func() { _ = res.Body.Close() }()
 
-	// Off-host guard — how BambooHR says "no such tenant". A nonexistent or
-	// deactivated tenant does NOT 404: it 302s to https://www.bamboohr.com/, which
-	// answers a Go client 403 text/html (verified live 2026-08-25). Left alone that
-	// would reach classifyBoard as a status/decode error and read Inconclusive
-	// forever, so a genuinely dead board would never tip its Career Page dormant and
-	// its Open Job Listings would never Close (ADR-0035). Landing on a different host
-	// than we asked for is therefore reported as a dead board (404). res.Request is
-	// set by the real transport; a test RoundTripper that leaves it nil simply skips
-	// the check.
-	if res.Request != nil && res.Request.URL != nil && !strings.EqualFold(res.Request.URL.Host, req.URL.Host) {
-		return fmt.Errorf("careers api: redirected off the board host to %q (no such tenant): %w",
-			res.Request.URL.Host, &BoardStatusError{StatusCode: http.StatusNotFound})
-	}
 	if res.StatusCode != http.StatusOK {
+		// Dead-tenant guard — how BambooHR says "no such tenant". A nonexistent or
+		// deactivated tenant does NOT 404: it 302s to https://www.bamboohr.com/, which
+		// answers a Go client 403 text/html (verified live 2026-08-25). Left alone that
+		// reaches classifyBoard as a plain status error and reads Inconclusive forever, so
+		// a genuinely dead board would never tip its Career Page dormant and its Open Job
+		// Listings would never Close (ADR-0035). Reported as a 404 → ProbeDead instead.
+		//
+		// The inference is deliberately the NARROWEST rule that still covers that
+		// observed signal — the landing must be non-2xx (this branch) AND on the
+		// provider's marketing host — because ProbeDead is the destructive direction:
+		// after crawler.DefaultPageDormancyThreshold consecutive Cycles a dormant Career
+		// Page Closes its remaining Open Job Listings, and a redirect BambooHR introduced
+		// vendor-wide (a regional <tenant>.eu.bamboohr.com, say) would trip every
+		// directly-catalogued BambooHR page on the same Cycle. So any other landing — a
+		// healthy 200 on another host, a non-2xx anywhere else — stays a plain status or
+		// decode error, i.e. Inconclusive: nothing is Closed on an inference this thin
+		// (ADR-0035). The requested-host comparison keeps the #320 `bamboohr:www` row
+		// benign: tenant "www" asks www.bamboohr.com directly, is answered 403 without a
+		// redirect, and must stay Inconclusive rather than tip itself dead.
+		//
+		// res.Request is the FINAL request the transport made, so its URL is the landing
+		// one; a test RoundTripper that leaves it nil simply skips the check.
+		if res.Request != nil && res.Request.URL != nil &&
+			!strings.EqualFold(res.Request.URL.Host, req.URL.Host) &&
+			strings.EqualFold(res.Request.URL.Host, bambooHRMarketingHost) {
+			return fmt.Errorf("careers api: redirected off the board host to %q (no such tenant): %w",
+				res.Request.URL.Host, &BoardStatusError{StatusCode: http.StatusNotFound})
+		}
 		return fmt.Errorf("careers api: %w", &BoardStatusError{StatusCode: res.StatusCode})
 	}
 	if err := json.NewDecoder(io.LimitReader(res.Body, maxBoardBytes)).Decode(dst); err != nil {
@@ -341,24 +416,68 @@ type bambooHRListResponse struct {
 	Result []bambooHRListItem `json:"result"`
 }
 
+// bambooHRListMeta carries the board's own row count. TotalCount is a POINTER so an
+// absent meta (or an absent totalCount inside it) is distinguishable from a genuine
+// zero: a plain int would decode both to 0, and a board of unknown size would then
+// satisfy every completeness comparison and be handed to the absence-sweep. Absent
+// means ErrBoardIncomplete, never complete (ADR-0035); see Fetch.
 type bambooHRListMeta struct {
-	TotalCount int `json:"totalCount"`
+	TotalCount *int `json:"totalCount"`
 }
 
-// bambooHRListItem is one open job opening as the list reports it. Its id is a
-// STRING on the live board ("36"), not a number. Deliberately absent: isRemote (null
-// on every list row and gone from the detail — a dead field), employmentStatusLabel
-// (an employment type — Full-Time/Contractor — not a work arrangement, and
-// JobListing has no field for it: the softgarden precedent), and departmentId (an
-// opaque numeric that must never stand in for departmentLabel).
+// bambooHRListItem is one open job opening as the list reports it. Deliberately
+// absent: isRemote (null on every list row and gone from the detail — a dead field),
+// employmentStatusLabel (an employment type — Full-Time/Contractor — not a work
+// arrangement, and JobListing has no field for it: the softgarden precedent), and
+// departmentId (an opaque numeric that must never stand in for departmentLabel).
 type bambooHRListItem struct {
-	ID              string              `json:"id"` // stable posting id; builds the canonical URL and the Corpus SourceID (ADR-0034)
+	ID              bambooHRScalar      `json:"id"` // stable posting id; builds the canonical URL and the Corpus SourceID (ADR-0034)
 	JobOpeningName  string              `json:"jobOpeningName"`
 	DepartmentLabel string              `json:"departmentLabel"`
-	LocationType    string              `json:"locationType"` // "0" unstated / "1" remote / "2" hybrid
+	LocationType    bambooHRScalar      `json:"locationType"` // "0" unstated / "1" remote / "2" hybrid
 	Location        bambooHRLocation    `json:"location"`
 	ATSLocation     bambooHRATSLocation `json:"atsLocation"`
 }
+
+// bambooHRScalar holds a JSON value the board serves QUOTED on every tenant probed
+// but which reads as a number — the posting id ("36") and locationType ("2"). Only
+// six tenants were reachable to check, so the encoding is a sample, not a contract:
+// were one tenant to serve `"id": 36` unquoted, a plain string field would fail the
+// whole list decode and that board would silently yield nothing forever (a hard error
+// classifies Inconclusive, so it would not even signal dormancy). This decodes either
+// encoding into its literal text and NEVER errors on another shape or null, so one
+// odd value degrades to a skipped row (no id → no upsert key) or an unspecified Work
+// Arrangement rather than costing the board. The softgarden identifier.value
+// precedent; ADR-0035's keep-what-we-saw over hard failure.
+type bambooHRScalar struct {
+	s string
+}
+
+// UnmarshalJSON accepts a JSON string or number (any other shape, or null, leaves the
+// value empty) and never returns an error.
+func (v *bambooHRScalar) UnmarshalJSON(data []byte) error {
+	s := strings.TrimSpace(string(data))
+	if s == "" || s == "null" {
+		return nil
+	}
+	if s[0] == '"' {
+		var str string
+		// Tolerate a malformed string literal: leave the value empty rather than fail.
+		_ = json.Unmarshal([]byte(s), &str)
+		v.s = str
+		return nil
+	}
+	// A JSON number renders its integer exactly; a bool/object/array leaves it empty.
+	var n json.Number
+	if err := json.Unmarshal([]byte(s), &n); err == nil {
+		v.s = n.String()
+	}
+	return nil
+}
+
+// String returns the value's literal text, or "" when it was absent, null, or an
+// unsupported shape.
+func (v bambooHRScalar) String() string { return v.s }
 
 // bambooHRDetailResponse is the /careers/<id>/detail envelope. Note the extra
 // nesting the list does not have: result.jobOpening, not result.
@@ -383,7 +502,7 @@ type bambooHRJobOpening struct {
 	DepartmentLabel string              `json:"departmentLabel"`
 	Description     string              `json:"description"` // single-encoded real HTML (verified live)
 	DatePosted      string              `json:"datePosted"`  // date-only, "2006-01-02"
-	LocationType    string              `json:"locationType"`
+	LocationType    bambooHRScalar      `json:"locationType"`
 	Location        bambooHRLocation    `json:"location"`
 	ATSLocation     bambooHRATSLocation `json:"atsLocation"`
 }
@@ -420,18 +539,24 @@ func mapBambooHRListItem(item bambooHRListItem, tenant string) *crawler.JobListi
 	return &crawler.JobListing{
 		// Live titles carry trailing spaces ("Machine Learning Engineer "), so trim.
 		Title:           strings.TrimSpace(item.JobOpeningName),
-		URL:             bambooHRPostingURL(tenant, item.ID),
-		SourceID:        item.ID,
+		URL:             bambooHRPostingURL(tenant, item.ID.String()),
+		SourceID:        item.ID.String(),
 		Location:        bambooHRLocationText(item.Location, item.ATSLocation),
 		CountryHint:     bambooHRCountryHint(item.Location, item.ATSLocation),
 		Department:      strings.TrimSpace(item.DepartmentLabel),
-		WorkArrangement: bambooHRWorkArrangement(item.LocationType),
+		WorkArrangement: bambooHRWorkArrangement(item.LocationType.String()),
 	}
 }
 
 // bambooHROverlayDetail folds a posting's detail object onto its list-derived Job
-// Listing, field by field and ONLY where the detail states something, so a sparser
-// detail can never erase richer list data. The detail adds the Posting Body and
+// Listing, field by field and ONLY where the detail states something, so a silent
+// detail can never blank a field the list filled. The rule is NON-EMPTY wins, not
+// richer wins: a detail that states less than the list still overwrites it (a row
+// whose list `location` reads {city:"Lausanne",state:"Vaud"} but whose detail carries
+// only atsLocation.country ends up "Switzerland", losing the city). Accepted because
+// the detail is the fresher and more complete object on every posting observed, and
+// because the alternative — merging the two — would invent addresses the provider
+// never stated (see bambooHRLocationText). The detail adds the Posting Body and
 // datePosted outright, and upgrades Location/CountryHint (its location object carries
 // addressCountry, which the list's does not).
 func bambooHROverlayDetail(listing *crawler.JobListing, jo bambooHRJobOpening) {
@@ -459,7 +584,7 @@ func bambooHROverlayDetail(listing *crawler.JobListing, jo bambooHRJobOpening) {
 	}
 	// Only ever an upgrade: an absent locationType on the detail must not downgrade a
 	// positive one the list stated.
-	if a := bambooHRWorkArrangement(jo.LocationType); a != crawler.WorkArrangementUnspecified {
+	if a := bambooHRWorkArrangement(jo.LocationType.String()); a != crawler.WorkArrangementUnspecified {
 		listing.WorkArrangement = a
 	}
 }
@@ -480,18 +605,20 @@ func bambooHRPostingURL(tenant, id string) string {
 // "1" → remote, "2" → hybrid, everything else — "0", empty, or an unknown code —
 // → unspecified (ADR-0030).
 //
-// The evidence is BambooHR's own board renderer (/jobs/embed2.php), checked
-// posting-by-posting against the API on four tenants: it appends "Remote" for 1 and
-// "(Hybrid)" for 2, and prints a bare city with NO arrangement word for 0. So the
-// provider itself declines to characterise 0, and ADR-0030 is explicit that a source
-// which does not POSITIVELY state the mode maps to unspecified, never onsite — a
-// false onsite is a wrong answer in a SavedSearch's Work Arrangement filter, an
-// unspecified is a visible gap. Reading 0 as a positive on-site selection is arguable
-// (hybrid has its own code, and every observed locationType:"0" posting carries a
-// full physical address) but cannot be settled from outside: 0 is also what an
-// untouched form field would carry. Because the field decodes as a string, an absent
-// or null locationType yields "" → unspecified, so no zero-value accident can produce
-// onsite.
+// The evidence is BambooHR's own board renderer (/jobs/embed2.php), cross-checked
+// posting-by-posting against the API on all FIVE reachable tenants that have open
+// roles — giottoai, birdbuddy, semble, vendasta, adterra, 51 postings, re-verified
+// 2026-08-25. It appends "Remote" for 1 (16 postings) and "(Hybrid)" for 2 (7), and
+// prints a bare city with NO arrangement word for 0 (28, all on vendasta and
+// adterra); every posting agrees. So the provider itself declines to characterise 0,
+// and ADR-0030 is explicit that a source which does not POSITIVELY state the mode
+// maps to unspecified, never onsite — a false onsite is a wrong answer in a
+// SavedSearch's Work Arrangement filter, an unspecified is a visible gap. Reading 0
+// as a positive on-site selection is arguable (hybrid has its own code, and every
+// observed locationType:"0" posting carries a full physical address) but cannot be
+// settled from outside: 0 is also what an untouched form field would carry. An
+// absent, null, or oddly-shaped locationType decodes to "" through bambooHRScalar →
+// unspecified, so no zero-value accident can produce onsite.
 func bambooHRWorkArrangement(locationType string) crawler.WorkArrangement {
 	switch locationType {
 	case bambooHRRemoteLocationType:
@@ -506,9 +633,9 @@ func bambooHRWorkArrangement(locationType string) crawler.WorkArrangement {
 // bambooHRLocationText composes a readable Location, preferring the physical
 // `location` object and FALLING BACK to the coarse `atsLocation` when it says
 // nothing. The two really are alternates rather than parts of one address: across 51
-// live postings exactly one of them is ever populated, keyed by locationType. So they
-// are never merged — merging would invent a location for a posting the provider
-// deliberately left coarse. postalCode is deliberately excluded: a bare postal code is
+// live postings (re-verified 2026-08-25) they are NEVER both populated — 35 fill
+// `location`, 11 fill `atsLocation`, and 5 fill neither. So they are never merged —
+// merging would invent a location for a posting the provider deliberately left coarse. postalCode is deliberately excluded: a bare postal code is
 // noise in a displayed Location and buys the Country Resolver nothing, which reads the
 // city/country tokens (ADR-0029). Parts are de-duplicated case-insensitively so a
 // row whose city equals its state does not render "Berlin, Berlin". Empty when both
