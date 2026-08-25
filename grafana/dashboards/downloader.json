@@ -292,7 +292,7 @@
       "title": "Transport errors by type",
       "description": "Rate of failed downloads that never got a status, split by errorType (dns, timeout, connection, unknown). NXDOMAIN failures are non-retryable; a rising dns/timeout line points back at the resolver.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 14 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -316,6 +316,41 @@
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "sum by (errorType) (rate(crawler_http_client_downloads_time_milliseconds_count{status=\"error\"}[$__rate_interval]))",
           "legendFormat": "{{errorType}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 10,
+      "title": "Throttle abandonments/s",
+      "description": "Fetches ended early because the server's Retry-After exceeded the retry ceiling (maxBackoff), by status (ADR-0054). Each one saved at least one guaranteed-failure request; a drop in the 4xx line on 'Download rate by outcome' is attributable here rather than to the host relenting.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "normal", "group": "A" }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (status) (rate(crawler_http_client_retries_abandoned_total[$__rate_interval]))",
+          "legendFormat": "{{status}}",
           "refId": "A"
         }
       ]

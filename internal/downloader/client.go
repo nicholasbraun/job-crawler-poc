@@ -33,8 +33,9 @@ var ErrNoHTML = errors.New("content type is not 'text/html'")
 //
 // RetryAfter holds the delay requested by the server's Retry-After header, or 0
 // when the header is absent, malformed, or points to the past. RetryClient
-// honors this hint in place of its exponential backoff, subject to its own
-// maxBackoff ceiling.
+// honors this hint in place of its exponential backoff when it fits under its
+// maxBackoff ceiling, and abandons the remaining attempts when it does not
+// (ADR-0054).
 type StatusError struct {
 	StatusCode int
 	Retryable  bool
@@ -50,8 +51,9 @@ type StatusError struct {
 // Error renders the status, plus the server's throttle hint when it sent one.
 // The hint is appended only when present, so the message is unchanged for the
 // overwhelming majority of failures that carry no Retry-After. It reports what
-// the server asked for, not what RetryClient will actually wait — the two
-// differ whenever the request exceeds the client's maxBackoff ceiling.
+// the server asked for, not what RetryClient will do about it — a hint above
+// the client's maxBackoff ceiling ends the attempt sequence rather than being
+// waited (ADR-0054).
 func (e *StatusError) Error() string {
 	switch {
 	case e.RetryAfter > 0:

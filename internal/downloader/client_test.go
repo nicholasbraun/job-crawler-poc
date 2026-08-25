@@ -533,9 +533,11 @@ func TestRetry(t *testing.T) {
 		})
 	})
 
-	t.Run("Caps an over-long Retry-After hint at maxBackoff", func(t *testing.T) {
+	t.Run("Abandons an over-long Retry-After hint", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			mock := &mockDownloader{
+				// The second entry would succeed: reaching it at all would mean the
+				// hint was capped and retried, the behaviour ADR-0054 removes.
 				responses: []*downloader.Response{nil, {StatusCode: 200}},
 				errors: []error{
 					&downloader.StatusError{StatusCode: 503, Retryable: true, RetryAfter: 24 * time.Hour},
@@ -546,12 +548,175 @@ func TestRetry(t *testing.T) {
 
 			start := time.Now()
 			_, err := retryClient.Get(t.Context(), "http://something.de")
+			if err == nil {
+				t.Fatal("expected an error: a hint above the ceiling must end the fetch")
+			}
+
+			if elapsed := time.Since(start); elapsed != 0 {
+				t.Errorf("waited %v, want 0 (abandoned, not slept to the ceiling)", elapsed)
+			}
+			if mock.callCount != 1 {
+				t.Errorf("expected 1 attempt, got: %d", mock.callCount)
+			}
+
+			var statusErr *downloader.StatusError
+			if !errors.As(err, &statusErr) {
+				t.Fatalf("abandonment error does not unwrap to *StatusError: %v", err)
+			}
+			if statusErr.StatusCode != 503 {
+				t.Errorf("StatusCode = %d, want 503", statusErr.StatusCode)
+			}
+			// pool.go logs no url attribute, so this message is the only place the
+			// URL reaches the log (ADR-0054).
+			if !strings.Contains(err.Error(), "http://something.de") {
+				t.Errorf("abandonment error does not name the URL: %v", err)
+			}
+		})
+	})
+
+	t.Run("The ceiling still bounds a hint-less backoff", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			mock := &mockDownloader{
+				responses: []*downloader.Response{nil, nil, {StatusCode: 200}},
+				errors: []error{
+					&downloader.StatusError{StatusCode: 500, Retryable: true},
+					&downloader.StatusError{StatusCode: 500, Retryable: true},
+					nil,
+				},
+			}
+			// 100s initial backoff escalating to 200s, against a 30s ceiling. With no
+			// Retry-After to key on, the abandonment must stay out of the way and both
+			// waits must still be capped (ADR-0054).
+			retryClient := downloader.NewRetryClient(
+				mock,
+				downloader.WithBackoff(100*time.Second),
+				downloader.WithMaxBackoff(30*time.Second),
+			)
+
+			start := time.Now()
+			_, err := retryClient.Get(t.Context(), "http://something.de")
 			if err != nil {
 				t.Fatalf("server did return an error: %v", err)
 			}
+			if elapsed := time.Since(start); elapsed != 60*time.Second {
+				t.Errorf("waited %v, want 60s (two waits, each capped at the 30s ceiling)", elapsed)
+			}
+			if mock.callCount != 3 {
+				t.Errorf("expected 3 attempts, got: %d", mock.callCount)
+			}
+		})
+	})
 
+	t.Run("A hint at exactly the ceiling is honoured", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			mock := &mockDownloader{
+				responses: []*downloader.Response{nil, {StatusCode: 200}},
+				errors: []error{
+					&downloader.StatusError{StatusCode: 429, Retryable: true, RetryAfter: 30 * time.Second},
+					nil,
+				},
+			}
+			// The abandonment is strictly greater-than: a hint we can wait out in
+			// full is still waited out (ADR-0054).
+			retryClient := downloader.NewRetryClient(mock, downloader.WithMaxBackoff(30*time.Second))
+
+			start := time.Now()
+			_, err := retryClient.Get(t.Context(), "http://something.de")
+			if err != nil {
+				t.Fatalf("a hint equal to the ceiling must be honoured, got: %v", err)
+			}
 			if elapsed := time.Since(start); elapsed != 30*time.Second {
-				t.Errorf("waited %v, want the 30s ceiling, not the 24h hint", elapsed)
+				t.Errorf("waited %v, want the full 30s hint", elapsed)
+			}
+			if mock.callCount != 2 {
+				t.Errorf("expected 2 attempts, got: %d", mock.callCount)
+			}
+		})
+	})
+
+	t.Run("A hint-less throttle still exhausts every try", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			// 1,776 of the 5,027 measured throttle exhaustions carried no hint
+			// (ADR-0054); those stay on today's exponential backoff.
+			mock := &mockDownloader{
+				responses: []*downloader.Response{nil, nil, nil, nil, nil},
+				errors: []error{
+					&downloader.StatusError{StatusCode: 429, Retryable: true},
+					&downloader.StatusError{StatusCode: 429, Retryable: true},
+					&downloader.StatusError{StatusCode: 429, Retryable: true},
+					&downloader.StatusError{StatusCode: 429, Retryable: true},
+					&downloader.StatusError{StatusCode: 429, Retryable: true},
+				},
+			}
+			retryClient := downloader.NewRetryClient(mock)
+
+			_, err := retryClient.Get(t.Context(), "http://something.de")
+			if err == nil {
+				t.Fatal("expected an error after exhausting retries, got nil")
+			}
+			if mock.callCount != 5 {
+				t.Errorf("expected 5 attempts (a hint-less throttle is not abandoned), got: %d", mock.callCount)
+			}
+		})
+	})
+
+	t.Run("The final attempt exhausts, it does not abandon", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			mock := &mockDownloader{
+				responses: []*downloader.Response{nil, nil},
+				errors: []error{
+					&downloader.StatusError{StatusCode: 500, Retryable: true},
+					&downloader.StatusError{StatusCode: 503, Retryable: true, RetryAfter: 24 * time.Hour},
+				},
+			}
+			// The hint arrives on the last attempt, where there is nothing left to
+			// abandon: that case stays a plain exhaustion, which is what lets every
+			// recorded abandonment be read as a saved request (ADR-0054).
+			retryClient := downloader.NewRetryClient(mock, downloader.WithMaxTries(2))
+
+			_, err := retryClient.Get(t.Context(), "http://something.de")
+			if err == nil {
+				t.Fatal("expected an error after exhausting retries, got nil")
+			}
+			if !strings.Contains(err.Error(), "after 2 tries") {
+				t.Errorf("want the exhaustion message, got: %v", err)
+			}
+			if strings.Contains(err.Error(), "retry ceiling") {
+				t.Errorf("want an exhaustion, not an abandonment, got: %v", err)
+			}
+			if mock.callCount != 2 {
+				t.Errorf("expected 2 attempts, got: %d", mock.callCount)
+			}
+		})
+	})
+
+	t.Run("No ceiling, no abandonment", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			mock := &mockDownloader{
+				responses: []*downloader.Response{nil, {StatusCode: 200}},
+				errors: []error{
+					&downloader.StatusError{StatusCode: 503, Retryable: true, RetryAfter: 24 * time.Hour},
+					nil,
+				},
+			}
+			// A non-positive maxBackoff documents an unbounded hint, so there is no
+			// such thing as a hint we refuse to honour (ADR-0054). On synctest's fake
+			// clock the 24h wait is free.
+			retryClient := downloader.NewRetryClient(mock, downloader.WithMaxBackoff(0))
+
+			start := time.Now()
+			res, err := retryClient.Get(t.Context(), "http://something.de")
+			if err != nil {
+				t.Fatalf("server did return an error: %v", err)
+			}
+			if res.StatusCode != 200 {
+				t.Errorf("expected status 200, got: %d", res.StatusCode)
+			}
+			if elapsed := time.Since(start); elapsed != 24*time.Hour {
+				t.Errorf("waited %v, want the full 24h hint", elapsed)
+			}
+			if mock.callCount != 2 {
+				t.Errorf("expected 2 attempts, got: %d", mock.callCount)
 			}
 		})
 	})
