@@ -199,8 +199,24 @@ Session 2 — deliver & review (fresh session; hand it the spec issue number):
 
 ### One-off lane (small, contained changes — no ceremony)
 
-Plan → `/handoff` → implement, committing directly to `main`. No spec, no branch,
-no PR.
+Committing directly to `main`. No spec, no sub-issues, no branch, no PR.
+
+1. Launch a **plan → implement Workflow** — two fresh-context agents in sequence:
+   a plan agent that derives the plan from the issue and whatever ADR binds it,
+   then an implementer that applies it, runs `gofmt -l`, `go build`, `go test
+   -race` and `make lint`, and commits **locally**. Pass it the scope and the
+   binding record; do NOT bake the plan into the script, and do NOT plan or
+   implement it yourself. This lane always uses the workflow — that is standing
+   authorization, no need to ask first.
+2. When it lands, launch a fresh-context `/code-review` sub-agent over the commit
+   diff **and verify it yourself at the same time**. The two are independent on
+   purpose: the agent reads the diff, while your own pass is what catches a test
+   bent to pass and runtime behaviour no diff shows.
+3. Apply the fixes you pick, then push.
+
+The pipeline is fresh-context rather than `/handoff` so the implementer cannot
+inherit the design conversation: everything it needs must be derivable from the
+issue and the ADR, which is also what keeps that record honest.
 
 ## Project Structure
 
