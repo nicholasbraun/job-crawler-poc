@@ -49,6 +49,9 @@ func TestSubdomainProviderHostContract(t *testing.T) {
 		ats.ProviderRecruitee: func(c *http.Client) ats.BoardFetcher {
 			return ats.NewRecruiteeFetcher(ats.WithRecruiteeHTTPClient(c))
 		},
+		ats.ProviderBambooHR: func(c *http.Client) ats.BoardFetcher {
+			return ats.NewBambooHRFetcher(ats.WithBambooHRHTTPClient(c))
+		},
 	}
 
 	// hasFetcher mirrors the ATS Fetch lane's real registry predicate.
@@ -66,6 +69,7 @@ func TestSubdomainProviderHostContract(t *testing.T) {
 		{"softgarden", "https://demo.career.softgarden.de/jobs", "demo.career.softgarden.de"},
 		{"teamtailor", "https://acme.teamtailor.com/jobs", "acme.teamtailor.com"},
 		{"recruitee", "https://acme.recruitee.com/careers", "acme.recruitee.com"},
+		{"bamboohr", "https://giottoai.bamboohr.com/careers", "giottoai.bamboohr.com"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
