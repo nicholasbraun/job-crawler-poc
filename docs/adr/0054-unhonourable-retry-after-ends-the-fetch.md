@@ -75,8 +75,13 @@ exactly as before and a throttling host still cannot be mistaken for a dead one.
   exhaustions would otherwise keep shouting while abandoned ones went quiet.
 - **A kill switch**, per the convention for paths that can go wrong silently and
   at scale. Rejected: this one cannot go wrong *silently* — the counter sits on
-  the same dashboard row as the 429 rate — it writes nothing to the Corpus or
-  Catalog, and `maxBackoff` is already the dial that turns it off.
+  the same dashboard row as the 429 rate — and it writes nothing to the Corpus or
+  Catalog, so the worst case is a page fetched next Cycle instead of this one.
+  Note what that accepts: `cmd/server` builds the retry client with no options and
+  there is no env knob, so `maxBackoff` is a compile-time dial only — turning this
+  off in production is a code change and a redeploy. A runtime knob was weighed
+  and declined; the honest form would be a `DOWNLOAD_MAX_BACKOFF` read through the
+  `env.Loader`, which would move both levers at once (see the consequences).
 - **A second counter for requests saved.** Rejected as near-degenerate: a host
   handing out an over-ceiling hint hands one out on the first 429 too, so
   abandonments sit at attempt 1. The saving is already measured directly by the
