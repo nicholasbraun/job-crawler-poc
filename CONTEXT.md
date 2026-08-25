@@ -210,6 +210,10 @@ _Avoid_: board fetch, API scrape, direct ingest
 A momentary Redis disruption (a blip, failover, or dropped connection) the Frontier rides out by retrying while the Crawl Run's context is live, so the run stays Running rather than Failing. Distinct from a fatal Frontier error — a corrupt or unrecognized Redis reply — which still Fails the run.
 _Avoid_: outage, crash
 
+**Throttle Abandonment**:
+A fetch giving up its remaining retry attempts the moment a host's `Retry-After` hint exceeds the longest the crawler will ever wait, because every attempt left would land inside a window the host has just said has not reset. It concerns one URL's attempt sequence only — the host's other URLs are scheduled exactly as before, which is what separates it from slowing or parking the whole Politeness Domain.
+_Avoid_: dropping, backing off, giving up on a host
+
 **Site Chrome**:
 The parts of a page that belong to the site rather than to the page — navigation, header, footer, sidebar. Repeated on every page of a host, so on a Career Page its links are that site's whole menu rather than that Company's Job Listings.
 _Avoid_: furniture, boilerplate, nav (bare)
