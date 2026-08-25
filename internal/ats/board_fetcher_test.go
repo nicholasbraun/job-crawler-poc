@@ -154,4 +154,11 @@ func TestNewDefaultRegistry(t *testing.T) {
 	if _, ok := reg.Fetcher(ats.ProviderManatal); !ok {
 		t.Errorf("NewDefaultRegistry did not wire the Manatal fetcher")
 	}
+	// #326 ships the BambooHR (hosted careers-site JSON) board-API client, so the
+	// default registry resolves it too rather than falling back to the crawl path —
+	// which for BambooHR harvested nothing at all, since its board is script-injected
+	// and so invisible to the crawl lane.
+	if _, ok := reg.Fetcher(ats.ProviderBambooHR); !ok {
+		t.Errorf("NewDefaultRegistry did not wire the BambooHR fetcher")
+	}
 }
