@@ -202,21 +202,29 @@ Session 2 — deliver & review (fresh session; hand it the spec issue number):
 Committing directly to `main`. No spec, no sub-issues, no branch, no PR.
 
 1. Launch a **plan → implement Workflow** — two fresh-context agents in sequence:
-   a plan agent that derives the plan from the issue and whatever ADR binds it,
-   then an implementer that applies it, runs `gofmt -l`, `go build`, `go test
-   -race` and `make lint`, and commits **locally**. Pass it the scope and the
-   binding record; do NOT bake the plan into the script, and do NOT plan or
-   implement it yourself. This lane always uses the workflow — that is standing
-   authorization, no need to ask first.
+   a plan agent that derives the plan from the binding context you hand it, then
+   an implementer that applies it, runs `gofmt -l`, `go build`, `go test -race`
+   and `make lint`, and commits **locally**. The binding context is the issue and
+   whatever ADR governs it, and/or the decisions a `/grilling` earlier in the
+   current session settled — those two are complements, not alternatives. Where
+   the grilling settled something the written record does not carry (an exact
+   error string, a list of tests, a dashboard panel), write it into the scope you
+   pass. Do NOT plan or implement it yourself. This lane always uses the
+   workflow — that is standing authorization, no need to ask first.
 2. When it lands, launch a fresh-context `/code-review` sub-agent over the commit
    diff **and verify it yourself at the same time**. The two are independent on
    purpose: the agent reads the diff, while your own pass is what catches a test
    bent to pass and runtime behaviour no diff shows.
 3. Apply the fixes you pick, then push.
 
-The pipeline is fresh-context rather than `/handoff` so the implementer cannot
-inherit the design conversation: everything it needs must be derivable from the
-issue and the ADR, which is also what keeps that record honest.
+The pipeline is fresh-context rather than `/handoff`, so the agents inherit
+nothing from the session that launched them — every decision they need has to be
+stated somewhere they can read: the issue, the ADR, or the scope you write from
+the grilling. That is the point of the seam, and the reason a decision worth
+keeping past this session belongs in an ADR rather than only in the scope block.
+
+Hand over **decisions and constraints, never the plan itself.** Telling the plan
+agent what was settled is the job; telling it which lines to edit is not.
 
 ## Project Structure
 
