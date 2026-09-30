@@ -403,9 +403,10 @@ standard library.
 
 ## Commit Messages
 
-Follow Conventional Commits: `type: description` (lowercase, imperative mood).
-Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`.
-Scoped variants allowed: `test(redis_frontier): add cooldown tests`.
+Follow Conventional Commits as the user-level `git-commit` skill describes them:
+`type: description` (lowercase, imperative mood). Types: `feat`, `fix`,
+`refactor`, `test`, `docs`, `chore`, `perf`, `style`, `ci`. Scoped variants
+allowed: `test(redis_frontier): add cooldown tests`.
 
 GitHub issue titles are plain descriptions, NOT Conventional-Commit prefixed --
 so a PR title (which mirrors the issue) is not conventional either. When squash
