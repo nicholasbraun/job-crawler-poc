@@ -18,7 +18,7 @@ and project-specific conventions.
    Read the diff carefully before writing any commit message.
 
 3. **Check `CLAUDE.md`** — read `CLAUDE.md` in the repo root.
-   If present, read the commit message section for project-specific conventions
+   Read its commit message section for project-specific conventions
    (types, scopes, formatting rules). Project conventions override the defaults below.
 
 4. **Write the commit message** — follow the format rules below.

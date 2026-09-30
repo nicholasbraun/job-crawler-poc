@@ -9,13 +9,17 @@
     ],
     "ask": [
       "Bash(git push *)",
-      "Bash(git -c * push *)",
+      "Bash(git -c * push*)",
+      "Bash(git -C * push*)",
       "Bash(gh pr merge *)",
-      "Bash(go run ./cmd/doctor --apply*)",
+      "Bash(go run ./cmd/doctor*apply*)",
+      "Bash(go generate *)",
       "Bash(go run ./cmd/llmbench goldset-refit*)",
       "Bash(go run ./cmd/llmbench train-scorer*)",
       "Bash(bin/llmbench goldset-refit*)",
-      "Bash(bin/llmbench train-scorer*)"
+      "Bash(bin/llmbench train-scorer*)",
+      "Bash(./bin/llmbench goldset-refit*)",
+      "Bash(./bin/llmbench train-scorer*)"
     ],
     "deny": [
       "Bash(rm -rf *)",
@@ -32,9 +36,8 @@
         "hooks": [
           {
             "type": "command",
-            "if": "Bash(git *)",
-            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/commit-gate.sh",
-            "timeout": 300
+            "command": "\"${CLAUDE_PROJECT_DIR}\"/.claude/hooks/commit-gate-guard.sh",
+            "timeout": 10
           }
         ]
       }
@@ -50,5 +53,8 @@
         ]
       }
     ]
+  },
+  "attribution": {
+    "commit": ""
   }
 }

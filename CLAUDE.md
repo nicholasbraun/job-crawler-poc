@@ -139,105 +139,69 @@ standard set -- govet, staticcheck, errcheck, ineffassign, unused), `go build
 a dashboard typecheck + build. **Run `make lint` before pushing** -- `go vet` and
 `gofmt` alone miss errcheck findings, the usual cause of a red build.
 
-### Gates Enforced by Settings
+### Enforced Gates
 
-`.claude/settings.json` enforces part of the above mechanically for agents, so it
-holds whether or not an agent has read this file:
+Part of the above is enforced mechanically, so it holds whether or not an agent
+has read this file:
 
-- **Commit gate.** A PreToolUse hook (`.claude/hooks/commit-gate.sh`) runs before
-  an agent's `git commit` whenever the commit can contain Go changes -- a changed
-  tracked `*.go`, `go.mod`, `go.sum` or `.golangci.yml`, or a `git add` in the
-  same command. It runs `gofmt -l` over the tracked Go files, `go build ./...`
-  and `golangci-lint run ./...`, and **blocks the commit** when one of them
-  fails. Fix the failure and commit again; the gate is not to be worked around.
-  It does **not** run tests: `go test -race ./...` needs Docker and takes
-  minutes, so it stays the committer's job. Each run appends one line to
-  `.git/commit-gate.log`, which is how to confirm the gate fired.
-- **`ask` rules.** These commands always prompt the human, in every permission
-  mode: `git push` (the `git -c ... push` form under Commit Messages included),
-  `gh pr merge`, `go run ./cmd/doctor --apply`, and llmbench's `goldset-refit`
-  and `train-scorer` (through `go run` or `bin/llmbench`). They publish, merge,
-  or rewrite stored or committed state. An agent that cannot get the prompt
-  answered stops and reports; it does not look for another spelling of the
-  command.
+- **Commit gate.** `.githooks/pre-commit` is a git hook, so git itself runs it
+  for every `git commit` and every merge commit -- yours as well as an agent's,
+  from any worktree, however the command is spelled. When the commit touches a
+  Go file, `go.mod`, `go.sum`, `.golangci.yml`, or any file under a directory
+  that holds Go code (a possible `go:embed` target), it exports the **staged
+  snapshot** to a temporary directory and runs `gofmt -l .`, `go build ./...`
+  and `golangci-lint run ./...` there: it checks what is being committed, not
+  what happens to be on disk. When one fails the commit is aborted; fix it,
+  stage the fix and commit again. It takes a few seconds. It does **not** run
+  tests: `go test -race ./...` needs Docker and takes minutes, so it stays the
+  committer's job. Each run appends one line to `.git/commit-gate.log`. Enable
+  it once per clone with `git config core.hooksPath .githooks`.
+- **Gate guard.** A PreToolUse hook (`.claude/hooks/commit-gate-guard.sh`) keeps
+  an agent from switching the gate off. It refuses `--no-verify`, `git commit
+  -n`, and any command naming `core.hooksPath` other than the enabling one above
+  and `git config --get core.hooksPath`; and it refuses a commit in a clone
+  where the gate is not enabled yet. It matches command text, so a commit
+  message that quotes one of those is refused too -- pass the message with
+  `git commit -F <file>`. Commits created by `git cherry-pick`, `git revert` or
+  a rebase do not run the gate.
+- **`ask` rules.** The usual spellings of these commands prompt the human, even
+  in auto mode: `git push` (the `git -c ... push` form under Commit Messages and
+  `git -C <dir> push` included), `gh pr merge`, the Catalog Doctor with its
+  apply flag (`go run ./cmd/doctor --apply`), `go generate` (it runs the weights
+  trainer), and llmbench's `goldset-refit` and `train-scorer` (through `go run`
+  or `bin/llmbench`). They publish, merge, or rewrite stored or committed state.
+  The rules match command text, so they are a prompt on the usual forms, not a
+  boundary around the program. An agent that cannot get the prompt answered
+  stops and reports; it does not look for another spelling of the command.
+- **Attribution.** `attribution.commit` is empty, so the harness adds no
+  `Co-Authored-By` trailer to commits.
 - **Worktrees.** Agent worktrees branch from the current HEAD
   (`worktree.baseRef: "head"`), so they start from the commits made locally so
   far.
 
 ## Development Workflow
 
-Two lanes, chosen by the size of the change. Each lane is a fixed sequence of
-skills; the session break between align/specify and deliver, plus the fix and
-merge decisions inside the delivery session, are deliberate human gates.
+The two lanes are described in the user-level `~/.claude/CLAUDE.md`, which loads
+alongside this file and is language-agnostic: the **feature / fix lane**
+(optional `/research`, then `/grilling`, then `/deliver <spec#>` in a fresh
+session) and the **one-off lane** (one fresh-context implementer, then review).
+This section adds only what is specific to this repo.
 
-### Feature / fix lane (non-trivial work — spans two sessions)
-
-Session 1 — align & specify:
-
-1. `/grilling` — reach a shared understanding of what to build before any code.
-2. `/domain-modeling` — record any new decisions and terms the grilling surfaced:
-   ADRs to `docs/adr/NNNN-slug.md`, domain language to `CONTEXT.md`.
-3. `/to-spec` — publish the spec / tracking GitHub issue.
-4. `/to-tickets` — break it into vertical sub-issues with their blocking edges.
-
-Session 2 — deliver & review (fresh session; hand it the spec issue number):
-
-5. `/deliver <spec#>` — delivers the spec: its sub-issues are implemented,
-   checked and reviewed in fresh contexts, and the result lands as one PR. The
-   `/deliver` skill is the single source of truth for how that session runs; its
-   mechanics are not restated here, because two descriptions drift. What this
-   repo adds is policy:
-   - **You orchestrate.** Do NOT plan, implement, review, or commit any ticket
-     yourself, do no warm-up solo work before launching, and bake no plans or
-     design decisions of your own into what you launch. The one exception is a
-     decision gate, where you apply the fixes the human picked.
-   - **The human decides** what to fix and when to merge. Nothing is fixed
-     without their pick, and nothing merges without their say-so.
-
-### One-off lane (small, contained changes — no ceremony)
-
-Committing directly to `main`. No spec, no sub-issues, no branch, no PR.
-
-1. Launch an **implement Workflow** — ONE fresh-context implementer agent, with
-   no separate plan agent in front of it. The implementer derives its plan from
-   the binding context you hand it and implements in that same context, runs
-   `gofmt -l`, `go build`, `go test -race` and `make lint`, and commits
-   **locally**. The binding context is the issue and whatever ADR governs it,
-   and/or the decisions a `/grilling` earlier in the current session settled —
-   those two are complements, not alternatives. Where the grilling settled
-   something the written record does not carry (an exact error string, a list of
-   tests, a dashboard panel), write it into the scope you pass. Do NOT plan or
-   implement it yourself. This lane always uses the workflow — that is standing
-   authorization, no need to ask first.
-2. When it lands, launch a fresh-context `/code-review high` sub-agent over the
-   commit diff **and verify it yourself at the same time**. The two are
-   independent on purpose: the agent reads the diff, while your own pass is what
-   catches a test bent to pass and runtime behaviour no diff shows.
-3. Apply the fixes you pick, then push (see Commit Messages for how).
-
-Plan and implement are one agent on purpose: a separate plan agent explores the
-code, hands over only its conclusions, and makes the implementer explore it all
-again. Fresh contexts are better spent on checking work than on handing it over.
-
-The implementer is fresh-context rather than `/handoff`, so it inherits nothing
-from the session that launched it — every decision it needs has to be stated
-somewhere it can read: the issue, the ADR, or the scope you write from the
-grilling. That is the point of the seam, and the reason a decision worth keeping
-past this session belongs in an ADR rather than only in the scope block.
-
-Hand over **decisions and constraints, never the plan itself.** Telling the
-implementer what was settled is the job; telling it which lines to edit is not.
-
-### Review
-
-`/code-review` is the bundled reviewer. Whenever you launch it in a fresh agent,
-name the effort level — `/code-review high` — because with none it reuses the
-level typed last, and a fresh agent has none. This repo's own checklist is the
-`review-checklist` skill, which a reviewer loads alongside: it is a checklist,
-not a second review procedure. Anything specific to this repo or to Go belongs
-there or elsewhere under this repo's `.claude/`; the skills and agents under
-`~/.claude/` are shared across projects and stay language- and
-technology-agnostic.
+- **The repo's checks.** Where a lane says "the repo's format, build, test and
+  lint checks", that means `gofmt -l` (must print nothing), `go build ./...`,
+  `go test -race ./...` and `make lint`. The commit gate above enforces all of
+  them except the tests.
+- **The one-off lane commits directly to `main`.** No branch, no PR. Push as
+  described under Commit Messages.
+- **Glossary and decision records.** Domain language goes to `CONTEXT.md`,
+  decisions to `docs/adr/NNNN-slug.md` (see Domain Language above), and
+  `/research` briefs to `docs/research/`.
+- **Review checklist.** This repo's own review criteria are the
+  `review-checklist` skill: a checklist, not a second review procedure. Nothing
+  loads it automatically, so when you launch a reviewer in this repo, tell it in
+  the prompt to load `review-checklist` alongside `/code-review`. Anything specific to this repo
+  or to Go belongs there or elsewhere under this repo's `.claude/`, never in the
+  shared skills and agents under `~/.claude/`.
 
 ## Project Structure
 

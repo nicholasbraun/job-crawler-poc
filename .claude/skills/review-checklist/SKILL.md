@@ -1,18 +1,27 @@
 ---
 name: review-checklist
-description: "This repo's review checklist: correctness, error handling, security, concurrency, design, edge cases, testing and performance, checked against the repo's own conventions. Load it as the checklist when reviewing changes in this repo. It is a checklist, not the review procedure: `/code-review` is the bundled reviewer and owns scope, effort level and reporting. READ-ONLY: never modify files while using it."
+description: "This repo's review checklist: correctness, error handling, security, concurrency, design, edge cases, testing and performance, checked against the repo's own conventions. Load it as the checklist when reviewing changes in this repo. Loaded by a reviewer such as the bundled `/code-review`, only its review categories apply and the reviewer owns scope, effort level and reporting; used on its own it also carries a small review procedure. READ-ONLY: never modify files while using it."
 ---
 
 # Review Checklist
 
-Perform structured code reviews that surface real issues with specific,
-actionable feedback. Read-only — never modify files.
+The criteria a review of this repo checks, with specific, actionable feedback as
+the goal. Read-only — never modify files.
+
+**Two ways to use it:**
+
+- **Loaded by a reviewer** (the bundled `/code-review`, or a review agent): use
+  only the [Review Categories](#review-categories) and [Tone](#tone) below. The
+  reviewer owns the scope, the effort level and the report format; skip the
+  Workflow section.
+- **On its own** ("review my changes" with no reviewer running): follow the
+  Workflow section too.
 
 This skill used to be named `code-review`, which replaced the bundled
 `/code-review` command in this repo. It was renamed so the bundled reviewer (with
 its effort levels, `--fix` and `ultra`) is reachable under its own name.
 
-## Allowed Tools
+## Allowed Tools (standalone use only)
 
 You may ONLY use these tools during a review:
 
@@ -30,7 +39,7 @@ Do NOT use: `Edit`, `Write`, or `Bash` with write commands (`git commit`,
 
 If you find issues, describe the fix — do not apply it.
 
-## Workflow
+## Workflow (standalone use only)
 
 ### 1. Understand the Scope
 
