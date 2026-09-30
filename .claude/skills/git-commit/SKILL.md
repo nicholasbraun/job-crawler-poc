@@ -1,6 +1,6 @@
 ---
 name: git-commit
-description: "Use this skill whenever the user asks you to commit, stage, or create a git commit message. Also trigger when the user says 'commit this', 'save my changes', 'write a commit message', 'stage and commit', or asks you to review staged changes and commit them. This skill enforces Conventional Commits format and project-specific conventions from AGENTS.md."
+description: "Use this skill whenever the user asks you to commit, stage, or create a git commit message. Also trigger when the user says 'commit this', 'save my changes', 'write a commit message', 'stage and commit', or asks you to review staged changes and commit them. This skill enforces Conventional Commits format and project-specific conventions from CLAUDE.md."
 ---
 
 # Git Commit Skill
@@ -17,7 +17,7 @@ and project-specific conventions.
 2. **Review the diff** — run `git diff --cached` to understand what changed.
    Read the diff carefully before writing any commit message.
 
-3. **Check for AGENTS.md** — look for `AGENTS.md` or `CLAUDE.md` in the repo root.
+3. **Check `CLAUDE.md`** — read `CLAUDE.md` in the repo root.
    If present, read the commit message section for project-specific conventions
    (types, scopes, formatting rules). Project conventions override the defaults below.
 

@@ -1,10 +1,44 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
-    "allow": ["Bash(go *)", "Bash(git status)", "Bash(git diff *)", "Read"],
-    "deny": ["Bash(rm -rf *)", "Bash(curl *)", "Read(./.env)", "Read(./.env.*)"]
+    "allow": [
+      "Bash(go *)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Read"
+    ],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(git -c * push *)",
+      "Bash(gh pr merge *)",
+      "Bash(go run ./cmd/doctor --apply*)",
+      "Bash(go run ./cmd/llmbench goldset-refit*)",
+      "Bash(go run ./cmd/llmbench train-scorer*)",
+      "Bash(bin/llmbench goldset-refit*)",
+      "Bash(bin/llmbench train-scorer*)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Read(./.env)"
+    ]
+  },
+  "worktree": {
+    "baseRef": "head"
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git *)",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/commit-gate.sh",
+            "timeout": 300
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write",

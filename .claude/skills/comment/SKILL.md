@@ -56,5 +56,5 @@ Review comments across the codebase (or a specific path) and produce a report of
 
 - **Don't be noisy.** A report full of trivial suggestions trains the user to ignore it. Only flag things that would meaningfully help a future reader.
 - **Prefer fewer, better comments** over commenting everything. A missing comment on a clear two-line helper is fine. A missing comment on a 30-line method with subtle behavior is not.
-- **Respect existing style.** Match the project's conventions from `AGENTS.md` (godoc style, `//` comments, package comments in `doc.go`, etc.).
+- **Respect existing style.** Match the project's conventions from `CLAUDE.md` (godoc style, `//` comments, package comments in `doc.go`, etc.).
 - **Interface comments are highest priority.** These define the abstractions that the rest of the codebase depends on.

@@ -1,27 +1,31 @@
 ---
-name: code-review
-description: "Use this skill whenever the user asks you to review code, check changes, audit a PR, look for bugs, or evaluate code quality. Also trigger when the user says 'review this', 'check my code', 'anything wrong here?', 'can you spot issues?', 'audit this', or 'what do you think of these changes?'. This skill performs a structured code review covering correctness, security, design, error handling, and edge cases. IMPORTANT: This skill is READ-ONLY. Do NOT modify any files. Only use reading tools: view, glob, grep, bash (for git diff, git log, git show only)."
+name: review-checklist
+description: "This repo's review checklist: correctness, error handling, security, concurrency, design, edge cases, testing and performance, checked against the repo's own conventions. Load it as the checklist when reviewing changes in this repo. It is a checklist, not the review procedure: `/code-review` is the bundled reviewer and owns scope, effort level and reporting. READ-ONLY: never modify files while using it."
 ---
 
-# Code Review Skill
+# Review Checklist
 
 Perform structured code reviews that surface real issues with specific,
 actionable feedback. Read-only — never modify files.
+
+This skill used to be named `code-review`, which replaced the bundled
+`/code-review` command in this repo. It was renamed so the bundled reviewer (with
+its effort levels, `--fix` and `ultra`) is reachable under its own name.
 
 ## Allowed Tools
 
 You may ONLY use these tools during a review:
 
-- `view` — read files and directories
-- `grep` / `glob` — search for patterns across the codebase
-- `bash` — ONLY for read-only git commands:
+- `Read` — read files
+- `Grep` / `Glob` — search for patterns across the codebase
+- `Bash` — ONLY for read-only commands:
   - `git diff`, `git diff --cached`, `git diff main..HEAD`
   - `git log`, `git show`
   - `git status`
   - `go vet ./...`, `go build ./...` (analysis only, no modifications)
   - `go test ./...` (running tests to verify correctness)
 
-Do NOT use: `str_replace`, `create_file`, `bash` with write commands (`git commit`,
+Do NOT use: `Edit`, `Write`, or `Bash` with write commands (`git commit`,
 `git add`, `rm`, `mv`, `cp`, `sed`, etc.)
 
 If you find issues, describe the fix — do not apply it.
@@ -43,7 +47,7 @@ Determine what to review:
 Before reviewing changed code, understand the surrounding context:
 
 - Read the full file(s) containing changes, not just the diff
-- Check for AGENTS.md or CLAUDE.md for project conventions
+- Check `CLAUDE.md` for project conventions
 - Look at related interfaces, types, and tests to understand contracts
 - Check imports to understand dependencies
 
@@ -122,7 +126,7 @@ If everything looks good, say so — don't invent issues.
 
 ### Design & Architecture
 
-- Does the code follow the project's package conventions? (check AGENTS.md)
+- Does the code follow the project's package conventions? (check `CLAUDE.md`)
 - Are interfaces defined by the consumer, not the implementation?
 - Is there unnecessary coupling between packages?
 - Are responsibilities clearly separated? (single responsibility principle)

@@ -97,35 +97,12 @@ goimports -w .
 # Catalog Doctor: replay today's URL-structural rules over the stored Catalog
 go run ./cmd/doctor              # dry-run report
 go run ./cmd/doctor --apply      # execute the plan
-
-# Gate benchmarks -- full verb list in cmd/llmbench/main.go's package comment
-go run ./cmd/llmbench bench -llm=false          # career-page Gate over the Gold Set, gate-only
-go run ./cmd/llmbench bench                     # ...same, but confirms uncertain fixtures with
-                                                #    the real classifier (needs LLM_* env)
-go run ./cmd/llmbench extract                   # Extract Gate over the reject-rung fixtures
-go run ./cmd/llmbench score-capture -in <labeled.jsonl>   # Extract Gate over the Extract Gold Set
-go run ./cmd/llmbench score-capture -in <labeled.jsonl> -gate-config <veto.json>
-                                                #    ...the same scorecard with the Learned Veto on (ADR-0049);
-                                                #    veto.json is {"LearnedVeto": true}
-go run ./cmd/llmbench score-rendering            # A/B: Flattened Text vs Structural Rendering at one prompt budget
-go run ./cmd/llmbench goldset-sample-veto-boundary -capture <capture.jsonl> -since <RFC3339>
-                                                #    veto depth over a capture frame (no labels), plus the
-                                                #    sampling plan preview; -draw appends a stratified sample of the
-                                                #    drop set in bands (-near-band, then a quota per band:
-                                                #    -accepted-rows/-near-rows/-deep-rows)
-go run ./cmd/llmbench goldset-sample-host-breadth -capture <capture.jsonl> -since <RFC3339>
-                                                #    host clusters in a capture frame and the sampling plan preview
-                                                #    (ADR-0050; reads no Posting Score, so no circular selection);
-                                                #    -draw appends one page per host, stratified on the live verdict
-go run ./cmd/llmbench train-scorer               # refit the Posting Score over the Extract Gold Set and rewrite
-                                                #    pagegate's weights (must reproduce the committed file byte for byte)
-go run ./cmd/llmbench goldset-refit              # after a confirmation pass: apply, rewrite the derived
-                                                #    counts, refit the weights, run the suite, and check
-                                                #    ADR-0049's pre-registered condition
-go run ./cmd/llmbench goldset-ui -by "<your name>" -stratum random   # blind, one-keystroke confirmation pass (loopback only;
-                                                                    #    measures Capture Fidelity and renders the page;
-                                                                    #    -refetch=false for neither)
 ```
+
+The Gate benchmarks (`go run ./cmd/llmbench <verb>`) are not listed here. Their
+verbs are in `.claude/rules/llmbench.md`, a path-scoped rule that loads when a
+file under `cmd/llmbench/` or `internal/pagegate/` is read; the full list is the
+package comment in `cmd/llmbench/main.go`.
 
 The server reads configuration from the environment (a `.env` file is loaded via
 `godotenv` if present): `DATABASE_URL` (Postgres DSN), `REDIS_ADDR` (defaults to
@@ -162,11 +139,36 @@ standard set -- govet, staticcheck, errcheck, ineffassign, unused), `go build
 a dashboard typecheck + build. **Run `make lint` before pushing** -- `go vet` and
 `gofmt` alone miss errcheck findings, the usual cause of a red build.
 
+### Gates Enforced by Settings
+
+`.claude/settings.json` enforces part of the above mechanically for agents, so it
+holds whether or not an agent has read this file:
+
+- **Commit gate.** A PreToolUse hook (`.claude/hooks/commit-gate.sh`) runs before
+  an agent's `git commit` whenever the commit can contain Go changes -- a changed
+  tracked `*.go`, `go.mod`, `go.sum` or `.golangci.yml`, or a `git add` in the
+  same command. It runs `gofmt -l` over the tracked Go files, `go build ./...`
+  and `golangci-lint run ./...`, and **blocks the commit** when one of them
+  fails. Fix the failure and commit again; the gate is not to be worked around.
+  It does **not** run tests: `go test -race ./...` needs Docker and takes
+  minutes, so it stays the committer's job. Each run appends one line to
+  `.git/commit-gate.log`, which is how to confirm the gate fired.
+- **`ask` rules.** These commands always prompt the human, in every permission
+  mode: `git push` (the `git -c ... push` form under Commit Messages included),
+  `gh pr merge`, `go run ./cmd/doctor --apply`, and llmbench's `goldset-refit`
+  and `train-scorer` (through `go run` or `bin/llmbench`). They publish, merge,
+  or rewrite stored or committed state. An agent that cannot get the prompt
+  answered stops and reports; it does not look for another spelling of the
+  command.
+- **Worktrees.** Agent worktrees branch from the current HEAD
+  (`worktree.baseRef: "head"`), so they start from the commits made locally so
+  far.
+
 ## Development Workflow
 
 Two lanes, chosen by the size of the change. Each lane is a fixed sequence of
-skills; the session break between align/specify and deliver, plus the in-session
-fix/merge decision gate, are deliberate human gates.
+skills; the session break between align/specify and deliver, plus the fix and
+merge decisions inside the delivery session, are deliberate human gates.
 
 ### Feature / fix lane (non-trivial work — spans two sessions)
 
@@ -180,51 +182,62 @@ Session 1 — align & specify:
 
 Session 2 — deliver & review (fresh session; hand it the spec issue number):
 
-5. `/deliver <spec#>` — create the `feat/<spec#>_…` or `fix/<spec#>_…` branch, then launch an
-   ultracode **implementation workflow** that orchestrates one sub-process per sub-issue. Each
-   sub-process is a fresh-context pipeline: plan agent -> handoff to implementer agent -> commit
-   (**no review inside the pipeline**). Run them in parallel when possible. In sequence otherwise.
-   Collect the results, run the suite, and open the PR that closes the spec and its sub-issues.
-   Then launch a SECOND, separate ultracode **review workflow** that fans out 1-3 independent,
-   fresh-context `/code-review` agents in parallel over the whole branch diff and reports their
-   findings back to the main thread. There, **YOU decide what to fix and whether to merge**; the
-   main agent applies the fixes you pick (small in place, larger delegated or filed as follow-ups)
-   and merges on your say-so.
-   **You orchestrate the workflows**: read the issues, open the branch, launch the implementation
-   workflow, open the PR, launch the review workflow, relay findings. Do NOT plan, implement,
-   review, capture, or commit any ticket yourself; do NOT do manual pre-work before launching; and
-   do NOT bake plans or design decisions into the workflow — each pipeline's plan agent derives its
-   own plan from the sub-issue. The **one exception** is the final decision gate: after reviews
-   report, you apply the fixes the human picks. No warm-up solo work.
+5. `/deliver <spec#>` — delivers the spec: its sub-issues are implemented,
+   checked and reviewed in fresh contexts, and the result lands as one PR. The
+   `/deliver` skill is the single source of truth for how that session runs; its
+   mechanics are not restated here, because two descriptions drift. What this
+   repo adds is policy:
+   - **You orchestrate.** Do NOT plan, implement, review, or commit any ticket
+     yourself, do no warm-up solo work before launching, and bake no plans or
+     design decisions of your own into what you launch. The one exception is a
+     decision gate, where you apply the fixes the human picked.
+   - **The human decides** what to fix and when to merge. Nothing is fixed
+     without their pick, and nothing merges without their say-so.
 
 ### One-off lane (small, contained changes — no ceremony)
 
 Committing directly to `main`. No spec, no sub-issues, no branch, no PR.
 
-1. Launch a **plan → implement Workflow** — two fresh-context agents in sequence:
-   a plan agent that derives the plan from the binding context you hand it, then
-   an implementer that applies it, runs `gofmt -l`, `go build`, `go test -race`
-   and `make lint`, and commits **locally**. The binding context is the issue and
-   whatever ADR governs it, and/or the decisions a `/grilling` earlier in the
-   current session settled — those two are complements, not alternatives. Where
-   the grilling settled something the written record does not carry (an exact
-   error string, a list of tests, a dashboard panel), write it into the scope you
-   pass. Do NOT plan or implement it yourself. This lane always uses the
-   workflow — that is standing authorization, no need to ask first.
-2. When it lands, launch a fresh-context `/code-review` sub-agent over the commit
-   diff **and verify it yourself at the same time**. The two are independent on
-   purpose: the agent reads the diff, while your own pass is what catches a test
-   bent to pass and runtime behaviour no diff shows.
-3. Apply the fixes you pick, then push.
+1. Launch an **implement Workflow** — ONE fresh-context implementer agent, with
+   no separate plan agent in front of it. The implementer derives its plan from
+   the binding context you hand it and implements in that same context, runs
+   `gofmt -l`, `go build`, `go test -race` and `make lint`, and commits
+   **locally**. The binding context is the issue and whatever ADR governs it,
+   and/or the decisions a `/grilling` earlier in the current session settled —
+   those two are complements, not alternatives. Where the grilling settled
+   something the written record does not carry (an exact error string, a list of
+   tests, a dashboard panel), write it into the scope you pass. Do NOT plan or
+   implement it yourself. This lane always uses the workflow — that is standing
+   authorization, no need to ask first.
+2. When it lands, launch a fresh-context `/code-review high` sub-agent over the
+   commit diff **and verify it yourself at the same time**. The two are
+   independent on purpose: the agent reads the diff, while your own pass is what
+   catches a test bent to pass and runtime behaviour no diff shows.
+3. Apply the fixes you pick, then push (see Commit Messages for how).
 
-The pipeline is fresh-context rather than `/handoff`, so the agents inherit
-nothing from the session that launched them — every decision they need has to be
-stated somewhere they can read: the issue, the ADR, or the scope you write from
-the grilling. That is the point of the seam, and the reason a decision worth
-keeping past this session belongs in an ADR rather than only in the scope block.
+Plan and implement are one agent on purpose: a separate plan agent explores the
+code, hands over only its conclusions, and makes the implementer explore it all
+again. Fresh contexts are better spent on checking work than on handing it over.
 
-Hand over **decisions and constraints, never the plan itself.** Telling the plan
-agent what was settled is the job; telling it which lines to edit is not.
+The implementer is fresh-context rather than `/handoff`, so it inherits nothing
+from the session that launched it — every decision it needs has to be stated
+somewhere it can read: the issue, the ADR, or the scope you write from the
+grilling. That is the point of the seam, and the reason a decision worth keeping
+past this session belongs in an ADR rather than only in the scope block.
+
+Hand over **decisions and constraints, never the plan itself.** Telling the
+implementer what was settled is the job; telling it which lines to edit is not.
+
+### Review
+
+`/code-review` is the bundled reviewer. Whenever you launch it in a fresh agent,
+name the effort level — `/code-review high` — because with none it reuses the
+level typed last, and a fresh agent has none. This repo's own checklist is the
+`review-checklist` skill, which a reviewer loads alongside: it is a checklist,
+not a second review procedure. Anything specific to this repo or to Go belongs
+there or elsewhere under this repo's `.claude/`; the skills and agents under
+`~/.claude/` are shared across projects and stay language- and
+technology-agnostic.
 
 ## Project Structure
 
@@ -434,3 +447,13 @@ GitHub issue titles are plain descriptions, NOT Conventional-Commit prefixed --
 so a PR title (which mirrors the issue) is not conventional either. When squash
 merging, pass the conventional subject explicitly so `main`'s history stays
 conventional: `gh pr merge --squash --subject "feat(scope): ..."`.
+
+Never add a `Co-Authored-By` trailer, or any other AI-attribution line, to a
+commit.
+
+Pushing over SSH fails from the agent shell, because the key is confirm-on-use.
+Push over HTTPS with `gh`'s credential helper instead:
+
+```bash
+git -c credential.helper= -c credential.helper='!gh auth git-credential' push https://github.com/nicholasbraun/job-crawler-poc.git <branch>:<branch>
+```
