@@ -3,23 +3,30 @@
 # snapshot being committed (the index, not the working tree) and aborts the commit
 # when one fails. Enable it once per clone:
 #
-#     git config core.hooksPath .githooks
+#     git config core.hooksPath .githooks        (or: make hooks)
 #
-# Git runs this for every `git commit`, however it is spelled and from whichever
-# worktree, and .githooks/pre-merge-commit runs it for merges. `go test -race` is
-# deliberately not here: it needs Docker and takes minutes, so it stays with the
-# committer and CI.
+# Git runs this for `git commit` however it is spelled and from whichever
+# worktree, and .githooks/pre-merge-commit runs it for merge commits. It only
+# exists on checkouts that contain this file: a branch cut before the gate was
+# added commits unchecked. `go test -race` is deliberately not here: it needs
+# Docker and takes minutes, so it stays with the committer and CI.
 #
 # Each run appends one line to <git-common-dir>/commit-gate.log.
 set -u -o pipefail
 
-root=$(git rev-parse --show-toplevel) || exit 0
-git_dir=$(git rev-parse --absolute-git-dir) || exit 0
-common_dir=$(cd "$(git rev-parse --git-common-dir)" && pwd) || exit 0
-
+common_dir=""
 log() {
-	printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$root" >>"$common_dir/commit-gate.log" 2>/dev/null || true
+	[ -n "$common_dir" ] || return 0
+	printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${root:-?}" >>"$common_dir/commit-gate.log" 2>/dev/null || true
 }
+die() {
+	log "error($1)"
+	echo "commit gate: $1" >&2
+	exit 1
+}
+
+root=$(git rev-parse --show-toplevel) || die "not inside a work tree"
+common_dir=$(cd "$(git rev-parse --git-common-dir)" && pwd) || die "cannot locate the git directory"
 
 # The commit's changes are the index against HEAD, or against the empty tree on a
 # branch with no commit yet.
@@ -32,44 +39,70 @@ fi
 # The checks can only change their verdict when the commit touches a Go file, the
 # module or lint configuration, or any file inside a directory tree that holds Go
 # code -- such a file may be a go:embed target, and removing one breaks the build.
-#
-# The first awk input is the list of those directories, the second the commit's
-# paths. If the filter itself fails, run the checks rather than skip them.
-go_dirs() {
-	git ls-files -- '*.go' | awk -F/ 'NF == 1 { print "."; next } { sub(/\/[^\/]+$/, ""); print }' | sort -u
-}
-relevant=$(git -c core.quotepath=off diff --cached --name-only --no-renames "$base" | awk '
-	NR == FNR { in_go[$0] = 1; next }
-	/\.go$/ || $0 == "go.mod" || $0 == "go.sum" || $0 == ".golangci.yml" { print; next }
-	{
-		p = $0
-		while (sub(/\/[^\/]+$/, "", p)) if (p in in_go) { print $0; next }
-		if ("." in in_go) print $0
-	}' <(go_dirs) -) || relevant="(filter failed)"
+# Whenever this cannot be worked out, run the checks rather than skip them.
+relevant=""
+if changed=$(git -c core.quotepath=off diff --cached --name-only --no-renames "$base") &&
+	go_dirs=$(git ls-files -- '*.go' | awk -F/ 'NF == 1 { print "."; next } { sub(/\/[^\/]+$/, ""); print }' | sort -u); then
+	if [ -n "$changed" ]; then
+		relevant=$(printf '%s\n' "$changed" | GO_DIRS="$go_dirs" awk '
+			BEGIN { n = split(ENVIRON["GO_DIRS"], d, "\n"); for (i = 1; i <= n; i++) if (d[i] != "") in_go[d[i]] = 1 }
+			/\.go$/ || $0 == "go.mod" || $0 == "go.sum" || $0 == ".golangci.yml" { print; next }
+			{
+				p = $0
+				while (sub(/\/[^\/]+$/, "", p)) if (p in in_go) { print $0; next }
+				if ("." in in_go) print $0
+			}') || relevant="(filter failed)"
+	fi
+else
+	relevant="(could not list the commit's paths)"
+fi
 if [ -z "$relevant" ]; then
 	log "skip(no-go-change)"
 	exit 0
 fi
 
+command -v go >/dev/null 2>&1 && command -v gofmt >/dev/null 2>&1 ||
+	die "go and gofmt must be on PATH for the commit gate to run"
+command -v golangci-lint >/dev/null 2>&1 ||
+	die "golangci-lint is not installed (brew install golangci-lint); the gate will not pass without it"
+
 # Check what is staged, not what is on disk: export the index to a directory of its
-# own. The path is stable per worktree so the build and lint caches stay warm.
-snap="${TMPDIR:-/tmp}/commit-gate-$(printf '%s' "$git_dir" | cksum | cut -d ' ' -f 1)"
-case "$snap" in
-*/commit-gate-[0-9]*) ;;
-*)
-	echo "commit gate: refusing to use snapshot path '$snap'" >&2
-	exit 1
-	;;
+# own. One fixed directory per repository keeps the build and lint caches warm and
+# every cached path valid; the lock makes concurrent commits from several
+# worktrees take turns, and the snapshot is removed when the run ends.
+tmp=$(cd "${TMPDIR:-/tmp}" 2>/dev/null && pwd) || die "no usable temporary directory"
+work="$tmp/commit-gate-$(printf '%s' "$common_dir" | cksum | cut -d ' ' -f 1)"
+case "$work" in
+/*/commit-gate-[0-9]*) ;;
+*) die "refusing to use work directory '$work'" ;;
 esac
+snap="$work/snapshot"
+lock="$work/lock"
+umask 077
+mkdir -p "$work" || die "cannot create $work"
+
+waited=0
+until mkdir "$lock" 2>/dev/null; do
+	holder=$(cat "$lock/pid" 2>/dev/null || true)
+	if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+		rm -rf "$lock" # its owner is gone
+		continue
+	fi
+	[ "$waited" -lt 600 ] || die "another commit gate run has held $lock for ten minutes; remove it if it is stale"
+	sleep 1
+	waited=$((waited + 1))
+done
+echo $$ >"$lock/pid"
+trap 'rm -rf "$snap" "$lock"' EXIT
+
 rm -rf "$snap"
-mkdir -p "$snap" && git checkout-index -a -f --prefix="$snap/" || {
-	echo "commit gate: could not export the staged snapshot to $snap" >&2
-	exit 1
-}
+mkdir "$snap" && git checkout-index -a -f --prefix="$snap/" || die "could not export the staged snapshot to $snap"
 
 # A hook inherits GIT_DIR, GIT_INDEX_FILE and the like; the tools below must not.
 unset $(git rev-parse --local-env-vars)
-cd "$snap" || exit 1
+cd "$snap" || die "cannot enter $snap"
+# A cache of its own, so a cached finding never points into some other tree.
+export GOLANGCI_LINT_CACHE="$work/lintcache"
 
 fail() {
 	log "block($1)"
@@ -88,10 +121,8 @@ $out"
 
 out=$(go build ./... 2>&1) || fail "go build ./..." "$out"
 
-command -v golangci-lint >/dev/null 2>&1 ||
-	fail "golangci-lint" "golangci-lint is not installed (brew install golangci-lint); the gate will not pass without it."
 # Serial runners: a second golangci-lint waits for the first instead of failing on
-# its lock, which matters when several worktrees commit at once.
+# its lock.
 out=$(golangci-lint run --allow-serial-runners ./... 2>&1) || fail "golangci-lint run ./..." "$out"
 
 log "pass"

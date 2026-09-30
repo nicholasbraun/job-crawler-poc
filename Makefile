@@ -1,4 +1,4 @@
-.PHONY: build web-build server-build dev test test-race lint docker-up clean
+.PHONY: build web-build server-build dev test test-race lint hooks docker-up clean
 
 # build produces the single self-contained binary: the dashboard is built first
 # so `go build` can embed web/dist via web/web.go's //go:embed directive.
@@ -27,6 +27,12 @@ test-race:
 # Install it with: brew install golangci-lint
 lint:
 	golangci-lint run ./...
+
+# hooks enables the tracked git hooks in this clone: .githooks/pre-commit runs
+# gofmt, go build and golangci-lint on the staged snapshot before every commit.
+# Run it once after cloning.
+hooks:
+	git config core.hooksPath .githooks
 
 # docker-up builds the image and starts the full stack (Postgres, Redis,
 # crawler, and the observability services).

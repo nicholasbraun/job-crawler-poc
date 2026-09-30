@@ -145,33 +145,38 @@ Part of the above is enforced mechanically, so it holds whether or not an agent
 has read this file:
 
 - **Commit gate.** `.githooks/pre-commit` is a git hook, so git itself runs it
-  for every `git commit` and every merge commit -- yours as well as an agent's,
-  from any worktree, however the command is spelled. When the commit touches a
-  Go file, `go.mod`, `go.sum`, `.golangci.yml`, or any file under a directory
-  that holds Go code (a possible `go:embed` target), it exports the **staged
+  for `git commit` and for merge commits -- yours as well as an agent's, from
+  any worktree, however the command is spelled. When the commit touches a Go
+  file, `go.mod`, `go.sum`, `.golangci.yml`, or any file under a directory that
+  holds Go code (a possible `go:embed` target), it exports the **staged
   snapshot** to a temporary directory and runs `gofmt -l .`, `go build ./...`
   and `golangci-lint run ./...` there: it checks what is being committed, not
   what happens to be on disk. When one fails the commit is aborted; fix it,
   stage the fix and commit again. It takes a few seconds. It does **not** run
   tests: `go test -race ./...` needs Docker and takes minutes, so it stays the
   committer's job. Each run appends one line to `.git/commit-gate.log`. Enable
-  it once per clone with `git config core.hooksPath .githooks`.
-- **Gate guard.** A PreToolUse hook (`.claude/hooks/commit-gate-guard.sh`) keeps
-  an agent from switching the gate off. It refuses `--no-verify`, `git commit
-  -n`, and any command naming `core.hooksPath` other than the enabling one above
-  and `git config --get core.hooksPath`; and it refuses a commit in a clone
-  where the gate is not enabled yet. It matches command text, so a commit
-  message that quotes one of those is refused too -- pass the message with
-  `git commit -F <file>`. Commits created by `git cherry-pick`, `git revert` or
-  a rebase do not run the gate.
-- **`ask` rules.** The usual spellings of these commands prompt the human, even
-  in auto mode: `git push` (the `git -c ... push` form under Commit Messages and
-  `git -C <dir> push` included), `gh pr merge`, the Catalog Doctor with its
-  apply flag (`go run ./cmd/doctor --apply`), `go generate` (it runs the weights
-  trainer), and llmbench's `goldset-refit` and `train-scorer` (through `go run`
-  or `bin/llmbench`). They publish, merge, or rewrite stored or committed state.
-  The rules match command text, so they are a prompt on the usual forms, not a
-  boundary around the program. An agent that cannot get the prompt answered
+  it once per clone with `make hooks` (`git config core.hooksPath .githooks`).
+
+  Its limits: a checkout that predates the gate has no `.githooks/` and commits
+  unchecked; commits created by `git cherry-pick`, `git revert` or a rebase
+  generally do not run it; and a fast-forward merge creates no commit to check.
+- **Gate guard.** A PreToolUse hook (`.claude/hooks/commit-gate-guard.sh`) reads
+  the words of every git command an agent runs. It refuses the usual ways to
+  switch the gate off -- `--no-verify`, `git commit -n`, changing
+  `core.hooksPath` -- and refuses a commit or merge where the gate is not in
+  effect: a clone where it was never enabled, or a checkout that predates it
+  (merge or rebase `main` first). It reads the command's words, not its effect,
+  so it is a backstop against the obvious spellings, not a boundary.
+- **Prompts before publishing or rewriting.** These prompt the human, even in
+  auto mode:
+  - every `git push`, whatever its spelling -- the gate guard asks;
+  - through `ask` rules, the usual spellings of `gh pr merge`, the Catalog Doctor
+    with its apply flag (`go run ./cmd/doctor --apply`), `go generate` (it runs
+    the weights trainer and the gazetteer generator), and llmbench's
+    `goldset-refit` and `train-scorer` (through `go run` or `bin/llmbench`).
+
+  The `ask` rules match command text, so they are a prompt on the usual forms,
+  not a boundary around the program. An agent that cannot get a prompt answered
   stops and reports; it does not look for another spelling of the command.
 - **Attribution.** `attribution.commit` is empty, so the harness adds no
   `Co-Authored-By` trailer to commits.
@@ -181,11 +186,13 @@ has read this file:
 
 ## Development Workflow
 
-The two lanes are described in the user-level `~/.claude/CLAUDE.md`, which loads
-alongside this file and is language-agnostic: the **feature / fix lane**
-(optional `/research`, then `/grilling`, then `/deliver <spec#>` in a fresh
-session) and the **one-off lane** (one fresh-context implementer, then review).
-This section adds only what is specific to this repo.
+The two lanes are described in the user-level `~/.claude/CLAUDE.md`, which is
+language-agnostic: the **feature / fix lane** (optional `/research`, then
+`/grilling`, then `/deliver <spec#>` in a fresh session) and the **one-off
+lane** (one fresh-context implementer, then review). That file and the skills it
+names live on the owner's machine, not in this repo, so a session on another
+machine or in the cloud does not have them. This section adds only what is
+specific to this repo.
 
 - **The repo's checks.** Where a lane says "the repo's format, build, test and
   lint checks", that means `gofmt -l` (must print nothing), `go build ./...`,
@@ -197,11 +204,11 @@ This section adds only what is specific to this repo.
   decisions to `docs/adr/NNNN-slug.md` (see Domain Language above), and
   `/research` briefs to `docs/research/`.
 - **Review checklist.** This repo's own review criteria are the
-  `review-checklist` skill: a checklist, not a second review procedure. Nothing
-  loads it automatically, so when you launch a reviewer in this repo, tell it in
-  the prompt to load `review-checklist` alongside `/code-review`. Anything specific to this repo
-  or to Go belongs there or elsewhere under this repo's `.claude/`, never in the
-  shared skills and agents under `~/.claude/`.
+  `review-checklist` skill: a checklist, not a second review procedure. If you
+  are reviewing changes in this repo, load it alongside `/code-review` -- nothing
+  loads it for you. Anything specific to this repo or to Go belongs there or
+  elsewhere under this repo's `.claude/`, never in the shared skills and agents
+  under `~/.claude/`.
 
 ## Project Structure
 

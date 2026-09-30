@@ -10,7 +10,6 @@
     "ask": [
       "Bash(git push *)",
       "Bash(git -c * push*)",
-      "Bash(git -C * push*)",
       "Bash(gh pr merge *)",
       "Bash(go run ./cmd/doctor*apply*)",
       "Bash(go generate *)",
